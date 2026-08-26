@@ -17,6 +17,14 @@
         "typescript": "^5.9.0",
       },
     },
+    "packages/cli": {
+      "name": "@wtm/cli",
+      "version": "0.1.0",
+      "dependencies": {
+        "@wtm/core": "workspace:*",
+        "@wtm/protocol": "workspace:*",
+      },
+    },
     "packages/core": {
       "name": "@wtm/core",
       "version": "0.1.0",
@@ -90,6 +98,8 @@
     "@types/bun": ["@types/bun@1.4.0", "", { "dependencies": { "bun-types": "1.4.0" } }, "sha512-K+lZULY23vRgK/CfTjFIV+tyifaNdSMlPh9j+6mQ/cLfpOznLyAuzgV/JQysyECpkBQLVMSyvjlr2fBUSA9wFQ=="],
 
     "@types/node": ["@types/node@26.3.0", "", { "dependencies": { "undici-types": "~8.3.0" } }, "sha512-L3fgrnchriRC2ExBflb8j4uZZURHZfQsmQeyVzhjcHW4kkwVyo8/0h1B2MVzMTrYUJYu6G7EWs14hW/L9putqw=="],
+
+    "@wtm/cli": ["@wtm/cli@workspace:packages/cli"],
 
     "@wtm/core": ["@wtm/core@workspace:packages/core"],
 

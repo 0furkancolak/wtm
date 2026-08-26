@@ -1,0 +1,14 @@
+{
+  "name": "@wtm/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./commands/init": "./src/commands/init.ts"
+  },
+  "dependencies": {
+    "@wtm/core": "workspace:*",
+    "@wtm/protocol": "workspace:*"
+  }
+}

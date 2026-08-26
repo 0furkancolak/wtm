@@ -1,4 +1,10 @@
-export { listGitWorktrees } from './git/git-runner';
+export {
+  GitCommandError,
+  listGitWorktrees,
+  readGitRemoteOrigin,
+  readGitRepositoryIdentity,
+} from './git/git-runner';
+export type { GitRepositoryIdentity } from './git/git-runner';
 export { parseGitWorktreePorcelain } from './git/worktree-parser';
 export type { GitWorktreeRecord } from './git/worktree-parser';
 export { resolveWorkspaceConfig, builtInConfig } from './config/load';
@@ -25,3 +31,4 @@ export type {
   WorktreeRecord,
   WorktreeState,
 } from './state/store';
+export * from './workspace/index';

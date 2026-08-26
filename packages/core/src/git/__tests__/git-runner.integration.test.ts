@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createGitWorktreeFixture } from '../../../../testkit/src/git-fixture';
 import { listGitWorktrees } from '../git-runner';
 
@@ -38,6 +41,21 @@ describe('listGitWorktrees', () => {
       ]);
     } finally {
       await fixture.cleanup();
+    }
+  });
+
+  it('rejects with structured command evidence when Git fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wtm-git-failure-'));
+    try {
+      await expect(listGitWorktrees(directory)).rejects.toMatchObject({
+        name: 'GitCommandError',
+        code: 'GIT_COMMAND_FAILED',
+        argv: ['git', '-C', directory, 'worktree', 'list', '--porcelain', '-z'],
+        exitCode: 128,
+        signal: null,
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   });
 });

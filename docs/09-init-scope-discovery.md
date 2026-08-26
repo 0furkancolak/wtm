@@ -15,7 +15,7 @@
 7. detect ecosystem/task markers;
 8. detect workspace-level Makefile/task files even when they are outside repos;
 9. propose workspace name and safe defaults;
-10. write `wtm.toml` unless `--global` was requested;
+10. create `wtm.toml` when absent unless `--global` was requested; use a complete existing file unchanged, or return non-secret generated `requiredChanges` when it requires an update;
 11. register workspace in user state;
 12. install/update the Agent Skill unless disabled;
 13. ask daemon to reconcile/watch the new workspace;
@@ -72,7 +72,7 @@ Therefore an agent inside `repo-a` or a nested linked worktree can use `wtm dev`
 
 ## Local registration
 
-`wtm init` creates/uses workspace `wtm.toml`. The daemon watches this registered workspace only.
+`wtm init` creates/uses workspace `wtm.toml`. It never rewrites an existing file: a complete file is used unchanged, while an incomplete file produces bounded generated `requiredChanges` for explicit user application. Reconstructed configuration and user-authored values are not copied into ordinary error context. The daemon watches this registered workspace only.
 
 ## Global-only registration
 

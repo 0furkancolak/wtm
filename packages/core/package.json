@@ -8,6 +8,7 @@
     "./git": "./src/git/git-runner.ts",
     "./config": "./src/config/load.ts",
     "./templates": "./src/templates/resolve.ts",
-    "./state": "./src/state/index.ts"
+    "./state": "./src/state/index.ts",
+    "./workspace": "./src/workspace/index.ts"
   }
 }

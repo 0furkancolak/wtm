@@ -21,7 +21,7 @@ Destructive commands still require an explicit worktree selector even when globa
 
 ### `wtm init [path]`
 
-Creates/updates a local `wtm.toml`, scans repositories/worktrees, records adapter detection and registers the workspace.
+Creates a local `wtm.toml` when absent, scans repositories/worktrees, records adapter detection and registers the workspace. A complete existing file is used byte-for-byte; if required minimal fields are missing, init returns non-secret `requiredChanges` and remediation without modifying the file. It never returns reconstructed user configuration in ordinary error context.
 
 Options:
 

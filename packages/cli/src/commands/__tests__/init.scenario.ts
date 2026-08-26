@@ -1,0 +1,87 @@
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { delimiter, join } from 'node:path';
+import { SQLiteStateStore } from '@wtm/core';
+import { createWorkspaceFixture } from '../../../../testkit/src/workspace-fixture';
+import { runInitCommand } from '../init';
+
+const scenario = process.argv[2];
+if (scenario === undefined) throw new Error('Scenario name is required');
+
+const fixture = await createWorkspaceFixture();
+const databasePath = join(fixture.userDataDir, 'state.db');
+let store = new SQLiteStateStore(databasePath);
+try {
+  if (scenario === 'git-failure') await installFailingGit(fixture.userDataDir, fixture.firstRepoPath);
+  if (scenario === 'config-context') {
+    await writeFile(join(fixture.root, 'wtm.toml'), '[workspace]\nname = 42\n');
+  }
+  if (scenario === 'update-required-secret') {
+    await writeFile(
+      join(fixture.root, 'wtm.toml'),
+      '[workspace]\nname = "cli-user-authored-name"\n\n[environment]\nAPI_TOKEN = "cli-environment-secret"\n',
+    );
+  }
+  if (scenario === 'malformed-secret') {
+    await writeFile(
+      join(fixture.root, 'wtm.toml'),
+      'version = 1\n\n[workspace]\nname = "valid-name"\n\n[environment]\nAPI_TOKEN = "cli-unterminated-secret-token-value\n',
+    );
+  }
+  const input = {
+    root: scenario === 'git-failure' ? fixture.firstRepoPath : fixture.root,
+    maxDepth: scenario === 'failure' ? -1 : 5,
+    userDataDir: fixture.userDataDir,
+    stateStore: store,
+  };
+  const envelope = await runInitCommand(input);
+  if (scenario !== 'success') {
+    process.stdout.write(`${JSON.stringify(envelope)}\n`);
+  } else {
+    if (!envelope.ok || envelope.data === null) throw new Error('First init unexpectedly failed');
+    const initialWorktrees = envelope.data.repositories
+      .flatMap((entry) => entry.reconciliation.discovered)
+      .map((worktree) => [worktree.path, worktree.id, worktree.numericId])
+      .sort(([left], [right]) => String(left).localeCompare(String(right)));
+    store.close();
+    store = new SQLiteStateStore(databasePath);
+    const reopened = await runInitCommand({ ...input, stateStore: store });
+    if (!reopened.ok || reopened.data === null) throw new Error('Reopened init unexpectedly failed');
+    const reopenedWorktrees = reopened.data.repositories
+      .flatMap((entry) => entry.reconciliation.updated)
+      .map((worktree) => [worktree.path, worktree.id, worktree.numericId])
+      .sort(([left], [right]) => String(left).localeCompare(String(right)));
+    process.stdout.write(`${JSON.stringify({
+      envelope: reopened,
+      stableWorktreeIdsAfterReopen: JSON.stringify(initialWorktrees) === JSON.stringify(reopenedWorktrees),
+      reopenedDiscoveredWorktrees: reopened.data.repositories
+        .flatMap((entry) => entry.reconciliation.discovered).length,
+      reopenedUpdatedWorktrees: reopened.data.repositories
+        .flatMap((entry) => entry.reconciliation.updated).length,
+    })}\n`);
+  }
+} finally {
+  store.close();
+  await fixture.cleanup();
+}
+
+async function installFailingGit(directory: string, repoRoot: string): Promise<void> {
+  const executableDirectory = join(directory, 'fake-bin');
+  const executablePath = join(executableDirectory, 'git');
+  await mkdir(executableDirectory, { recursive: true });
+  const script = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.includes('rev-parse')) {
+  process.stdout.write(${JSON.stringify(`${join(repoRoot, '.git')}\n${repoRoot}\n`)});
+  process.exit(0);
+}
+if (args.includes('config')) process.exit(1);
+if (args.includes('worktree')) {
+  process.stderr.write('fatal: https://alice:super-secret@example.invalid/private\\n');
+  process.exit(7);
+}
+process.exit(2);
+`;
+  await writeFile(executablePath, script, { flag: 'wx' });
+  await chmod(executablePath, 0o755);
+  process.env.PATH = `${executableDirectory}${delimiter}${process.env.PATH ?? ''}`;
+}
