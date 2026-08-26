@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGitWorktreeFixture } from '../../../../testkit/src/git-fixture';
-import { listGitWorktrees } from '../git-runner';
+import { createGitEnvironment, listGitWorktrees } from '../git-runner';
 
 describe('listGitWorktrees', () => {
   it('reads normal, linked locked, and detached worktrees from Git porcelain', async () => {
@@ -57,5 +57,42 @@ describe('listGitWorktrees', () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+});
+
+describe('createGitEnvironment', () => {
+  it('removes repository-routing variables without mutating or dropping unrelated environment', () => {
+    const source = {
+      PATH: '/usr/bin',
+      WTM_SENTINEL: 'preserved',
+      GIT_CONFIG_GLOBAL: '/tmp/global-config',
+      GIT_DIR: '/tmp/wrong.git',
+      GIT_WORK_TREE: '/tmp/wrong-tree',
+      GIT_COMMON_DIR: '/tmp/common.git',
+      GIT_INDEX_FILE: '/tmp/index',
+      GIT_OBJECT_DIRECTORY: '/tmp/objects',
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: '/tmp/alternate',
+      GIT_NAMESPACE: 'wrong-namespace',
+      GIT_SHALLOW_FILE: '/tmp/shallow',
+      GIT_GRAFT_FILE: '/tmp/grafts',
+      GIT_REPLACE_REF_BASE: 'refs/replace-test/',
+      GIT_CEILING_DIRECTORIES: '/tmp',
+      GIT_DISCOVERY_ACROSS_FILESYSTEM: '1',
+      GIT_PREFIX: 'wrong-prefix',
+      GIT_CONFIG_PARAMETERS: "'core.worktree'='/tmp/wrong-tree'",
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.worktree',
+      GIT_CONFIG_VALUE_0: '/tmp/wrong-tree',
+    };
+
+    const result = createGitEnvironment(source);
+
+    expect(result).toEqual({
+      PATH: '/usr/bin',
+      WTM_SENTINEL: 'preserved',
+      GIT_CONFIG_GLOBAL: '/tmp/global-config',
+    });
+    expect(source.GIT_DIR).toBe('/tmp/wrong.git');
+    expect(source.WTM_SENTINEL).toBe('preserved');
   });
 });

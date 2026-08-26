@@ -14,6 +14,34 @@ interface GitCommandFailure {
   stderr: string;
 }
 
+export interface GitCommandOptions {
+  acceptedExitCodes?: readonly number[];
+}
+
+export interface GitCommandResult {
+  stdout: Buffer;
+  stderr: string;
+  exitCode: number;
+}
+
+const gitRepositoryRoutingVariables = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_COMMON_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_NAMESPACE',
+  'GIT_SHALLOW_FILE',
+  'GIT_GRAFT_FILE',
+  'GIT_REPLACE_REF_BASE',
+  'GIT_CEILING_DIRECTORIES',
+  'GIT_DISCOVERY_ACROSS_FILESYSTEM',
+  'GIT_PREFIX',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_CONFIG_COUNT',
+] as const;
+
 export class GitCommandError extends Error {
   readonly code = 'GIT_COMMAND_FAILED' as const;
   readonly argv: readonly string[];
@@ -36,14 +64,14 @@ export class GitCommandError extends Error {
 }
 
 export async function listGitWorktrees(repoPath: string): Promise<GitWorktreeRecord[]> {
-  const output = await runGit(repoPath, ['worktree', 'list', '--porcelain', '-z']);
-  return parseGitWorktreePorcelain(output);
+  const result = await runGit(repoPath, ['worktree', 'list', '--porcelain', '-z']);
+  return parseGitWorktreePorcelain(result.stdout);
 }
 
 export async function readGitRepositoryIdentity(repoPath: string): Promise<GitRepositoryIdentity> {
   const args = ['rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel'];
-  const output = await runGit(repoPath, args);
-  const [commonGitDir, topLevel] = output.toString('utf8').trimEnd().split('\n');
+  const result = await runGit(repoPath, args);
+  const [commonGitDir, topLevel] = result.stdout.toString('utf8').trimEnd().split('\n');
   if (commonGitDir === undefined || topLevel === undefined) {
     throw new GitCommandError({
       argv: gitArgv(repoPath, args),
@@ -55,10 +83,25 @@ export async function readGitRepositoryIdentity(repoPath: string): Promise<GitRe
   return { commonGitDir, topLevel };
 }
 
+export async function readGitCommonDirectory(repoPath: string): Promise<string> {
+  const args = ['rev-parse', '--path-format=absolute', '--git-common-dir'];
+  const result = await runGit(repoPath, args);
+  const output = result.stdout.toString('utf8').trimEnd();
+  if (output.length === 0 || output.includes('\n') || output.includes('\0')) {
+    throw new GitCommandError({
+      argv: gitArgv(repoPath, args),
+      exitCode: 0,
+      signal: null,
+      stderr: 'git rev-parse returned an invalid common Git directory',
+    });
+  }
+  return output;
+}
+
 export async function readGitRemoteOrigin(repoPath: string): Promise<string | null> {
   try {
-    const output = await runGit(repoPath, ['config', '--get', 'remote.origin.url']);
-    const value = output.toString('utf8').trim();
+    const result = await runGit(repoPath, ['config', '--get', 'remote.origin.url']);
+    const value = result.stdout.toString('utf8').trim();
     return value.length === 0 ? null : value;
   } catch (error) {
     if (error instanceof GitCommandError && error.exitCode === 1) return null;
@@ -66,10 +109,17 @@ export async function readGitRemoteOrigin(repoPath: string): Promise<string | nu
   }
 }
 
-function runGit(repoPath: string, args: readonly string[]): Promise<Buffer> {
+export function runGit(
+  repoPath: string,
+  args: readonly string[],
+  options: GitCommandOptions = {},
+): Promise<GitCommandResult> {
   const argv = gitArgv(repoPath, args);
   return new Promise((resolve, reject) => {
-    const child = spawn(argv[0] ?? 'git', argv.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(argv[0] ?? 'git', argv.slice(1), {
+      env: createGitEnvironment(process.env),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
 
@@ -79,8 +129,13 @@ function runGit(repoPath: string, args: readonly string[]): Promise<Buffer> {
       reject(new GitCommandError({ argv, exitCode: null, signal: null, stderr: error.message }));
     });
     child.once('close', (exitCode, signal) => {
-      if (exitCode === 0) {
-        resolve(Buffer.concat(stdout));
+      const acceptedExitCodes = options.acceptedExitCodes ?? [0];
+      if (exitCode !== null && acceptedExitCodes.includes(exitCode)) {
+        resolve({
+          stdout: Buffer.concat(stdout),
+          stderr: sanitizeGitDiagnostic(Buffer.concat(stderr).toString('utf8')),
+          exitCode,
+        });
         return;
       }
       reject(new GitCommandError({
@@ -91,6 +146,15 @@ function runGit(repoPath: string, args: readonly string[]): Promise<Buffer> {
       }));
     });
   });
+}
+
+export function createGitEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const environment = { ...source };
+  for (const key of gitRepositoryRoutingVariables) delete environment[key];
+  for (const key of Object.keys(environment)) {
+    if (/^GIT_CONFIG_(?:KEY|VALUE)_\d+$/u.test(key)) delete environment[key];
+  }
+  return environment;
 }
 
 function gitArgv(repoPath: string, args: readonly string[]): readonly string[] {

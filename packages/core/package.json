@@ -5,10 +5,13 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./git": "./src/git/git-runner.ts",
     "./config": "./src/config/load.ts",
     "./templates": "./src/templates/resolve.ts",
     "./state": "./src/state/index.ts",
-    "./workspace": "./src/workspace/index.ts"
+    "./workspace": "./src/workspace/index.ts",
+    "./analysis": "./src/analysis/worktree-analysis.ts"
+  },
+  "dependencies": {
+    "@wtm/protocol": "workspace:*"
   }
 }

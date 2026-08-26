@@ -28,6 +28,9 @@
     "packages/core": {
       "name": "@wtm/core",
       "version": "0.1.0",
+      "dependencies": {
+        "@wtm/protocol": "workspace:*",
+      },
     },
     "packages/protocol": {
       "name": "@wtm/protocol",

@@ -5,7 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./commands/init": "./src/commands/init.ts"
+    "./commands/init": "./src/commands/init.ts",
+    "./commands/analyze": "./src/commands/analyze.ts",
+    "./commands/remove": "./src/commands/remove.ts"
   },
   "dependencies": {
     "@wtm/core": "workspace:*",
