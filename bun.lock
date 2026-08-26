@@ -12,8 +12,16 @@
         "typescript": "^5.9.0",
       },
     },
+    "packages/core": {
+      "name": "@wtm/core",
+      "version": "0.1.0",
+    },
     "packages/protocol": {
       "name": "@wtm/protocol",
+      "version": "0.1.0",
+    },
+    "packages/testkit": {
+      "name": "@wtm/testkit",
       "version": "0.1.0",
     },
   },
@@ -22,7 +30,11 @@
 
     "@types/node": ["@types/node@26.3.0", "", { "dependencies": { "undici-types": "~8.3.0" } }, "sha512-L3fgrnchriRC2ExBflb8j4uZZURHZfQsmQeyVzhjcHW4kkwVyo8/0h1B2MVzMTrYUJYu6G7EWs14hW/L9putqw=="],
 
+    "@wtm/core": ["@wtm/core@workspace:packages/core"],
+
     "@wtm/protocol": ["@wtm/protocol@workspace:packages/protocol"],
+
+    "@wtm/testkit": ["@wtm/testkit@workspace:packages/testkit"],
 
     "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
 

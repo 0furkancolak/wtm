@@ -12,8 +12,8 @@
   ],
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit --project packages/protocol/tsconfig.json",
-    "build": "bun build packages/protocol/src/index.ts --outdir dist/protocol --target node"
+    "typecheck": "tsc --noEmit --project packages/protocol/tsconfig.json && tsc --noEmit --project packages/core/tsconfig.json && tsc --noEmit --project packages/testkit/tsconfig.json",
+    "build": "bun build packages/protocol/src/index.ts --outdir dist/protocol --target node && bun build packages/core/src/index.ts --outdir dist/core --target node"
   },
   "devDependencies": {
     "@types/bun": "^1.3.0",
