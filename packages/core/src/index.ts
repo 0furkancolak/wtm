@@ -8,3 +8,20 @@ export type { WtmConfig } from './config/schema';
 export type { ResolvedConfig, Provenance } from './config/provenance';
 export { resolveTemplate, WtmTemplateError } from './templates/resolve';
 export type { TemplateContext } from './templates/resolve';
+export { SQLiteStateStore } from './state/sqlite-store';
+export type {
+  EndpointLease,
+  EndpointLeaseState,
+  EndpointProtocol,
+  EndpointRequest,
+  PortRange,
+  ReconcileResult,
+  RepositoryInput,
+  RepositoryRecord,
+  StateStore,
+  WorkspaceInput,
+  WorkspaceRecord,
+  WorkspaceScope,
+  WorktreeRecord,
+  WorktreeState,
+} from './state/store';
