@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveWorkspaceConfig } from './load.js';
+import { resolveWorkspaceConfig } from '../load';
 
 const directories: string[] = [];
 

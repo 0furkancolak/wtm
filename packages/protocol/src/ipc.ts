@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { protocolVersionSchema } from './adapter.js';
-import { jsonEnvelopeSchema } from './json-envelope.js';
+import { protocolVersionSchema } from './adapter';
+import { jsonEnvelopeSchema } from './json-envelope';
 
 export const ipcRequestSchema = z.object({
   protocol: protocolVersionSchema,

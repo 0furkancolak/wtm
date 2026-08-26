@@ -9,7 +9,7 @@ import {
   isProtocolVersionCompatible,
   parseAdapterResponse,
   protocolVersionSchema,
-} from './adapter.js';
+} from '../adapter';
 
 describe('adapter protocol schemas', () => {
   it('accepts a versioned metadata request', () => {

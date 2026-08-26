@@ -1,2 +1,2 @@
-export { createGitWorktreeFixture } from './git-fixture.js';
-export type { GitWorktreeFixture } from './git-fixture.js';
+export { createGitWorktreeFixture } from './git-fixture';
+export type { GitWorktreeFixture } from './git-fixture';

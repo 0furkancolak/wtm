@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { wtmErrorSchema } from './errors.js';
+import { wtmErrorSchema } from '../errors';
 
 describe('wtmErrorSchema', () => {
   it('accepts a documented error and command-suggestion remediation', () => {

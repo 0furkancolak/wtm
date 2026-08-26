@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { wtmErrorSchema, type WtmError } from './errors.js';
-import { schemaVersionSchema, type SchemaVersion } from './schema-version.js';
+import { wtmErrorSchema, type WtmError } from './errors';
+import { schemaVersionSchema, type SchemaVersion } from './schema-version';
 
 export const scopeSchema = z.object({
   mode: z.enum(['local', 'global']),

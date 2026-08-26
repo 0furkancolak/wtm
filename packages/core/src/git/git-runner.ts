@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-import { parseGitWorktreePorcelain } from './worktree-parser.js';
-import type { GitWorktreeRecord } from './worktree-parser.js';
+import { parseGitWorktreePorcelain } from './worktree-parser';
+import type { GitWorktreeRecord } from './worktree-parser';
 
 export async function listGitWorktrees(repoPath: string): Promise<GitWorktreeRecord[]> {
   const output = await runGitWorktreeList(repoPath);
@@ -30,4 +30,4 @@ function runGitWorktreeList(repoPath: string): Promise<Buffer> {
   });
 }
 
-export type { GitWorktreeRecord } from './worktree-parser.js';
+export type { GitWorktreeRecord } from './worktree-parser';

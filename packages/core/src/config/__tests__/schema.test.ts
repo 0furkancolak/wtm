@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { parseWtmConfig } from './schema.js';
+import { parseWtmConfig } from '../schema';
 
 describe('parseWtmConfig', () => {
   it('rejects a task which combines run with main or worktree commands', () => {

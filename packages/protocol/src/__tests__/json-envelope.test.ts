@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import { jsonEnvelopeSchema } from './json-envelope.js';
-import type { JsonEnvelope } from './json-envelope.js';
+import { jsonEnvelopeSchema } from '../json-envelope';
+import type { JsonEnvelope } from '../json-envelope';
 
 // A failed envelope must always carry a structured error for consumers.
 // @ts-expect-error Failure envelopes cannot have an empty errors array.

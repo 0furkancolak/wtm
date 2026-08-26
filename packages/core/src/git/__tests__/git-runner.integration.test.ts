@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import { createGitWorktreeFixture } from '../../../testkit/src/git-fixture.js';
-import { listGitWorktrees } from './git-runner.js';
+import { createGitWorktreeFixture } from '../../../../testkit/src/git-fixture';
+import { listGitWorktrees } from '../git-runner';
 
 describe('listGitWorktrees', () => {
   it('reads normal, linked locked, and detached worktrees from Git porcelain', async () => {

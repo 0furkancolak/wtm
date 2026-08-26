@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { ipcRequestSchema, ipcResponseSchema } from './ipc.js';
+import { ipcRequestSchema, ipcResponseSchema } from '../ipc';
 
 describe('daemon IPC framing schemas', () => {
   it('requires a V1 protocol version on requests', () => {

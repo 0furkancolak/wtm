@@ -1,4 +1,4 @@
-import type { WtmConfig } from './schema.js';
+import type { WtmConfig } from './schema';
 
 export interface Provenance {
   source: string;

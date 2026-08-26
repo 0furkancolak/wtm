@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { wtmErrorSchema } from './errors.js';
+import { wtmErrorSchema } from './errors';
 
 export const protocolVersionSchema = z.object({
   major: z.literal(1),

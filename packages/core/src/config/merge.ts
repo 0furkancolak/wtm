@@ -1,5 +1,5 @@
-import type { ResolvedConfig, Provenance } from './provenance.js';
-import { WtmConfigError, type WtmConfig } from './schema.js';
+import type { ResolvedConfig, Provenance } from './provenance';
+import { WtmConfigError, type WtmConfig } from './schema';
 
 type ConfigRecord = Record<string, unknown>;
 

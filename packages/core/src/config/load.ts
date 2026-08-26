@@ -1,9 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import { parse } from 'smol-toml';
-import { mergeConfigLayers, type ConfigLayer } from './merge.js';
-import { collectProvenance, type ResolvedConfig } from './provenance.js';
-import { parseWtmConfig, WtmConfigError, type WtmConfig } from './schema.js';
+import { mergeConfigLayers, type ConfigLayer } from './merge';
+import { collectProvenance, type ResolvedConfig } from './provenance';
+import { parseWtmConfig, WtmConfigError, type WtmConfig } from './schema';
 
 export const builtInConfig: WtmConfig = {
   version: 1,

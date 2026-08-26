@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { findTomlValueLine } from './provenance.js';
+import { findTomlValueLine } from '../provenance';
 
 describe('findTomlValueLine', () => {
   it('returns a line only when the TOML leaf assignment can be identified reliably', () => {

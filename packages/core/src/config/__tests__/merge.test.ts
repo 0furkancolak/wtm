@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { mergeConfigLayers } from './merge.js';
+import { mergeConfigLayers } from '../merge';
 
 describe('mergeConfigLayers', () => {
   it('applies defaults and adapter suggestions below explicit configuration in precedence order', () => {

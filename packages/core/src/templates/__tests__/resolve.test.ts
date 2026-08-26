@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { resolveTemplate, type TemplateContext } from './resolve.js';
+import { resolveTemplate, type TemplateContext } from '../resolve';
 
 const context: TemplateContext = {
   workspace: { root: '/workspace', name: 'dev' },

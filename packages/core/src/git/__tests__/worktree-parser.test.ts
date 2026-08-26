@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { parseGitWorktreePorcelain } from './worktree-parser.js';
+import { parseGitWorktreePorcelain } from '../worktree-parser';
 
 const encodePorcelain = (records: string[][]): Uint8Array =>
   new TextEncoder().encode(records.flatMap((record) => [...record, '']).join('\0'));
