@@ -5,6 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./git": "./src/git/git-runner.ts"
+    "./git": "./src/git/git-runner.ts",
+    "./config": "./src/config/load.ts",
+    "./templates": "./src/templates/resolve.ts"
   }
 }

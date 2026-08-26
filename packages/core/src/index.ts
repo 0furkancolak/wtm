@@ -1,3 +1,10 @@
 export { listGitWorktrees } from './git/git-runner.js';
 export { parseGitWorktreePorcelain } from './git/worktree-parser.js';
 export type { GitWorktreeRecord } from './git/worktree-parser.js';
+export { resolveWorkspaceConfig, builtInConfig } from './config/load.js';
+export { mergeConfigLayers } from './config/merge.js';
+export { parseWtmConfig, wtmConfigSchema, WtmConfigError } from './config/schema.js';
+export type { WtmConfig } from './config/schema.js';
+export type { ResolvedConfig, Provenance } from './config/provenance.js';
+export { resolveTemplate, WtmTemplateError } from './templates/resolve.js';
+export type { TemplateContext } from './templates/resolve.js';
