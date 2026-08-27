@@ -4,6 +4,7 @@ import Database from 'better-sqlite3';
 import type { GitWorktreeRecord } from '../git/worktree-parser';
 import type {
   EndpointLease,
+  EndpointAvailabilityProbe,
   EndpointRequest,
   ReconcileResult,
   RepositoryInput,
@@ -141,6 +142,7 @@ export class SQLiteStateStore implements StateStore {
       if (path !== ':memory:' && !path.startsWith('file::memory:')) {
         this.#database.pragma('journal_mode = WAL');
       }
+      this.#database.pragma('busy_timeout = 5000');
       this.#migrate();
     } catch (error) {
       try {
@@ -283,7 +285,7 @@ export class SQLiteStateStore implements StateStore {
     });
   }
 
-  allocateEndpoint(input: EndpointRequest): EndpointLease {
+  allocateEndpoint(input: EndpointRequest, probe?: EndpointAvailabilityProbe): EndpointLease {
     this.#assertOpen();
     this.#validateEndpointRequest(input);
     return this.transaction(() => {
@@ -298,7 +300,12 @@ export class SQLiteStateStore implements StateStore {
       const existingIsCompatible = existing?.state === 'ACTIVE'
         && existing.protocol === input.protocol
         && existing.host === input.host;
-      if (existingIsCompatible) return endpointFromRow(existing);
+      if (
+        existingIsCompatible
+        && (probe === undefined || probe({ protocol: input.protocol, host: input.host, port: existing.port }))
+      ) {
+        return endpointFromRow(existing);
+      }
 
       const candidates: number[] = [];
       if (
@@ -316,9 +323,10 @@ export class SQLiteStateStore implements StateStore {
         SELECT id FROM endpoint_leases
         WHERE protocol = ? AND port = ? AND state = 'ACTIVE' AND id <> ?
       `);
-      const port = candidates.find((candidate) =>
-        collisionStatement.get(input.protocol, candidate, existing?.id ?? '') === undefined,
-      );
+      const port = candidates.find((candidate) => {
+        if (collisionStatement.get(input.protocol, candidate, existing?.id ?? '') !== undefined) return false;
+        return probe?.({ protocol: input.protocol, host: input.host, port: candidate }) ?? true;
+      });
       if (port === undefined) {
         throw new Error(
           `No available ${input.protocol} endpoint on ${input.host} in range ${input.portRange.min}-${input.portRange.max}`,

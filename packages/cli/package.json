@@ -7,6 +7,8 @@
     ".": "./src/index.ts",
     "./commands/init": "./src/commands/init.ts",
     "./commands/analyze": "./src/commands/analyze.ts",
+    "./commands/resolve": "./src/commands/resolve.ts",
+    "./commands/run": "./src/commands/run.ts",
     "./commands/remove": "./src/commands/remove.ts"
   },
   "dependencies": {

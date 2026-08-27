@@ -37,10 +37,21 @@ export type { WtmConfig } from './config/schema';
 export type { ResolvedConfig, Provenance } from './config/provenance';
 export { resolveTemplate, WtmTemplateError } from './templates/resolve';
 export type { TemplateContext } from './templates/resolve';
+export { resolveEnvironment, WtmEnvironmentError } from './runtime/environment';
+export type { EnvironmentResolutionInput } from './runtime/environment';
+export { resolveTask, WtmTaskResolutionError } from './runtime/task-resolver';
+export type { ResolvedTask, TaskResolutionInput } from './runtime/task-resolver';
+export {
+  allocateStableEndpoint,
+  isEndpointAvailable,
+  WtmEndpointAllocationError,
+} from './runtime/endpoints';
 export { SQLiteStateStore } from './state/sqlite-store';
 export type {
   EndpointLease,
   EndpointLeaseState,
+  EndpointAvailabilityProbe,
+  EndpointCandidate,
   EndpointProtocol,
   EndpointRequest,
   PortRange,

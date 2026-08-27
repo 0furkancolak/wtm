@@ -80,6 +80,14 @@ export interface EndpointRequest {
   preferredPort?: number;
 }
 
+export interface EndpointCandidate {
+  protocol: EndpointProtocol;
+  host: string;
+  port: number;
+}
+
+export type EndpointAvailabilityProbe = (candidate: EndpointCandidate) => boolean;
+
 export type EndpointLeaseState = 'ACTIVE' | 'RELEASED';
 
 export interface EndpointLease {
@@ -98,6 +106,6 @@ export interface StateStore {
   upsertWorkspace(input: WorkspaceInput): WorkspaceRecord;
   upsertRepository(input: RepositoryInput): RepositoryRecord;
   reconcileWorktrees(repositoryId: string, snapshot: GitWorktreeRecord[]): ReconcileResult;
-  allocateEndpoint(input: EndpointRequest): EndpointLease;
+  allocateEndpoint(input: EndpointRequest, probe?: EndpointAvailabilityProbe): EndpointLease;
   transaction<T>(fn: () => T): T;
 }
