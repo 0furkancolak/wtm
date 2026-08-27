@@ -6,6 +6,13 @@ import type {
   EndpointLease,
   EndpointAvailabilityProbe,
   EndpointRequest,
+  ManagedProcessInput,
+  ManagedProcessCreateOptions,
+  ManagedProcessQuery,
+  ManagedProcessRecord,
+  ManagedProcessReservationOptions,
+  ManagedProcessState,
+  ManagedProcessUpdate,
   ReconcileResult,
   RepositoryInput,
   RepositoryRecord,
@@ -63,8 +70,41 @@ interface EndpointRow {
   last_verified_at: string;
 }
 
+interface ManagedProcessRow {
+  id: string;
+  worktree_id: string;
+  task_name: string;
+  pid: number;
+  pgid: number;
+  process_start_time: string;
+  command_fingerprint: string;
+  state: ManagedProcessState;
+  started_at: string;
+  stopped_at: string | null;
+  stdout_path: string;
+  stderr_path: string;
+  cleanup_required: 0 | 1;
+  cleanup_owner_token: string | null;
+}
+
 const initialMigration = readFileSync(
   new URL('./migrations/001-initial.sql', import.meta.url),
+  'utf8',
+);
+const managedProcessIndexesMigration = readFileSync(
+  new URL('./migrations/002-managed-process-indexes.sql', import.meta.url),
+  'utf8',
+);
+const managedProcessReservationsMigration = readFileSync(
+  new URL('./migrations/003-managed-process-reservations.sql', import.meta.url),
+  'utf8',
+);
+const managedProcessReservationLeasesMigration = readFileSync(
+  new URL('./migrations/004-managed-process-reservation-leases.sql', import.meta.url),
+  'utf8',
+);
+const managedProcessCleanupOwnershipMigration = readFileSync(
+  new URL('./migrations/005-managed-process-cleanup-ownership.sql', import.meta.url),
   'utf8',
 );
 
@@ -120,6 +160,25 @@ function endpointFromRow(row: EndpointRow): EndpointLease {
     state: row.state,
     allocatedAt: row.allocated_at,
     lastVerifiedAt: row.last_verified_at,
+  };
+}
+
+function managedProcessFromRow(row: ManagedProcessRow): ManagedProcessRecord {
+  return {
+    id: row.id,
+    worktreeId: row.worktree_id,
+    taskName: row.task_name,
+    pid: row.pid,
+    pgid: row.pgid,
+    processStartTime: row.process_start_time,
+    commandFingerprint: row.command_fingerprint,
+    state: row.state,
+    startedAt: row.started_at,
+    stoppedAt: row.stopped_at,
+    stdoutPath: row.stdout_path,
+    stderrPath: row.stderr_path,
+    cleanupRequired: row.cleanup_required === 1,
+    ...(row.cleanup_owner_token === null ? {} : { cleanupOwnerToken: row.cleanup_owner_token }),
   };
 }
 
@@ -397,6 +456,221 @@ export class SQLiteStateStore implements StateStore {
     });
   }
 
+  createManagedProcess(
+    input: ManagedProcessInput,
+    options: ManagedProcessCreateOptions = {},
+  ): ManagedProcessRecord {
+    this.#assertOpen();
+    this.#validateManagedProcess(input);
+    return this.transaction(() => {
+      if (options.reservationToken !== undefined) {
+        const reservation = this.#database.prepare(`
+          SELECT token FROM managed_process_start_reservations
+          WHERE worktree_id = ? AND task_name = ?
+        `).get(input.worktreeId, input.taskName) as { token: string } | undefined;
+        if (reservation?.token !== options.reservationToken) {
+          throw new Error('Managed process start reservation is not owned by this caller');
+        }
+      }
+      if (isActiveProcessState(input.state)) {
+        const active = this.findActiveManagedProcess(input.worktreeId, input.taskName);
+        if (active !== null) {
+          throw new Error(`Managed task is already active: ${input.taskName}`);
+        }
+      }
+      const id = randomUUID();
+      this.#database.prepare(`
+        INSERT INTO managed_processes (
+          id, worktree_id, task_name, pid, pgid, process_start_time, command_fingerprint,
+          state, started_at, stopped_at, stdout_path, stderr_path
+          , cleanup_required, cleanup_owner_token
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        input.worktreeId,
+        input.taskName,
+        input.pid,
+        input.pgid,
+        input.processStartTime,
+        input.commandFingerprint,
+        input.state,
+        input.startedAt,
+        input.stoppedAt,
+        input.stdoutPath,
+        input.stderrPath,
+        input.cleanupRequired === true ? 1 : 0,
+        input.cleanupOwnerToken ?? null,
+      );
+      return this.#managedProcessById(id);
+    });
+  }
+
+  getManagedProcess(id: string): ManagedProcessRecord | null {
+    this.#assertOpen();
+    const row = this.#database
+      .prepare('SELECT * FROM managed_processes WHERE id = ?')
+      .get(id) as ManagedProcessRow | undefined;
+    return row === undefined ? null : managedProcessFromRow(row);
+  }
+
+  updateManagedProcess(id: string, update: ManagedProcessUpdate): ManagedProcessRecord | null {
+    this.#assertOpen();
+    if (update.expectedStates.length === 0) throw new TypeError('Expected managed process states must not be empty');
+    for (const expected of update.expectedStates) assertProcessTransition(expected, update.state);
+    validateProcessTimestamp(update.state, update.stoppedAt ?? null);
+    const placeholders = update.expectedStates.map(() => '?').join(', ');
+    return this.transaction(() => {
+      const current = this.#managedProcessById(id);
+      if (update.reservationToken !== undefined) {
+        const reservation = this.#database.prepare(`
+          SELECT token FROM managed_process_start_reservations
+          WHERE worktree_id = ? AND task_name = ?
+        `).get(current.worktreeId, current.taskName) as { token: string } | undefined;
+        if (reservation?.token !== update.reservationToken) {
+          throw new Error('Managed process start reservation is not owned by this caller');
+        }
+      }
+      const result = this.#database.prepare(`
+        UPDATE managed_processes SET state = ?, stopped_at = ?,
+          cleanup_required = COALESCE(?, cleanup_required)
+        WHERE id = ? AND state IN (${placeholders})
+      `).run(
+        update.state,
+        update.stoppedAt ?? null,
+        update.cleanupRequired === undefined ? null : update.cleanupRequired ? 1 : 0,
+        id,
+        ...update.expectedStates,
+      );
+      if (result.changes !== 1) return null;
+      return this.#managedProcessById(id);
+    });
+  }
+
+  reserveManagedProcessStart(
+    worktreeId: string,
+    taskName: string,
+    token: string,
+    createdAt: string,
+    options: ManagedProcessReservationOptions = {},
+  ): boolean {
+    this.#assertOpen();
+    if (token.length === 0) throw new TypeError('Managed process reservation token must not be empty');
+    return this.transaction(() => {
+      this.#database.prepare(`
+        DELETE FROM managed_process_start_reservations
+        WHERE worktree_id = ? AND task_name = ? AND expires_at <= ?
+          AND NOT EXISTS (
+            SELECT 1 FROM managed_processes
+            WHERE worktree_id = ? AND task_name = ?
+              AND (state IN ('STARTING', 'RUNNING', 'STOPPING') OR cleanup_required = 1)
+          )
+      `).run(worktreeId, taskName, createdAt, worktreeId, taskName);
+      const active = this.findActiveManagedProcess(worktreeId, taskName);
+      if (active !== null && options.replaceProcessId !== active.id) return false;
+      try {
+        this.#database.prepare(`
+          INSERT INTO managed_process_start_reservations (
+            worktree_id, task_name, token, created_at, expires_at, replace_process_id
+          ) VALUES (?, ?, ?, ?, ?, ?)
+        `).run(
+          worktreeId,
+          taskName,
+          token,
+          createdAt,
+          options.expiresAt ?? createdAt,
+          options.replaceProcessId ?? null,
+        );
+        return true;
+      } catch (error) {
+        if (isConstraintError(error)) return false;
+        throw error;
+      }
+    });
+  }
+
+  releaseManagedProcessStart(worktreeId: string, taskName: string, token: string): boolean {
+    this.#assertOpen();
+    return this.#database.prepare(`
+      DELETE FROM managed_process_start_reservations
+      WHERE worktree_id = ? AND task_name = ? AND token = ?
+    `).run(worktreeId, taskName, token).changes === 1;
+  }
+
+  releaseExpiredManagedProcessStart(worktreeId: string, taskName: string, now: string): boolean {
+    this.#assertOpen();
+    return this.#database.prepare(`
+      DELETE FROM managed_process_start_reservations
+      WHERE worktree_id = ? AND task_name = ? AND expires_at <= ?
+        AND NOT EXISTS (
+          SELECT 1 FROM managed_processes
+          WHERE worktree_id = ? AND task_name = ?
+            AND (state IN ('STARTING', 'RUNNING', 'STOPPING') OR cleanup_required = 1)
+        )
+    `).run(worktreeId, taskName, now, worktreeId, taskName).changes === 1;
+  }
+
+  releaseExpiredManagedProcessReplacement(record: ManagedProcessRecord, now: string): boolean {
+    this.#assertOpen();
+    return this.#database.prepare(`
+      DELETE FROM managed_process_start_reservations
+      WHERE worktree_id = ? AND task_name = ? AND expires_at <= ?
+        AND replace_process_id = ?
+        AND EXISTS (
+          SELECT 1 FROM managed_processes
+          WHERE id = ? AND worktree_id = ? AND task_name = ?
+            AND pid = ? AND pgid = ? AND process_start_time = ? AND command_fingerprint = ?
+            AND state = 'RUNNING' AND cleanup_required = 0
+        )
+    `).run(
+      record.worktreeId, record.taskName, now, record.id,
+      record.id, record.worktreeId, record.taskName, record.pid, record.pgid,
+      record.processStartTime, record.commandFingerprint,
+    ).changes === 1;
+  }
+
+  hasManagedProcessStartReservation(worktreeId: string, taskName: string): boolean {
+    this.#assertOpen();
+    return this.#database.prepare(`
+      SELECT 1 FROM managed_process_start_reservations
+      WHERE worktree_id = ? AND task_name = ?
+    `).get(worktreeId, taskName) !== undefined;
+  }
+
+  listManagedProcesses(query: ManagedProcessQuery = {}): ManagedProcessRecord[] {
+    this.#assertOpen();
+    const clauses: string[] = [];
+    const parameters: Array<string> = [];
+    if (query.worktreeId !== undefined) {
+      clauses.push('worktree_id = ?');
+      parameters.push(query.worktreeId);
+    }
+    if (query.taskName !== undefined) {
+      clauses.push('task_name = ?');
+      parameters.push(query.taskName);
+    }
+    if (query.states !== undefined) {
+      if (query.states.length === 0) return [];
+      clauses.push(`state IN (${query.states.map(() => '?').join(', ')})`);
+      parameters.push(...query.states);
+    }
+    const where = clauses.length === 0 ? '' : `WHERE ${clauses.join(' AND ')}`;
+    const rows = this.#database.prepare(`
+      SELECT * FROM managed_processes ${where} ORDER BY started_at, id
+    `).all(...parameters) as ManagedProcessRow[];
+    return rows.map(managedProcessFromRow);
+  }
+
+  findActiveManagedProcess(worktreeId: string, taskName: string): ManagedProcessRecord | null {
+    this.#assertOpen();
+    const row = this.#database.prepare(`
+      SELECT * FROM managed_processes
+      WHERE worktree_id = ? AND task_name = ?
+        AND state IN ('STARTING', 'RUNNING', 'STOPPING')
+      ORDER BY started_at DESC, id DESC LIMIT 1
+    `).get(worktreeId, taskName) as ManagedProcessRow | undefined;
+    return row === undefined ? null : managedProcessFromRow(row);
+  }
+
   transaction<T>(fn: () => T): T {
     this.#assertOpen();
     return this.#database.transaction(fn).immediate();
@@ -431,6 +705,24 @@ export class SQLiteStateStore implements StateStore {
     if (input.host.length === 0) throw new TypeError('Endpoint host must not be empty');
   }
 
+  #validateManagedProcess(input: ManagedProcessInput): void {
+    if (!Number.isSafeInteger(input.pid) || input.pid < 1) throw new RangeError('Managed process PID must be positive');
+    if (!Number.isSafeInteger(input.pgid) || input.pgid < 1) throw new RangeError('Managed process PGID must be positive');
+    if (input.taskName.length === 0) throw new TypeError('Managed process task name must not be empty');
+    if (input.processStartTime.length === 0 || input.commandFingerprint.length === 0) {
+      throw new TypeError('Managed process identity must be complete');
+    }
+    validateProcessTimestamp(input.state, input.stoppedAt);
+  }
+
+  #managedProcessById(id: string): ManagedProcessRecord {
+    const row = this.#database
+      .prepare('SELECT * FROM managed_processes WHERE id = ?')
+      .get(id) as ManagedProcessRow | undefined;
+    if (row === undefined) throw new Error(`Unknown managed process: ${id}`);
+    return managedProcessFromRow(row);
+  }
+
   #migrate(): void {
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -438,15 +730,62 @@ export class SQLiteStateStore implements StateStore {
         applied_at TEXT NOT NULL
       )
     `);
+    const migrations = [
+      initialMigration,
+      managedProcessIndexesMigration,
+      managedProcessReservationsMigration,
+      managedProcessReservationLeasesMigration,
+      managedProcessCleanupOwnershipMigration,
+    ];
     this.#database.transaction(() => {
-      const row = this.#database
-        .prepare('SELECT version FROM schema_migrations WHERE version = ?')
-        .get(1) as { version: number } | undefined;
-      if (row !== undefined) return;
-      this.#database.exec(initialMigration);
-      this.#database
-        .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
-        .run(1, new Date().toISOString());
+      const applied = this.#database.prepare('SELECT version FROM schema_migrations WHERE version = ?');
+      const record = this.#database.prepare(
+        'INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)',
+      );
+      for (const [index, migration] of migrations.entries()) {
+        const version = index + 1;
+        if (applied.get(version) !== undefined) continue;
+        this.#database.exec(migration);
+        record.run(version, new Date().toISOString());
+      }
     }).immediate();
   }
+}
+
+function isActiveProcessState(state: ManagedProcessState): boolean {
+  return state === 'STARTING' || state === 'RUNNING' || state === 'STOPPING';
+}
+
+function validateProcessTimestamp(state: ManagedProcessState, stoppedAt: string | null): void {
+  if (isTerminalProcessState(state) && stoppedAt === null) {
+    throw new TypeError('Terminal managed process state requires stoppedAt');
+  }
+  if (!isTerminalProcessState(state) && stoppedAt !== null) {
+    throw new TypeError('Nonterminal managed process state requires stoppedAt to be null');
+  }
+}
+
+function isTerminalProcessState(state: ManagedProcessState): boolean {
+  return state === 'STOPPED' || state === 'FAILED' || state === 'STALE_IDENTITY';
+}
+
+function assertProcessTransition(from: ManagedProcessState, to: ManagedProcessState): void {
+  if (from === to) return;
+  const allowed: Record<ManagedProcessState, readonly ManagedProcessState[]> = {
+    STARTING: ['RUNNING', 'STOPPING', 'STOPPED', 'FAILED', 'STALE_IDENTITY'],
+    RUNNING: ['STOPPING', 'STOPPED', 'FAILED', 'STALE_IDENTITY'],
+    STOPPING: ['STOPPED', 'FAILED', 'STALE_IDENTITY'],
+    STOPPED: [],
+    FAILED: [],
+    STALE_IDENTITY: [],
+  };
+  if (!allowed[from].includes(to)) throw new Error(`Invalid managed process transition: ${from} -> ${to}`);
+}
+
+function isConstraintError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && typeof error.code === 'string'
+    && error.code.startsWith('SQLITE_CONSTRAINT');
 }

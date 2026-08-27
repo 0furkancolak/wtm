@@ -125,4 +125,64 @@ describe('SQLiteStateStore', () => {
       walSidecarExistsAfterFailure: false,
     });
   });
+
+  test('persists managed process identities and queries active singleton records deterministically', () => {
+    expect(runScenario('managed-process-crud')).toEqual({
+      createdState: 'STARTING',
+      activeIdMatches: true,
+      runningState: 'RUNNING',
+      stoppedAt: '2026-08-27T09:05:00.000Z',
+      activeAfterStop: null,
+      orderedStates: ['STOPPED', 'FAILED'],
+      rejectedSecondActiveSingleton: true,
+      migrationVersions: [1, 2, 3, 4, 5],
+    });
+  });
+
+  test('enforces CAS lifecycle transitions and terminal timestamp invariants', () => {
+    expect(runScenario('managed-process-lifecycle')).toEqual({
+      wrongExpectedStateReturnedNull: true,
+      runningState: 'RUNNING',
+      stoppingState: 'STOPPING',
+      stoppedState: 'STOPPED',
+      rejectedRevival: true,
+      rejectedTerminalWithoutTimestamp: true,
+      rejectedNonterminalTimestamp: true,
+    });
+  });
+
+  test('serializes process start reservations across independent SQLite connections', () => {
+    expect(runScenario('managed-process-reservations')).toEqual({
+      firstReserved: true,
+      secondBlocked: true,
+      wrongTokenDidNotRelease: true,
+      reclaimedExpired: true,
+      reservationHeldThroughCreate: true,
+      runningState: 'RUNNING',
+      owningTokenReleased: true,
+      cleanupReserved: true,
+      cleanupLeaseSurvivedExpiry: true,
+      cleanupOwnerTokenPersisted: true,
+      recoveryReleasedCleanupLease: true,
+    });
+  });
+
+  test('migrates the newest v4 cleanup candidate with its reservation ownership', () => {
+    expect(runScenario('managed-process-v4-cleanup-upgrade')).toEqual({
+      newestFailedCleanupRequired: true,
+      newestFailedOwner: 'legacy-token',
+      olderFailedCleanupRequired: false,
+      unrelatedFailedCleanupRequired: false,
+      restartHistoricalCleanupRequired: false,
+      restartRunningCleanupRequired: false,
+      restartHistoricalCannotRelease: true,
+      restartLeaseRetained: true,
+      restartExactReclaimed: true,
+      stoppedHistoricalCleanupRequired: false,
+      tieWinner: 'tie-z',
+      tieLoserCleanupRequired: false,
+      leaseSurvivedExpiry: true,
+      migrationVersions: [1, 2, 3, 4, 5],
+    });
+  });
 });

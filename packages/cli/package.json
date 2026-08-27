@@ -16,6 +16,12 @@
     "./commands/plan": "./src/commands/plan.ts",
     "./commands/ports": "./src/commands/ports.ts",
     "./commands/status": "./src/commands/status.ts",
+    "./commands/start": "./src/commands/start.ts",
+    "./commands/stop": "./src/commands/stop.ts",
+    "./commands/restart": "./src/commands/restart.ts",
+    "./commands/ps": "./src/commands/ps.ts",
+    "./commands/logs": "./src/commands/logs.ts",
+    "./commands/exec": "./src/commands/exec.ts",
     "./client": "./src/client.ts",
     "./main": "./src/main.ts"
   },

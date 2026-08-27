@@ -1,4 +1,7 @@
 import { Command, CommanderError, Option } from 'commander';
+import { constants } from 'node:os';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { JsonEnvelope, WtmErrorCode } from '@wtm/protocol';
 import {
   emptyDiagnosticDataSource,
@@ -12,12 +15,23 @@ import {
   type DiagnosticDataSource,
 } from './diagnostics';
 import { renderEnvelope } from './output';
+import { runStartCommand } from './commands/start';
+import { runStopCommand } from './commands/stop';
+import { runRestartCommand } from './commands/restart';
+import { runPsCommand } from './commands/ps';
+import { followLogs, runLogsCommand } from './commands/logs';
+import { runExecCommand, type ForegroundExecutor } from './commands/exec';
+import type { RuntimeDaemonClient } from './commands/runtime-client';
+import { DaemonClient } from './client';
 
 export interface CliDependencies {
   dataSource?: DiagnosticDataSource;
   cwd?: string;
   stdout?: (value: string) => void;
   stderr?: (value: string) => void;
+  runtimeClient?: RuntimeDaemonClient;
+  execForeground?: ForegroundExecutor;
+  signal?: AbortSignal;
 }
 
 interface CliHooks {
@@ -45,6 +59,7 @@ const commands: ReadonlyArray<[string, string, DiagnosticRunner]> = [
 
 export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = {}): Command {
   const stdout = dependencies.stdout ?? ((value: string) => process.stdout.write(value));
+  const followStdout = dependencies.stdout ?? writeStdoutWithBackpressure;
   const stderr = dependencies.stderr ?? ((value: string) => process.stderr.write(value));
   const source = dependencies.dataSource ?? emptyDiagnosticDataSource;
   const cwd = dependencies.cwd ?? process.cwd();
@@ -74,6 +89,58 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     });
   }
 
+  const renderRuntime = (envelope: JsonEnvelope<unknown>, json: boolean) => {
+    stdout(`${renderEnvelope(envelope, { json })}\n`);
+    hooks.setExitCode?.(exitCodeForEnvelope(envelope));
+  };
+
+  const start = program.command('start <task>').description('Start a managed background task.');
+  addJsonOption(start);
+  start.action(async (taskName: string, options: ScopeOptions) => {
+    renderRuntime(await runStartCommand({ cwd, taskName }, dependencies.runtimeClient), runtimeJson(program, options));
+  });
+
+  const stop = program.command('stop [task]').description('Stop one or all managed tasks.');
+  addJsonOption(stop);
+  stop.action(async (taskName: string | undefined, options: ScopeOptions) => {
+    renderRuntime(await runStopCommand({ cwd, ...(taskName === undefined ? {} : { taskName }) }, dependencies.runtimeClient), runtimeJson(program, options));
+  });
+
+  const restart = program.command('restart <task>').description('Safely stop and restart a managed task.');
+  addJsonOption(restart);
+  restart.action(async (taskName: string, options: ScopeOptions) => {
+    renderRuntime(await runRestartCommand({ cwd, taskName }, dependencies.runtimeClient), runtimeJson(program, options));
+  });
+
+  const ps = program.command('ps').description('List WTM-managed process groups.');
+  addJsonOption(ps);
+  ps.action(async (options: ScopeOptions) => {
+    renderRuntime(await runPsCommand({ cwd }, dependencies.runtimeClient), runtimeJson(program, options));
+  });
+
+  const logs = program.command('logs [task]').description('Read managed task logs.');
+  addJsonOption(logs);
+  logs.option('--follow', 'follow logs as a raw stream');
+  logs.action(async (taskName: string | undefined, options: ScopeOptions & { follow?: boolean }) => {
+    const input = { cwd, ...(taskName === undefined ? {} : { taskName }) };
+    if (options.follow === true) {
+      const result = await followLogs(input, followStdout, dependencies.runtimeClient, dependencies.signal);
+      if (result.failure !== undefined) renderRuntime(result.failure, runtimeJson(program, options));
+      else hooks.setExitCode?.(result.exitCode);
+      return;
+    }
+    renderRuntime(await runLogsCommand(input, dependencies.runtimeClient), runtimeJson(program, options));
+  });
+
+  const exec = program.command('exec <argv...>').description('Execute raw argv in the foreground.');
+  addJsonOption(exec);
+  exec.action(async (argv: string[], options: ScopeOptions) => {
+    renderRuntime(
+      await runExecCommand({ cwd, argv }, dependencies.runtimeClient, dependencies.execForeground),
+      runtimeJson(program, options),
+    );
+  });
+
   return program;
 }
 
@@ -81,8 +148,19 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
   let exitCode = 0;
   const jsonRequested = hasOptionIntent(argv, '--json');
   const stdout = dependencies.stdout ?? ((value: string) => process.stdout.write(value));
+  const defaultClient = dependencies.runtimeClient === undefined && isRuntimeInvocation(argv)
+    ? new DaemonClient({ socketPath: defaultDaemonSocketPath() })
+    : null;
+  const cancellation = dependencies.signal === undefined && isFollowInvocation(argv)
+    ? new AbortController()
+    : null;
+  const onInterrupt = () => cancellation?.abort();
+  if (cancellation !== null) process.once('SIGINT', onInterrupt);
+  if (defaultClient !== null) await defaultClient.start().catch(() => {});
   const program = createCli({
     ...dependencies,
+    ...(defaultClient === null ? {} : { runtimeClient: defaultClient }),
+    ...(cancellation === null ? {} : { signal: cancellation.signal }),
     ...(jsonRequested ? { stderr: () => {} } : {}),
   }, { setExitCode: (value) => { exitCode = value; } });
   try {
@@ -95,7 +173,16 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
       return 2;
     }
     throw error;
+  } finally {
+    if (cancellation !== null) process.off('SIGINT', onInterrupt);
+    await defaultClient?.close();
   }
+}
+
+function isFollowInvocation(argv: readonly string[]): boolean {
+  const boundary = argv.indexOf('--');
+  const commandArguments = boundary < 0 ? argv : argv.slice(0, boundary);
+  return commandArguments.includes('logs') && commandArguments.includes('--follow');
 }
 
 function addScopeOptions(command: Command): void {
@@ -104,9 +191,37 @@ function addScopeOptions(command: Command): void {
     .addOption(new Option('--global', 'aggregate registered workspaces only'));
 }
 
+function addJsonOption(command: Command): void {
+  command.addOption(new Option('--json', 'emit the stable JSON envelope'));
+}
+
+function runtimeJson(program: Command, options: ScopeOptions): boolean {
+  return options.json === true || program.opts<ScopeOptions>().json === true;
+}
+
 function exitCodeForEnvelope(envelope: JsonEnvelope<unknown>): number {
   if (envelope.ok) return 0;
+  if (envelope.command === 'exec') {
+    const context = envelope.errors[0]?.context;
+    const signal = context?.signal;
+    if (typeof signal === 'string' && Object.hasOwn(constants.signals, signal)) {
+      return 128 + constants.signals[signal as keyof typeof constants.signals];
+    }
+    const exitCode = context?.exitCode;
+    if (typeof exitCode === 'number' && Number.isSafeInteger(exitCode) && exitCode >= 0 && exitCode <= 255) {
+      return exitCode;
+    }
+  }
   return envelope.errors.reduce((code, error) => Math.max(code, exitCodeForError(error.code)), 1);
+}
+
+export function defaultDaemonSocketPath(home = homedir()): string {
+  return join(home, 'Library', 'Application Support', 'WTM', 'wtmd.sock');
+}
+
+function isRuntimeInvocation(argv: readonly string[]): boolean {
+  const command = argv.find((argument) => !argument.startsWith('-'));
+  return command !== undefined && ['start', 'stop', 'restart', 'ps', 'logs', 'exec'].includes(command);
 }
 
 function exitCodeForError(code: WtmErrorCode): number {
@@ -150,4 +265,18 @@ function hasOptionIntent(argv: readonly string[], option: string): boolean {
     if (argument === option) return true;
   }
   return false;
+}
+
+async function writeStdoutWithBackpressure(value: string): Promise<void> {
+  if (process.stdout.write(value)) return;
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      process.stdout.off('drain', onDrain);
+      process.stdout.off('error', onError);
+    };
+    const onDrain = () => { cleanup(); resolve(); };
+    const onError = () => { cleanup(); reject(new Error('Standard output stream failed')); };
+    process.stdout.once('drain', onDrain);
+    process.stdout.once('error', onError);
+  });
 }

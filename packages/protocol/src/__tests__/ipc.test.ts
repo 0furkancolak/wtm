@@ -6,6 +6,15 @@ describe('daemon IPC framing schemas', () => {
     expect(() => ipcRequestSchema.parse({ id: 'request-1', command: 'status' })).toThrow();
   });
 
+  it('bounds correlation IDs and command names before response construction', () => {
+    expect(ipcRequestSchema.safeParse({
+      protocol: { major: 1, minor: 0 }, id: 'x'.repeat(129), command: 'ps', arguments: {},
+    }).success).toBe(false);
+    expect(ipcRequestSchema.safeParse({
+      protocol: { major: 1, minor: 0 }, id: 'id', command: 'x'.repeat(129), arguments: {},
+    }).success).toBe(false);
+  });
+
   it('accepts a versioned response containing an operational envelope', () => {
     expect(
       ipcResponseSchema.parse({

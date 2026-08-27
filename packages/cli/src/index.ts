@@ -31,9 +31,21 @@ export type {
   RegisteredWorkspace,
   StatusDiagnostic,
 } from './diagnostics';
-export { createCli, runCli } from './main';
+export { createCli, defaultDaemonSocketPath, runCli } from './main';
 export type { CliDependencies } from './main';
 export { renderEnvelope } from './output';
 export type { OutputOptions } from './output';
 export { DaemonClient } from './client';
-export type { DaemonClientOptions } from './client';
+export type { DaemonClientOptions, FollowLogsOptions } from './client';
+export { runStartCommand } from './commands/start';
+export { runStopCommand } from './commands/stop';
+export { runRestartCommand } from './commands/restart';
+export { runPsCommand } from './commands/ps';
+export { followLogs, runLogsCommand } from './commands/logs';
+export { executeRawForeground, runExecCommand } from './commands/exec';
+export type {
+  ForegroundExecutionInput,
+  ForegroundExecutor,
+  PreparedExec,
+  RuntimeDaemonClient,
+} from './commands/exec';

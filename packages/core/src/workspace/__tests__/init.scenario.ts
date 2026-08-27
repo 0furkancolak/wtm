@@ -6,6 +6,12 @@ import { SQLiteStateStore } from '../../state/sqlite-store';
 import type {
   EndpointLease,
   EndpointRequest,
+  ManagedProcessInput,
+  ManagedProcessCreateOptions,
+  ManagedProcessQuery,
+  ManagedProcessRecord,
+  ManagedProcessUpdate,
+  ManagedProcessReservationOptions,
   ReconcileResult,
   RepositoryInput,
   RepositoryRecord,
@@ -41,6 +47,52 @@ class FailingReconciliationStore implements StateStore {
 
   allocateEndpoint(input: EndpointRequest): EndpointLease {
     return this.inner.allocateEndpoint(input);
+  }
+
+  createManagedProcess(input: ManagedProcessInput, options?: ManagedProcessCreateOptions): ManagedProcessRecord {
+    return this.inner.createManagedProcess(input, options);
+  }
+
+  getManagedProcess(id: string): ManagedProcessRecord | null {
+    return this.inner.getManagedProcess(id);
+  }
+
+  updateManagedProcess(id: string, update: ManagedProcessUpdate): ManagedProcessRecord | null {
+    return this.inner.updateManagedProcess(id, update);
+  }
+
+  reserveManagedProcessStart(
+    worktreeId: string,
+    taskName: string,
+    token: string,
+    createdAt: string,
+    options?: ManagedProcessReservationOptions,
+  ): boolean {
+    return this.inner.reserveManagedProcessStart(worktreeId, taskName, token, createdAt, options);
+  }
+
+  releaseManagedProcessStart(worktreeId: string, taskName: string, token: string): boolean {
+    return this.inner.releaseManagedProcessStart(worktreeId, taskName, token);
+  }
+
+  releaseExpiredManagedProcessStart(worktreeId: string, taskName: string, now: string): boolean {
+    return this.inner.releaseExpiredManagedProcessStart(worktreeId, taskName, now);
+  }
+
+  releaseExpiredManagedProcessReplacement(record: ManagedProcessRecord, now: string): boolean {
+    return this.inner.releaseExpiredManagedProcessReplacement(record, now);
+  }
+
+  hasManagedProcessStartReservation(worktreeId: string, taskName: string): boolean {
+    return this.inner.hasManagedProcessStartReservation(worktreeId, taskName);
+  }
+
+  listManagedProcesses(query?: ManagedProcessQuery): ManagedProcessRecord[] {
+    return this.inner.listManagedProcesses(query);
+  }
+
+  findActiveManagedProcess(worktreeId: string, taskName: string): ManagedProcessRecord | null {
+    return this.inner.findActiveManagedProcess(worktreeId, taskName);
   }
 
   transaction<T>(fn: () => T): T {

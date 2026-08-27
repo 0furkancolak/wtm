@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -16,6 +16,16 @@ type StateStoreDomainOperation =
   | 'upsertRepository'
   | 'reconcileWorktrees'
   | 'allocateEndpoint'
+  | 'createManagedProcess'
+  | 'getManagedProcess'
+  | 'updateManagedProcess'
+  | 'listManagedProcesses'
+  | 'findActiveManagedProcess'
+  | 'reserveManagedProcessStart'
+  | 'releaseManagedProcessStart'
+  | 'releaseExpiredManagedProcessStart'
+  | 'releaseExpiredManagedProcessReplacement'
+  | 'hasManagedProcessStartReservation'
   | 'transaction';
 type StateStoreHasExactlyPlannedOperations = Assert<Equal<keyof StateStore, StateStoreDomainOperation>>;
 
@@ -583,6 +593,364 @@ function failedInitializationCleanup() {
   });
 }
 
+function managedProcessCrud() {
+  return withDatabase((path, open, close) => {
+    const store = open();
+    const repository = createRepository(store);
+    const worktreeRecord = store.reconcileWorktrees(repository.id, [
+      worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
+    ]).discovered[0];
+    if (worktreeRecord === undefined) throw new Error('Expected discovered worktree');
+
+    const created = store.createManagedProcess({
+      worktreeId: worktreeRecord.id,
+      taskName: 'dev',
+      pid: 41001,
+      pgid: 41001,
+      processStartTime: '123456789',
+      commandFingerprint: 'sha256:first',
+      state: 'STARTING',
+      startedAt: '2026-08-27T09:00:00.000Z',
+      stoppedAt: null,
+      stdoutPath: '/logs/dev.stdout.log',
+      stderrPath: '/logs/dev.stderr.log',
+    });
+    const active = store.findActiveManagedProcess(worktreeRecord.id, 'dev');
+    const running = store.updateManagedProcess(created.id, { expectedStates: ['STARTING'], state: 'RUNNING' });
+
+    let rejectedSecondActiveSingleton = false;
+    try {
+      store.createManagedProcess({
+        worktreeId: worktreeRecord.id,
+        taskName: 'dev',
+        pid: 41002,
+        pgid: 41002,
+        processStartTime: '123456790',
+        commandFingerprint: 'sha256:second',
+        state: 'STARTING',
+        startedAt: '2026-08-27T09:01:00.000Z',
+        stoppedAt: null,
+        stdoutPath: '/logs/dev-2.stdout.log',
+        stderrPath: '/logs/dev-2.stderr.log',
+      });
+    } catch {
+      rejectedSecondActiveSingleton = true;
+    }
+
+    const stopped = store.updateManagedProcess(created.id, {
+      expectedStates: ['RUNNING'],
+      state: 'STOPPED',
+      stoppedAt: '2026-08-27T09:05:00.000Z',
+    });
+    store.createManagedProcess({
+      worktreeId: worktreeRecord.id,
+      taskName: 'dev',
+      pid: 41003,
+      pgid: 41003,
+      processStartTime: '123456791',
+      commandFingerprint: 'sha256:third',
+      state: 'FAILED',
+      startedAt: '2026-08-27T09:06:00.000Z',
+      stoppedAt: '2026-08-27T09:06:01.000Z',
+      stdoutPath: '/logs/dev-3.stdout.log',
+      stderrPath: '/logs/dev-3.stderr.log',
+    });
+    close();
+
+    const database = new Database(path);
+    const migrationVersions = (database
+      .prepare('SELECT version FROM schema_migrations ORDER BY version')
+      .all() as Array<{ version: number }>).map(({ version }) => version);
+    database.close();
+
+    const reopened = open();
+    return {
+      createdState: created.state,
+      activeIdMatches: active?.id === created.id,
+      runningState: running?.state,
+      stoppedAt: stopped?.stoppedAt,
+      activeAfterStop: reopened.findActiveManagedProcess(worktreeRecord.id, 'dev'),
+      orderedStates: reopened.listManagedProcesses({
+        worktreeId: worktreeRecord.id,
+        taskName: 'dev',
+      }).map(({ state }) => state),
+      rejectedSecondActiveSingleton,
+      migrationVersions,
+    };
+  });
+}
+
+function managedProcessLifecycle() {
+  return withDatabase((_, open) => {
+    const store = open();
+    const repository = createRepository(store);
+    const worktreeRecord = store.reconcileWorktrees(repository.id, [
+      worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
+    ]).discovered[0];
+    if (worktreeRecord === undefined) throw new Error('Expected discovered worktree');
+    const base = {
+      worktreeId: worktreeRecord.id,
+      taskName: 'lifecycle',
+      pid: 42001,
+      pgid: 42001,
+      processStartTime: 'start',
+      commandFingerprint: 'fingerprint',
+      state: 'STARTING' as const,
+      startedAt: '2026-08-27T10:00:00.000Z',
+      stoppedAt: null,
+      stdoutPath: '/logs/lifecycle.stdout.log',
+      stderrPath: '/logs/lifecycle.stderr.log',
+    };
+    const created = store.createManagedProcess(base);
+    const wrongExpected = store.updateManagedProcess(created.id, {
+      expectedStates: ['RUNNING'],
+      state: 'STOPPING',
+    });
+    const running = store.updateManagedProcess(created.id, {
+      expectedStates: ['STARTING'],
+      state: 'RUNNING',
+    });
+    if (running === null) throw new Error('Expected RUNNING transition');
+    const stopping = store.updateManagedProcess(created.id, {
+      expectedStates: ['RUNNING'],
+      state: 'STOPPING',
+    });
+    if (stopping === null) throw new Error('Expected STOPPING transition');
+
+    let rejectedTerminalWithoutTimestamp = false;
+    try {
+      store.updateManagedProcess(created.id, {
+        expectedStates: ['STOPPING'],
+        state: 'STOPPED',
+      });
+    } catch {
+      rejectedTerminalWithoutTimestamp = true;
+    }
+    const stopped = store.updateManagedProcess(created.id, {
+      expectedStates: ['STOPPING'],
+      state: 'STOPPED',
+      stoppedAt: '2026-08-27T10:01:00.000Z',
+    });
+    if (stopped === null) throw new Error('Expected STOPPED transition');
+    let rejectedRevival = false;
+    try {
+      store.updateManagedProcess(created.id, {
+        expectedStates: ['STOPPED'],
+        state: 'RUNNING',
+      });
+    } catch {
+      rejectedRevival = true;
+    }
+    let rejectedNonterminalTimestamp = false;
+    try {
+      store.createManagedProcess({
+        ...base,
+        taskName: 'invalid-time',
+        stoppedAt: '2026-08-27T10:02:00.000Z',
+      });
+    } catch {
+      rejectedNonterminalTimestamp = true;
+    }
+    return {
+      wrongExpectedStateReturnedNull: wrongExpected === null,
+      runningState: running.state,
+      stoppingState: stopping.state,
+      stoppedState: stopped.state,
+      rejectedRevival,
+      rejectedTerminalWithoutTimestamp,
+      rejectedNonterminalTimestamp,
+    };
+  });
+}
+
+function managedProcessReservations() {
+  return withDatabase((path, open, close) => {
+    const first = open();
+    const repository = createRepository(first);
+    const worktreeRecord = first.reconcileWorktrees(repository.id, [
+      worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
+    ]).discovered[0];
+    if (worktreeRecord === undefined) throw new Error('Expected discovered worktree');
+    close();
+    const firstStore = new SQLiteStateStore(path);
+    const secondStore = new SQLiteStateStore(path);
+    try {
+      const firstReserved = firstStore.reserveManagedProcessStart(
+        worktreeRecord.id,
+        'dev',
+        'token-1',
+        '2026-08-27T11:00:00.000Z',
+        { expiresAt: '2026-08-27T11:00:10.000Z' } as never,
+      );
+      const secondBlocked = !secondStore.reserveManagedProcessStart(
+        worktreeRecord.id,
+        'dev',
+        'token-2',
+        '2026-08-27T11:00:01.000Z',
+        { expiresAt: '2026-08-27T11:00:11.000Z' } as never,
+      );
+      const wrongTokenDidNotRelease = !secondStore.releaseManagedProcessStart(
+        worktreeRecord.id,
+        'dev',
+        'token-2',
+      );
+      const reclaimedExpired = secondStore.reserveManagedProcessStart(
+        worktreeRecord.id,
+        'dev',
+        'token-2',
+        '2026-08-27T11:00:11.000Z',
+        { expiresAt: '2026-08-27T11:00:21.000Z' } as never,
+      );
+      const created = secondStore.createManagedProcess({
+        worktreeId: worktreeRecord.id,
+        taskName: 'dev',
+        pid: 43001,
+        pgid: 43001,
+        processStartTime: 'start',
+        commandFingerprint: 'fingerprint',
+        state: 'STARTING',
+        startedAt: '2026-08-27T11:00:12.000Z',
+        stoppedAt: null,
+        stdoutPath: '/logs/reserved.stdout.log',
+        stderrPath: '/logs/reserved.stderr.log',
+      }, { reservationToken: 'token-2' });
+      const reservationHeldThroughCreate = !firstStore.reserveManagedProcessStart(
+        worktreeRecord.id,
+        'dev',
+        'token-3',
+        '2026-08-27T11:00:13.000Z',
+        { expiresAt: '2026-08-27T11:00:23.000Z' } as never,
+      );
+      const running = secondStore.updateManagedProcess(created.id, {
+        expectedStates: ['STARTING'],
+        state: 'RUNNING',
+        reservationToken: 'token-2',
+      } as never);
+      const owningTokenReleased = secondStore.releaseManagedProcessStart(worktreeRecord.id, 'dev', 'token-2');
+      const cleanupReserved = secondStore.reserveManagedProcessStart(
+        worktreeRecord.id,
+        'cleanup',
+        'cleanup-token',
+        '2026-08-27T11:01:00.000Z',
+        { expiresAt: '2026-08-27T11:01:01.000Z' },
+      );
+      const cleanupRecord = secondStore.createManagedProcess({
+        worktreeId: worktreeRecord.id,
+        taskName: 'cleanup',
+        pid: 43002,
+        pgid: 43002,
+        processStartTime: 'cleanup-start',
+        commandFingerprint: 'cleanup-fingerprint',
+        state: 'FAILED',
+        startedAt: '2026-08-27T11:01:00.000Z',
+        stoppedAt: '2026-08-27T11:01:00.000Z',
+        stdoutPath: '/logs/cleanup.stdout.log',
+        stderrPath: '/logs/cleanup.stderr.log',
+        cleanupRequired: true,
+        cleanupOwnerToken: 'cleanup-token',
+      }, { reservationToken: 'cleanup-token' });
+      const cleanupLeaseSurvivedExpiry = !secondStore.releaseExpiredManagedProcessStart(
+        worktreeRecord.id,
+        'cleanup',
+        '2026-08-27T11:02:00.000Z',
+      );
+      const recoveryReleasedCleanupLease = secondStore.releaseManagedProcessStart(
+        worktreeRecord.id, 'cleanup', 'cleanup-token',
+      );
+      return {
+        firstReserved,
+        secondBlocked,
+        wrongTokenDidNotRelease,
+        reclaimedExpired,
+        reservationHeldThroughCreate,
+        runningState: running?.state,
+        owningTokenReleased,
+        cleanupReserved,
+        cleanupLeaseSurvivedExpiry,
+        cleanupOwnerTokenPersisted: cleanupRecord.cleanupOwnerToken === 'cleanup-token',
+        recoveryReleasedCleanupLease,
+      };
+    } finally {
+      firstStore.close();
+      secondStore.close();
+    }
+  });
+}
+
+function managedProcessV4CleanupUpgrade() {
+  return withDatabase((path) => {
+    const database = new Database(path);
+    database.exec('CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
+    for (const [version, file] of [
+      [1, '001-initial.sql'], [2, '002-managed-process-indexes.sql'],
+      [3, '003-managed-process-reservations.sql'], [4, '004-managed-process-reservation-leases.sql'],
+    ] as const) {
+      database.exec(String(requireMigration(file)));
+      database.prepare('INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)')
+        .run(version, '2026-08-27T00:00:00.000Z');
+    }
+    database.prepare(`INSERT INTO workspaces VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run('ws', 'demo', '/demo', 'local', null, '2026-08-27T00:00:00.000Z', '2026-08-27T00:00:00.000Z');
+    database.prepare(`INSERT INTO repositories VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run('repo', 'ws', '/demo/.git', '/demo', null, '2026-08-27T00:00:00.000Z', null);
+    database.prepare(`INSERT INTO worktrees VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run('wt', 'repo', 1, '/demo', 'main', 'head', 1, 0, 'READY', '2026-08-27T00:00:00.000Z', '2026-08-27T00:00:00.000Z', null);
+    const insert = database.prepare(`INSERT INTO managed_processes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    insert.run('old', 'wt', 'dev', 40001, 40001, 'old-start', 'old-fp', 'FAILED', '2026-08-27T00:00:01.000Z', '2026-08-27T00:00:02.000Z', '/logs/old.out', '/logs/old.err');
+    insert.run('live', 'wt', 'dev', 40002, 40002, 'live-start', 'live-fp', 'FAILED', '2026-08-27T00:00:03.000Z', '2026-08-27T00:00:04.000Z', '/logs/live.out', '/logs/live.err');
+    insert.run('other', 'wt', 'other', 40003, 40003, 'other-start', 'other-fp', 'FAILED', '2026-08-27T00:00:05.000Z', '2026-08-27T00:00:06.000Z', '/logs/other.out', '/logs/other.err');
+    insert.run('restart-failed', 'wt', 'restart', 40004, 40004, 'failed-start', 'failed-fp', 'FAILED', '2026-08-27T00:00:01.000Z', '2026-08-27T00:00:02.000Z', '/logs/restart-old.out', '/logs/restart-old.err');
+    insert.run('restart-running', 'wt', 'restart', 40005, 40005, 'running-start', 'running-fp', 'RUNNING', '2026-08-27T00:00:03.000Z', null, '/logs/restart.out', '/logs/restart.err');
+    insert.run('stopped-failed', 'wt', 'stopped', 40006, 40006, 'stopped-failed-start', 'stopped-failed-fp', 'FAILED', '2026-08-27T00:00:01.000Z', '2026-08-27T00:00:02.000Z', '/logs/stopped-old.out', '/logs/stopped-old.err');
+    insert.run('stopped-latest', 'wt', 'stopped', 40007, 40007, 'stopped-start', 'stopped-fp', 'STOPPED', '2026-08-27T00:00:03.000Z', '2026-08-27T00:00:04.000Z', '/logs/stopped.out', '/logs/stopped.err');
+    insert.run('tie-a', 'wt', 'tie', 40008, 40008, 'tie-a-start', 'tie-a-fp', 'FAILED', '2026-08-27T00:00:05.000Z', '2026-08-27T00:00:06.000Z', '/logs/tie-a.out', '/logs/tie-a.err');
+    insert.run('tie-z', 'wt', 'tie', 40009, 40009, 'tie-z-start', 'tie-z-fp', 'FAILED', '2026-08-27T00:00:05.000Z', '2026-08-27T00:00:06.000Z', '/logs/tie-z.out', '/logs/tie-z.err');
+    database.prepare(`INSERT INTO managed_process_start_reservations VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('wt', 'dev', 'legacy-token', '2026-08-27T00:00:03.000Z', '2026-08-27T00:00:10.000Z', null);
+    database.prepare(`INSERT INTO managed_process_start_reservations VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('wt', 'restart', 'restart-token', '2026-08-27T00:00:03.000Z', '2026-08-27T00:00:10.000Z', 'restart-running');
+    database.prepare(`INSERT INTO managed_process_start_reservations VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('wt', 'stopped', 'stopped-token', '2026-08-27T00:00:03.000Z', '2026-08-27T00:00:10.000Z', null);
+    database.prepare(`INSERT INTO managed_process_start_reservations VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('wt', 'tie', 'tie-token', '2026-08-27T00:00:05.000Z', '2026-08-27T00:00:10.000Z', null);
+    database.close();
+
+    const store = new SQLiteStateStore(path);
+    const records = store.listManagedProcesses();
+    const result = {
+      newestFailedCleanupRequired: records.find(({ id }) => id === 'live')?.cleanupRequired,
+      newestFailedOwner: records.find(({ id }) => id === 'live')?.cleanupOwnerToken,
+      olderFailedCleanupRequired: records.find(({ id }) => id === 'old')?.cleanupRequired,
+      unrelatedFailedCleanupRequired: records.find(({ id }) => id === 'other')?.cleanupRequired,
+      restartHistoricalCleanupRequired: records.find(({ id }) => id === 'restart-failed')?.cleanupRequired,
+      restartRunningCleanupRequired: records.find(({ id }) => id === 'restart-running')?.cleanupRequired,
+      restartHistoricalCannotRelease: !store.releaseExpiredManagedProcessReplacement(
+        records.find(({ id }) => id === 'restart-failed')!,
+        '2026-08-27T01:00:00.000Z',
+      ),
+      restartLeaseRetained: store.hasManagedProcessStartReservation('wt', 'restart'),
+      restartExactReclaimed: store.releaseExpiredManagedProcessReplacement(
+        records.find(({ id }) => id === 'restart-running')!,
+        '2026-08-27T01:00:00.000Z',
+      ),
+      stoppedHistoricalCleanupRequired: records.find(({ id }) => id === 'stopped-failed')?.cleanupRequired,
+      tieWinner: records.find(({ cleanupOwnerToken }) => cleanupOwnerToken === 'tie-token')?.id,
+      tieLoserCleanupRequired: records.find(({ id }) => id === 'tie-a')?.cleanupRequired,
+      leaseSurvivedExpiry: !store.releaseExpiredManagedProcessStart('wt', 'dev', '2026-08-27T01:00:00.000Z'),
+      migrationVersions: [] as number[],
+    };
+    store.close();
+    const migrated = new Database(path);
+    result.migrationVersions = (migrated.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: number }>).map(({ version }) => version);
+    migrated.close();
+    return result;
+  });
+}
+
+function requireMigration(file: string): string {
+  return readFileSync(new URL(`../migrations/${file}`, import.meta.url), 'utf8');
+}
+
 const scenarios: Record<string, () => unknown> = {
   'daemon-registration-queries': daemonRegistrationQueries,
   'stable-identities': stableIdentities,
@@ -595,6 +963,10 @@ const scenarios: Record<string, () => unknown> = {
   'database-pragmas': databasePragmas,
   'state-enum-constraints': stateEnumConstraints,
   'failed-initialization-cleanup': failedInitializationCleanup,
+  'managed-process-crud': managedProcessCrud,
+  'managed-process-lifecycle': managedProcessLifecycle,
+  'managed-process-reservations': managedProcessReservations,
+  'managed-process-v4-cleanup-upgrade': managedProcessV4CleanupUpgrade,
 };
 
 const scenarioName = process.argv[2];

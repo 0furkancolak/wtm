@@ -4,6 +4,7 @@ export { WtmDaemon, assertSupportedRuntime } from './main';
 export type {
   DaemonRecoveryHooks,
   DaemonRegistrationSnapshot,
+  DaemonProcessSupervisorLifecycle,
   DaemonServerLifecycle,
   DaemonWatcherLifecycle,
   ReconciledRepository,
@@ -24,3 +25,35 @@ export type {
   WatchHandle,
   WorkspaceWatchRegistration,
 } from './watcher';
+export { ManagedLogStore } from './logs';
+export type { ManagedLogStoreOptions, OpenedManagedLogs } from './logs';
+export {
+  ManagedProcessError,
+  ManagedProcessSupervisor,
+  inspectProcess,
+  inspectProcessGroup,
+  inspectProcessIdentity,
+} from './process-supervisor';
+export type {
+  ManagedProcessSelector,
+  ManagedProcessStartInput,
+  ManagedProcessStartResult,
+  ManagedProcessStateStore,
+  ManagedProcessSupervisorOptions,
+  ProcessGroupInspection,
+  ProcessIdentity,
+  ProcessInspection,
+} from './process-supervisor';
+export { DaemonRuntimeController, runtimeCommandNames } from './runtime-controller';
+export type {
+  DaemonRuntimeControllerOptions,
+  DaemonRuntimeLogReader,
+  DaemonRuntimeResolver,
+  DaemonRuntimeSupervisor,
+} from './runtime-controller';
+export { createProductionDaemon, defaultProductionRuntimePaths } from './runtime-factory';
+export type {
+  ProductionDaemonOptions,
+  ProductionDaemonRuntime,
+  ProductionRuntimePaths,
+} from './runtime-factory';

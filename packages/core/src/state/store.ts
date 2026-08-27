@@ -102,11 +102,79 @@ export interface EndpointLease {
   lastVerifiedAt: string;
 }
 
+export type ManagedProcessState =
+  | 'STARTING'
+  | 'RUNNING'
+  | 'STOPPING'
+  | 'STOPPED'
+  | 'FAILED'
+  | 'STALE_IDENTITY';
+
+export interface ManagedProcessInput {
+  worktreeId: string;
+  taskName: string;
+  pid: number;
+  pgid: number;
+  processStartTime: string;
+  commandFingerprint: string;
+  state: ManagedProcessState;
+  startedAt: string;
+  stoppedAt: string | null;
+  stdoutPath: string;
+  stderrPath: string;
+  cleanupRequired?: boolean;
+  cleanupOwnerToken?: string;
+}
+
+export interface ManagedProcessRecord extends Omit<ManagedProcessInput, 'cleanupRequired'> {
+  id: string;
+  cleanupRequired: boolean;
+}
+
+export interface ManagedProcessUpdate {
+  expectedStates: readonly ManagedProcessState[];
+  state: ManagedProcessState;
+  stoppedAt?: string | null;
+  reservationToken?: string;
+  cleanupRequired?: boolean;
+}
+
+export interface ManagedProcessCreateOptions {
+  reservationToken?: string;
+}
+
+export interface ManagedProcessReservationOptions {
+  expiresAt?: string;
+  replaceProcessId?: string;
+}
+
+export interface ManagedProcessQuery {
+  worktreeId?: string;
+  taskName?: string;
+  states?: readonly ManagedProcessState[];
+}
+
 export interface StateStore {
   upsertWorkspace(input: WorkspaceInput): WorkspaceRecord;
   upsertRepository(input: RepositoryInput): RepositoryRecord;
   reconcileWorktrees(repositoryId: string, snapshot: GitWorktreeRecord[]): ReconcileResult;
   allocateEndpoint(input: EndpointRequest, probe?: EndpointAvailabilityProbe): EndpointLease;
+  createManagedProcess(input: ManagedProcessInput, options?: ManagedProcessCreateOptions): ManagedProcessRecord;
+  getManagedProcess(id: string): ManagedProcessRecord | null;
+  updateManagedProcess(id: string, update: ManagedProcessUpdate): ManagedProcessRecord | null;
+  listManagedProcesses(query?: ManagedProcessQuery): ManagedProcessRecord[];
+  findActiveManagedProcess(worktreeId: string, taskName: string): ManagedProcessRecord | null;
+  reserveManagedProcessStart(
+    worktreeId: string,
+    taskName: string,
+    token: string,
+    createdAt: string,
+    options?: ManagedProcessReservationOptions,
+  ): boolean;
+  releaseManagedProcessStart(worktreeId: string, taskName: string, token: string): boolean;
+  releaseExpiredManagedProcessStart(worktreeId: string, taskName: string, now: string): boolean;
+  releaseExpiredManagedProcessReplacement(record: ManagedProcessRecord, now: string): boolean;
+  hasManagedProcessStartReservation(worktreeId: string, taskName: string): boolean;
   transaction<T>(fn: () => T): T;
 }
 

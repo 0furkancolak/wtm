@@ -51,11 +51,12 @@ function capture() {
 }
 
 describe('Commander CLI', () => {
-  test('exposes exactly the six diagnostic commands', () => {
+  test('exposes the six diagnostic commands plus explicit runtime commands', () => {
     const cli = createCli({ dataSource: source(), cwd: '/registered/demo' });
 
     expect(cli.commands.map((command) => command.name())).toEqual([
       'status', 'doctor', 'explain', 'plan', 'env', 'ports',
+      'start', 'stop', 'restart', 'ps', 'logs', 'exec',
     ]);
   });
 
@@ -205,5 +206,61 @@ describe('Commander CLI', () => {
     const envelope = JSON.parse(output.stdout());
     expect(envelope.ok).toBe(false);
     expect(envelope.errors[0].code).toBe('WTM_CONFIG_INVALID');
+  });
+
+  test('exec returns the foreground child exit status without using a shell or process.exit', async () => {
+    const output = capture();
+    const seen: unknown[] = [];
+    const runtimeClient = {
+      request: async (_command: string, args?: unknown) => {
+        seen.push(args);
+        return {
+          schemaVersion: 1 as const,
+          ok: true as const,
+          command: 'exec',
+          data: { argv: ['node', '-e', 'process.exit(7)'], cwd: '/registered/demo', envDelta: {} },
+          warnings: [],
+          errors: [],
+        };
+      },
+    };
+    const executions: unknown[] = [];
+
+    const exitCode = await runCli(['exec', '--json', '--', 'node', '-e', 'process.exit(7)'], {
+      cwd: '/registered/demo',
+      runtimeClient,
+      execForeground: async (input) => { executions.push(input); return { exitCode: 7, signal: null }; },
+      ...output.io,
+    });
+
+    expect(exitCode).toBe(7);
+    expect(seen).toEqual([{ cwd: '/registered/demo', argv: ['node', '-e', 'process.exit(7)'] }]);
+    expect(executions).toEqual([{
+      argv: ['node', '-e', 'process.exit(7)'], cwd: '/registered/demo', envDelta: {}, shell: false,
+    }]);
+    expect(JSON.parse(output.stdout()).errors[0].context.exitCode).toBe(7);
+  });
+
+  test('exec maps signal termination to the conventional 128 plus signal number status', async () => {
+    const output = capture();
+    const runtimeClient = {
+      request: async () => ({
+        schemaVersion: 1 as const,
+        ok: true as const,
+        command: 'exec',
+        data: { argv: ['node'], cwd: '/registered/demo', envDelta: {} },
+        warnings: [],
+        errors: [],
+      }),
+    };
+
+    const exitCode = await runCli(['exec', '--json', '--', 'node'], {
+      cwd: '/registered/demo',
+      runtimeClient,
+      execForeground: async () => ({ exitCode: 1, signal: 'SIGTERM' }),
+      ...output.io,
+    });
+
+    expect(exitCode).toBe(143);
   });
 });

@@ -10,6 +10,7 @@ import {
 import type { IpcRequest, JsonEnvelope } from '@wtm/protocol';
 import { ReconcilerQueue, type ReconcileBatch, type ReconcileSignal } from './reconciler-queue';
 import { UnixIpcServer, type IpcRequestHandler } from './server';
+import { runtimeCommandNames } from './runtime-controller';
 import {
   StructuralWatcher,
   type StructuralWatcherOptions,
@@ -38,6 +39,11 @@ export interface DaemonServerLifecycle {
   close(): Promise<void>;
 }
 
+export interface DaemonProcessSupervisorLifecycle {
+  recover(): Promise<unknown>;
+  close(): Promise<void>;
+}
+
 export interface ReconciledRepository {
   repository: RepositoryRecord;
   result: ReconcileResult;
@@ -59,6 +65,8 @@ export interface WtmDaemonOptions {
     socketPath: string;
     handler: IpcRequestHandler;
   }) => DaemonServerLifecycle;
+  runtimeHandler?: IpcRequestHandler;
+  processSupervisor?: DaemonProcessSupervisorLifecycle;
   watchFactory?: StructuralWatcherOptions['watchFactory'];
   fingerprint?: StructuralWatcherOptions['fingerprint'];
   platform?: NodeJS.Platform;
@@ -77,6 +85,8 @@ export class WtmDaemon {
   readonly #listGitWorktrees: NonNullable<WtmDaemonOptions['listGitWorktrees']>;
   readonly #watcherFactory: NonNullable<WtmDaemonOptions['watcherFactory']>;
   readonly #serverFactory: NonNullable<WtmDaemonOptions['serverFactory']>;
+  readonly #runtimeHandler: IpcRequestHandler | null;
+  readonly #processSupervisor: DaemonProcessSupervisorLifecycle | null;
   readonly #queue: ReconcilerQueue;
   readonly #platform: NodeJS.Platform;
   readonly #nodeVersion: string;
@@ -91,8 +101,13 @@ export class WtmDaemon {
   constructor(options: WtmDaemonOptions) {
     this.#stateStore = options.stateStore;
     this.#socketPath = options.socketPath;
+    this.#processSupervisor = options.processSupervisor ?? null;
+    this.#runtimeHandler = options.runtimeHandler ?? null;
     this.#recoveryHooks = {
-      verifyProcessIdentities: options.recoveryHooks?.verifyProcessIdentities ?? noRecoveryWork,
+      verifyProcessIdentities: options.recoveryHooks?.verifyProcessIdentities
+        ?? (this.#processSupervisor === null ? noRecoveryWork : async () => {
+          await this.#processSupervisor?.recover();
+        }),
       verifyEndpointLeases: options.recoveryHooks?.verifyEndpointLeases ?? noRecoveryWork,
       scheduleCleanupRetries: options.recoveryHooks?.scheduleCleanupRetries ?? noRecoveryWork,
     };
@@ -241,6 +256,9 @@ export class WtmDaemon {
       await this.#queue.flush();
       return successEnvelope('reconcile', { workspaces: this.#snapshot.workspaces.length });
     }
+    if (runtimeCommandNames.has(request.command) && this.#runtimeHandler !== null) {
+      return await this.#runtimeHandler(request);
+    }
     return {
       schemaVersion: 1,
       ok: false,
@@ -261,7 +279,7 @@ export class WtmDaemon {
     this.#server = null;
     this.#watcher = null;
     let failure: unknown;
-    for (const resource of [server, watcher]) {
+    for (const resource of [server, watcher, this.#processSupervisor]) {
       try {
         await resource?.close();
       } catch (error) {
@@ -276,7 +294,7 @@ export class WtmDaemon {
     const watcher = this.#watcher;
     this.#server = null;
     this.#watcher = null;
-    for (const resource of [server, watcher]) {
+    for (const resource of [server, watcher, this.#processSupervisor]) {
       try {
         await resource?.close();
       } catch (error) {

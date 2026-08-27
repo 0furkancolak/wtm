@@ -6,7 +6,11 @@
   "exports": {
     ".": "./src/index.ts",
     "./main": "./src/main.ts",
-    "./server": "./src/server.ts"
+    "./server": "./src/server.ts",
+    "./logs": "./src/logs.ts",
+    "./process-supervisor": "./src/process-supervisor.ts",
+    "./runtime-controller": "./src/runtime-controller.ts",
+    "./runtime-factory": "./src/runtime-factory.ts"
   },
   "dependencies": {
     "@wtm/core": "workspace:*",
