@@ -12,3 +12,26 @@ export type {
   RemoveCommandInput,
   RemoveCommandResult,
 } from './commands/remove';
+export { runStatusCommand } from './commands/status';
+export { runDoctorCommand } from './commands/doctor';
+export { runExplainCommand } from './commands/explain';
+export { runPlanCommand } from './commands/plan';
+export { runEnvCommand } from './commands/env';
+export { runPortsCommand } from './commands/ports';
+export { DiagnosticSourceError } from './diagnostics';
+export type {
+  DiagnosticCommandEnvelope,
+  DiagnosticCommandInput,
+  DiagnosticDataSource,
+  DoctorDiagnostic,
+  EnvDiagnostic,
+  ExplainDiagnostic,
+  PlanDiagnostic,
+  PortsDiagnostic,
+  RegisteredWorkspace,
+  StatusDiagnostic,
+} from './diagnostics';
+export { createCli, runCli } from './main';
+export type { CliDependencies } from './main';
+export { renderEnvelope } from './output';
+export type { OutputOptions } from './output';

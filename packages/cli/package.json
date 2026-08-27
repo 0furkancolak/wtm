@@ -7,12 +7,20 @@
     ".": "./src/index.ts",
     "./commands/init": "./src/commands/init.ts",
     "./commands/analyze": "./src/commands/analyze.ts",
+    "./commands/doctor": "./src/commands/doctor.ts",
+    "./commands/env": "./src/commands/env.ts",
+    "./commands/explain": "./src/commands/explain.ts",
     "./commands/resolve": "./src/commands/resolve.ts",
     "./commands/run": "./src/commands/run.ts",
-    "./commands/remove": "./src/commands/remove.ts"
+    "./commands/remove": "./src/commands/remove.ts",
+    "./commands/plan": "./src/commands/plan.ts",
+    "./commands/ports": "./src/commands/ports.ts",
+    "./commands/status": "./src/commands/status.ts",
+    "./main": "./src/main.ts"
   },
   "dependencies": {
     "@wtm/core": "workspace:*",
-    "@wtm/protocol": "workspace:*"
+    "@wtm/protocol": "workspace:*",
+    "commander": "14.0.2"
   }
 }
