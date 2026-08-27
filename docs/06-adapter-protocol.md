@@ -150,6 +150,7 @@ Example:
       "timeoutMs": 600000
     }
   ],
+  "tasks": {},
   "capabilities": {
     "deps.install": {
       "action": "cargo.fetch"
@@ -157,6 +158,10 @@ Example:
   }
 }
 ```
+
+Task contributions are keyed task definitions. Commands use argv arrays by default; shell strings require an explicit `shell: true`. Adapters may also declare task `cwd`, `background` and `singleton` behavior. Tasks are registered by core and are not executed merely because a plan is applied.
+
+For V1.0 compatibility, a plan that omits `tasks` is accepted and normalized to an empty task map.
 
 The adapter does not mutate the repository during `plan`.
 
