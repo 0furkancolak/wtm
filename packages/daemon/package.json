@@ -10,7 +10,8 @@
     "./logs": "./src/logs.ts",
     "./process-supervisor": "./src/process-supervisor.ts",
     "./runtime-controller": "./src/runtime-controller.ts",
-    "./runtime-factory": "./src/runtime-factory.ts"
+    "./runtime-factory": "./src/runtime-factory.ts",
+    "./launchd": "./src/launchd.ts"
   },
   "dependencies": {
     "@wtm/core": "workspace:*",

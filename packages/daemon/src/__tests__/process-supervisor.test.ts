@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -577,6 +577,7 @@ describe('ManagedProcessSupervisor', () => {
       { name: 'oldest-only', phase: 'closed', shifts: 1, archived: false, opened: false },
       { name: 'oldest-and-newest', phase: 'closed', shifts: 2, archived: false, opened: false },
       { name: 'shifted', phase: 'shifted', shifts: 2, archived: false, opened: false },
+      { name: 'shifted-current-absent', phase: 'shifted', shifts: 2, archived: true, opened: false },
       { name: 'archived', phase: 'archived', shifts: 2, archived: true, opened: false },
       { name: 'opened', phase: 'opened', shifts: 2, archived: true, opened: true },
     ] as const)('replacement anchor finishes partial retained-generation shift $name idempotently', async (scenario) => {
@@ -632,6 +633,34 @@ describe('ManagedProcessSupervisor', () => {
           opened.stdoutPath, `${opened.stdoutPath}.1`, `${opened.stdoutPath}.2`, `${opened.stdoutPath}.3`,
         ].map((path) => readFile(path, 'utf8')))).toEqual(beforeRepeat);
       }
+  });
+
+  test.each([
+    { name: 'invalid marker', marker: 'not-a-generation', retained: true },
+    { name: 'closed marker with missing current', marker: 'rotating-2-closed-4242', retained: true },
+    { name: 'shifted marker without an archive', marker: 'rotating-2-shifted-4242', retained: false },
+  ])('replacement anchor fails closed for $name', async ({ name, marker, retained }) => {
+    const root = await mkdtemp(join(tmpdir(), `wtm-anchor-invalid-${name.replaceAll(' ', '-')}-`));
+    const store = new MemoryProcessStore();
+    const logs = new ManagedLogStore({ root: join(root, 'logs'), rotationBytes: 4, retainedFiles: 3 });
+    const opened = await logs.open('worktree-1', 'invalid-recovery');
+    await opened.stdout.write('B2--');
+    await opened.close();
+    if (retained) await rename(opened.stdoutPath, `${opened.stdoutPath}.1`);
+    else await rm(opened.stdoutPath);
+    await writeFile(`${opened.stdoutPath}.generation`, marker, { mode: 0o600 });
+    const supervisor = new ManagedProcessSupervisor({ stateStore: store, logs, pollIntervalMs: 10 });
+    cleanups.push(async () => {
+      await supervisor.close();
+      await rm(root, { recursive: true, force: true });
+    });
+
+    await expect(supervisor.start({
+      worktreeId: 'worktree-1', taskName: 'invalid-recovery',
+      argv: ['/usr/bin/true'], cwd: root, env: process.env,
+    })).rejects.toMatchObject({ code: 'RUNTIME_START_FAILED', context: { reason: 'LOG_SETUP_FAILED' } });
+    if (retained) expect(await readFile(`${opened.stdoutPath}.1`, 'utf8')).toBe('B2--');
+    else expect(await lstat(`${opened.stdoutPath}.1`).then(() => true, () => false)).toBe(false);
   });
 
   test('task leader exit leaves the anchor and record running until its descendant exits', async () => {

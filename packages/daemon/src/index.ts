@@ -57,3 +57,28 @@ export type {
   ProductionDaemonRuntime,
   ProductionRuntimePaths,
 } from './runtime-factory';
+export {
+  LaunchdLifecycleError,
+  createLaunchdLifecycle,
+  generateLaunchdPlist,
+  launchdCommands,
+  launchdLabel,
+  launchdPaths,
+  sanitizeLaunchdPathEnvironment,
+} from './launchd';
+export type {
+  LaunchdCommandResult,
+  LaunchdCommandRunner,
+  LaunchdCommandSet,
+  LaunchdInstallState,
+  LaunchdLifecycle,
+  LaunchdLifecycleOptions,
+  LaunchdLifecycleResult,
+  LaunchdPaths,
+  LaunchdPlistOptions,
+  LaunchdProcessInspection,
+  LaunchdProcessInspector,
+  LaunchdStatusState,
+  LaunchdTransactionPhase,
+  LaunchdUninstallState,
+} from './launchd';

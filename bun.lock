@@ -29,6 +29,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@wtm/core": "workspace:*",
+        "@wtm/daemon": "workspace:*",
         "@wtm/protocol": "workspace:*",
         "commander": "14.0.2",
       },

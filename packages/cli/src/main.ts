@@ -1,8 +1,13 @@
 import { Command, CommanderError, Option } from 'commander';
 import { constants } from 'node:os';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { JsonEnvelope, WtmErrorCode } from '@wtm/protocol';
+import {
+  createLaunchdLifecycle,
+  createProductionDaemon,
+  type LaunchdLifecycle,
+} from '@wtm/daemon';
 import {
   emptyDiagnosticDataSource,
   runDoctorCommand,
@@ -23,6 +28,12 @@ import { followLogs, runLogsCommand } from './commands/logs';
 import { runExecCommand, type ForegroundExecutor } from './commands/exec';
 import type { RuntimeDaemonClient } from './commands/runtime-client';
 import { DaemonClient } from './client';
+import {
+  runDaemonLifecycleCommand,
+  serveDaemon,
+  type DaemonSignalSource,
+  type ForegroundDaemonRuntime,
+} from './commands/daemon';
 
 export interface CliDependencies {
   dataSource?: DiagnosticDataSource;
@@ -32,6 +43,10 @@ export interface CliDependencies {
   runtimeClient?: RuntimeDaemonClient;
   execForeground?: ForegroundExecutor;
   signal?: AbortSignal;
+  daemonLifecycle?: LaunchdLifecycle;
+  daemonRuntimeFactory?: () => Promise<ForegroundDaemonRuntime>;
+  daemonSignals?: DaemonSignalSource;
+  daemonProgramArguments?: readonly string[];
 }
 
 interface CliHooks {
@@ -141,6 +156,28 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     );
   });
 
+  const daemon = program.command('daemon').description('Manage the per-user WTM daemon.');
+  for (const action of ['install', 'uninstall', 'status'] as const) {
+    const lifecycle = daemon.command(action).description(`${capitalize(action)} the per-user WTM LaunchAgent.`);
+    addJsonOption(lifecycle);
+    lifecycle.action(async (options: ScopeOptions) => {
+      const manager = dependencies.daemonLifecycle ?? createLaunchdLifecycle({
+        programArguments: dependencies.daemonProgramArguments ?? defaultDaemonProgramArguments(),
+      });
+      renderRuntime(await runDaemonLifecycleCommand(action, manager), runtimeJson(program, options));
+    });
+  }
+  const serve = daemon.command('serve').description('Run the WTM daemon in the foreground.');
+  addJsonOption(serve);
+  serve.action(async (options: ScopeOptions) => {
+    const result = await serveDaemon({
+      runtimeFactory: dependencies.daemonRuntimeFactory ?? createProductionDaemon,
+      ...(dependencies.daemonSignals === undefined ? {} : { signals: dependencies.daemonSignals }),
+    });
+    renderRuntime(result.envelope, runtimeJson(program, options));
+    hooks.setExitCode?.(result.exitCode);
+  });
+
   return program;
 }
 
@@ -236,9 +273,20 @@ function exitCodeForError(code: WtmErrorCode): number {
     || code === 'GIT_UNTRACKED'
     || code === 'GIT_UNMERGED'
     || code === 'GIT_HEAD_NOT_REMOTE_PERSISTED'
+    || code === 'RESOURCE_PATH_DENIED'
     || code === 'GC_ACTIVE_WORKTREE_PROTECTED'
   ) return 3;
   return 1;
+}
+
+function defaultDaemonProgramArguments(): readonly string[] {
+  const entry = process.argv[1];
+  if (entry === undefined) throw new Error('WTM CLI entry path is unavailable');
+  return [resolve(process.execPath), resolve(entry), 'daemon', 'serve'];
+}
+
+function capitalize(value: string): string {
+  return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
 }
 
 function usageFailureEnvelope(argv: readonly string[], commanderCode: string): JsonEnvelope<null> {

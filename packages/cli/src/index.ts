@@ -49,3 +49,11 @@ export type {
   PreparedExec,
   RuntimeDaemonClient,
 } from './commands/exec';
+export { runDaemonLifecycleCommand, serveDaemon } from './commands/daemon';
+export type {
+  DaemonLifecycleAction,
+  DaemonServeDependencies,
+  DaemonServeResult,
+  DaemonSignalSource,
+  ForegroundDaemonRuntime,
+} from './commands/daemon';

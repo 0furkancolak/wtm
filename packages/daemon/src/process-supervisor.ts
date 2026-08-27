@@ -1065,7 +1065,7 @@ function readGeneration(path, currentPath) {
       const current = (() => { try { return fs.lstatSync(currentPath); } catch { return null; } })();
       return current === null || current.size === 0 && fs.existsSync(currentPath + '.1') ? 1 : 0;
     }
-    return 0;
+    throw new Error('INVALID_LOG_GENERATION_MARKER');
   } catch (error) {
     if (error.code === 'ENOENT') return 0;
     throw error;
@@ -1084,6 +1084,11 @@ function hasSafeFile(path) {
   checkFile(path);
   try { fs.lstatSync(path); return true; }
   catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+}
+function safeFileSize(path) {
+  checkFile(path);
+  try { return fs.lstatSync(path).size; }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }
 function publishGeneration(path, value) {
   checkFile(path);
@@ -1123,6 +1128,12 @@ class RotatingLog extends Writable {
     this.verifyParent();
     this.fd = opened.fd;
     this.size = opened.size;
+    const recoveryMarker = readGenerationMarker(this.markerPath);
+    const recovery = /^rotating-(\d+)-(marker|closed|shifted|archived|opened)-([A-Za-z0-9-]+)$/.exec(recoveryMarker);
+    if (recovery) {
+      publishGeneration(this.markerPath, 'rotating-' + recovery[1] + '-opened-' + recovery[3]);
+      this.verifyParent();
+    }
     publishGeneration(this.markerPath, this.generation);
     this.verifyParent();
   }
@@ -1133,7 +1144,31 @@ class RotatingLog extends Writable {
     const phase = phased[2];
     const transaction = phased[3];
     this.verifyParent();
-    if (phase === 'archived' || phase === 'opened' || !hasSafeFile(this.path)) return generation + 1;
+    if (phase === 'archived' || phase === 'opened') {
+      if (!hasSafeFile(this.path + '.1') || phase === 'opened' && !hasSafeFile(this.path)) {
+        throw new Error('AMBIGUOUS_LOG_ROTATION_RECOVERY');
+      }
+      return generation + 1;
+    }
+    if (!hasSafeFile(this.path)) {
+      if (phase !== 'shifted' || !hasSafeFile(this.path + '.1')) {
+        throw new Error('AMBIGUOUS_LOG_ROTATION_RECOVERY');
+      }
+      publishGeneration(this.markerPath, 'rotating-' + generation + '-archived-' + transaction);
+      this.verifyParent();
+      return generation + 1;
+    }
+    if ((phase === 'marker' || phase === 'closed') && safeFileSize(this.path) === 0) {
+      throw new Error('AMBIGUOUS_LOG_ROTATION_RECOVERY');
+    }
+    if (phase === 'shifted' && !hasSafeFile(this.path + '.1') && safeFileSize(this.path) === 0) {
+      throw new Error('AMBIGUOUS_LOG_ROTATION_RECOVERY');
+    }
+    if (phase === 'shifted' && hasSafeFile(this.path + '.1') && safeFileSize(this.path) === 0) {
+      publishGeneration(this.markerPath, 'rotating-' + generation + '-archived-' + transaction);
+      this.verifyParent();
+      return generation + 1;
+    }
     if (phase !== 'shifted') {
       const present = Array.from({ length: this.retained }, (_, index) => hasSafeFile(this.path + '.' + (index + 1)));
       const firstMissing = present.findIndex((value) => !value);

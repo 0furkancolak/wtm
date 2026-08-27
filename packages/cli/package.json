@@ -22,11 +22,13 @@
     "./commands/ps": "./src/commands/ps.ts",
     "./commands/logs": "./src/commands/logs.ts",
     "./commands/exec": "./src/commands/exec.ts",
+    "./commands/daemon": "./src/commands/daemon.ts",
     "./client": "./src/client.ts",
     "./main": "./src/main.ts"
   },
   "dependencies": {
     "@wtm/core": "workspace:*",
+    "@wtm/daemon": "workspace:*",
     "@wtm/protocol": "workspace:*",
     "commander": "14.0.2"
   }
