@@ -40,6 +40,14 @@
         "@wtm/protocol": "workspace:*",
       },
     },
+    "packages/daemon": {
+      "name": "@wtm/daemon",
+      "version": "0.1.0",
+      "dependencies": {
+        "@wtm/core": "workspace:*",
+        "@wtm/protocol": "workspace:*",
+      },
+    },
     "packages/protocol": {
       "name": "@wtm/protocol",
       "version": "0.1.0",
@@ -115,6 +123,8 @@
     "@wtm/cli": ["@wtm/cli@workspace:packages/cli"],
 
     "@wtm/core": ["@wtm/core@workspace:packages/core"],
+
+    "@wtm/daemon": ["@wtm/daemon@workspace:packages/daemon"],
 
     "@wtm/protocol": ["@wtm/protocol@workspace:packages/protocol"],
 

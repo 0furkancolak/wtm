@@ -107,6 +107,8 @@ Suggested location:
 
 The socket is user-only (`0600`). Requests and responses use framed JSON with a protocol version.
 
+V1 framing is deterministic: a four-byte unsigned big-endian payload length followed by exactly that many UTF-8 JSON bytes. The default payload ceiling is 1 MiB and is checked from the header before allocating the frame body or parsing JSON. Receivers accept fragmented headers/bodies and multiple coalesced frames.
+
 No HTTP server and no local TCP port are required.
 
 ## Daemon unavailable

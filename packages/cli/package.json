@@ -16,6 +16,7 @@
     "./commands/plan": "./src/commands/plan.ts",
     "./commands/ports": "./src/commands/ports.ts",
     "./commands/status": "./src/commands/status.ts",
+    "./client": "./src/client.ts",
     "./main": "./src/main.ts"
   },
   "dependencies": {

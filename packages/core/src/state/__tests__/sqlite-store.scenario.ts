@@ -95,6 +95,38 @@ function stableIdentities() {
   });
 }
 
+function daemonRegistrationQueries() {
+  return withDatabase((_, open) => {
+    const store = open();
+    const secondWorkspace = store.upsertWorkspace({
+      name: 'zeta',
+      root: '/projects/zeta',
+      scope: 'global-only',
+      configPath: null,
+    });
+    const firstRepository = createRepository(store);
+    store.upsertRepository({
+      workspaceId: secondWorkspace.id,
+      commonGitDir: '/projects/zeta/repo/.git',
+      mainRoot: '/projects/zeta/repo',
+      remoteIdentity: 'ssh://example.invalid/zeta.git',
+    });
+    store.reconcileWorktrees(firstRepository.id, [
+      worktree('/projects/demo/repo-linked', 'linked-head', 'refs/heads/linked'),
+      worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
+    ]);
+
+    const firstWorkspace = store.listWorkspaces().find(({ root }) => root === '/projects/demo');
+    if (firstWorkspace === undefined) throw new Error('Expected demo workspace');
+    return {
+      workspaceRoots: store.listWorkspaces().map(({ root }) => root),
+      repositoryRoots: store.listRepositories(firstWorkspace.id).map(({ mainRoot }) => mainRoot),
+      worktreePaths: store.listWorktrees(firstRepository.id).map(({ path }) => path),
+      allRepositoryRoots: store.listRepositories().map(({ mainRoot }) => mainRoot),
+    };
+  });
+}
+
 function transactionRollback() {
   return withDatabase((path, open, close) => {
     const firstStore = open();
@@ -552,6 +584,7 @@ function failedInitializationCleanup() {
 }
 
 const scenarios: Record<string, () => unknown> = {
+  'daemon-registration-queries': daemonRegistrationQueries,
   'stable-identities': stableIdentities,
   'transaction-rollback': transactionRollback,
   'reconciliation-transitions': reconciliationTransitions,

@@ -35,3 +35,5 @@ export { createCli, runCli } from './main';
 export type { CliDependencies } from './main';
 export { renderEnvelope } from './output';
 export type { OutputOptions } from './output';
+export { DaemonClient } from './client';
+export type { DaemonClientOptions } from './client';

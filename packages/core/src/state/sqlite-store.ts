@@ -285,6 +285,34 @@ export class SQLiteStateStore implements StateStore {
     });
   }
 
+  listWorkspaces(): WorkspaceRecord[] {
+    this.#assertOpen();
+    const rows = this.#database
+      .prepare('SELECT * FROM workspaces ORDER BY root, id')
+      .all() as WorkspaceRow[];
+    return rows.map(workspaceFromRow);
+  }
+
+  listRepositories(workspaceId?: string): RepositoryRecord[] {
+    this.#assertOpen();
+    const rows = workspaceId === undefined
+      ? this.#database.prepare('SELECT * FROM repositories ORDER BY main_root, id').all()
+      : this.#database
+        .prepare('SELECT * FROM repositories WHERE workspace_id = ? ORDER BY main_root, id')
+        .all(workspaceId);
+    return (rows as RepositoryRow[]).map(repositoryFromRow);
+  }
+
+  listWorktrees(repositoryId?: string): WorktreeRecord[] {
+    this.#assertOpen();
+    const rows = repositoryId === undefined
+      ? this.#database.prepare('SELECT * FROM worktrees ORDER BY path, id').all()
+      : this.#database
+        .prepare('SELECT * FROM worktrees WHERE repository_id = ? ORDER BY path, id')
+        .all(repositoryId);
+    return (rows as WorktreeRow[]).map(worktreeFromRow);
+  }
+
   allocateEndpoint(input: EndpointRequest, probe?: EndpointAvailabilityProbe): EndpointLease {
     this.#assertOpen();
     this.#validateEndpointRequest(input);

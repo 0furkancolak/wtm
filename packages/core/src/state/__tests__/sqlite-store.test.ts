@@ -16,6 +16,15 @@ function runScenario(name: string): Record<string, unknown> {
 }
 
 describe('SQLiteStateStore', () => {
+  test('lists only persisted daemon registrations in deterministic order', () => {
+    expect(runScenario('daemon-registration-queries')).toEqual({
+      workspaceRoots: ['/projects/demo', '/projects/zeta'],
+      repositoryRoots: ['/projects/demo/repo'],
+      worktreePaths: ['/projects/demo/repo', '/projects/demo/repo-linked'],
+      allRepositoryRoots: ['/projects/demo/repo', '/projects/zeta/repo'],
+    });
+  });
+
   test('keeps worktree numeric IDs stable when snapshot order changes and the database reopens', () => {
     expect(runScenario('stable-identities')).toEqual({
       initial: [

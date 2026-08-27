@@ -109,3 +109,11 @@ export interface StateStore {
   allocateEndpoint(input: EndpointRequest, probe?: EndpointAvailabilityProbe): EndpointLease;
   transaction<T>(fn: () => T): T;
 }
+
+export interface StateRegistrationReader {
+  listWorkspaces(): WorkspaceRecord[];
+  listRepositories(workspaceId?: string): RepositoryRecord[];
+  listWorktrees(repositoryId?: string): WorktreeRecord[];
+}
+
+export type DaemonStateStore = StateStore & StateRegistrationReader;
