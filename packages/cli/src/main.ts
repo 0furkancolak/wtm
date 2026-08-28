@@ -55,6 +55,7 @@ import {
   type SkillInstallResult,
   type SkillInstaller,
 } from './commands/skill';
+import { configureProductMetadata } from './product';
 
 export interface CliDependencies {
   dataSource?: DiagnosticDataSource;
@@ -119,6 +120,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     .showHelpAfterError(false)
     .exitOverride()
     .configureOutput({ writeOut: stdout, writeErr: stderr });
+  configureProductMetadata(program);
   addScopeOptions(program);
 
   for (const [name, description, runner] of commands) {

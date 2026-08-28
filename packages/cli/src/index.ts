@@ -40,6 +40,7 @@ export type {
 } from './diagnostics';
 export { createCli, defaultDaemonSocketPath, runCli } from './main';
 export type { CliDependencies } from './main';
+export { configureProductMetadata, WTM_BRAND, WTM_VERSION } from './product';
 export { renderEnvelope } from './output';
 export { createStateDiagnosticDataSource } from './state-diagnostics';
 export type { OutputOptions } from './output';

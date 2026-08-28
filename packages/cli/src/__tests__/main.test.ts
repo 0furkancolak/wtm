@@ -55,6 +55,35 @@ function capture() {
 }
 
 describe('Commander CLI', () => {
+  test('prints package version and Nafru attribution', async () => {
+    const output = capture();
+
+    expect(await runCli(['--version'], output.io)).toBe(0);
+    expect(output.stderr()).toBe('');
+    expect(output.stdout()).toBe('0.1.0\nPowered by https://nafru.com\n');
+  });
+
+  test('includes the Nafru attribution once in root help', async () => {
+    const output = capture();
+
+    expect(await runCli(['--help'], output.io)).toBe(0);
+    expect(output.stderr()).toBe('');
+    expect(output.stdout().match(/Powered by https:\/\/nafru\.com/gu)).toHaveLength(1);
+  });
+
+  test('keeps status JSON free of product attribution', async () => {
+    const output = capture();
+
+    expect(await runCli(['status', '--json'], {
+      dataSource: source(),
+      cwd: '/registered/demo',
+      ...output.io,
+    })).toBe(0);
+    expect(output.stderr()).toBe('');
+    expect(() => JSON.parse(output.stdout())).not.toThrow();
+    expect(output.stdout()).not.toContain('Powered by https://nafru.com');
+  });
+
   test('exposes diagnostic, runtime, daemon, and resource lifecycle commands', () => {
     const cli = createCli({ dataSource: source(), cwd: '/registered/demo' });
 
