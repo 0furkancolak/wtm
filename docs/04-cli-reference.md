@@ -32,6 +32,9 @@ Options:
 --json            machine-readable result
 ```
 
+`--yes` records explicit acceptance of WTM's non-destructive defaults in the result contract as
+`data.confirmation.defaultsAccepted`. V1 init is non-interactive, so this flag never approves destructive work.
+
 ### `wtm init --global [path]`
 
 Registers a workspace without writing `wtm.toml` into the selected directory. Configuration is stored in user WTM data.

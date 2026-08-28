@@ -1,8 +1,9 @@
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import { SQLiteStateStore } from '@wtm/core';
 import { createWorkspaceFixture } from '../../../../testkit/src/workspace-fixture';
 import { runInitCommand } from '../init';
+import type { SkillInstaller } from '../skill';
 
 const scenario = process.argv[2];
 if (scenario === undefined) throw new Error('Scenario name is required');
@@ -27,14 +28,46 @@ try {
       'version = 1\n\n[workspace]\nname = "valid-name"\n\n[environment]\nAPI_TOKEN = "cli-unterminated-secret-token-value\n',
     );
   }
+  let installs = 0;
+  const installer: SkillInstaller = {
+    async install() {
+      installs += 1;
+      if (scenario === 'skill-failure') {
+        throw new Error('installer-secret at /private/vendor/path');
+      }
+      return { path: join(fixture.root, '.agent-skills', 'wtm', 'SKILL.md') };
+    },
+  };
+  const agentsPath = join(fixture.root, 'AGENTS.md');
+  if (scenario === 'skill-install' || scenario === 'no-ai-skill') {
+    await writeFile(agentsPath, 'project-owned instructions\n');
+  }
   const input = {
     root: scenario === 'git-failure' ? fixture.firstRepoPath : fixture.root,
-    maxDepth: scenario === 'failure' ? -1 : 5,
+    maxDepth: scenario === 'failure' || scenario === 'core-failure-no-install' ? -1 : 5,
     userDataDir: fixture.userDataDir,
     stateStore: store,
+    ...(scenario === 'success' ? { acceptDefaults: true } : {}),
+    ...((scenario === 'skill-install' || scenario === 'no-ai-skill' || scenario === 'skill-failure'
+      || scenario === 'core-failure-no-install') ? {
+      aiSkillInstaller: installer,
+      installAiSkill: scenario !== 'no-ai-skill',
+    } : {}),
   };
   const envelope = await runInitCommand(input);
-  if (scenario !== 'success') {
+  if (scenario === 'skill-install' || scenario === 'no-ai-skill') {
+    process.stdout.write(`${JSON.stringify({
+      ok: envelope.ok,
+      installs,
+      aiSkill: envelope.data?.aiSkill,
+      confirmation: envelope.data?.confirmation,
+      agentsContent: await readFile(agentsPath, 'utf8'),
+    })}\n`);
+  } else if (scenario === 'core-failure-no-install') {
+    process.stdout.write(`${JSON.stringify({ ok: envelope.ok, installs })}\n`);
+  } else if (scenario === 'skill-failure') {
+    process.stdout.write(`${JSON.stringify(envelope)}\n`);
+  } else if (scenario !== 'success') {
     process.stdout.write(`${JSON.stringify(envelope)}\n`);
   } else {
     if (!envelope.ok || envelope.data === null) throw new Error('First init unexpectedly failed');

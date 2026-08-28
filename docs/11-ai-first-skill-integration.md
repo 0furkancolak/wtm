@@ -68,6 +68,11 @@ wtm skill install --global
 
 `skill install` should support the Agent Skills `SKILL.md` format and copy/symlink the canonical skill to a supported agent-skill location selected by the installation adapter. Exact vendor locations stay outside the core business logic because they can evolve independently.
 
+The filesystem adapter installs only WTM's fixed public canonical skill. It rejects symbolic links, foreign owners,
+group/other-writable directory components, linked temporary files and changed inode evidence; ordinary same-user `0755`
+project directories remain valid. Pure Node 24 does not expose `openat`/`renameat` on macOS, so the final pathname syscall
+window is inside the effective user's account trust boundary. A native helper is intentionally outside V1 scope.
+
 ## AGENTS.md integration
 
 WTM should not rewrite a user's `AGENTS.md` automatically.

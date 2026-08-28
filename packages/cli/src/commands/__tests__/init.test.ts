@@ -22,6 +22,8 @@ describe('runInitCommand', () => {
       workspace: { scope: 'local' },
       repositories: [{}, {}],
       discovery: { repositories: [{}, {}] },
+      confirmation: { defaultsAccepted: true },
+      aiSkill: { status: 'skipped' },
     });
     expect((envelope.scope as { workspaceId: string }).workspaceId).toBe(
       (envelope.data as { workspace: { id: string } }).workspace.id,
@@ -133,6 +135,59 @@ describe('runInitCommand', () => {
     expect(serialized).not.toContain('cause');
     expect(serialized).not.toContain('stack');
   });
+
+  test('installs the Agent Skill after successful initialization without changing AGENTS.md', () => {
+    const result = runScenario('skill-install');
+
+    expect(result).toMatchObject({
+      ok: true,
+      installs: 1,
+      aiSkill: { status: 'installed', path: expect.stringContaining('SKILL.md') },
+      confirmation: { defaultsAccepted: false },
+      agentsContent: 'project-owned instructions\n',
+    });
+  }, 15_000);
+
+  test('--no-ai-skill performs zero Agent Skill installs and leaves AGENTS.md untouched', () => {
+    const result = runScenario('no-ai-skill');
+
+    expect(result).toEqual({
+      ok: true,
+      installs: 0,
+      aiSkill: { status: 'skipped' },
+      confirmation: { defaultsAccepted: false },
+      agentsContent: 'project-owned instructions\n',
+    });
+  }, 15_000);
+
+  test('reports Agent Skill failure as sanitized partial success after core state persists', () => {
+    const envelope = runScenario('skill-failure');
+
+    expect(jsonEnvelopeSchema.safeParse(envelope).success).toBe(true);
+    expect(envelope).toMatchObject({
+      ok: true,
+      command: 'init',
+      data: {
+        workspace: { id: expect.any(String) },
+        aiSkill: { status: 'failed' },
+      },
+      warnings: [{
+        code: 'WTM_CONFIG_INVALID',
+        message: 'Workspace initialized, but the WTM Agent Skill was not installed.',
+        severity: 'warning',
+        context: { component: 'ai-skill' },
+        remediation: [{ kind: 'command-suggestion', argv: ['wtm', 'skill', 'install'] }],
+      }],
+      errors: [],
+    });
+    const serialized = JSON.stringify(envelope);
+    expect(serialized).not.toContain('installer-secret');
+    expect(serialized).not.toContain('/private/vendor/path');
+  }, 15_000);
+
+  test('never calls the installer before core initialization succeeds', () => {
+    expect(runScenario('core-failure-no-install')).toEqual({ ok: false, installs: 0 });
+  }, 15_000);
 });
 
 function runScenario(name: string): Record<string, unknown> {

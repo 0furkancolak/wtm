@@ -1,21 +1,40 @@
-import { initializeWorkspace, type InitInput, type InitResult } from '@wtm/core';
+import { basename, dirname, join } from 'node:path';
+import {
+  ensurePrivateDirectory,
+  initializeWorkspace,
+  SQLiteStateStore,
+  verifyPrivateDirectory,
+  type InitInput,
+  type InitResult,
+  type StateStore,
+} from '@wtm/core';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
+import { runSkillInstallCommand, type SkillInstaller } from './skill';
 
-export type InitCommandEnvelope = JsonEnvelope<InitResult | null>;
+export type InitAiSkillStatus =
+  | { status: 'installed'; path: string }
+  | { status: 'skipped' }
+  | { status: 'failed' };
 
-export async function runInitCommand(input: InitInput): Promise<InitCommandEnvelope> {
+export interface InitCommandResult extends InitResult {
+  aiSkill: InitAiSkillStatus;
+  confirmation: { defaultsAccepted: boolean };
+}
+
+export type InitCommandEnvelope = JsonEnvelope<InitCommandResult | null>;
+
+export interface InitCommandInput extends InitInput {
+  aiSkillInstaller?: SkillInstaller;
+  installAiSkill?: boolean;
+  /** Records explicit acceptance of non-destructive defaults; init remains non-interactive. */
+  acceptDefaults?: boolean;
+}
+
+export async function runInitCommand(input: InitCommandInput): Promise<InitCommandEnvelope> {
   const mode = input.globalOnly === true ? 'global' as const : 'local' as const;
+  let result: InitResult;
   try {
-    const result = await initializeWorkspace(input);
-    return {
-      schemaVersion: 1,
-      ok: true,
-      command: 'init',
-      scope: { mode, workspaceId: result.workspace.id },
-      data: result,
-      warnings: [],
-      errors: [],
-    };
+    result = await initializeWorkspace(input);
   } catch (error) {
     return {
       schemaVersion: 1,
@@ -27,6 +46,91 @@ export async function runInitCommand(input: InitInput): Promise<InitCommandEnvel
       errors: [toInitError(error)],
     };
   }
+
+  let aiSkill: InitAiSkillStatus = { status: 'skipped' };
+  const warnings: WtmError[] = [];
+  if (input.installAiSkill !== false && input.aiSkillInstaller !== undefined) {
+    try {
+      const installed = await runSkillInstallCommand({
+        scope: 'local',
+        installer: input.aiSkillInstaller,
+        workspaceRoot: result.discovery.root,
+      });
+      aiSkill = { status: 'installed', path: installed.path };
+    } catch {
+      aiSkill = { status: 'failed' };
+      warnings.push({
+        code: 'WTM_CONFIG_INVALID',
+        message: 'Workspace initialized, but the WTM Agent Skill was not installed.',
+        severity: 'warning',
+        context: { component: 'ai-skill' },
+        remediation: [{ kind: 'command-suggestion', argv: ['wtm', 'skill', 'install'] }],
+      });
+    }
+  }
+
+  return {
+    schemaVersion: 1,
+    ok: true,
+    command: 'init',
+    scope: { mode, workspaceId: result.workspace.id },
+    data: {
+      ...result,
+      aiSkill,
+      confirmation: { defaultsAccepted: input.acceptDefaults === true },
+    },
+    warnings,
+    errors: [],
+  };
+}
+
+export interface ProductionInitCommandInput {
+  root: string;
+  maxDepth?: number;
+  globalOnly?: boolean;
+  userDataDir: string;
+  databasePath: string;
+  workspaceName?: string;
+  aiSkillInstaller?: SkillInstaller;
+  installAiSkill?: boolean;
+  /** Explicit `--yes` intent forwarded into the init result contract. */
+  acceptDefaults?: boolean;
+}
+
+export interface ProductionInitDependencies {
+  openStateStore?(databasePath: string): { stateStore: StateStore; close(): void };
+  runInit?(input: InitCommandInput): Promise<InitCommandEnvelope>;
+}
+
+export async function runProductionInitCommand(
+  input: ProductionInitCommandInput,
+  dependencies: ProductionInitDependencies = {},
+): Promise<InitCommandEnvelope> {
+  const databaseParent = await ensurePrivateDirectory(dirname(input.databasePath));
+  const databasePath = join(databaseParent.path, basename(input.databasePath));
+  await verifyPrivateDirectory(databaseParent);
+  const opened = dependencies.openStateStore?.(databasePath) ?? openSqliteStateStore(databasePath);
+  try {
+    await verifyPrivateDirectory(databaseParent);
+    return await (dependencies.runInit ?? runInitCommand)({
+      root: input.root,
+      userDataDir: input.userDataDir,
+      stateStore: opened.stateStore,
+      ...(input.maxDepth === undefined ? {} : { maxDepth: input.maxDepth }),
+      ...(input.globalOnly === undefined ? {} : { globalOnly: input.globalOnly }),
+      ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }),
+      ...(input.aiSkillInstaller === undefined ? {} : { aiSkillInstaller: input.aiSkillInstaller }),
+      ...(input.installAiSkill === undefined ? {} : { installAiSkill: input.installAiSkill }),
+      ...(input.acceptDefaults === undefined ? {} : { acceptDefaults: input.acceptDefaults }),
+    });
+  } finally {
+    opened.close();
+  }
+}
+
+function openSqliteStateStore(databasePath: string): { stateStore: StateStore; close(): void } {
+  const stateStore = new SQLiteStateStore(databasePath);
+  return { stateStore, close: () => stateStore.close() };
 }
 
 function toInitError(error: unknown): WtmError {

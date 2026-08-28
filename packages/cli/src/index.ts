@@ -1,5 +1,12 @@
-export { runInitCommand } from './commands/init';
-export type { InitCommandEnvelope } from './commands/init';
+export { runInitCommand, runProductionInitCommand } from './commands/init';
+export type {
+  InitCommandEnvelope,
+  InitCommandInput,
+  InitCommandResult,
+  InitAiSkillStatus,
+  ProductionInitCommandInput,
+  ProductionInitDependencies,
+} from './commands/init';
 export { runAnalyzeCommand } from './commands/analyze';
 export type { AnalyzeCommandEnvelope, AnalyzeCommandInput } from './commands/analyze';
 export { runResolveCommand } from './commands/resolve';
@@ -56,6 +63,21 @@ export { runGcCommand } from './commands/gc';
 export type { GcCommandEnvelope, GcCommandInput, GcCommandResult } from './commands/gc';
 export { runAdapterCommand } from './commands/adapter';
 export type { AdapterCommandEnvelope, AdapterCommandInput, AdapterCommandResult } from './commands/adapter';
+export {
+  canonicalSkillPathForModule,
+  createFilesystemSkillInstaller,
+  readCanonicalSkill,
+  runSkillInstallCommand,
+} from './commands/skill';
+export type {
+  FilesystemSkillLocations,
+  FilesystemSkillInstallerHookContext,
+  FilesystemSkillInstallerHooks,
+  SkillInstaller,
+  SkillInstallRequest,
+  SkillInstallResult,
+  SkillInstallScope,
+} from './commands/skill';
 export type {
   DaemonLifecycleAction,
   DaemonServeDependencies,

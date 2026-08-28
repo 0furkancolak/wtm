@@ -26,6 +26,7 @@
     "./commands/disk": "./src/commands/disk.ts",
     "./commands/gc": "./src/commands/gc.ts",
     "./commands/adapter": "./src/commands/adapter.ts",
+    "./commands/skill": "./src/commands/skill.ts",
     "./client": "./src/client.ts",
     "./main": "./src/main.ts"
   },

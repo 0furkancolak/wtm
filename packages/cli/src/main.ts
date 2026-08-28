@@ -1,7 +1,7 @@
-import { Command, CommanderError, Option } from 'commander';
+import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
 import { constants } from 'node:os';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { JsonEnvelope, WtmErrorCode } from '@wtm/protocol';
 import type { AdapterTrustStore } from '@wtm/core';
 import {
@@ -38,6 +38,17 @@ import {
 } from './commands/daemon';
 import { runProductionDiskCommand, runProductionGcCommand } from './commands/resource-production';
 import { runAdapterCommand } from './commands/adapter';
+import {
+  runProductionInitCommand,
+  type ProductionInitCommandInput,
+} from './commands/init';
+import {
+  createFilesystemSkillInstaller,
+  readCanonicalSkill,
+  runSkillInstallCommand,
+  type SkillInstallResult,
+  type SkillInstaller,
+} from './commands/skill';
 
 export interface CliDependencies {
   dataSource?: DiagnosticDataSource;
@@ -56,6 +67,10 @@ export interface CliDependencies {
   resourceDatabasePath?: string;
   adapterDatabasePath?: string;
   adapterTrustStore?: AdapterTrustStore;
+  skillInstaller?: SkillInstaller;
+  initRunner?: (input: ProductionInitCommandInput) => ReturnType<typeof runProductionInitCommand>;
+  initDatabasePath?: string;
+  initUserDataDir?: string;
 }
 
 interface CliHooks {
@@ -238,7 +253,98 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     }), runtimeJson(program, options));
   });
 
+  const init = program.command('init [path]').description('Initialize and register a WTM workspace.');
+  addScopeOptions(init);
+  init.option('--yes', 'accept non-destructive proposed defaults');
+  init.option('--max-depth <n>', 'maximum discovery depth', parseNonNegativeInteger);
+  init.option('--no-ai-skill', 'skip local Agent Skill installation');
+  init.action(async (path: string | undefined, options: ScopeOptions & {
+    yes?: boolean;
+    maxDepth?: number;
+    aiSkill?: boolean;
+  }) => {
+    const global = options.global === true || program.opts<ScopeOptions>().global === true;
+    const databasePath = dependencies.initDatabasePath ?? defaultProductionRuntimePaths().databasePath;
+    const userDataDir = dependencies.initUserDataDir ?? dirname(databasePath);
+    const installer = dependencies.skillInstaller ?? defaultPortableSkillInstaller(cwd);
+    const envelope = await (dependencies.initRunner ?? runProductionInitCommand)({
+      root: resolve(cwd, path ?? '.'),
+      userDataDir,
+      databasePath,
+      globalOnly: global,
+      installAiSkill: options.aiSkill !== false,
+      acceptDefaults: options.yes === true,
+      aiSkillInstaller: installer,
+      ...(options.maxDepth === undefined ? {} : { maxDepth: options.maxDepth }),
+    });
+    renderRuntime(envelope, runtimeJson(program, options));
+  });
+
+  const skill = program.command('skill').description('Print or install the WTM Agent Skill.');
+  skill.command('print').description('Print the canonical WTM Agent Skill.').action(async () => {
+    stdout(await readCanonicalSkill());
+  });
+  const skillInstall = skill.command('install').description('Install the canonical WTM Agent Skill.');
+  addScopeOptions(skillInstall);
+  skillInstall.action(async (options: ScopeOptions) => {
+    const global = options.global === true || program.opts<ScopeOptions>().global === true;
+    const mode = global ? 'global' as const : 'local' as const;
+    let envelope: JsonEnvelope<SkillInstallResult | null>;
+    try {
+      const result = await runSkillInstallCommand({
+        scope: mode,
+        installer: dependencies.skillInstaller ?? defaultPortableSkillInstaller(cwd),
+      });
+      envelope = {
+        schemaVersion: 1,
+        ok: true,
+        command: 'skill install',
+        scope: { mode },
+        data: result,
+        warnings: [],
+        errors: [],
+      };
+    } catch {
+      envelope = {
+        schemaVersion: 1,
+        ok: false,
+        command: 'skill install',
+        scope: { mode },
+        data: null,
+        warnings: [],
+        errors: [{
+          code: 'WTM_CONFIG_INVALID',
+          message: 'WTM Agent Skill installation failed.',
+          severity: 'error',
+          context: { scope: mode },
+        }],
+      };
+    }
+    renderRuntime(envelope, runtimeJson(program, options));
+  });
+
   return program;
+}
+
+function defaultPortableSkillInstaller(fallbackWorkspaceRoot: string): SkillInstaller {
+  return {
+    install(request) {
+      return createFilesystemSkillInstaller({
+        localAnchor: request.workspaceRoot ?? fallbackWorkspaceRoot,
+        localSkills: join(request.workspaceRoot ?? fallbackWorkspaceRoot, '.agents', 'skills'),
+        globalAnchor: homedir(),
+        globalSkills: join(homedir(), '.agents', 'skills'),
+      }).install(request);
+    },
+  };
+}
+
+function parseNonNegativeInteger(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new InvalidArgumentError('max depth must be a non-negative integer');
+  }
+  return parsed;
 }
 
 export async function runCli(argv: readonly string[], dependencies: CliDependencies = {}): Promise<number> {

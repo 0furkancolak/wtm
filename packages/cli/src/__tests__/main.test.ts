@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { createAdapterTrustStore } from '@wtm/core';
 import { jsonEnvelopeSchema } from '@wtm/protocol';
 import { createFakeAdapter } from '../../../testkit/src/fake-adapter';
@@ -59,8 +60,98 @@ describe('Commander CLI', () => {
 
     expect(cli.commands.map((command) => command.name())).toEqual([
       'status', 'doctor', 'explain', 'plan', 'env', 'ports',
-      'start', 'stop', 'restart', 'ps', 'logs', 'exec', 'daemon', 'disk', 'gc', 'adapter',
+      'start', 'stop', 'restart', 'ps', 'logs', 'exec', 'daemon', 'disk', 'gc', 'adapter', 'init', 'skill',
     ]);
+  });
+
+  test('skill print emits exactly the canonical skill without an added newline or envelope', async () => {
+    const output = capture();
+    const canonical = await readFile(join(import.meta.dir, '../../../../skills/wtm/SKILL.md'), 'utf8');
+
+    const exitCode = await runCli(['skill', 'print'], { ...output.io });
+
+    expect(exitCode).toBe(0);
+    expect(output.stderr()).toBe('');
+    expect(output.stdout()).toBe(canonical);
+  });
+
+  test('registers init and forwards --no-ai-skill without invoking the installer', async () => {
+    const output = capture();
+    let installs = 0;
+    const seen: unknown[] = [];
+
+    const exitCode = await runCli(['init', 'project', '--yes', '--max-depth', '3', '--no-ai-skill', '--json'], {
+      cwd: '/workspace',
+      initRunner: async (input) => {
+        seen.push(input);
+        return {
+          schemaVersion: 1,
+          ok: true,
+          command: 'init',
+          scope: { mode: 'local', workspaceId: 'workspace-1' },
+          data: null,
+          warnings: [],
+          errors: [],
+        };
+      },
+      skillInstaller: {
+        async install() {
+          installs += 1;
+          return { path: '/must-not-be-written/SKILL.md' };
+        },
+      },
+      ...output.io,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(installs).toBe(0);
+    expect(seen).toEqual([expect.objectContaining({
+      root: '/workspace/project',
+      maxDepth: 3,
+      globalOnly: false,
+      installAiSkill: false,
+      acceptDefaults: true,
+    })]);
+  });
+
+  test('rejects an invalid init discovery depth as deterministic JSON usage', async () => {
+    const output = capture();
+
+    const exitCode = await runCli(['init', '--max-depth', '-1', '--json'], { ...output.io });
+
+    expect(exitCode).toBe(2);
+    expect(output.stderr()).toBe('');
+    expect(JSON.parse(output.stdout())).toMatchObject({
+      ok: false,
+      command: 'init',
+      errors: [{ code: 'WTM_CONFIG_INVALID' }],
+    });
+  });
+
+  test('renders skill installation failures as one deterministic JSON envelope', async () => {
+    const output = capture();
+
+    const exitCode = await runCli(['skill', 'install', '--json'], {
+      skillInstaller: { async install() { throw new Error('private vendor detail'); } },
+      ...output.io,
+    });
+
+    expect(exitCode).toBe(2);
+    expect(output.stderr()).toBe('');
+    expect(JSON.parse(output.stdout())).toEqual({
+      schemaVersion: 1,
+      ok: false,
+      command: 'skill install',
+      scope: { mode: 'local' },
+      data: null,
+      warnings: [],
+      errors: [{
+        code: 'WTM_CONFIG_INVALID',
+        message: 'WTM Agent Skill installation failed.',
+        severity: 'error',
+        context: { scope: 'local' },
+      }],
+    });
   });
 
   test('writes schema-valid JSON through injected stdout', async () => {
