@@ -26,6 +26,8 @@ describe('SQLite database drivers', () => {
       process: ['dev', 4242, 'RUNNING', false],
       adapterTrust: ['contract-adapter', '/adapters/contract', 'a'.repeat(64)],
       resource: ['/resources/contract/cache', 'directory', 'READY', 1, 100, 128],
+      resourceFinalization: [true, true, null, 'REMOVED', null],
+      rollback: ['contract rollback', true],
       relationships: {
         repositoryWorkspace: true,
         worktreeRepository: true,

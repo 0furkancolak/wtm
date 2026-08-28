@@ -128,6 +128,58 @@ async function run(driver: DriverName): Promise<Record<string, unknown>> {
       resourceName: 'cache',
       createdAt: '2026-08-28T08:00:05.000Z',
     });
+    store.registerResourceStorageObject({
+      id: 'cleanup-storage',
+      sandboxId: 'sandbox-1',
+      path: '/resources/contract/stale',
+      dev: 1,
+      ino: 5,
+      uid: 3,
+      kind: 'directory',
+      state: 'STALE',
+      retention: 'ephemeral',
+      owned: true,
+      createdAt: '2026-08-28T08:00:06.000Z',
+      lastUsedAt: '2026-08-28T08:00:06.000Z',
+      lastVerifiedAt: '2026-08-28T08:00:06.000Z',
+      logicalBytes: 64,
+      allocatedBytes: 128,
+    });
+    const cleanupLeaseAcquired = store.acquireResourceCleanupLease({
+      storageObjectId: 'cleanup-storage',
+      sandboxId: 'sandbox-1',
+      sandboxGeneration: 'generation-1',
+      path: '/resources/contract/stale',
+      dev: 1,
+      ino: 5,
+      uid: 3,
+      kind: 'directory',
+      state: 'STALE',
+      retention: 'ephemeral',
+    }, 'cleanup-token', 60_000);
+    let resourceFinalized: boolean | null = null;
+    let resourceFinalizationError: string | null = null;
+    try {
+      resourceFinalized = store.finalizeResourceCleanup('cleanup-storage', 'cleanup-token');
+    } catch (error) {
+      resourceFinalizationError = error instanceof Error ? error.message : String(error);
+    }
+
+    let rollbackError: string | null = null;
+    try {
+      const transactionStore = store;
+      transactionStore.transaction(() => {
+        transactionStore.upsertWorkspace({
+          name: 'rolled-back',
+          root: '/projects/rolled-back-contract',
+          scope: 'local',
+          configPath: null,
+        });
+        throw new Error('contract rollback');
+      });
+    } catch (error) {
+      rollbackError = error instanceof Error ? error.message : String(error);
+    }
     store.close();
 
     store = new SQLiteStateStore(databasePath, { readonly: true, databaseFactory });
@@ -148,7 +200,9 @@ async function run(driver: DriverName): Promise<Record<string, unknown>> {
     const persistedWorktree = store.listWorktrees()[0];
     const persistedProcess = store.listManagedProcesses()[0];
     const persistedTrust = store.listAdapterTrust()[0];
-    const persistedResource = store.listResourceGcEvidence()[0];
+    const persistedResources = store.listResourceGcEvidence();
+    const persistedResource = persistedResources.find(({ id }) => id === 'storage-1');
+    const finalizedResource = persistedResources.find(({ id }) => id === 'cleanup-storage');
     if (
       persistedWorkspace === undefined
       || persistedRepository === undefined
@@ -156,6 +210,7 @@ async function run(driver: DriverName): Promise<Record<string, unknown>> {
       || persistedProcess === undefined
       || persistedTrust === undefined
       || persistedResource === undefined
+      || finalizedResource === undefined
     ) throw new Error('Expected all contract records to persist');
 
     return {
@@ -178,6 +233,17 @@ async function run(driver: DriverName): Promise<Record<string, unknown>> {
         persistedResource.referenceCount,
         persistedResource.logicalBytes,
         persistedResource.allocatedBytes,
+      ],
+      resourceFinalization: [
+        cleanupLeaseAcquired,
+        resourceFinalized,
+        resourceFinalizationError,
+        finalizedResource.state,
+        finalizedResource.cleanupLeaseToken,
+      ],
+      rollback: [
+        rollbackError,
+        store.listWorkspaces().every(({ root }) => root !== '/projects/rolled-back-contract'),
       ],
       relationships: {
         repositoryWorkspace: persistedRepository.workspaceId === persistedWorkspace.id,

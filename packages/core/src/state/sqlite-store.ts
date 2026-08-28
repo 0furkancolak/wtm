@@ -604,21 +604,11 @@ export class SQLiteStateStore implements StateStore {
 
   releaseResourceCleanupLease(storageObjectId: string, token: string, preserveReservation = false): boolean {
     this.#assertOpen();
-    return this.transaction(() => {
-      if (!preserveReservation) this.#database.prepare(`
-        UPDATE resource_storage_objects SET state = (
-          SELECT previous_state FROM resource_cleanup_leases l
-          WHERE l.storage_object_id = resource_storage_objects.id AND l.token = ?
-        )
-        WHERE id = ? AND state = 'QUARANTINED' AND EXISTS (
-          SELECT 1 FROM resource_cleanup_leases l
-          WHERE l.storage_object_id = resource_storage_objects.id AND l.token = ?
-        )
-      `).run(token, storageObjectId, token);
-      return this.#database.prepare(`
-        DELETE FROM resource_cleanup_leases WHERE storage_object_id = ? AND token = ?
-      `).run(storageObjectId, token).changes === 1;
-    });
+    return this.transaction(() => this.#releaseResourceCleanupLease(
+      storageObjectId,
+      token,
+      preserveReservation,
+    ));
   }
 
   finalizeResourceCleanup(storageObjectId: string, token: string): boolean {
@@ -642,7 +632,7 @@ export class SQLiteStateStore implements StateStore {
         )
       `).run(storageObjectId, token).changes === 1;
       if (!updated) return false;
-      this.releaseResourceCleanupLease(storageObjectId, token);
+      this.#releaseResourceCleanupLease(storageObjectId, token);
       return true;
     });
   }
@@ -1124,6 +1114,22 @@ export class SQLiteStateStore implements StateStore {
       .get(id) as ManagedProcessRow | undefined;
     if (row === undefined) throw new Error(`Unknown managed process: ${id}`);
     return managedProcessFromRow(row);
+  }
+
+  #releaseResourceCleanupLease(storageObjectId: string, token: string, preserveReservation = false): boolean {
+    if (!preserveReservation) this.#database.prepare(`
+      UPDATE resource_storage_objects SET state = (
+        SELECT previous_state FROM resource_cleanup_leases l
+        WHERE l.storage_object_id = resource_storage_objects.id AND l.token = ?
+      )
+      WHERE id = ? AND state = 'QUARANTINED' AND EXISTS (
+        SELECT 1 FROM resource_cleanup_leases l
+        WHERE l.storage_object_id = resource_storage_objects.id AND l.token = ?
+      )
+    `).run(token, storageObjectId, token);
+    return this.#database.prepare(`
+      DELETE FROM resource_cleanup_leases WHERE storage_object_id = ? AND token = ?
+    `).run(storageObjectId, token).changes === 1;
   }
 
   #migrate(migrationAssets: MigrationAssetProvider): void {
