@@ -3,6 +3,7 @@ import { constants } from 'node:os';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { JsonEnvelope, WtmErrorCode } from '@wtm/protocol';
+import type { AdapterTrustStore } from '@wtm/core';
 import {
   createLaunchdLifecycle,
   createProductionDaemon,
@@ -36,6 +37,7 @@ import {
   type ForegroundDaemonRuntime,
 } from './commands/daemon';
 import { runProductionDiskCommand, runProductionGcCommand } from './commands/resource-production';
+import { runAdapterCommand } from './commands/adapter';
 
 export interface CliDependencies {
   dataSource?: DiagnosticDataSource;
@@ -52,6 +54,8 @@ export interface CliDependencies {
   diskRunner?: (input: { cwd: string }) => Promise<JsonEnvelope<unknown>>;
   gcRunner?: (input: { cwd: string; apply: boolean }) => Promise<JsonEnvelope<unknown>>;
   resourceDatabasePath?: string;
+  adapterDatabasePath?: string;
+  adapterTrustStore?: AdapterTrustStore;
 }
 
 interface CliHooks {
@@ -210,6 +214,28 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       })
       : await dependencies.gcRunner({ cwd, apply });
     renderRuntime(envelope, runtimeJson(program, options));
+  });
+
+  const adapter = program.command('adapter').description('Manage trusted external adapters.');
+  const adapterList = adapter.command('list').description('List trusted external adapters.');
+  addJsonOption(adapterList);
+  adapterList.action(async (options: ScopeOptions) => {
+    renderRuntime(await runAdapterCommand({
+      action: 'list',
+      databasePath: dependencies.adapterDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+      ...(dependencies.adapterTrustStore === undefined ? {} : { trust: dependencies.adapterTrustStore }),
+    }), runtimeJson(program, options));
+  });
+  const adapterTrust = adapter.command('trust <adapter-id> <executable>').description('Trust an adapter executable by SHA-256.');
+  addJsonOption(adapterTrust);
+  adapterTrust.action(async (adapterId: string, executablePath: string, options: ScopeOptions) => {
+    renderRuntime(await runAdapterCommand({
+      action: 'trust',
+      adapterId,
+      executablePath,
+      databasePath: dependencies.adapterDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+      ...(dependencies.adapterTrustStore === undefined ? {} : { trust: dependencies.adapterTrustStore }),
+    }), runtimeJson(program, options));
   });
 
   return program;

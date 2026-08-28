@@ -1,0 +1,30 @@
+import { readdir } from 'node:fs/promises';
+import { createFakeAdapter } from '../../../../testkit/src/fake-adapter';
+import { createAdapterTrustStore, trustRepositoryAdapter } from '../adapter-trust';
+import { invokeExternalAdapter } from '../external-adapter';
+
+const response = {
+  protocol: { major: 1, minor: 0 },
+  adapter: { id: 'fake', name: 'Fake', version: '1.0.0', kind: 'custom', provides: [] },
+};
+const adapter = await createFakeAdapter({ type: 'response', response });
+const trust = createAdapterTrustStore();
+try {
+  await trustRepositoryAdapter(trust, { adapterId: 'fake', executablePath: adapter.executablePath });
+  let afterVerificationRan = false;
+  let snapshotArtifactSeen = false;
+  const actual = await invokeExternalAdapter({
+    adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
+    operation: 'metadata', trust,
+    hooks: {
+      async afterVerification() {
+        afterVerificationRan = true;
+        snapshotArtifactSeen ||= (await readdir(process.env.TMPDIR!)).some((entry) =>
+          entry.startsWith('wtm-adapter-snapshot-') || entry.startsWith('wtm-adapter-execution-'));
+      },
+    },
+  });
+  process.stdout.write(`${JSON.stringify({ afterVerificationRan, snapshotArtifactSeen, response: actual })}\n`);
+} finally {
+  await adapter.cleanup();
+}

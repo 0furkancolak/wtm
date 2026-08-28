@@ -1,8 +1,9 @@
-import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import {
   SQLiteStateStore,
+  ensurePrivateDirectory,
+  verifyPrivateDirectory,
   resolveEnvironment,
   resolveTask,
   resolveWorkspaceConfig,
@@ -62,16 +63,32 @@ export function defaultProductionRuntimePaths(home = homedir()): ProductionRunti
 export async function createProductionDaemon(options: ProductionDaemonOptions = {}): Promise<ProductionDaemonRuntime> {
   const defaults = defaultProductionRuntimePaths();
   const dataRoot = resolve(options.dataRoot ?? defaults.dataRoot);
-  const paths: ProductionRuntimePaths = {
+  const requestedPaths: ProductionRuntimePaths = {
     dataRoot,
     databasePath: resolve(options.databasePath ?? join(dataRoot, 'state.db')),
     socketPath: resolve(options.socketPath ?? join(dataRoot, 'wtmd.sock')),
     logRoot: resolve(options.logRoot ?? defaults.logRoot),
     globalConfigPath: resolve(options.globalConfigPath ?? join(dataRoot, 'config.toml')),
   };
-  await mkdir(dataRoot, { recursive: true, mode: 0o700 });
+  await ensurePrivateDirectory(dataRoot);
   const ownedStore = options.stateStore === undefined;
+  const databaseParent = ownedStore
+    ? await ensurePrivateDirectory(dirname(requestedPaths.databasePath))
+    : undefined;
+  const paths: ProductionRuntimePaths = {
+    ...requestedPaths,
+    databasePath: databaseParent === undefined
+      ? requestedPaths.databasePath
+      : join(databaseParent.path, basename(requestedPaths.databasePath)),
+  };
   const stateStore = options.stateStore ?? new SQLiteStateStore(paths.databasePath);
+  if (databaseParent !== undefined) {
+    try { await verifyPrivateDirectory(databaseParent); }
+    catch (error) {
+      (stateStore as SQLiteStateStore).close();
+      throw error;
+    }
+  }
   const logs = new ManagedLogStore({
     root: paths.logRoot,
     ...(options.onError === undefined ? {} : { onError: options.onError }),

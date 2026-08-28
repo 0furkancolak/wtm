@@ -47,6 +47,8 @@ export {
   WtmEndpointAllocationError,
 } from './runtime/endpoints';
 export { SQLiteStateStore } from './state/sqlite-store';
+export { ensurePrivateDirectory, PrivateDirectoryError, verifyPrivateDirectory } from './state/private-directory';
+export type { PrivateDirectory, PrivateDirectoryIdentity } from './state/private-directory';
 export type {
   EndpointLease,
   EndpointLeaseState,
@@ -127,3 +129,19 @@ export type {
   ResourceSandboxIdentity,
   RecoverGcOptions,
 } from './resources/gc';
+export {
+  AdapterTrustError,
+  createAdapterTrustStore,
+  createSqliteAdapterTrustStore,
+  inspectAdapterExecutable,
+  trustRepositoryAdapter,
+  verifyTrustedRepositoryAdapter,
+} from './plan/adapter-trust';
+export type {
+  AdapterExecutableIdentity,
+  AdapterTrustRecord,
+  AdapterTrustStore,
+  TrustRepositoryAdapterInput,
+} from './plan/adapter-trust';
+export { ExternalAdapterError, invokeExternalAdapter } from './plan/external-adapter';
+export type { ExternalAdapterHooks, ExternalAdapterInvocation } from './plan/external-adapter';

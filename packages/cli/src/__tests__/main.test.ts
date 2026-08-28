@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { join } from 'node:path';
+import { createAdapterTrustStore } from '@wtm/core';
 import { jsonEnvelopeSchema } from '@wtm/protocol';
+import { createFakeAdapter } from '../../../testkit/src/fake-adapter';
 import type { DiagnosticDataSource, RegisteredWorkspace } from '../diagnostics';
 import { createCli, DiagnosticSourceError, runCli } from '../index';
 
@@ -56,7 +59,7 @@ describe('Commander CLI', () => {
 
     expect(cli.commands.map((command) => command.name())).toEqual([
       'status', 'doctor', 'explain', 'plan', 'env', 'ports',
-      'start', 'stop', 'restart', 'ps', 'logs', 'exec', 'daemon', 'disk', 'gc',
+      'start', 'stop', 'restart', 'ps', 'logs', 'exec', 'daemon', 'disk', 'gc', 'adapter',
     ]);
   });
 
@@ -206,6 +209,30 @@ describe('Commander CLI', () => {
     const envelope = JSON.parse(output.stdout());
     expect(envelope.ok).toBe(false);
     expect(envelope.errors[0].code).toBe('WTM_CONFIG_INVALID');
+  });
+
+  test('wires adapter trust through the CLI with an injected SQLite database path', async () => {
+    const adapter = await createFakeAdapter({ type: 'response', response: {} });
+    const output = capture();
+    const trust = createAdapterTrustStore();
+    try {
+      const exitCode = await runCli(['adapter', 'trust', 'fake', adapter.executablePath, '--json'], {
+        cwd: adapter.root,
+        adapterDatabasePath: join(adapter.root, 'state', 'state.db'),
+        adapterTrustStore: trust,
+        ...output.io,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(JSON.parse(output.stdout())).toMatchObject({
+        ok: true,
+        command: 'adapter trust',
+        data: { adapterId: 'fake', sha256: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+      });
+      expect(trust.list()).toHaveLength(1);
+    } finally {
+      await adapter.cleanup();
+    }
   });
 
   test('exec returns the foreground child exit status without using a shell or process.exit', async () => {

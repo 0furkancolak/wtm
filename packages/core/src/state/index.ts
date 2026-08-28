@@ -1,5 +1,10 @@
 export { SQLiteStateStore } from './sqlite-store';
+export { ensurePrivateDirectory, PrivateDirectoryError, verifyPrivateDirectory } from './private-directory';
+export type { PrivateDirectory, PrivateDirectoryIdentity } from './private-directory';
 export type {
+  AdapterTrustInput,
+  AdapterTrustRecord,
+  AdapterTrustStateStore,
   EndpointLease,
   EndpointLeaseState,
   EndpointAvailabilityProbe,

@@ -12,7 +12,9 @@
     "./analysis": "./src/analysis/worktree-analysis.ts",
     "./resources/guard": "./src/resources/guard.ts",
     "./resources/materializer": "./src/resources/materializer.ts",
-    "./resources/gc": "./src/resources/gc.ts"
+    "./resources/gc": "./src/resources/gc.ts",
+    "./plan/adapter-trust": "./src/plan/adapter-trust.ts",
+    "./plan/external-adapter": "./src/plan/external-adapter.ts"
   },
   "dependencies": {
     "@wtm/protocol": "workspace:*"

@@ -102,6 +102,21 @@ export interface EndpointLease {
   lastVerifiedAt: string;
 }
 
+export interface AdapterTrustInput {
+  adapterId: string;
+  canonicalPath: string;
+  sha256: string;
+}
+
+export interface AdapterTrustRecord extends AdapterTrustInput {
+  trustedAt: string;
+}
+
+export interface AdapterTrustStateStore {
+  upsertAdapterTrust(input: AdapterTrustInput): AdapterTrustRecord;
+  listAdapterTrust(): AdapterTrustRecord[];
+}
+
 export type ManagedProcessState =
   | 'STARTING'
   | 'RUNNING'
@@ -154,7 +169,7 @@ export interface ManagedProcessQuery {
   states?: readonly ManagedProcessState[];
 }
 
-export interface StateStore {
+export interface StateStore extends AdapterTrustStateStore {
   upsertWorkspace(input: WorkspaceInput): WorkspaceRecord;
   upsertRepository(input: RepositoryInput): RepositoryRecord;
   reconcileWorktrees(repositoryId: string, snapshot: GitWorktreeRecord[]): ReconcileResult;

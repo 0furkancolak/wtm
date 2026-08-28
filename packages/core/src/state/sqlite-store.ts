@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import type { GitWorktreeRecord } from '../git/worktree-parser';
 import type {
+  AdapterTrustInput,
+  AdapterTrustRecord,
   EndpointLease,
   EndpointAvailabilityProbe,
   EndpointRequest,
@@ -74,6 +76,13 @@ interface EndpointRow {
   state: EndpointLease['state'];
   allocated_at: string;
   last_verified_at: string;
+}
+
+interface AdapterTrustRow {
+  adapter_id: string;
+  canonical_path: string;
+  sha256: string;
+  trusted_at: string;
 }
 
 interface ManagedProcessRow {
@@ -178,6 +187,15 @@ function endpointFromRow(row: EndpointRow): EndpointLease {
     state: row.state,
     allocatedAt: row.allocated_at,
     lastVerifiedAt: row.last_verified_at,
+  };
+}
+
+function adapterTrustFromRow(row: AdapterTrustRow): AdapterTrustRecord {
+  return {
+    adapterId: row.adapter_id,
+    canonicalPath: row.canonical_path,
+    sha256: row.sha256,
+    trustedAt: row.trusted_at,
   };
 }
 
@@ -388,6 +406,35 @@ export class SQLiteStateStore implements StateStore {
         .prepare('SELECT * FROM worktrees WHERE repository_id = ? ORDER BY path, id')
         .all(repositoryId);
     return (rows as WorktreeRow[]).map(worktreeFromRow);
+  }
+
+  upsertAdapterTrust(input: AdapterTrustInput): AdapterTrustRecord {
+    this.#assertOpen();
+    if (input.adapterId.trim() === '' || input.canonicalPath.trim() === '' || !/^[a-f0-9]{64}$/u.test(input.sha256)) {
+      throw new TypeError('Adapter trust record is invalid');
+    }
+    return this.transaction(() => {
+      const trustedAt = new Date().toISOString();
+      this.#database.prepare(`
+        INSERT INTO adapter_trust (adapter_id, canonical_path, sha256, trusted_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (adapter_id, canonical_path) DO UPDATE SET
+          sha256 = excluded.sha256,
+          trusted_at = excluded.trusted_at
+      `).run(input.adapterId, input.canonicalPath, input.sha256, trustedAt);
+      const row = this.#database.prepare(`
+        SELECT * FROM adapter_trust WHERE adapter_id = ? AND canonical_path = ?
+      `).get(input.adapterId, input.canonicalPath) as AdapterTrustRow;
+      return adapterTrustFromRow(row);
+    });
+  }
+
+  listAdapterTrust(): AdapterTrustRecord[] {
+    this.#assertOpen();
+    const rows = this.#database.prepare(`
+      SELECT * FROM adapter_trust ORDER BY adapter_id, canonical_path
+    `).all() as AdapterTrustRow[];
+    return rows.map(adapterTrustFromRow);
   }
 
   upsertResourceSandbox(input: ResourceSandboxInput): void {

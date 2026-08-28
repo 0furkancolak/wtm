@@ -54,6 +54,8 @@ export { runDiskCommand } from './commands/disk';
 export type { DiskCommandEnvelope, DiskCommandInput, DiskCommandResult, DiskUsageSummary } from './commands/disk';
 export { runGcCommand } from './commands/gc';
 export type { GcCommandEnvelope, GcCommandInput, GcCommandResult } from './commands/gc';
+export { runAdapterCommand } from './commands/adapter';
+export type { AdapterCommandEnvelope, AdapterCommandInput, AdapterCommandResult } from './commands/adapter';
 export type {
   DaemonLifecycleAction,
   DaemonServeDependencies,

@@ -126,6 +126,16 @@ describe('SQLiteStateStore', () => {
     });
   });
 
+  test('persists exact adapter trust upserts across independent SQLite connections', () => {
+    expect(runScenario('adapter-trust-persistence')).toEqual({
+      records: [
+        ['fake', '/adapters/fake', 'b'.repeat(64)],
+        ['other', '/adapters/other', 'c'.repeat(64)],
+      ],
+      trustedAtIsIso: true,
+    });
+  });
+
   test('persists managed process identities and queries active singleton records deterministically', () => {
     expect(runScenario('managed-process-crud')).toEqual({
       createdState: 'STARTING',

@@ -4,6 +4,8 @@ import Database from 'better-sqlite3';
 import { createWorkspaceFixture } from '../../../../testkit/src/workspace-fixture';
 import { SQLiteStateStore } from '../../state/sqlite-store';
 import type {
+  AdapterTrustInput,
+  AdapterTrustRecord,
   EndpointLease,
   EndpointRequest,
   ManagedProcessInput,
@@ -47,6 +49,14 @@ class FailingReconciliationStore implements StateStore {
 
   allocateEndpoint(input: EndpointRequest): EndpointLease {
     return this.inner.allocateEndpoint(input);
+  }
+
+  upsertAdapterTrust(input: AdapterTrustInput): AdapterTrustRecord {
+    return this.inner.upsertAdapterTrust(input);
+  }
+
+  listAdapterTrust(): AdapterTrustRecord[] {
+    return this.inner.listAdapterTrust();
   }
 
   createManagedProcess(input: ManagedProcessInput, options?: ManagedProcessCreateOptions): ManagedProcessRecord {

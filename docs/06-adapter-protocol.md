@@ -228,6 +228,45 @@ External adapters installed into user-controlled WTM directories can be trusted 
 
 Repository-local executable adapters are **not executed automatically**. Trust records store adapter ID, canonical path and SHA-256. A changed binary requires renewed trust.
 
+### V1 external executable format
+
+V1 makes a deliberate single-file ruling: a trust record authenticates exactly one
+file, so WTM cannot safely authenticate sibling modules, `$ORIGIN` libraries, or
+an argv0 dispatcher package. External adapters therefore must be a self-contained
+Node ESM executable with this exact declaration:
+
+```text
+#!/usr/bin/env node
+// wtm-adapter-v1: self-contained
+```
+
+The declaration must be the first two lines. WTM opens that file without
+following its final path component, verifies it, and hashes the bytes read from
+the retained descriptor. It then writes those exact in-memory bytes into a 0600
+file in a newly established 0700 private directory, reopens the copy read-only,
+verifies its bytes, and unlinks the file and removes the directory before child
+execution. Node 24 receives only the anonymous read-only descriptor. Replacing
+or rewriting the source after verification therefore cannot change the bytes
+Node runs, and no executable pathname or staging artifact remains during
+execution. The original basename remains visible as `process.argv[1]`.
+
+At execution time a synchronous Node module-resolution hook allows canonical
+`node:` built-ins recognized by Node 24 except `node:module`. Bare built-in names
+are not accepted. `node:module` is also denied through
+`process.getBuiltinModule()` and that policy wrapper cannot be replaced by the
+adapter; this prevents later loader hooks or `createRequire()` instances from
+short-circuiting WTM's guard. The guard rejects static imports, re-exports,
+computed dynamic imports and CommonJS resolution of relative, absolute,
+package, `file:`, `data:` or network modules. The exact first/second declaration
+lines are the trust-time structural check; runtime resolution remains the
+authoritative dependency boundary.
+
+Trust authenticates the entry file only. Files read explicitly through other
+built-in APIs such as `node:fs` are outside that authentication boundary. V1 is
+not a general process sandbox: allowed built-ins such as `node:child_process`
+retain their normal Node behavior. Shell scripts and native binaries are
+unsupported. A later version may define a signed multi-file manifest.
+
 ## Timeouts
 
 Default adapter RPC budgets:

@@ -16,6 +16,8 @@ type StateStoreDomainOperation =
   | 'upsertRepository'
   | 'reconcileWorktrees'
   | 'allocateEndpoint'
+  | 'upsertAdapterTrust'
+  | 'listAdapterTrust'
   | 'createManagedProcess'
   | 'getManagedProcess'
   | 'updateManagedProcess'
@@ -947,6 +949,31 @@ function managedProcessV4CleanupUpgrade() {
   });
 }
 
+function adapterTrustPersistence() {
+  return withDatabase((path, open, close) => {
+    const first = open();
+    const second = new SQLiteStateStore(path);
+    try {
+      first.upsertAdapterTrust({
+        adapterId: 'fake', canonicalPath: '/adapters/fake', sha256: 'a'.repeat(64),
+      });
+      second.upsertAdapterTrust({
+        adapterId: 'other', canonicalPath: '/adapters/other', sha256: 'c'.repeat(64),
+      });
+      const renewed = second.upsertAdapterTrust({
+        adapterId: 'fake', canonicalPath: '/adapters/fake', sha256: 'b'.repeat(64),
+      });
+      return {
+        records: first.listAdapterTrust().map(({ adapterId, canonicalPath, sha256 }) => [adapterId, canonicalPath, sha256]),
+        trustedAtIsIso: !Number.isNaN(Date.parse(renewed.trustedAt)),
+      };
+    } finally {
+      second.close();
+      close();
+    }
+  });
+}
+
 function requireMigration(file: string): string {
   return readFileSync(new URL(`../migrations/${file}`, import.meta.url), 'utf8');
 }
@@ -967,6 +994,7 @@ const scenarios: Record<string, () => unknown> = {
   'managed-process-lifecycle': managedProcessLifecycle,
   'managed-process-reservations': managedProcessReservations,
   'managed-process-v4-cleanup-upgrade': managedProcessV4CleanupUpgrade,
+  'adapter-trust-persistence': adapterTrustPersistence,
 };
 
 const scenarioName = process.argv[2];

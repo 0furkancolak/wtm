@@ -9,6 +9,7 @@ import {
 } from '../process-supervisor';
 
 const scenarioPath = fileURLToPath(new URL('./runtime-factory.scenario.ts', import.meta.url));
+const privateDatabaseScenarioPath = fileURLToPath(new URL('./private-database.scenario.ts', import.meta.url));
 
 describe('production daemon composition', () => {
   test('runs CLI start, ps, and stop through a real temporary socket and SQLite store', () => {
@@ -72,6 +73,15 @@ describe('production daemon composition', () => {
         await waitForGroupAbsent(identity.pgid);
       }
     }
+  }, 20_000);
+
+  test('uses the private custom database parent rather than only the data root', () => {
+    const result = spawnSync('node', ['--import', 'tsx', privateDatabaseScenarioPath], {
+      encoding: 'utf8', timeout: 20_000,
+    });
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({ created: true, unsafeParentRejected: true });
   }, 20_000);
 });
 

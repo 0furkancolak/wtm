@@ -34,7 +34,7 @@ export async function createWorkspaceFixture(options: WorkspaceFixtureOptions = 
 
   try {
     await mkdir(root, { recursive: true });
-    await mkdir(userDataDir, { recursive: true });
+    await mkdir(userDataDir, { recursive: true, mode: 0o700 });
     await writeFile(join(root, 'Makefile'), 'dev:\n\t@echo workspace-dev\n');
     await createRepository(firstRepoPath, 'first');
     await createRepository(secondRepoPath, 'second');
