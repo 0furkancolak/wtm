@@ -73,5 +73,57 @@ export type {
   WorkspaceScope,
   WorktreeRecord,
   WorktreeState,
+  ResourceGcEvidenceRecord,
+  ResourceCleanupLeaseRequest,
+  ResourceGcJournalInput,
+  ResourceGcJournalPhase,
+  ResourceLifecycleStore,
+  ResourceReferenceInput,
+  ResourceSandboxInput,
+  ResourceStorageObjectInput,
 } from './state/store';
 export * from './workspace/index';
+export {
+  ResourcePathGuardError,
+  authorizeResourcePath,
+  createResourceGuard,
+} from './resources/guard';
+export type {
+  GitTrackingInspector,
+  ResourceGuard,
+  ResourceGuardIntent,
+  ResourceGuardOptions,
+  ResourcePathAuthorization,
+} from './resources/guard';
+export {
+  ResourceMaterializationError,
+  applyMaterializationPlan,
+  buildMaterializationPlan,
+  planResourceMaterialization,
+} from './resources/materializer';
+export type {
+  ApplyMaterializationOptions,
+  CloneFileCapability,
+  MaterializationHooks,
+  MaterializationPlan,
+  MaterializationRequest,
+  MaterializationResult,
+} from './resources/materializer';
+export { applyGcPlan, buildGcPlan, executeGcPlan, planResourceGc, recoverGcJournalEntry } from './resources/gc';
+export type {
+  ApplyGcOptions,
+  BuildGcPlanInput,
+  GcApplyResult,
+  GcCandidate,
+  GcEvidence,
+  GcExclusionReason,
+  GcHooks,
+  GcItemResult,
+  GcJournal,
+  GcJournalEntry,
+  GcJournalPhase,
+  GcLeaseCoordinator,
+  GcPlan,
+  ResourceSandboxIdentity,
+  RecoverGcOptions,
+} from './resources/gc';

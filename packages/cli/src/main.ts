@@ -6,6 +6,7 @@ import type { JsonEnvelope, WtmErrorCode } from '@wtm/protocol';
 import {
   createLaunchdLifecycle,
   createProductionDaemon,
+  defaultProductionRuntimePaths,
   type LaunchdLifecycle,
 } from '@wtm/daemon';
 import {
@@ -34,6 +35,7 @@ import {
   type DaemonSignalSource,
   type ForegroundDaemonRuntime,
 } from './commands/daemon';
+import { runProductionDiskCommand, runProductionGcCommand } from './commands/resource-production';
 
 export interface CliDependencies {
   dataSource?: DiagnosticDataSource;
@@ -47,6 +49,9 @@ export interface CliDependencies {
   daemonRuntimeFactory?: () => Promise<ForegroundDaemonRuntime>;
   daemonSignals?: DaemonSignalSource;
   daemonProgramArguments?: readonly string[];
+  diskRunner?: (input: { cwd: string }) => Promise<JsonEnvelope<unknown>>;
+  gcRunner?: (input: { cwd: string; apply: boolean }) => Promise<JsonEnvelope<unknown>>;
+  resourceDatabasePath?: string;
 }
 
 interface CliHooks {
@@ -176,6 +181,35 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     });
     renderRuntime(result.envelope, runtimeJson(program, options));
     hooks.setExitCode?.(result.exitCode);
+  });
+
+  const disk = program.command('disk').description('Report logical and allocated WTM resource usage.');
+  addJsonOption(disk);
+  disk.action(async (options: ScopeOptions) => {
+    const envelope = dependencies.diskRunner === undefined
+      ? await runProductionDiskCommand({
+        databasePath: dependencies.resourceDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+        cwd,
+      })
+      : await dependencies.diskRunner({ cwd });
+    renderRuntime(envelope, runtimeJson(program, options));
+  });
+
+  const gc = program.command('gc').description('Plan or apply safe WTM resource garbage collection.');
+  addJsonOption(gc);
+  gc
+    .addOption(new Option('--apply', 'apply the guarded GC plan').conflicts('dryRun'))
+    .addOption(new Option('--dry-run', 'plan only (the default)').conflicts('apply'));
+  gc.action(async (options: ScopeOptions & { apply?: boolean; dryRun?: boolean }) => {
+    const apply = options.apply === true;
+    const envelope = dependencies.gcRunner === undefined
+      ? await runProductionGcCommand({
+        databasePath: dependencies.resourceDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+        cwd,
+        apply,
+      })
+      : await dependencies.gcRunner({ cwd, apply });
+    renderRuntime(envelope, runtimeJson(program, options));
   });
 
   return program;

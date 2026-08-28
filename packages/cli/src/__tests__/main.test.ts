@@ -51,12 +51,12 @@ function capture() {
 }
 
 describe('Commander CLI', () => {
-  test('exposes the six diagnostic commands plus explicit runtime and daemon commands', () => {
+  test('exposes diagnostic, runtime, daemon, and resource lifecycle commands', () => {
     const cli = createCli({ dataSource: source(), cwd: '/registered/demo' });
 
     expect(cli.commands.map((command) => command.name())).toEqual([
       'status', 'doctor', 'explain', 'plan', 'env', 'ports',
-      'start', 'stop', 'restart', 'ps', 'logs', 'exec', 'daemon',
+      'start', 'stop', 'restart', 'ps', 'logs', 'exec', 'daemon', 'disk', 'gc',
     ]);
   });
 

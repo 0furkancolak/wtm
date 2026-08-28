@@ -107,6 +107,27 @@ describe('adapter protocol schemas', () => {
     ).toThrow();
   });
 
+  it('rejects filesystem mutations that do not identify one declared resource', () => {
+    expect(() => adapterPlanResponseSchema.parse({
+      resources: [{ name: 'cache', type: 'cache', path: '.cache', policy: 'isolated', retention: 'ephemeral' }],
+      actions: [{ type: 'ensure-directory', path: '.cache' }],
+      capabilities: {},
+      tasks: {},
+    })).toThrow();
+  });
+
+  it('rejects duplicate declared resource names because action ownership would be ambiguous', () => {
+    expect(() => adapterPlanResponseSchema.parse({
+      resources: [
+        { name: 'dup', type: 'cache', path: 'one', policy: 'isolated', retention: 'ephemeral' },
+        { name: 'dup', type: 'cache', path: 'two', policy: 'isolated', retention: 'ephemeral' },
+      ],
+      actions: [{ type: 'ensure-directory', resource: 'dup', path: 'one' }],
+      capabilities: {},
+      tasks: {},
+    })).toThrow();
+  });
+
   it('rejects adapter resources with an unknown policy before use', () => {
     expect(() =>
       adapterPlanResponseSchema.parse({
@@ -167,11 +188,11 @@ describe('adapter protocol schemas', () => {
         capabilities: { 'deps.install': { action: 'cargo.fetch' } },
         tasks: {},
         actions: [
-          { type: 'ensure-directory', path: '.cache' },
-          { type: 'symlink', source: '.env.shared', target: '.env' },
-          { type: 'copy', source: 'source', target: 'target' },
-          { type: 'clone', source: 'seed', target: 'data' },
-          { type: 'write-generated-file', path: '.env.generated', contents: 'PORT=3000' },
+          { type: 'ensure-directory', resource: 'cargo-target', path: '.cache' },
+          { type: 'symlink', resource: 'cargo-target', source: '.env.shared', target: '.env' },
+          { type: 'copy', resource: 'cargo-target', source: 'source', target: 'target' },
+          { type: 'clone', resource: 'cargo-target', source: 'seed', target: 'data' },
+          { type: 'write-generated-file', resource: 'cargo-target', path: '.env.generated', contents: 'PORT=3000' },
           { type: 'reserve-endpoint', name: 'api' },
           { type: 'exec', argv: ['cargo', 'fetch'], cwd: '{worktree.root}', timeoutMs: 600000 },
           { type: 'register-runtime-namespace', namespace: 'app-auth' },

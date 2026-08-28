@@ -23,6 +23,8 @@
     "./commands/logs": "./src/commands/logs.ts",
     "./commands/exec": "./src/commands/exec.ts",
     "./commands/daemon": "./src/commands/daemon.ts",
+    "./commands/disk": "./src/commands/disk.ts",
+    "./commands/gc": "./src/commands/gc.ts",
     "./client": "./src/client.ts",
     "./main": "./src/main.ts"
   },

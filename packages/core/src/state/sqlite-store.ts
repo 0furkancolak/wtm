@@ -16,6 +16,12 @@ import type {
   ReconcileResult,
   RepositoryInput,
   RepositoryRecord,
+  ResourceGcEvidenceRecord,
+  ResourceGcJournalInput,
+  ResourceCleanupLeaseRequest,
+  ResourceReferenceInput,
+  ResourceSandboxInput,
+  ResourceStorageObjectInput,
   StateStore,
   WorkspaceInput,
   WorkspaceRecord,
@@ -107,6 +113,18 @@ const managedProcessCleanupOwnershipMigration = readFileSync(
   new URL('./migrations/005-managed-process-cleanup-ownership.sql', import.meta.url),
   'utf8',
 );
+const resourceLifecycleMigration = readFileSync(
+  new URL('./migrations/006-resource-lifecycle.sql', import.meta.url),
+  'utf8',
+);
+const resourceGcDeletingPhaseMigration = readFileSync(
+  new URL('./migrations/007-resource-gc-deleting-phase.sql', import.meta.url),
+  'utf8',
+);
+const resourceGcContainerIdentityMigration = readFileSync(
+  new URL('./migrations/008-resource-gc-container-identity.sql', import.meta.url),
+  'utf8',
+);
 
 function workspaceFromRow(row: WorkspaceRow): WorkspaceRecord {
   return {
@@ -194,15 +212,15 @@ export class SQLiteStateStore implements StateStore {
   readonly #database: Database.Database;
   #closed = false;
 
-  constructor(path: string) {
-    this.#database = new Database(path);
+  constructor(path: string, options: { readonly?: boolean } = {}) {
+    this.#database = new Database(path, options.readonly === true ? { readonly: true, fileMustExist: true } : undefined);
     try {
       this.#database.pragma('foreign_keys = ON');
-      if (path !== ':memory:' && !path.startsWith('file::memory:')) {
+      if (options.readonly !== true && path !== ':memory:' && !path.startsWith('file::memory:')) {
         this.#database.pragma('journal_mode = WAL');
       }
       this.#database.pragma('busy_timeout = 5000');
-      this.#migrate();
+      if (options.readonly !== true) this.#migrate();
     } catch (error) {
       try {
         this.#database.close();
@@ -370,6 +388,368 @@ export class SQLiteStateStore implements StateStore {
         .prepare('SELECT * FROM worktrees WHERE repository_id = ? ORDER BY path, id')
         .all(repositoryId);
     return (rows as WorktreeRow[]).map(worktreeFromRow);
+  }
+
+  upsertResourceSandbox(input: ResourceSandboxInput): void {
+    this.#assertOpen();
+    this.transaction(() => {
+      const existing = this.#database.prepare(`
+        SELECT root, generation, dev, ino, uid FROM resource_sandboxes WHERE id = ?
+      `).get(input.id) as Omit<ResourceSandboxInput, 'id'> | undefined;
+      if (existing !== undefined) {
+        if (
+          existing.root !== input.root
+          || existing.generation !== input.generation
+          || existing.dev !== input.dev
+          || existing.ino !== input.ino
+          || existing.uid !== input.uid
+        ) throw new Error('Resource sandbox identity changed for an existing generation');
+        return;
+      }
+      this.#database.prepare(`
+        INSERT INTO resource_sandboxes (id, root, generation, dev, ino, uid, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(input.id, input.root, input.generation, input.dev, input.ino, input.uid, new Date().toISOString());
+    });
+  }
+
+  registerResourceStorageObject(input: ResourceStorageObjectInput): void {
+    this.#assertOpen();
+    this.#database.prepare(`
+      INSERT INTO resource_storage_objects (
+        id, sandbox_id, path, dev, ino, uid, kind, state, retention, owned,
+        created_at, last_used_at, last_verified_at, logical_bytes, allocated_bytes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.id, input.sandboxId, input.path, input.dev, input.ino, input.uid,
+      input.kind, input.state, input.retention, input.owned ? 1 : 0,
+      input.createdAt, input.lastUsedAt, input.lastVerifiedAt, input.logicalBytes, input.allocatedBytes,
+    );
+  }
+
+  addResourceReference(input: ResourceReferenceInput): void {
+    this.#assertOpen();
+    this.transaction(() => {
+      const blocked = this.#database.prepare(`
+        SELECT 1 FROM resource_storage_objects o
+        WHERE o.id = ? AND (
+          o.state IN ('QUARANTINED', 'REMOVED') OR EXISTS (
+            SELECT 1 FROM resource_cleanup_leases l WHERE l.storage_object_id = o.id
+          )
+        )
+      `).get(input.storageObjectId);
+      if (blocked !== undefined) throw new Error('Resource reference cannot be acquired during or after cleanup');
+      this.#database.prepare(`
+        INSERT INTO resource_references (
+          id, storage_object_id, owner_type, owner_id, resource_name, created_at, released_at
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+      `).run(input.id, input.storageObjectId, input.ownerType, input.ownerId, input.resourceName, input.createdAt);
+    });
+  }
+
+  releaseResourceReference(id: string, releasedAt: string): boolean {
+    this.#assertOpen();
+    return this.#database.prepare(`
+      UPDATE resource_references SET released_at = ? WHERE id = ? AND released_at IS NULL
+    `).run(releasedAt, id).changes === 1;
+  }
+
+  listResourceGcEvidence(_now?: string): ResourceGcEvidenceRecord[] {
+    this.#assertOpen();
+    const rows = this.#database.prepare(`
+      SELECT o.*, s.root AS sandbox_root, s.generation AS sandbox_generation,
+        s.dev AS sandbox_dev, s.ino AS sandbox_ino, s.uid AS sandbox_uid,
+        COUNT(r.id) AS reference_count, l.token AS cleanup_lease_token
+      FROM resource_storage_objects o
+      JOIN resource_sandboxes s ON s.id = o.sandbox_id
+      LEFT JOIN resource_references r ON r.storage_object_id = o.id AND r.released_at IS NULL
+      LEFT JOIN resource_cleanup_leases l ON l.storage_object_id = o.id
+        AND julianday(l.expires_at) > julianday('now')
+      GROUP BY o.id
+      ORDER BY o.path, o.id
+    `).all() as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      id: row.id as string,
+      storageObjectId: row.id as string,
+      sandboxId: row.sandbox_id as string,
+      path: row.path as string,
+      dev: row.dev as number,
+      ino: row.ino as number,
+      uid: row.uid as number,
+      kind: row.kind as ResourceStorageObjectInput['kind'],
+      state: row.state as ResourceStorageObjectInput['state'],
+      retention: row.retention as ResourceStorageObjectInput['retention'],
+      owned: row.owned === 1,
+      createdAt: row.created_at as string,
+      lastUsedAt: row.last_used_at as string,
+      lastVerifiedAt: row.last_verified_at as string,
+      logicalBytes: row.logical_bytes as number,
+      allocatedBytes: row.allocated_bytes as number,
+      sandboxRoot: row.sandbox_root as string,
+      sandboxGeneration: row.sandbox_generation as string,
+      sandboxDev: row.sandbox_dev as number,
+      sandboxIno: row.sandbox_ino as number,
+      sandboxUid: row.sandbox_uid as number,
+      referenceCount: row.reference_count as number,
+      cleanupLeaseToken: row.cleanup_lease_token as string | null,
+    }));
+  }
+
+  acquireResourceCleanupLease(
+    input: ResourceCleanupLeaseRequest,
+    token: string,
+    ttlMs = 5 * 60_000,
+  ): boolean {
+    this.#assertOpen();
+    if (!Number.isFinite(ttlMs) || ttlMs <= 0) return false;
+    return this.transaction(() => {
+      this.#database.prepare(`
+        DELETE FROM resource_cleanup_leases
+        WHERE storage_object_id = ? AND julianday(expires_at) <= julianday('now')
+      `).run(input.storageObjectId);
+      const eligible = this.#database.prepare(`
+        SELECT o.id FROM resource_storage_objects o
+        JOIN resource_sandboxes s ON s.id = o.sandbox_id
+        WHERE o.id = ? AND o.sandbox_id = ? AND s.generation = ?
+          AND o.path = ? AND o.dev = ? AND o.ino = ? AND o.uid = ? AND o.kind = ?
+          AND o.state = ? AND o.retention = ?
+          AND o.owned = 1 AND o.retention = 'ephemeral'
+          AND o.state IN ('STALE', 'ORPHANED', 'QUARANTINED')
+          AND NOT EXISTS (
+            SELECT 1 FROM resource_references r
+            WHERE r.storage_object_id = o.id AND r.released_at IS NULL
+          )
+      `).get(
+        input.storageObjectId, input.sandboxId, input.sandboxGeneration,
+        input.path, input.dev, input.ino, input.uid, input.kind, input.state, input.retention,
+      );
+      if (eligible === undefined) return false;
+      try {
+        this.#database.prepare(`
+          INSERT INTO resource_cleanup_leases (
+            storage_object_id, token, sandbox_id, sandbox_generation, path, dev, ino, uid,
+            kind, previous_state, retention, acquired_at, expires_at
+          ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+            strftime('%Y-%m-%dT%H:%M:%fZ', julianday('now') + (? / 86400000.0))
+          )
+        `).run(
+          input.storageObjectId, token, input.sandboxId, input.sandboxGeneration, input.path,
+          input.dev, input.ino, input.uid, input.kind, input.state, input.retention, ttlMs,
+        );
+        this.#database.prepare(`
+          UPDATE resource_storage_objects SET state = 'QUARANTINED' WHERE id = ?
+        `).run(input.storageObjectId);
+        return true;
+      } catch (error) {
+        if (isConstraintError(error)) return false;
+        throw error;
+      }
+    });
+  }
+
+  renewResourceCleanupLease(input: ResourceCleanupLeaseRequest, token: string, ttlMs = 5 * 60_000): boolean {
+    this.#assertOpen();
+    if (!Number.isFinite(ttlMs) || ttlMs <= 0) return false;
+    return this.#database.prepare(`
+      UPDATE resource_cleanup_leases SET expires_at =
+        strftime('%Y-%m-%dT%H:%M:%fZ', julianday('now') + (? / 86400000.0))
+      WHERE storage_object_id = ? AND token = ? AND sandbox_id = ? AND sandbox_generation = ?
+        AND path = ? AND dev = ? AND ino = ? AND uid = ? AND kind = ? AND retention = ?
+        AND julianday(expires_at) > julianday('now')
+        AND EXISTS (
+          SELECT 1 FROM resource_storage_objects o
+          JOIN resource_sandboxes s ON s.id = o.sandbox_id
+          WHERE o.id = resource_cleanup_leases.storage_object_id
+            AND o.sandbox_id = resource_cleanup_leases.sandbox_id
+            AND s.generation = resource_cleanup_leases.sandbox_generation
+            AND o.path = resource_cleanup_leases.path AND o.dev = resource_cleanup_leases.dev
+            AND o.ino = resource_cleanup_leases.ino AND o.uid = resource_cleanup_leases.uid
+            AND o.kind = resource_cleanup_leases.kind AND o.retention = resource_cleanup_leases.retention
+            AND o.state = 'QUARANTINED' AND o.owned = 1
+            AND NOT EXISTS (
+              SELECT 1 FROM resource_references r
+              WHERE r.storage_object_id = o.id AND r.released_at IS NULL
+            )
+        )
+    `).run(
+      ttlMs, input.storageObjectId, token, input.sandboxId, input.sandboxGeneration,
+      input.path, input.dev, input.ino, input.uid, input.kind, input.retention,
+    ).changes === 1;
+  }
+
+  releaseResourceCleanupLease(storageObjectId: string, token: string, preserveReservation = false): boolean {
+    this.#assertOpen();
+    return this.transaction(() => {
+      if (!preserveReservation) this.#database.prepare(`
+        UPDATE resource_storage_objects SET state = (
+          SELECT previous_state FROM resource_cleanup_leases l
+          WHERE l.storage_object_id = resource_storage_objects.id AND l.token = ?
+        )
+        WHERE id = ? AND state = 'QUARANTINED' AND EXISTS (
+          SELECT 1 FROM resource_cleanup_leases l
+          WHERE l.storage_object_id = resource_storage_objects.id AND l.token = ?
+        )
+      `).run(token, storageObjectId, token);
+      return this.#database.prepare(`
+        DELETE FROM resource_cleanup_leases WHERE storage_object_id = ? AND token = ?
+      `).run(storageObjectId, token).changes === 1;
+    });
+  }
+
+  finalizeResourceCleanup(storageObjectId: string, token: string): boolean {
+    this.#assertOpen();
+    return this.transaction(() => {
+      const updated = this.#database.prepare(`
+        UPDATE resource_storage_objects SET state = 'REMOVED'
+        WHERE id = ? AND owned = 1 AND retention = 'ephemeral' AND state = 'QUARANTINED' AND EXISTS (
+          SELECT 1 FROM resource_cleanup_leases l
+          JOIN resource_sandboxes s ON s.id = resource_storage_objects.sandbox_id
+          WHERE l.storage_object_id = resource_storage_objects.id AND l.token = ?
+            AND l.sandbox_id = resource_storage_objects.sandbox_id
+            AND l.sandbox_generation = s.generation
+            AND l.path = resource_storage_objects.path AND l.dev = resource_storage_objects.dev
+            AND l.ino = resource_storage_objects.ino AND l.uid = resource_storage_objects.uid
+            AND l.kind = resource_storage_objects.kind AND l.retention = resource_storage_objects.retention
+            AND julianday(l.expires_at) > julianday('now')
+        ) AND NOT EXISTS (
+          SELECT 1 FROM resource_references r
+          WHERE r.storage_object_id = resource_storage_objects.id AND r.released_at IS NULL
+        )
+      `).run(storageObjectId, token).changes === 1;
+      if (!updated) return false;
+      this.releaseResourceCleanupLease(storageObjectId, token);
+      return true;
+    });
+  }
+
+  finalizeResourceCleanupJournal(input: ResourceGcJournalInput, token: string): boolean {
+    this.#assertOpen();
+    if (input.phase !== 'finalized') throw new Error('Atomic resource cleanup finalization requires finalized journal evidence');
+    return this.transaction(() => {
+      const row = this.#database.prepare(`
+        SELECT * FROM resource_gc_journal WHERE operation_id = ?
+      `).get(input.operationId) as Record<string, unknown> | undefined;
+      if (row === undefined || !journalRowMatchesFinalization(row, input)
+        || (row.phase !== 'prepared' && row.phase !== 'deleted' && row.phase !== 'finalized')) return false;
+
+      const updated = this.#database.prepare(`
+        UPDATE resource_storage_objects SET state = 'REMOVED'
+        WHERE id = ? AND sandbox_id = ? AND path = ? AND dev = ? AND ino = ? AND uid = ? AND kind = ?
+          AND owned = 1 AND retention = 'ephemeral' AND state = 'QUARANTINED'
+          AND EXISTS (
+            SELECT 1 FROM resource_sandboxes s
+            WHERE s.id = resource_storage_objects.sandbox_id AND s.generation = ?
+          )
+          AND EXISTS (
+            SELECT 1 FROM resource_cleanup_leases l
+            WHERE l.storage_object_id = resource_storage_objects.id AND l.token = ?
+              AND l.sandbox_id = resource_storage_objects.sandbox_id AND l.sandbox_generation = ?
+              AND l.path = resource_storage_objects.path AND l.dev = resource_storage_objects.dev
+              AND l.ino = resource_storage_objects.ino AND l.uid = resource_storage_objects.uid
+              AND l.kind = resource_storage_objects.kind AND l.retention = resource_storage_objects.retention
+              AND julianday(l.expires_at) > julianday('now')
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM resource_references r
+            WHERE r.storage_object_id = resource_storage_objects.id AND r.released_at IS NULL
+          )
+      `).run(
+        input.storageObjectId, input.sandboxId, input.originalPath, input.dev, input.ino, input.uid, input.kind,
+        input.sandboxGeneration, token, input.sandboxGeneration,
+      ).changes === 1;
+
+      if (!updated) {
+        const alreadyRemoved = this.#database.prepare(`
+          SELECT 1 FROM resource_storage_objects o
+          JOIN resource_sandboxes s ON s.id = o.sandbox_id
+          WHERE o.id = ? AND o.sandbox_id = ? AND s.generation = ?
+            AND o.path = ? AND o.dev = ? AND o.ino = ? AND o.uid = ? AND o.kind = ?
+            AND o.owned = 1 AND o.retention = 'ephemeral' AND o.state = 'REMOVED'
+            AND NOT EXISTS (
+              SELECT 1 FROM resource_references r
+              WHERE r.storage_object_id = o.id AND r.released_at IS NULL
+            )
+        `).get(
+          input.storageObjectId, input.sandboxId, input.sandboxGeneration,
+          input.originalPath, input.dev, input.ino, input.uid, input.kind,
+        );
+        if (alreadyRemoved === undefined) return false;
+      }
+
+      const journalUpdated = this.#database.prepare(`
+        UPDATE resource_gc_journal SET phase = 'finalized', updated_at = ?
+        WHERE operation_id = ? AND phase = ?
+      `).run(new Date().toISOString(), input.operationId, row.phase).changes === 1;
+      if (!journalUpdated) throw new Error('Atomic resource cleanup journal finalization lost its exact row');
+      this.#database.prepare(`
+        DELETE FROM resource_cleanup_leases WHERE storage_object_id = ? AND token = ?
+      `).run(input.storageObjectId, token);
+      return true;
+    });
+  }
+
+  recordResourceGcJournal(input: ResourceGcJournalInput): void {
+    this.#assertOpen();
+    const order = { prepared: 0, linked: 1, unlinking: 2, quarantined: 3, deleting: 4, deleted: 5, finalized: 6 } as const;
+    const current = this.#database.prepare(`
+      SELECT phase FROM resource_gc_journal WHERE operation_id = ?
+    `).get(input.operationId) as { phase: ResourceGcJournalInput['phase'] } | undefined;
+    if (current !== undefined && order[input.phase] < order[current.phase]) {
+      throw new Error('Resource GC journal phase may not move backward');
+    }
+    this.#database.prepare(`
+      INSERT INTO resource_gc_journal (
+        operation_id, storage_object_id, phase, original_path, quarantine_path,
+        quarantine_container_path, quarantine_container_dev, quarantine_container_ino,
+        quarantine_container_uid, quarantine_container_mode,
+        dev, ino, uid, sandbox_id, sandbox_generation, kind, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (operation_id) DO UPDATE SET
+        phase = excluded.phase, quarantine_path = excluded.quarantine_path,
+        quarantine_container_path = excluded.quarantine_container_path,
+        quarantine_container_dev = excluded.quarantine_container_dev,
+        quarantine_container_ino = excluded.quarantine_container_ino,
+        quarantine_container_uid = excluded.quarantine_container_uid,
+        quarantine_container_mode = excluded.quarantine_container_mode,
+        updated_at = excluded.updated_at
+    `).run(
+      input.operationId, input.storageObjectId, input.phase, input.originalPath,
+      input.quarantinePath,
+      input.quarantineContainer?.path ?? null, input.quarantineContainer?.dev ?? null,
+      input.quarantineContainer?.ino ?? null, input.quarantineContainer?.uid ?? null,
+      input.quarantineContainer?.mode ?? null,
+      input.dev, input.ino, input.uid, input.sandboxId,
+      input.sandboxGeneration, input.kind, new Date().toISOString(),
+    );
+  }
+
+  listResourceGcJournal(): ResourceGcJournalInput[] {
+    this.#assertOpen();
+    const rows = this.#database.prepare(`
+      SELECT * FROM resource_gc_journal ORDER BY updated_at, operation_id
+    `).all() as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      operationId: row.operation_id as string,
+      storageObjectId: row.storage_object_id as string,
+      phase: row.phase as ResourceGcJournalInput['phase'],
+      originalPath: row.original_path as string,
+      quarantinePath: row.quarantine_path as string | null,
+      dev: row.dev as number,
+      ino: row.ino as number,
+      uid: row.uid as number,
+      sandboxId: row.sandbox_id as string,
+      sandboxGeneration: row.sandbox_generation as string,
+      kind: row.kind as ResourceStorageObjectInput['kind'],
+      quarantineContainer: row.quarantine_container_path === null ? null : {
+        path: row.quarantine_container_path as string,
+        dev: row.quarantine_container_dev as number,
+        ino: row.quarantine_container_ino as number,
+        uid: row.quarantine_container_uid as number,
+        mode: row.quarantine_container_mode as number,
+      },
+    }));
   }
 
   allocateEndpoint(input: EndpointRequest, probe?: EndpointAvailabilityProbe): EndpointLease {
@@ -736,6 +1116,9 @@ export class SQLiteStateStore implements StateStore {
       managedProcessReservationsMigration,
       managedProcessReservationLeasesMigration,
       managedProcessCleanupOwnershipMigration,
+      resourceLifecycleMigration,
+      resourceGcDeletingPhaseMigration,
+      resourceGcContainerIdentityMigration,
     ];
     this.#database.transaction(() => {
       const applied = this.#database.prepare('SELECT version FROM schema_migrations WHERE version = ?');
@@ -788,4 +1171,18 @@ function isConstraintError(error: unknown): boolean {
     && 'code' in error
     && typeof error.code === 'string'
     && error.code.startsWith('SQLITE_CONSTRAINT');
+}
+
+function journalRowMatchesFinalization(row: Record<string, unknown>, input: ResourceGcJournalInput): boolean {
+  const container = input.quarantineContainer;
+  return row.operation_id === input.operationId && row.storage_object_id === input.storageObjectId
+    && row.original_path === input.originalPath && row.quarantine_path === input.quarantinePath
+    && row.dev === input.dev && row.ino === input.ino && row.uid === input.uid
+    && row.sandbox_id === input.sandboxId && row.sandbox_generation === input.sandboxGeneration
+    && row.kind === input.kind
+    && row.quarantine_container_path === (container?.path ?? null)
+    && row.quarantine_container_dev === (container?.dev ?? null)
+    && row.quarantine_container_ino === (container?.ino ?? null)
+    && row.quarantine_container_uid === (container?.uid ?? null)
+    && row.quarantine_container_mode === (container?.mode ?? null);
 }

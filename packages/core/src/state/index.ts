@@ -25,4 +25,12 @@ export type {
   WorkspaceScope,
   WorktreeRecord,
   WorktreeState,
+  ResourceGcEvidenceRecord,
+  ResourceCleanupLeaseRequest,
+  ResourceGcJournalInput,
+  ResourceGcJournalPhase,
+  ResourceLifecycleStore,
+  ResourceReferenceInput,
+  ResourceSandboxInput,
+  ResourceStorageObjectInput,
 } from './store';

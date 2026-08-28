@@ -60,11 +60,11 @@ export const adapterResourceSchema = z.object({
 }).strict();
 
 export const adapterActionSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('ensure-directory'), path: z.string().min(1) }).strict(),
-  z.object({ type: z.literal('symlink'), source: z.string().min(1), target: z.string().min(1) }).strict(),
-  z.object({ type: z.literal('copy'), source: z.string().min(1), target: z.string().min(1) }).strict(),
-  z.object({ type: z.literal('clone'), source: z.string().min(1), target: z.string().min(1) }).strict(),
-  z.object({ type: z.literal('write-generated-file'), path: z.string().min(1), contents: z.string() }).strict(),
+  z.object({ type: z.literal('ensure-directory'), resource: z.string().min(1), path: z.string().min(1) }).strict(),
+  z.object({ type: z.literal('symlink'), resource: z.string().min(1), source: z.string().min(1), target: z.string().min(1) }).strict(),
+  z.object({ type: z.literal('copy'), resource: z.string().min(1), source: z.string().min(1), target: z.string().min(1) }).strict(),
+  z.object({ type: z.literal('clone'), resource: z.string().min(1), source: z.string().min(1), target: z.string().min(1) }).strict(),
+  z.object({ type: z.literal('write-generated-file'), resource: z.string().min(1), path: z.string().min(1), contents: z.string() }).strict(),
   z.object({ type: z.literal('reserve-endpoint'), name: z.string().min(1) }).strict(),
   z.object({
     type: z.literal('exec'), argv: z.array(z.string()).min(1), cwd: z.string().min(1).optional(),
@@ -101,7 +101,27 @@ export const adapterPlanSchema = z.object({
   actions: z.array(adapterActionSchema),
   capabilities: z.record(z.string().min(1), z.object({ action: z.string().min(1) }).strict()),
   tasks: z.record(z.string().min(1), adapterTaskSchema).default({}),
-}).strict();
+}).strict().superRefine((plan, context) => {
+  const seen = new Set<string>();
+  plan.resources.forEach((resource, index) => {
+    if (seen.has(resource.name)) {
+      context.addIssue({
+        code: 'custom', path: ['resources', index, 'name'],
+        message: 'declared resource names must be unique',
+      });
+    }
+    seen.add(resource.name);
+  });
+  const declared = new Set(plan.resources.map((resource) => resource.name));
+  plan.actions.forEach((action, index) => {
+    if (!('resource' in action) || declared.has(action.resource)) return;
+    context.addIssue({
+      code: 'custom',
+      path: ['actions', index, 'resource'],
+      message: 'filesystem mutation resource must identify one declared resource',
+    });
+  });
+});
 
 export const adapterPlanResponseSchema = adapterPlanSchema;
 

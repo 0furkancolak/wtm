@@ -50,6 +50,10 @@ export type {
   RuntimeDaemonClient,
 } from './commands/exec';
 export { runDaemonLifecycleCommand, serveDaemon } from './commands/daemon';
+export { runDiskCommand } from './commands/disk';
+export type { DiskCommandEnvelope, DiskCommandInput, DiskCommandResult, DiskUsageSummary } from './commands/disk';
+export { runGcCommand } from './commands/gc';
+export type { GcCommandEnvelope, GcCommandInput, GcCommandResult } from './commands/gc';
 export type {
   DaemonLifecycleAction,
   DaemonServeDependencies,

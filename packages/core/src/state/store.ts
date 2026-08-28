@@ -185,3 +185,101 @@ export interface StateRegistrationReader {
 }
 
 export type DaemonStateStore = StateStore & StateRegistrationReader;
+
+export interface ResourceSandboxInput {
+  id: string;
+  root: string;
+  generation: string;
+  dev: number;
+  ino: number;
+  uid: number;
+}
+
+export interface ResourceStorageObjectInput {
+  id: string;
+  sandboxId: string;
+  path: string;
+  dev: number;
+  ino: number;
+  uid: number;
+  kind: 'file' | 'directory';
+  state: 'READY' | 'STALE' | 'ORPHANED' | 'QUARANTINED' | 'REMOVED';
+  retention: 'ephemeral' | 'persistent';
+  owned: boolean;
+  createdAt: string;
+  lastUsedAt: string;
+  lastVerifiedAt: string;
+  logicalBytes: number;
+  allocatedBytes: number;
+}
+
+export interface ResourceReferenceInput {
+  id: string;
+  storageObjectId: string;
+  ownerType: string;
+  ownerId: string;
+  resourceName: string;
+  createdAt: string;
+}
+
+export interface ResourceCleanupLeaseRequest {
+  storageObjectId: string;
+  sandboxId: string;
+  sandboxGeneration: string;
+  path: string;
+  dev: number;
+  ino: number;
+  uid: number;
+  kind: ResourceStorageObjectInput['kind'];
+  state: ResourceStorageObjectInput['state'];
+  retention: ResourceStorageObjectInput['retention'];
+}
+
+export interface ResourceGcEvidenceRecord extends ResourceStorageObjectInput {
+  storageObjectId: string;
+  sandboxRoot: string;
+  sandboxGeneration: string;
+  sandboxDev: number;
+  sandboxIno: number;
+  sandboxUid: number;
+  referenceCount: number;
+  cleanupLeaseToken: string | null;
+}
+
+export type ResourceGcJournalPhase = 'prepared' | 'linked' | 'unlinking' | 'quarantined' | 'deleting' | 'deleted' | 'finalized';
+
+export interface ResourceGcJournalInput {
+  operationId: string;
+  storageObjectId: string;
+  phase: ResourceGcJournalPhase;
+  originalPath: string;
+  quarantinePath: string | null;
+  dev: number;
+  ino: number;
+  uid: number;
+  sandboxId: string;
+  sandboxGeneration: string;
+  kind: ResourceStorageObjectInput['kind'];
+  quarantineContainer: {
+    path: string;
+    dev: number;
+    ino: number;
+    uid: number;
+    mode: number;
+  } | null;
+}
+
+export interface ResourceLifecycleStore {
+  upsertResourceSandbox(input: ResourceSandboxInput): void;
+  registerResourceStorageObject(input: ResourceStorageObjectInput): void;
+  addResourceReference(input: ResourceReferenceInput): void;
+  releaseResourceReference(id: string, releasedAt: string): boolean;
+  listResourceGcEvidence(now?: string): ResourceGcEvidenceRecord[];
+  acquireResourceCleanupLease(input: ResourceCleanupLeaseRequest, token: string, ttlMs?: number): boolean;
+  renewResourceCleanupLease(input: ResourceCleanupLeaseRequest, token: string, ttlMs?: number): boolean;
+  releaseResourceCleanupLease(storageObjectId: string, token: string, preserveReservation?: boolean): boolean;
+  finalizeResourceCleanup(storageObjectId: string, token: string): boolean;
+  finalizeResourceCleanupJournal(input: ResourceGcJournalInput, token: string): boolean;
+  recordResourceGcJournal(input: ResourceGcJournalInput): void;
+  listResourceGcJournal(): ResourceGcJournalInput[];
+}

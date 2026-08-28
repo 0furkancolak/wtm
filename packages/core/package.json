@@ -9,7 +9,10 @@
     "./templates": "./src/templates/resolve.ts",
     "./state": "./src/state/index.ts",
     "./workspace": "./src/workspace/index.ts",
-    "./analysis": "./src/analysis/worktree-analysis.ts"
+    "./analysis": "./src/analysis/worktree-analysis.ts",
+    "./resources/guard": "./src/resources/guard.ts",
+    "./resources/materializer": "./src/resources/materializer.ts",
+    "./resources/gc": "./src/resources/gc.ts"
   },
   "dependencies": {
     "@wtm/protocol": "workspace:*"

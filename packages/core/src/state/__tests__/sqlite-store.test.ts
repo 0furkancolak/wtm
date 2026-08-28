@@ -135,7 +135,7 @@ describe('SQLiteStateStore', () => {
       activeAfterStop: null,
       orderedStates: ['STOPPED', 'FAILED'],
       rejectedSecondActiveSingleton: true,
-      migrationVersions: [1, 2, 3, 4, 5],
+      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8],
     });
   });
 
@@ -182,7 +182,7 @@ describe('SQLiteStateStore', () => {
       tieWinner: 'tie-z',
       tieLoserCleanupRequired: false,
       leaseSurvivedExpiry: true,
-      migrationVersions: [1, 2, 3, 4, 5],
+      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8],
     });
   });
 });
