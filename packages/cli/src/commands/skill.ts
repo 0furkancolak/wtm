@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { filesystemSkillAssets, type SkillAssetProvider } from '../assets';
+
+export { canonicalSkillPathForModule } from '../assets';
 
 export type SkillInstallScope = 'local' | 'global';
 
@@ -46,29 +48,8 @@ export interface SkillInstallResult {
   path: string;
 }
 
-export async function readCanonicalSkill(): Promise<string> {
-  const path = canonicalSkillPathForModule(import.meta.url);
-  try {
-    return await readFile(path, 'utf8');
-  } catch (error) {
-    if (!isMissingFile(error)) throw error;
-    throw new Error('The canonical WTM Agent Skill is missing from this installation.');
-  }
-}
-
-export function canonicalSkillPathForModule(moduleUrl: string): string {
-  const moduleDirectory = dirname(fileURLToPath(moduleUrl));
-  const sourceDirectory = dirname(moduleDirectory);
-  const cliDirectory = dirname(sourceDirectory);
-  const packagesDirectory = dirname(cliDirectory);
-  if (basename(moduleDirectory) === 'commands' && basename(sourceDirectory) === 'src'
-    && basename(cliDirectory) === 'cli' && basename(packagesDirectory) === 'packages') {
-    return resolve(packagesDirectory, '..', 'skills', 'wtm', 'SKILL.md');
-  }
-  if (basename(moduleDirectory) === 'cli' && basename(dirname(moduleDirectory)) === 'dist') {
-    return join(moduleDirectory, 'skills', 'wtm', 'SKILL.md');
-  }
-  throw new Error('The WTM Agent Skill runtime layout is unsupported.');
+export async function readCanonicalSkill(provider: SkillAssetProvider = filesystemSkillAssets): Promise<string> {
+  return provider.readCanonicalSkill();
 }
 
 export function createFilesystemSkillInstaller(locations: FilesystemSkillLocations): SkillInstaller {

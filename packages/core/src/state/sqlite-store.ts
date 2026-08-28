@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import type { GitWorktreeRecord } from '../git/worktree-parser';
+import { filesystemMigrationAssets, type MigrationAssetProvider } from './assets';
 import type {
   AdapterTrustInput,
   AdapterTrustRecord,
@@ -102,39 +102,6 @@ interface ManagedProcessRow {
   cleanup_owner_token: string | null;
 }
 
-const initialMigration = readFileSync(
-  new URL('./migrations/001-initial.sql', import.meta.url),
-  'utf8',
-);
-const managedProcessIndexesMigration = readFileSync(
-  new URL('./migrations/002-managed-process-indexes.sql', import.meta.url),
-  'utf8',
-);
-const managedProcessReservationsMigration = readFileSync(
-  new URL('./migrations/003-managed-process-reservations.sql', import.meta.url),
-  'utf8',
-);
-const managedProcessReservationLeasesMigration = readFileSync(
-  new URL('./migrations/004-managed-process-reservation-leases.sql', import.meta.url),
-  'utf8',
-);
-const managedProcessCleanupOwnershipMigration = readFileSync(
-  new URL('./migrations/005-managed-process-cleanup-ownership.sql', import.meta.url),
-  'utf8',
-);
-const resourceLifecycleMigration = readFileSync(
-  new URL('./migrations/006-resource-lifecycle.sql', import.meta.url),
-  'utf8',
-);
-const resourceGcDeletingPhaseMigration = readFileSync(
-  new URL('./migrations/007-resource-gc-deleting-phase.sql', import.meta.url),
-  'utf8',
-);
-const resourceGcContainerIdentityMigration = readFileSync(
-  new URL('./migrations/008-resource-gc-container-identity.sql', import.meta.url),
-  'utf8',
-);
-
 function workspaceFromRow(row: WorkspaceRow): WorkspaceRecord {
   return {
     id: row.id,
@@ -226,11 +193,16 @@ function compareWorktreePaths(mainRoot: string) {
   };
 }
 
+export interface SQLiteStateStoreOptions {
+  readonly?: boolean;
+  migrationAssets?: MigrationAssetProvider;
+}
+
 export class SQLiteStateStore implements StateStore {
   readonly #database: Database.Database;
   #closed = false;
 
-  constructor(path: string, options: { readonly?: boolean } = {}) {
+  constructor(path: string, options: SQLiteStateStoreOptions = {}) {
     this.#database = new Database(path, options.readonly === true ? { readonly: true, fileMustExist: true } : undefined);
     try {
       this.#database.pragma('foreign_keys = ON');
@@ -238,7 +210,7 @@ export class SQLiteStateStore implements StateStore {
         this.#database.pragma('journal_mode = WAL');
       }
       this.#database.pragma('busy_timeout = 5000');
-      if (options.readonly !== true) this.#migrate();
+      if (options.readonly !== true) this.#migrate(options.migrationAssets ?? filesystemMigrationAssets);
     } catch (error) {
       try {
         this.#database.close();
@@ -1150,23 +1122,14 @@ export class SQLiteStateStore implements StateStore {
     return managedProcessFromRow(row);
   }
 
-  #migrate(): void {
+  #migrate(migrationAssets: MigrationAssetProvider): void {
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         version INTEGER PRIMARY KEY,
         applied_at TEXT NOT NULL
       )
     `);
-    const migrations = [
-      initialMigration,
-      managedProcessIndexesMigration,
-      managedProcessReservationsMigration,
-      managedProcessReservationLeasesMigration,
-      managedProcessCleanupOwnershipMigration,
-      resourceLifecycleMigration,
-      resourceGcDeletingPhaseMigration,
-      resourceGcContainerIdentityMigration,
-    ];
+    const migrations = migrationAssets.readMigrations();
     this.#database.transaction(() => {
       const applied = this.#database.prepare('SELECT version FROM schema_migrations WHERE version = ?');
       const record = this.#database.prepare(
