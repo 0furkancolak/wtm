@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import Database from 'better-sqlite3';
 import type { GitWorktreeRecord } from '../git/worktree-parser';
 import { filesystemMigrationAssets, type MigrationAssetProvider } from './assets';
+import { betterSqliteDatabaseFactory } from './better-sqlite-driver';
+import type { SqliteDatabase, SqliteDatabaseFactory } from './database';
 import type {
   AdapterTrustInput,
   AdapterTrustRecord,
@@ -196,14 +197,17 @@ function compareWorktreePaths(mainRoot: string) {
 export interface SQLiteStateStoreOptions {
   readonly?: boolean;
   migrationAssets?: MigrationAssetProvider;
+  databaseFactory?: SqliteDatabaseFactory;
 }
 
 export class SQLiteStateStore implements StateStore {
-  readonly #database: Database.Database;
+  readonly #database: SqliteDatabase;
   #closed = false;
 
   constructor(path: string, options: SQLiteStateStoreOptions = {}) {
-    this.#database = new Database(path, options.readonly === true ? { readonly: true, fileMustExist: true } : undefined);
+    this.#database = (options.databaseFactory ?? betterSqliteDatabaseFactory)(path, {
+      readonly: options.readonly === true,
+    });
     try {
       this.#database.pragma('foreign_keys = ON');
       if (options.readonly !== true && path !== ':memory:' && !path.startsWith('file::memory:')) {
