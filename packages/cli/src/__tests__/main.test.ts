@@ -60,7 +60,38 @@ describe('Commander CLI', () => {
 
     expect(cli.commands.map((command) => command.name())).toEqual([
       'status', 'doctor', 'explain', 'plan', 'env', 'ports',
-      'start', 'stop', 'restart', 'ps', 'logs', 'exec', 'daemon', 'disk', 'gc', 'adapter', 'init', 'skill',
+      'resolve', 'analyze', 'remove', 'start', 'stop', 'restart', 'ps', 'logs', 'exec',
+      'daemon', 'disk', 'gc', 'adapter', 'init', 'skill',
+    ]);
+  });
+
+  test('routes resolve, analyze, and remove through their production parser boundaries', async () => {
+    const calls: Array<{ command: string; input: unknown }> = [];
+    const ok = (command: string) => ({
+      schemaVersion: 1 as const, ok: true as const, command,
+      scope: { mode: 'local' as const }, data: null, warnings: [], errors: [],
+    });
+
+    for (const testCase of [
+      { argv: ['resolve', 'dev', '--json'], command: 'resolve' },
+      { argv: ['analyze', '../linked', '--json'], command: 'analyze' },
+      { argv: ['remove', '../linked', '--json'], command: 'remove' },
+    ]) {
+      const output = capture();
+      expect(await runCli(testCase.argv, {
+        cwd: '/workspace/repo',
+        resolveRunner: async (input) => { calls.push({ command: 'resolve', input }); return ok('resolve'); },
+        analyzeRunner: async (input) => { calls.push({ command: 'analyze', input }); return ok('analyze'); },
+        removeRunner: async (input) => { calls.push({ command: 'remove', input }); return ok('remove'); },
+        ...output.io,
+      })).toBe(0);
+      expect(JSON.parse(output.stdout()).command).toBe(testCase.command);
+    }
+
+    expect(calls).toEqual([
+      { command: 'resolve', input: { cwd: '/workspace/repo', taskName: 'dev' } },
+      { command: 'analyze', input: { repoPath: '/workspace/repo', selector: '../linked' } },
+      { command: 'remove', input: { repoPath: '/workspace/repo', selector: '../linked' } },
     ]);
   });
 

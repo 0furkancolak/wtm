@@ -62,6 +62,30 @@ describe('StructuralWatcher', () => {
     expect(watches.every(({ closed }) => closed)).toBe(true);
   });
 
+  test('an ordinary thousand-file source edit storm schedules zero adapter discovery work', async () => {
+    expect(watcherModule).not.toBeNull();
+    if (watcherModule === null) return;
+    let listener!: CapturedWatch['listener'];
+    let scheduled = 0;
+    const watcher = new watcherModule.StructuralWatcher({
+      registrations: [{ workspaceRoot: '/registered', repositories: [{
+        mainRoot: '/registered/repo', commonGitDir: '/registered/repo/.git', worktreePaths: [],
+      }] }],
+      schedule: () => { scheduled += 1; },
+      fingerprint: async () => 'stable',
+      watchFactory: (root, _options, captured) => {
+        if (root === '/registered/repo') listener = captured;
+        return { close() {}, onError: () => () => {} };
+      },
+    });
+    await watcher.start();
+    for (let index = 0; index < 1_000; index += 1) listener('change', `src/module-${index}.ts`);
+    await watcher.whenIdle();
+    await watcher.close();
+
+    expect(scheduled).toBe(0);
+  });
+
   test('uses a lightweight fingerprint when filename is absent', async () => {
     expect(watcherModule).not.toBeNull();
     if (watcherModule === null) return;

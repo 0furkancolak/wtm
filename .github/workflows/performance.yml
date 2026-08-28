@@ -1,0 +1,26 @@
+name: Performance
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  release-budgets:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: bun install --frozen-lockfile
+      - run: bun run test:perf
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wtm-performance-${{ github.sha }}
+          path: artifacts/performance.json
+          if-no-files-found: error

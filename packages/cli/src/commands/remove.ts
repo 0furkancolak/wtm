@@ -1,4 +1,4 @@
-import { isAbsolute } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import {
   listGitWorktrees,
@@ -102,7 +102,7 @@ function analysisContext(
 async function resolveExplicitSelector(input: RemoveCommandInput): Promise<GitWorktreeRecord> {
   if (input.selector.trim().length === 0) throw new WorktreeSelectorError(input);
   const topology = await listGitWorktrees(input.repoPath);
-  const canonicalPath = await canonicalSelectorPath(input.selector);
+  const canonicalPath = await canonicalSelectorPath(input.repoPath, input.selector);
   const fullBranchRef = input.selector.startsWith('refs/heads/')
     ? input.selector
     : `refs/heads/${input.selector}`;
@@ -119,10 +119,9 @@ async function resolveExplicitSelector(input: RemoveCommandInput): Promise<GitWo
   return matches[0];
 }
 
-async function canonicalSelectorPath(selector: string): Promise<string | null> {
-  if (!isAbsolute(selector)) return null;
+async function canonicalSelectorPath(repoPath: string, selector: string): Promise<string | null> {
   try {
-    return await realpath(selector);
+    return await realpath(isAbsolute(selector) ? selector : resolve(repoPath, selector));
   } catch {
     return null;
   }

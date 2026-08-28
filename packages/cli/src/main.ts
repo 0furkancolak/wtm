@@ -2,8 +2,10 @@ import { Command, CommanderError, InvalidArgumentError, Option } from 'commander
 import { constants } from 'node:os';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import type { JsonEnvelope, WtmErrorCode } from '@wtm/protocol';
+import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
 import type { AdapterTrustStore } from '@wtm/core';
+import { listGitWorktrees, resolveWorkspaceConfig, SQLiteStateStore } from '@wtm/core';
+import type { GitWorktreeRecord } from '@wtm/core';
 import {
   createLaunchdLifecycle,
   createProductionDaemon,
@@ -38,6 +40,10 @@ import {
 } from './commands/daemon';
 import { runProductionDiskCommand, runProductionGcCommand } from './commands/resource-production';
 import { runAdapterCommand } from './commands/adapter';
+import { runAnalyzeCommand } from './commands/analyze';
+import { runRemoveCommand } from './commands/remove';
+import { toGitSafetyError } from './commands/git-error';
+import { runResolveCommand } from './commands/resolve';
 import {
   runProductionInitCommand,
   type ProductionInitCommandInput,
@@ -71,6 +77,10 @@ export interface CliDependencies {
   initRunner?: (input: ProductionInitCommandInput) => ReturnType<typeof runProductionInitCommand>;
   initDatabasePath?: string;
   initUserDataDir?: string;
+  analysisDatabasePath?: string;
+  resolveRunner?: (input: { cwd: string; taskName: string }) => Promise<JsonEnvelope<unknown>>;
+  analyzeRunner?: (input: { repoPath: string; selector?: string }) => Promise<JsonEnvelope<unknown>>;
+  removeRunner?: (input: { repoPath: string; selector: string }) => Promise<JsonEnvelope<unknown>>;
 }
 
 interface CliHooks {
@@ -127,6 +137,48 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       hooks.setExitCode?.(exitCodeForEnvelope(envelope));
     });
   }
+
+  const resolveTaskCommand = program.command('resolve <task>').description('Resolve a task without running it.');
+  addJsonOption(resolveTaskCommand);
+  resolveTaskCommand.action(async (taskName: string, options: ScopeOptions) => {
+    const envelope = dependencies.resolveRunner === undefined
+      ? await runProductionResolve({ cwd, taskName })
+      : await dependencies.resolveRunner({ cwd, taskName });
+    renderRuntime(envelope, runtimeJson(program, options));
+  });
+
+  const analyze = program.command('analyze [selector]').description('Analyze worktree removal safety.');
+  addScopeOptions(analyze);
+  analyze.option('--all', 'analyze every worktree in the current repository');
+  analyze.option('--cleanup-candidates', 'analyze linked worktrees that may be cleanup candidates');
+  analyze.action(async (selector: string | undefined, options: ScopeOptions & { all?: boolean; cleanupCandidates?: boolean }) => {
+    const input = { repoPath: cwd, ...(selector === undefined ? {} : { selector }) };
+    const envelope = dependencies.analyzeRunner === undefined
+      ? await runProductionAnalyze({
+        cwd,
+        ...(selector === undefined ? {} : { selector }),
+        global: options.global === true || program.opts<ScopeOptions>().global === true,
+        all: options.all === true,
+        cleanupCandidates: options.cleanupCandidates === true,
+        databasePath: dependencies.analysisDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+      })
+      : await dependencies.analyzeRunner(input);
+    renderRuntime(envelope, runtimeJson(program, options));
+  });
+
+  const remove = program.command('remove <selector>').description('Safely remove one linked worktree.');
+  addJsonOption(remove);
+  remove.action(async (selector: string, options: ScopeOptions) => {
+    const input = { repoPath: cwd, selector };
+    const envelope = dependencies.removeRunner === undefined
+      ? await runProductionRemove({
+        cwd,
+        selector,
+        databasePath: dependencies.analysisDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+      })
+      : await dependencies.removeRunner(input);
+    renderRuntime(envelope, runtimeJson(program, options));
+  });
 
   const renderRuntime = (envelope: JsonEnvelope<unknown>, json: boolean) => {
     stdout(`${renderEnvelope(envelope, { json })}\n`);
@@ -337,6 +389,242 @@ function defaultPortableSkillInstaller(fallbackWorkspaceRoot: string): SkillInst
       }).install(request);
     },
   };
+}
+
+async function runProductionAnalyze(input: {
+  cwd: string;
+  selector?: string;
+  global: boolean;
+  all: boolean;
+  cleanupCandidates: boolean;
+  databasePath: string;
+}): Promise<JsonEnvelope<unknown>> {
+  if (input.selector !== undefined && (input.global || input.all || input.cleanupCandidates)) {
+    return analysisFailure(
+      'WTM_CONFIG_INVALID', 'A selector cannot be combined with an aggregate analysis mode.', input.global,
+    );
+  }
+  if ([input.global, input.all, input.cleanupCandidates].filter(Boolean).length > 1) {
+    return analysisFailure('WTM_CONFIG_INVALID', 'Only one aggregate analysis mode may be selected.', input.global);
+  }
+  const selected: Array<{ repoPath: string; record: GitWorktreeRecord }> = [];
+  let store: SQLiteStateStore | null = null;
+  try {
+    if (input.global || /^\d+$/.test(input.selector ?? '')) {
+      try {
+        store = new SQLiteStateStore(input.databasePath, { readonly: true });
+      } catch {
+        return stateFailure('analyze', input.global);
+      }
+    }
+    if (input.global) {
+      let repositories;
+      try {
+        repositories = store?.listRepositories() ?? [];
+      } catch {
+        return stateFailure('analyze', true);
+      }
+      for (const repository of repositories) {
+        let topology: GitWorktreeRecord[];
+        try {
+          topology = await listGitWorktrees(repository.mainRoot);
+        } catch (error) {
+          return operationFailure('analyze', true, toGitSafetyError(error, 'analyze'));
+        }
+        for (const record of topology) selected.push({ repoPath: repository.mainRoot, record });
+      }
+    } else {
+      let topology: GitWorktreeRecord[];
+      try {
+        topology = await listGitWorktrees(input.cwd);
+      } catch (error) {
+        return operationFailure('analyze', false, toGitSafetyError(error, 'analyze'));
+      }
+      const repositoryRoot = containingWorktreeRoot(topology, input.cwd);
+      if (repositoryRoot === undefined) {
+        return analysisFailure('WTM_WORKSPACE_NOT_FOUND', 'The current directory is not in a discovered worktree.', false);
+      }
+      if (input.all || input.cleanupCandidates) {
+        for (const [index, record] of topology.entries()) {
+          if (!input.cleanupCandidates || index > 0) selected.push({ repoPath: repositoryRoot, record });
+        }
+      } else {
+        let record: GitWorktreeRecord | undefined;
+        try {
+          record = resolveAnalysisSelector(repositoryRoot, input.cwd, input.selector, topology, store);
+        } catch {
+          return stateFailure('analyze', false);
+        }
+        if (record !== undefined) selected.push({ repoPath: repositoryRoot, record });
+      }
+    }
+  } finally {
+    store?.close();
+  }
+  if (selected.length === 0) {
+    return analysisFailure(
+      'WTM_WORKSPACE_NOT_FOUND', 'The worktree selector did not resolve to one worktree.', input.global,
+    );
+  }
+  const envelopes = await Promise.all(selected.map(({ repoPath, record }) => runAnalyzeCommand({
+    repoPath,
+    worktreePath: record.path,
+  })));
+  if (!input.global && !input.all && !input.cleanupCandidates) return envelopes[0] as JsonEnvelope<unknown>;
+  const analyses = envelopes.flatMap(({ data }) => data === null ? [] : [data]);
+  const errors = envelopes.flatMap(({ errors }) => errors);
+  const common = {
+    schemaVersion: 1 as const,
+    command: 'analyze',
+    scope: { mode: input.global ? 'global' as const : 'local' as const },
+    data: { analyses },
+    warnings: envelopes.flatMap(({ warnings }) => warnings),
+  };
+  return errors.length === 0
+    ? { ...common, ok: true, errors: [] }
+    : { ...common, ok: false, errors: [errors[0]!, ...errors.slice(1)] };
+}
+
+function resolveAnalysisSelector(
+  repositoryRoot: string,
+  cwd: string,
+  selector: string | undefined,
+  topology: readonly GitWorktreeRecord[],
+  store: SQLiteStateStore | null,
+): GitWorktreeRecord | undefined {
+  if (selector === undefined) {
+    const current = resolve(cwd);
+    return topology.find(({ path }) => containsPath(path, current));
+  }
+  if (/^\d+$/.test(selector)) {
+    const repository = store?.listRepositories().find(({ id }) =>
+      store.listWorktrees(id).some(({ path }) => containsPath(path, cwd)));
+    const registered = repository === undefined ? undefined : store?.listWorktrees(repository.id)
+      .find(({ numericId }) => numericId === Number(selector));
+    return topology.find(({ path }) => path === registered?.path);
+  }
+  const candidatePath = resolve(repositoryRoot, selector);
+  const branchRef = selector.startsWith('refs/heads/') ? selector : `refs/heads/${selector}`;
+  return topology.find(({ path, branch }) =>
+    path === candidatePath || branch === selector || branch === branchRef);
+}
+
+async function runProductionRemove(input: {
+  cwd: string;
+  selector: string;
+  databasePath: string;
+}): Promise<JsonEnvelope<unknown>> {
+  let topology: GitWorktreeRecord[];
+  try {
+    topology = await listGitWorktrees(input.cwd);
+  } catch (error) {
+    return operationFailure('remove', false, toGitSafetyError(error, 'remove'));
+  }
+  const repositoryRoot = containingWorktreeRoot(topology, input.cwd);
+  if (repositoryRoot === undefined) {
+    return operationFailure('remove', false, {
+      code: 'WTM_WORKSPACE_NOT_FOUND',
+      message: 'The current directory is not in a discovered worktree.',
+      severity: 'error',
+    });
+  }
+  if (!/^\d+$/.test(input.selector)) {
+    return runRemoveCommand({ repoPath: repositoryRoot, selector: input.selector });
+  }
+  let store: SQLiteStateStore | null = null;
+  try {
+    store = new SQLiteStateStore(input.databasePath, { readonly: true });
+    const repository = store.listRepositories().find(({ id }) =>
+      store!.listWorktrees(id).some(({ path }) => containsPath(path, input.cwd)));
+    const selected = repository === undefined
+      ? undefined
+      : store.listWorktrees(repository.id).find(({ numericId }) => numericId === Number(input.selector));
+    if (selected === undefined) {
+      return operationFailure('remove', false, {
+        code: 'WTM_WORKSPACE_NOT_FOUND',
+        message: 'The worktree selector did not resolve to one worktree.',
+        severity: 'error',
+      });
+    }
+    return runRemoveCommand({ repoPath: repositoryRoot, selector: selected.path });
+  } catch {
+    return stateFailure('remove', false);
+  } finally {
+    store?.close();
+  }
+}
+
+function containingWorktreeRoot(topology: readonly GitWorktreeRecord[], cwd: string): string | undefined {
+  return topology.filter(({ path }) => containsPath(path, cwd))
+    .sort((left, right) => right.path.length - left.path.length)[0]?.path;
+}
+
+function analysisFailure(code: WtmErrorCode, message: string, global: boolean): JsonEnvelope<null> {
+  return operationFailure('analyze', global, { code, message, severity: 'error' });
+}
+
+function stateFailure(command: 'analyze' | 'remove', global: boolean): JsonEnvelope<null> {
+  return operationFailure(command, global, {
+    code: 'WTM_NOT_INITIALIZED',
+    message: 'WTM state is unavailable.',
+    severity: 'error',
+    context: { subsystem: 'state' },
+  });
+}
+
+function operationFailure(
+  command: 'analyze' | 'remove',
+  global: boolean,
+  error: WtmError,
+): JsonEnvelope<null> {
+  return {
+    schemaVersion: 1,
+    ok: false,
+    command,
+    scope: { mode: global ? 'global' : 'local' },
+    data: null,
+    warnings: [],
+    errors: [error],
+  };
+}
+
+async function runProductionResolve(input: { cwd: string; taskName: string }): Promise<JsonEnvelope<unknown>> {
+  const topology = await listGitWorktrees(input.cwd);
+  const worktree = topology.find(({ path }) => containsPath(path, input.cwd)) ?? topology[0];
+  if (worktree === undefined) {
+    return runResolveCommand({
+      config: {}, taskName: input.taskName, isMain: true,
+      context: { env: process.env },
+    });
+  }
+  const config = await resolveWorkspaceConfig({
+    workspaceRoot: input.cwd,
+    repoRoot: worktree.path,
+    globalConfigPath: join(homedir(), 'Library', 'Application Support', 'WTM', 'config.toml'),
+  });
+  const branch = worktree.branch?.replace(/^refs\/heads\//, '') ?? '';
+  return runResolveCommand({
+    config: config.value,
+    taskName: input.taskName,
+    isMain: worktree.path === topology[0]?.path,
+    context: {
+      workspace: { root: input.cwd, name: input.cwd.split('/').at(-1) ?? 'workspace' },
+      repo: { root: worktree.path, name: worktree.path.split('/').at(-1) ?? 'repo' },
+      main: { root: topology[0]?.path ?? worktree.path },
+      worktree: { root: worktree.path },
+      id: Math.max(1, topology.findIndex(({ path }) => path === worktree.path) + 1),
+      key: String(Math.max(1, topology.findIndex(({ path }) => path === worktree.path) + 1)),
+      slug: worktree.path.split('/').at(-1) ?? 'worktree',
+      branch,
+      branchSlug: branch.replace(/[^A-Za-z0-9._-]+/g, '-'),
+      env: process.env,
+    },
+  });
+}
+
+function containsPath(root: string, candidate: string): boolean {
+  const relativePath = resolve(candidate).slice(resolve(root).length);
+  return relativePath === '' || relativePath.startsWith('/');
 }
 
 function parseNonNegativeInteger(value: string): number {

@@ -82,6 +82,7 @@ Equivalent to safe stop + start.
 ### `wtm resolve <task>`
 
 Prints the final command, cwd and environment delta without running it.
+Use `--json` for the stable V1 envelope. The argument is always a configured task name; it is not a worktree selector.
 
 Example:
 
@@ -135,6 +136,7 @@ wtm logs dev --follow
 ### `wtm analyze [selector]`
 
 Produces the advanced worktree analysis defined in `10-git-safety-worktree-analysis.md`.
+The optional selector accepts a registered numeric worktree ID, branch name, absolute path, or path relative to the current repository. `--all`, `--cleanup-candidates`, and `--global` are mutually exclusive aggregate modes and cannot be combined with a selector.
 
 Useful modes:
 
@@ -150,6 +152,7 @@ wtm analyze --global --json
 ### `wtm remove <selector>`
 
 Runs analysis and only removes when all safety blockers pass.
+The required selector accepts a registered numeric worktree ID, branch name, absolute path, or path relative to the current repository. Use `--json` for the stable V1 envelope.
 
 V1 intentionally does **not** provide a loss-bypassing `--force` option.
 

@@ -1,0 +1,20 @@
+name: Bug report
+description: Report a reproducible WTM defect
+body:
+  - type: markdown
+    attributes:
+      value: Do not report vulnerabilities here; use the private security advisory form.
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include sanitized commands, fixture setup, and observed output.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: WTM, Node, Bun, and macOS versions.
+    validations:
+      required: true

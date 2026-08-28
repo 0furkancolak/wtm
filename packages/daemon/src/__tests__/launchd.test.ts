@@ -1609,6 +1609,39 @@ describe('launchd lifecycle', () => {
     expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
   });
 
+  test('recovers a predecessor journal after a successor crashes while publishing its recovery snapshot', async () => {
+    const home = await fakeHome();
+    const paths = launchdPaths(home);
+    const first = createLaunchdLifecycle({
+      home, platform: 'darwin', programArguments: ['/bin/echo', 'desired'], commandRunner: absentRunner,
+      processInspector: inspector('first-start', 'live', 'first-start'),
+      transactionHook: async (phase) => phase === 'temporary-written' ? 'interrupt' : 'continue',
+    });
+    await expect(first.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
+
+    const journalPath = join(paths.agentsDirectory, `.${launchdLabel}.transaction`);
+    let interruptedRecoveryTemporary = '';
+    const second = createLaunchdLifecycle({
+      home, platform: 'darwin', programArguments: ['/bin/echo', 'desired'], commandRunner: absentRunner,
+      processInspector: inspector('second-start', 'dead', null), lockPollAttempts: 1,
+      metadataReadHook: async (path) => {
+        if (!path.startsWith(`${journalPath}.tmp-`) || interruptedRecoveryTemporary !== '') return;
+        interruptedRecoveryTemporary = path;
+        throw new Error('simulated recovery snapshot crash');
+      },
+    });
+    await expect(second.install()).rejects.toThrow('simulated recovery snapshot crash');
+    expect(interruptedRecoveryTemporary).not.toBe('');
+
+    const third = createLaunchdLifecycle({
+      home, platform: 'darwin', programArguments: ['/bin/echo', 'desired'], commandRunner: absentRunner,
+      processInspector: inspector('third-start', 'dead', null), lockPollAttempts: 1,
+    });
+    expect((await third.install()).state).toBe('installed');
+    expect(await readFile(paths.plistPath, 'utf8')).toContain('<string>desired</string>');
+    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
+  });
+
   test('retries a crash after removing a duplicate predecessor journal temp', async () => {
     const home = await fakeHome();
     const paths = launchdPaths(home);

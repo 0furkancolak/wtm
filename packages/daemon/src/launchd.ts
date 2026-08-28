@@ -1329,7 +1329,7 @@ async function writeRecoveredTransactionJournal(
 }
 
 async function writeJournalSnapshot(transaction: LaunchdTransaction, journal: TransactionJournal): Promise<void> {
-  const temporary = `${transaction.journalPath}.tmp-${transaction.id}`;
+  const temporary = `${transaction.journalPath}.tmp-${journal.transactionId}`;
   const content = `${JSON.stringify(journal)}\n`;
   await transaction.assertOwned();
   const previous = await readOwnedFile(

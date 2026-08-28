@@ -41,6 +41,7 @@ export type {
 export { createCli, defaultDaemonSocketPath, runCli } from './main';
 export type { CliDependencies } from './main';
 export { renderEnvelope } from './output';
+export { createStateDiagnosticDataSource } from './state-diagnostics';
 export type { OutputOptions } from './output';
 export { DaemonClient } from './client';
 export type { DaemonClientOptions, FollowLogsOptions } from './client';
