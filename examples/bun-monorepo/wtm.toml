@@ -1,0 +1,29 @@
+version = 1
+
+[workspace]
+name = "bun-monorepo"
+
+[ports]
+strategy = "stable-dynamic"
+range = "20000-50000"
+
+[ports.web]
+preferred = 3000
+
+[environment]
+PORT = "{port.web}"
+
+[capabilities]
+"javascript.package-manager" = "bun"
+
+[tasks.dev]
+description = "Run the web application for this worktree."
+expose = true
+run = ["bun", "run", "dev", "--port", "{port.web}"]
+cwd = "{worktree.root}/apps/web"
+background = true
+
+[tasks.test]
+description = "Run the monorepo test suite."
+run = ["bun", "test"]
+cwd = "{worktree.root}"

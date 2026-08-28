@@ -1,0 +1,9 @@
+version = 1
+
+[workspace]
+name = "minimal"
+
+[tasks.test]
+description = "Run the project's test suite in the foreground."
+run = ["npm", "test"]
+cwd = "{worktree.root}"

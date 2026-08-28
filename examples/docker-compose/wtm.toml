@@ -1,0 +1,25 @@
+version = 1
+
+[workspace]
+name = "docker-compose"
+
+[ports.web]
+preferred = 3000
+
+[ports.api]
+preferred = 4000
+
+[environment]
+PORT = "{port.web}"
+API_PORT = "{port.api}"
+COMPOSE_PROJECT_NAME = "{workspace.name}-{repo.name}-wt{id}"
+
+[tasks.compose-up]
+description = "Start this worktree's Docker Compose services explicitly."
+run = ["docker", "compose", "up", "-d"]
+cwd = "{worktree.root}"
+
+[tasks.compose-down]
+description = "Stop this worktree's Docker Compose services explicitly."
+run = ["docker", "compose", "down"]
+cwd = "{worktree.root}"

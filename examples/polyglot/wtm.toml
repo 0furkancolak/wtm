@@ -1,0 +1,23 @@
+version = 1
+
+[workspace]
+name = "polyglot"
+
+[capabilities]
+"javascript.package-manager" = "bun"
+"python.environment-manager" = "uv"
+
+[tasks.js-test]
+description = "Test the JavaScript service."
+run = ["bun", "test"]
+cwd = "{worktree.root}/services/web"
+
+[tasks.python-test]
+description = "Test the Python API with uv."
+run = ["uv", "run", "pytest"]
+cwd = "{worktree.root}/services/api"
+
+[tasks.rust-test]
+description = "Test the Rust worker."
+run = ["cargo", "test"]
+cwd = "{worktree.root}/services/worker"
