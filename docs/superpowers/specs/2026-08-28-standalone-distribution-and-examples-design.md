@@ -14,7 +14,7 @@ The first standalone release targets macOS arm64 and macOS x64. Linux and Window
 
 ### Homebrew
 
-WTM's repository acts as a custom tap and contains `Formula/wtm.rb`. Until a separately named tap repository exists, users install it with an explicit repository URL:
+After the first successful binary release, WTM's repository acts as a custom tap and contains the release-generated `Formula/wtm.rb`. Until a separately named tap repository exists, users install it with an explicit repository URL:
 
 ```bash
 brew tap 0furkancolak/wtm https://github.com/0furkancolak/wtm.git
@@ -146,7 +146,7 @@ The implementation prepares and tests this automation but does not create a tag,
 
 ## Homebrew Formula
 
-`Formula/wtm.rb` is generated from a reviewed template. It contains architecture-specific stable URLs and checksums, declares the Apache-2.0 license, and installs the executable directly. It does not run npm, compile source, install Node, modify LaunchAgents, or write WTM user state.
+`Formula/wtm.rb` is generated from a reviewed template only after both release archives exist and their final checksums are known. Before the first successful release the repository contains the template and renderer, not a formula with guessed or unusable checksums. The generated formula contains architecture-specific stable URLs and checksums, declares the Apache-2.0 license, and installs the executable directly. It does not run npm, compile source, install Node, modify LaunchAgents, or write WTM user state.
 
 Its test creates an isolated temporary Git repository and runs non-mutating CLI checks such as `wtm --version` and `wtm --help`. Formula validation includes Ruby syntax, expected URLs/checksums, and `brew audit`/installation checks when Homebrew is available in release CI.
 
@@ -175,7 +175,7 @@ Examples are configuration examples, not generated application skeletons. They m
 - `minimal` demonstrates workspace identity and one foreground task.
 - `bun-monorepo` demonstrates worktree-local commands, stable ports, environment templates, and exposed tasks.
 - `docker-compose` demonstrates per-worktree Compose project names, endpoints, and explicit up/down tasks without WTM starting Docker during initialization.
-- `polyglot` demonstrates repository-level JavaScript, Python/uv, and Rust task overrides.
+- `polyglot` demonstrates top-level JavaScript, Python/uv, and Rust tasks with explicit service working directories and capability selection supported by the V1 schema.
 
 Automated tests parse every example through the production configuration parser and assert important resolved behavior. Every test and scenario file remains under the owning module's `__tests__/` directory.
 
