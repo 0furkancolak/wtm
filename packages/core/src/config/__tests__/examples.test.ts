@@ -19,7 +19,12 @@ async function readExample(path: string): Promise<WtmConfig> {
 
 describe('published example configurations', () => {
   test('parse with supported V1 schema fields and production-resolve every task', async () => {
-    const [minimal, bun, compose, polyglot] = await Promise.all(Object.values(examplePaths).map(readExample));
+    const [minimal, bun, compose, polyglot] = await Promise.all([
+      readExample(examplePaths.minimal),
+      readExample(examplePaths.bun),
+      readExample(examplePaths.compose),
+      readExample(examplePaths.polyglot),
+    ]);
 
     for (const config of [minimal, bun, compose, polyglot]) {
       expect(Object.keys(config.tasks ?? {})).not.toHaveLength(0);
