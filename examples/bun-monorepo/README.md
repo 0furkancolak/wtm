@@ -8,4 +8,4 @@ wtm resolve dev
 wtm start dev
 ```
 
-WTM assigns a stable dynamic `web` port to each worktree and exposes it through `PORT` and the `dev` command argument.
+The configuration retains a preferred `web` port declaration. Configure the application itself to consume that preference until WTM port allocation is available to runtime task resolution.

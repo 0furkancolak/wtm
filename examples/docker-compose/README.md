@@ -1,6 +1,6 @@
 # Docker Compose Example
 
-Copy `wtm.toml` to a project with a Docker Compose file at its root. The Compose project name includes the workspace, repository, and worktree ID, so linked worktrees do not share Compose resources accidentally.
+Copy `wtm.toml` to a project with a Docker Compose file at its root. The Compose project name includes the workspace, repository, and worktree ID, so linked worktrees do not share Compose resources accidentally. Configure any Compose service ports in the project itself; WTM's preferred port declarations are not yet available to runtime task resolution.
 
 ```bash
 cp examples/docker-compose/wtm.toml ./wtm.toml

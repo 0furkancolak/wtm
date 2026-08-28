@@ -20,17 +20,21 @@ wtm --version
 
 ### Direct macOS binary (release channel)
 
-After a release publishes its archives, download both architecture archives and `SHA256SUMS` from that release directory, verify them, then extract the archive for the current machine:
+After a release publishes its archives, select the archive matching the current macOS architecture, verify it against `SHA256SUMS`, then extract it:
 
 ```bash
-curl -LO https://github.com/0furkancolak/wtm/releases/download/v<VERSION>/wtm-darwin-arm64.tar.gz
-curl -LO https://github.com/0furkancolak/wtm/releases/download/v<VERSION>/wtm-darwin-x64.tar.gz
+case "$(uname -m)" in
+  arm64) archive=wtm-darwin-arm64.tar.gz ;;
+  x86_64) archive=wtm-darwin-x64.tar.gz ;;
+  *) echo "Unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+curl -LO "https://github.com/0furkancolak/wtm/releases/download/v<VERSION>/$archive"
 curl -LO https://github.com/0furkancolak/wtm/releases/download/v<VERSION>/SHA256SUMS
-shasum -a 256 -c SHA256SUMS
-tar -xzf wtm-darwin-arm64.tar.gz
+shasum -a 256 -c --ignore-missing SHA256SUMS
+tar -xzf "$archive"
 ```
 
-Replace `<VERSION>` and select the archive matching the host architecture.
+Replace `<VERSION>` with the published release version.
 
 ### npm (Node.js 24+)
 
@@ -51,10 +55,11 @@ node dist/cli/bin.js --version
 
 ## Quick start
 
-Inside an existing Git workspace, initialize WTM and opt into the per-user daemon only when you want managed background tasks:
+Inside an existing Git workspace, initialize WTM, then copy or write a `wtm.toml` that defines the `dev` task before resolving it. The following uses the Bun monorepo example and assumes the project has `apps/web`:
 
 ```bash
 wtm init --yes
+cp /path/to/wtm/examples/bun-monorepo/wtm.toml ./wtm.toml
 wtm daemon install
 wtm status
 wtm resolve dev

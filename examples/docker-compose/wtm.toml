@@ -10,8 +10,6 @@ preferred = 3000
 preferred = 4000
 
 [environment]
-PORT = "{port.web}"
-API_PORT = "{port.api}"
 COMPOSE_PROJECT_NAME = "{workspace.name}-{repo.name}-wt{id}"
 
 [tasks.compose-up]

@@ -10,16 +10,13 @@ range = "20000-50000"
 [ports.web]
 preferred = 3000
 
-[environment]
-PORT = "{port.web}"
-
 [capabilities]
 "javascript.package-manager" = "bun"
 
 [tasks.dev]
 description = "Run the web application for this worktree."
 expose = true
-run = ["bun", "run", "dev", "--port", "{port.web}"]
+run = ["bun", "run", "dev"]
 cwd = "{worktree.root}/apps/web"
 background = true
 
