@@ -218,6 +218,11 @@ describe.skipIf(!existsSync(executable))('standalone executable', () => {
     })).resolves.toEqual(response);
   });
 
+  test('ships a stripped runtime', () => {
+    // The pinned Node version fixes the runtime size, so the bound only moves when a build regresses.
+    expect(statSync(executable).size).toBeLessThan(110_000_000);
+  });
+
   test('embeds its assets instead of shipping a native SQLite addon', () => {
     const binary = readFileSync(executable);
 

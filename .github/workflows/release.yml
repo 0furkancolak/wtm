@@ -1,0 +1,232 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Publication is opt-in per job. Nothing here runs for ordinary pushes or pull requests.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify ${{ matrix.arch }}
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Each executable is built natively; the SEA embeds a host-architecture Node runtime.
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - run: bun install --frozen-lockfile
+
+      - name: Verify the whole release
+        run: bun run release:verify
+
+      - name: Sign the executable
+        id: sign
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CERTIFICATE}" ] || [ -z "${SIGNING_IDENTITY}" ]; then
+            # The gate refuses a stable release in this state; prereleases stay ad-hoc signed.
+            echo 'signing=adhoc' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/wtm-signing.keychain-db"
+          password="$(uuidgen)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 900 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
+          security list-keychain -d user -s "$keychain" login.keychain-db
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          codesign --sign "$SIGNING_IDENTITY" --options runtime --timestamp --force dist/sea/wtm
+          codesign --verify --strict dist/sea/wtm
+          echo 'signing=signed' >> "$GITHUB_OUTPUT"
+
+      - name: Re-verify the signed executable
+        run: |
+          set -uo pipefail
+          if bun test scripts/__tests__/sea-smoke.test.ts --timeout 60000; then
+            smoke='[{"name":"standalone executable smoke suite","passed":true}]'
+          else
+            smoke='[{"name":"standalone executable smoke suite","passed":false,'
+            smoke="$smoke"'"detail":"scripts/__tests__/sea-smoke.test.ts failed after signing"}]'
+          fi
+          # The gate, not this step, decides what a failed smoke result means for a release.
+          echo "WTM_RELEASE_SMOKE=$smoke" >> "$GITHUB_ENV"
+
+      - name: Archive the signed executable
+        run: |
+          set -euo pipefail
+          bun run release:artifacts
+          # Archiving rebuilds the directory, so the evidence is recorded afterwards and travels
+          # with the artifact instead of being re-asserted by the publishing job.
+          echo '${{ steps.sign.outputs.signing }}' > dist/release/SIGNING
+          printf '%s' "$WTM_RELEASE_SMOKE" > dist/release/SMOKE.json
+
+      - name: Gate the release artifacts
+        env:
+          WTM_RELEASE_SIGNING: ${{ steps.sign.outputs.signing }}
+        run: bun run release:gate
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wtm-darwin-${{ matrix.arch }}
+          path: dist/release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+          registry-url: https://registry.npmjs.org
+      - run: bun install --frozen-lockfile
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wtm-darwin-*
+          path: staged/
+
+      - name: Collect both architectures
+        id: collect
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          find staged -name '*.tar.gz' -exec cp {} dist/release/ ';'
+          # Each matrix job wrote its own SHA256SUMS; the release carries the union of both.
+          cat staged/*/SHA256SUMS | sort -k2 > dist/release/SHA256SUMS
+          # Both architectures must agree on the evidence, or the release does not describe one build.
+          signing="$(cat staged/*/SIGNING | sort -u)"
+          test "$(printf '%s\n' "$signing" | wc -l | tr -d ' ')" -eq 1
+          echo "signing=$signing" >> "$GITHUB_OUTPUT"
+          {
+            echo 'smoke<<WTM_SMOKE_EOF'
+            bun -e 'const {readdirSync,readFileSync}=require("node:fs");
+              const roots=readdirSync("staged");
+              const merged=roots.flatMap((dir)=>JSON.parse(readFileSync(`staged/${dir}/SMOKE.json`,"utf8"))
+                .map((check)=>({...check,name:`${dir}: ${check.name}`})));
+              process.stdout.write(JSON.stringify(merged));'
+            echo
+            echo 'WTM_SMOKE_EOF'
+          } >> "$GITHUB_ENV"
+
+      - name: Gate the combined release
+        env:
+          WTM_RELEASE_SIGNING: ${{ steps.collect.outputs.signing }}
+        run: bun run release:gate
+
+      - uses: actions/attest@v4
+        with:
+          subject-path: dist/release/*.tar.gz
+          predicate-type: https://slsa.dev/provenance/v1
+          predicate: '{}'
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prerelease=''
+          case "${{ github.ref_name }}" in *-*) prerelease='--prerelease';; esac
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --notes-file CHANGELOG.md \
+            --verify-tag $prerelease \
+            dist/release/wtm-darwin-arm64.tar.gz \
+            dist/release/wtm-darwin-x64.tar.gz \
+            dist/release/SHA256SUMS
+
+      - name: Publish to npm with provenance
+        run: npm publish --provenance --access public
+
+  formula:
+    name: Homebrew formula
+    needs: publish
+    # A prerelease must never become the default formula for `brew install`.
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - run: bun install --frozen-lockfile
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wtm-darwin-*
+          path: staged/
+
+      - name: Render the formula from the published checksums
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          cat staged/*/SHA256SUMS | sort -k2 > dist/release/SHA256SUMS
+          # Digests come from the artifacts that were just uploaded; they are never guessed.
+          bun run formula:render
+          ruby -c artifacts/formula/wtm.rb
+
+      - name: Update the tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAP_TOKEN}" ]; then
+            echo 'No tap token configured; the rendered formula is left as a build artifact.'
+            exit 0
+          fi
+          git clone --depth 1 \
+            "https://x-access-token:${TAP_TOKEN}@github.com/0furkancolak/homebrew-wtm.git" tap
+          mkdir -p tap/Formula
+          cp artifacts/formula/wtm.rb tap/Formula/wtm.rb
+          git -C tap add Formula/wtm.rb
+          git -C tap -c user.name='wtm-release' -c user.email='release@nafru.com' \
+            commit -m "wtm ${{ github.ref_name }}"
+          git -C tap push
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-formula
+          path: artifacts/formula/wtm.rb
+          if-no-files-found: error

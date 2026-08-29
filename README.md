@@ -13,8 +13,8 @@ The commands below describe the release channels that will be available after a 
 After a release publishes the formula, install WTM from its custom tap:
 
 ```bash
-brew tap 0furkancolak/wtm https://github.com/0furkancolak/wtm.git
-brew install wtm
+brew tap 0furkancolak/wtm
+brew install 0furkancolak/wtm/wtm
 wtm --version
 ```
 

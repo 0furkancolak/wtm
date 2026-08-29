@@ -13,6 +13,11 @@ test('the public npm package contains runtime bundles, migrations, docs, license
     'dist/cli/bin.js', 'dist/cli/index.js',
     'dist/cli/migrations/001-initial.sql', 'dist/cli/skills/wtm/SKILL.md',
   ]) expect(files).toContain(required);
+  // The standalone executable embeds a whole Node runtime; shipping it inside the npm package
+  // would multiply the download for consumers who already have Node.
+  for (const excluded of ['dist/sea/wtm', 'dist/release/SHA256SUMS', 'dist/release/wtm-darwin-arm64.tar.gz'])
+    expect(files).not.toContain(excluded);
+  expect(files.filter((path) => path.endsWith('.tar.gz'))).toEqual([]);
   const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
   expect(manifest.dependencies.commander).toBe('14.0.2');
   const thirdParty = readFileSync('THIRD_PARTY_LICENSES.md', 'utf8');

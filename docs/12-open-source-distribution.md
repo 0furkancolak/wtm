@@ -97,14 +97,21 @@ The protocol/interface must allow the helper to be replaced.
 
 ## Distribution channels
 
-Primary V1:
+V1 ships two channels from one codebase:
 
-1. Homebrew tap/formula for macOS.
-2. npm global package for developers already running Node 24+.
+1. **Standalone macOS executable.** A Node SEA build that embeds the pinned Node 24 runtime, the SQL
+   migrations and the agent skill. It stores state through `node:sqlite`, so it contains no native
+   addon and needs no Node, Bun or compiler on the target machine. Built by `bun run build:binary`
+   and proven by `bun run binary:verify`.
+2. **npm global package** for developers already running Node 24+. This channel keeps
+   `better-sqlite3` and the ordinary Node module resolution.
 
-Possible later artifact:
+Both channels run the same CLI. The only difference is how a WTM child process is launched: the npm
+build re-invokes `node <cli>`, the standalone build re-invokes its own executable.
 
-3. standalone Node SEA executable when the Node feature/distribution workflow is stable enough for the project's support expectations.
+A Homebrew formula is prepared in `packaging/homebrew/wtm.rb.template` and rendered by
+`bun run formula:render`. **No public tap repository exists yet.** Until one is published, install
+from a custom tap or directly from a downloaded archive.
 
 The daemon is installed separately through:
 
@@ -113,6 +120,44 @@ wtm daemon install
 ```
 
 rather than automatically starting a hidden service during package installation.
+
+## Release operations
+
+Nothing is published by ordinary CI. Publication happens only when a `v*` tag is pushed, and every
+publishing job is guarded by `startsWith(github.ref, 'refs/tags/v')`.
+
+The tag workflow (`.github/workflows/release.yml`):
+
+- builds and fully verifies the executable natively on macOS arm64 and macOS x64;
+- requires the tag to equal the `package.json` version exactly — `v1.2.3` for `1.2.3`, and a
+  prerelease tag only for the identical prerelease version;
+- recomputes every archive digest and requires exactly the two expected archives before it
+  publishes anything;
+- refuses to publish a **stable** release whose executable is not Developer ID signed. Prereleases
+  may ship ad-hoc signed;
+- attests the artifacts, uploads them to the GitHub Release, publishes to npm with provenance, and
+  only then renders and commits the Homebrew formula from the final checksums.
+
+Required repository configuration before the first real release:
+
+| Secret / setting | Purpose |
+| --- | --- |
+| `MACOS_SIGNING_CERTIFICATE`, `MACOS_SIGNING_PASSWORD`, `MACOS_SIGNING_IDENTITY` | Developer ID signing for stable releases |
+| npm trusted publisher for `worktree-runtime-manager` | provenance-backed `npm publish` without a long-lived token |
+| `HOMEBREW_TAP_TOKEN` | write access to the tap repository that receives `Formula/wtm.rb` |
+
+The formula is never committed with guessed digests: it is rendered from the `SHA256SUMS` produced
+by the same workflow run, after the assets are uploaded.
+
+Custom tap installation, once a tap exists:
+
+```bash
+brew tap 0furkancolak/wtm
+brew install 0furkancolak/wtm/wtm
+```
+
+`brew tap 0furkancolak/wtm` resolves to `github.com/0furkancolak/homebrew-wtm`, which is the
+repository the release workflow writes `Formula/wtm.rb` into.
 
 ## Semantic versioning
 

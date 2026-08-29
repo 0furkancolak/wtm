@@ -1,0 +1,33 @@
+class Wtm < Formula
+  desc "Local-first runtime and safety manager for Git worktrees"
+  homepage "https://github.com/0furkancolak/wtm"
+  version "{{VERSION}}"
+  license "Apache-2.0"
+
+  on_arm do
+    url "https://github.com/0furkancolak/wtm/releases/download/v{{VERSION}}/{{ARM64_ARCHIVE}}"
+    sha256 "{{ARM64_SHA256}}"
+  end
+
+  on_intel do
+    url "https://github.com/0furkancolak/wtm/releases/download/v{{VERSION}}/{{X64_ARCHIVE}}"
+    sha256 "{{X64_SHA256}}"
+  end
+
+  def install
+    bin.install "wtm"
+  end
+
+  def caveats
+    <<~EOS
+      WTM installed — Powered by https://nafru.com
+      Run `wtm init --yes` inside a workspace to get started.
+    EOS
+  end
+
+  test do
+    ENV["HOME"] = testpath
+    assert_match version.to_s, shell_output("#{bin}/wtm --version")
+    assert_match "Powered by https://nafru.com", shell_output("#{bin}/wtm --help")
+  end
+end

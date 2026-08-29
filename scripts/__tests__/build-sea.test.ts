@@ -121,6 +121,20 @@ describe('SEA executable assembly', () => {
     });
   });
 
+  test('strips the copied runtime between signature removal and injection', async () => {
+    const { host, recording } = createHost();
+
+    const result = await buildSea(host);
+
+    const indexOf = (match: (entry: { command: string; args: readonly string[] }) => boolean) =>
+      recording.commands.findIndex(match);
+    const stripped = indexOf(({ command }) => command === '/usr/bin/strip');
+    expect(recording.commands[stripped])
+      .toEqual({ command: '/usr/bin/strip', args: ['-x', '-S', result.executable] });
+    expect(indexOf(({ args }) => args[0] === '--remove-signature')).toBeLessThan(stripped);
+    expect(stripped).toBeLessThan(indexOf(({ args }) => args[0]?.endsWith('postject/dist/cli.js') === true));
+  });
+
   test('removes the inherited signature, re-signs, verifies, and leaves an executable file', async () => {
     const { host, recording } = createHost();
 
@@ -133,6 +147,21 @@ describe('SEA executable assembly', () => {
       ['--verify', '--strict', result.executable],
     ]);
     expect(recording.modes).toEqual([{ path: result.executable, mode: 0o755 }]);
+  });
+
+  test('aborts and removes partial output when stripping fails', async () => {
+    const { host, recording } = createHost({
+      run(command, args) {
+        recording.commands.push({ command, args });
+        return command === '/usr/bin/strip'
+          ? { status: 1, stderr: 'strip: bad' }
+          : { status: 0, stderr: '' };
+      },
+    });
+
+    await expect(buildSea(host)).rejects.toThrow('strip: bad');
+    expect(recording.removed).toContain(join(root, 'dist/sea/.build'));
+    expect(recording.removed).toContain(join(root, 'dist/sea/wtm'));
   });
 
   test('reports the failing command and removes scratch and partial output', async () => {

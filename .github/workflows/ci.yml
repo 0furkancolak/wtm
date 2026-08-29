@@ -22,3 +22,5 @@ jobs:
       - run: bun run test:e2e
       - run: bun run build
       - run: bun run package:verify
+      # Ordinary CI proves the current host can produce a working executable; it never publishes one.
+      - run: bun run binary:verify
