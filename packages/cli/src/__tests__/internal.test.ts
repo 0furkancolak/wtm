@@ -1,6 +1,30 @@
 import { describe, expect, test } from 'bun:test';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { runInternalMode } from '../internal';
 import { daemonProgramArguments, runCli } from '../main';
+
+const cliEntry = fileURLToPath(new URL('../bin.ts', import.meta.url));
+const publicGraphProbe = `data:text/javascript,${encodeURIComponent([
+  "import { createRequire } from 'node:module';",
+  'const require = createRequire(process.execPath);',
+  "process.on('exit', () => {",
+  "  const loaded = Object.keys(require.cache)",
+  "    .filter((key) => key.includes('better-sqlite3') || key.includes('commander'));",
+  '  process.stderr.write(`WTM_PUBLIC_GRAPH ${loaded.length}\\n`);',
+  '});',
+].join('\n'))}`;
+
+function publicGraphModulesLoadedBy(argv: readonly string[]): number {
+  const result = spawnSync(
+    'node',
+    ['--import', 'tsx', '--import', publicGraphProbe, cliEntry, ...argv],
+    { encoding: 'utf8', input: '' },
+  );
+  const match = /WTM_PUBLIC_GRAPH (\d+)/.exec(result.stderr);
+  if (match === null) throw new Error(`probe did not report: ${result.stderr}`);
+  return Number(match[1]);
+}
 
 describe('internal CLI dispatch', () => {
   test('keeps internal modes out of public help', async () => {
@@ -33,6 +57,11 @@ describe('internal CLI dispatch', () => {
 
   test('returns null for public argv without constructing a private mode', async () => {
     await expect(runInternalMode(['status'])).resolves.toBeNull();
+  });
+
+  test('runs a private mode without loading the public CLI module graph', () => {
+    expect(publicGraphModulesLoadedBy(['__wtm_internal_anchor', 'a'.repeat(64)])).toBe(0);
+    expect(publicGraphModulesLoadedBy(['--version'])).toBeGreaterThan(0);
   });
 });
 
