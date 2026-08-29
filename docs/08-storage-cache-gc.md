@@ -119,34 +119,30 @@ last_verified_at
 logical size estimate
 ```
 
-## GC levels
+## GC scope
 
 ### `wtm gc`
 
-Safe by default. May remove:
+V1 ships a single safe GC mode. It may remove:
 
 - WTM caches;
 - expired logs;
 - ephemeral resources belonging to already removed worktrees;
 - stale state whose external resource is verified absent.
 
-### `wtm gc --builds`
+Adapter-declared disposable build outputs and adapter-native dependency cleanup plans are not part of this mode. WTM does not directly delete arbitrary global package-manager caches.
 
-May remove adapter-declared disposable build outputs only from non-running worktrees.
+## Plan and apply
 
-### `wtm gc --dependencies`
-
-Uses adapter-native cleanup plans. WTM does not directly delete arbitrary global package-manager caches.
-
-## Dry run
-
-Every GC mode supports:
+`wtm gc` plans by default; `--dry-run` states that default explicitly. `--apply` performs the same guarded plan.
 
 ```bash
+wtm gc
 wtm gc --dry-run
+wtm gc --apply
 ```
 
-and JSON output.
+Both modes support `--json`.
 
 ## Hard deletion safeguards
 

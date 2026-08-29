@@ -10,13 +10,7 @@ DISCOVERED -> ALLOCATED -> PREPARING -> READY
 
 `READY` means identity/config/plan is ready. It does not mean dev servers are running.
 
-Default:
-
-```toml
-[runtime]
-auto_prepare = true
-auto_start = false
-```
+By default WTM prepares a worktree automatically and never starts runtime tasks automatically. This is built-in behavior, not a configuration key: the root config schema is strict and has no `runtime` table. Preparation eagerness is configured through `[prepare] mode`.
 
 This makes 20 inactive worktrees cheap.
 
@@ -60,9 +54,9 @@ range = "20000-50000"
 Only processes started through WTM are managed.
 
 ```text
-wtm start dev
-wtm dev              # if exposed/background task
-wtm exec -- command
+wtm start dev        # managed background task
+wtm run dev          # configured task in the foreground
+wtm exec -- command  # raw argv in the foreground
 ```
 
 A process started manually with raw `make dev` is external. WTM does not scan the entire process table and "adopt" arbitrary processes.
@@ -97,8 +91,8 @@ Default background task policy is one managed instance per task per worktree.
 Calling:
 
 ```bash
-wtm dev
-wtm dev
+wtm start dev
+wtm start dev
 ```
 
 does not start two copies. The second call reports the existing process. Explicit `wtm restart dev` replaces it.

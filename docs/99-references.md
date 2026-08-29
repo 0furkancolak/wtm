@@ -22,9 +22,9 @@ Official references consulted for the design package. These links are implementa
 - Node.js child process API: https://nodejs.org/api/child_process.html
   - detached processes on non-Windows systems become leaders of a new process group/session.
 - Node.js single executable applications: https://nodejs.org/api/single-executable-applications.html
-  - useful for future distribution, but still an active-development feature.
+  - the basis of the shipped standalone macOS channel, which embeds the pinned Node 24 runtime, the SQL migrations and the agent skill.
 - Node SQLite API: https://nodejs.org/api/sqlite.html
-  - currently release-candidate level; the implementation plan selects `better-sqlite3` behind an interface rather than coupling core state to an unstable built-in API.
+  - backs the standalone build, so it needs no native addon. `better-sqlite3` backs the npm channel. Both sit behind the same store interface, so core state is coupled to neither.
 
 ## Agent Skills / AI
 
@@ -36,4 +36,4 @@ These references describe portable `SKILL.md`-based Agent Skills and support the
 
 ## Notes
 
-Dependency/library versions for implementation should be locked during repository bootstrap and revalidated before public release. Architecture does not depend on a specific minor version of Commander, Zod, smol-toml, Vitest or better-sqlite3.
+Dependency/library versions for implementation should be locked during repository bootstrap and revalidated before public release. Architecture does not depend on a specific minor version of Commander, Zod, smol-toml, `bun test` or better-sqlite3.

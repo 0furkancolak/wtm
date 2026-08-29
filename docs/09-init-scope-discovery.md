@@ -68,7 +68,7 @@ worktree = ["make", "dev-with-worktree-{id}"]
 cwd = "{workspace.root}"
 ```
 
-Therefore an agent inside `repo-a` or a nested linked worktree can use `wtm dev` without discovering the parent Makefile itself.
+Therefore an agent inside `repo-a` or a nested linked worktree can use `wtm start dev` without discovering the parent Makefile itself.
 
 ## Local registration
 
@@ -91,8 +91,8 @@ For read/maintenance commands:
 ```bash
 wtm status --global
 wtm analyze --global
-wtm reconcile --global
-wtm gc --global --dry-run
+wtm ports --global
+wtm plan --global
 ```
 
 means "operate across registered workspaces".

@@ -89,7 +89,7 @@ describe('Commander CLI', () => {
 
     expect(cli.commands.map((command) => command.name())).toEqual([
       'status', 'doctor', 'explain', 'plan', 'env', 'ports',
-      'resolve', 'analyze', 'remove', 'start', 'stop', 'restart', 'ps', 'logs', 'exec',
+      'resolve', 'run', 'analyze', 'remove', 'start', 'stop', 'restart', 'ps', 'logs', 'exec',
       'daemon', 'disk', 'gc', 'adapter', 'init', 'skill',
     ]);
   });

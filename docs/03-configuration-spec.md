@@ -112,7 +112,7 @@ expose = true
 run = ["make", "test"]
 cwd = "{workspace.root}"
 
-[events.worktree.created]
+[events."worktree.created"]
 tasks = ["deps.install"]
 ```
 
@@ -215,6 +215,7 @@ expose            boolean
 run               string|string[]
 main              string|string[]
 worktree          string|string[]
+shell             boolean
 cwd               template path
 background         boolean
 singleton          boolean
@@ -226,6 +227,10 @@ env                 map<string,string>
 ```
 
 `main`/`worktree` are mutually exclusive with `run`.
+
+`shell` is required when a command is written as a single string and rejected when a command is written as an argv array.
+
+`expose` is accepted by the configuration schema but has no CLI dispatch effect in V1: it does not create a top-level `wtm <task>` word. Tasks are always addressed by name through `wtm run`, `wtm start`, `wtm restart` or `wtm resolve`.
 
 ## Events
 
@@ -242,10 +247,12 @@ runtime.started
 runtime.stopped
 ```
 
+Event names contain a dot, so the table key must be quoted. `[events.worktree.created]` is parsed as a nested table and rejected.
+
 Example:
 
 ```toml
-[events.worktree.created]
+[events."worktree.created"]
 tasks = ["deps.install"]
 ```
 

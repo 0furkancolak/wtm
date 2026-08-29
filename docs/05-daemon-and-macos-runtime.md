@@ -93,7 +93,7 @@ No previous in-memory state is required for recovery.
 
 ## Sleep/wake and missed events
 
-WTM does not depend on an event being delivered exactly once. Any subsequent `status`, `doctor`, `analyze`, explicit `reconcile`, daemon restart or structural event can reconcile state from Git.
+WTM does not depend on an event being delivered exactly once. Any subsequent `status`, `doctor`, `analyze`, `plan`, daemon restart or structural event can reconcile state from Git.
 
 V1 does not add high-frequency polling merely to detect sleep/wake. If field testing shows reliable wake detection is needed, add a narrow macOS helper behind the watcher interface rather than spreading native code through core packages.
 

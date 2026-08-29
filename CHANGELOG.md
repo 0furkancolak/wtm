@@ -20,6 +20,22 @@ All notable changes are documented here. This project follows Semantic Versionin
 - Tag-gated release workflow that builds natively on macOS arm64 and x64, attests the artifacts,
   and publishes to the GitHub Release, npm and the Homebrew tap only for `v*` tags.
 
+### Fixed
+
+- `wtm status`, `doctor`, `explain`, `plan`, `env` and `ports` read the persistent workspace
+  registry. They previously ran against an empty data source and reported
+  `WTM_NOT_INITIALIZED` even directly after a successful `wtm init`.
+- `wtm run <task>` runs a configured task in the foreground. The command was implemented and
+  tested but never registered on the CLI, so the documented foreground path did not exist.
+- Public documentation, the bundled Agent Skill and the examples no longer describe commands the
+  CLI does not have.
+
+### Changed
+
+- The npm package ships only what `bin` and `main` resolve, so it no longer carries unreachable
+  bundles, duplicate migrations or this project's internal planning ledger: 5.0 MB unpacked
+  becomes 2.5 MB. Only the version field of the manifest reaches the bundles.
+
 ### Notes
 
 - No public release, npm version, GitHub Release or Homebrew tap exists yet. The channels are

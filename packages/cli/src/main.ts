@@ -4,7 +4,12 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
 import type { AdapterTrustStore } from '@wtm/core';
-import { listGitWorktrees, resolveWorkspaceConfig, SQLiteStateStore } from '@wtm/core';
+import {
+  listGitWorktrees,
+  resolveWorkspaceConfig,
+  SQLiteStateStore,
+  type TaskResolutionInput,
+} from '@wtm/core';
 import type { GitWorktreeRecord } from '@wtm/core';
 import {
   createLaunchdLifecycle,
@@ -44,6 +49,7 @@ import { runAnalyzeCommand } from './commands/analyze';
 import { runRemoveCommand } from './commands/remove';
 import { toGitSafetyError } from './commands/git-error';
 import { runResolveCommand } from './commands/resolve';
+import { runRunCommand } from './commands/run';
 import {
   runProductionInitCommand,
   type ProductionInitCommandInput,
@@ -56,6 +62,7 @@ import {
   type SkillInstaller,
 } from './commands/skill';
 import { configureProductMetadata } from './product';
+import { createStateDiagnosticDataSource } from './state-diagnostics';
 
 export interface CliDependencies {
   dataSource?: DiagnosticDataSource;
@@ -80,6 +87,7 @@ export interface CliDependencies {
   initDatabasePath?: string;
   initUserDataDir?: string;
   analysisDatabasePath?: string;
+  diagnosticsDatabasePath?: string;
   resolveRunner?: (input: { cwd: string; taskName: string }) => Promise<JsonEnvelope<unknown>>;
   analyzeRunner?: (input: { repoPath: string; selector?: string }) => Promise<JsonEnvelope<unknown>>;
   removeRunner?: (input: { repoPath: string; selector: string }) => Promise<JsonEnvelope<unknown>>;
@@ -153,6 +161,12 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       ? await runProductionResolve({ cwd, taskName })
       : await dependencies.resolveRunner({ cwd, taskName });
     renderRuntime(envelope, runtimeJson(program, options));
+  });
+
+  const runTaskCommand = program.command('run <task>').description('Run a configured task in the foreground.');
+  addJsonOption(runTaskCommand);
+  runTaskCommand.action(async (taskName: string, options: ScopeOptions) => {
+    renderRuntime(await runRunCommand(await productionTaskResolution({ cwd, taskName })), runtimeJson(program, options));
   });
 
   const analyze = program.command('analyze [selector]').description('Analyze worktree removal safety.');
@@ -318,7 +332,9 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   });
 
   const init = program.command('init [path]').description('Initialize and register a WTM workspace.');
-  addScopeOptions(init);
+  addJsonOption(init);
+  // `--global` selects a destination here, so it cannot borrow the read-scoping description.
+  init.addOption(new Option('--global', 'register in user WTM data instead of wtm.toml'));
   init.option('--yes', 'accept non-destructive proposed defaults');
   init.option('--max-depth <n>', 'maximum discovery depth', parseNonNegativeInteger);
   init.option('--no-ai-skill', 'skip local Agent Skill installation');
@@ -349,7 +365,8 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     stdout(await readCanonicalSkill());
   });
   const skillInstall = skill.command('install').description('Install the canonical WTM Agent Skill.');
-  addScopeOptions(skillInstall);
+  addJsonOption(skillInstall);
+  skillInstall.addOption(new Option('--global', 'install into ~/.agents/skills instead of the current workspace'));
   skillInstall.action(async (options: ScopeOptions) => {
     const global = options.global === true || program.opts<ScopeOptions>().global === true;
     const mode = global ? 'global' as const : 'local' as const;
@@ -601,13 +618,15 @@ function operationFailure(
 }
 
 async function runProductionResolve(input: { cwd: string; taskName: string }): Promise<JsonEnvelope<unknown>> {
+  return runResolveCommand(await productionTaskResolution(input));
+}
+
+/** `resolve` and `run` answer the same question; only one of them then executes the task. */
+async function productionTaskResolution(input: { cwd: string; taskName: string }): Promise<TaskResolutionInput> {
   const topology = await listGitWorktrees(input.cwd);
   const worktree = topology.find(({ path }) => containsPath(path, input.cwd)) ?? topology[0];
   if (worktree === undefined) {
-    return runResolveCommand({
-      config: {}, taskName: input.taskName, isMain: true,
-      context: { env: process.env },
-    });
+    return { config: {}, taskName: input.taskName, isMain: true, context: { env: process.env } };
   }
   const config = await resolveWorkspaceConfig({
     workspaceRoot: input.cwd,
@@ -615,7 +634,7 @@ async function runProductionResolve(input: { cwd: string; taskName: string }): P
     globalConfigPath: join(homedir(), 'Library', 'Application Support', 'WTM', 'config.toml'),
   });
   const branch = worktree.branch?.replace(/^refs\/heads\//, '') ?? '';
-  return runResolveCommand({
+  return {
     config: config.value,
     taskName: input.taskName,
     isMain: worktree.path === topology[0]?.path,
@@ -631,7 +650,7 @@ async function runProductionResolve(input: { cwd: string; taskName: string }): P
       branchSlug: branch.replace(/[^A-Za-z0-9._-]+/g, '-'),
       env: process.env,
     },
-  });
+  };
 }
 
 function containsPath(root: string, candidate: string): boolean {
@@ -654,6 +673,9 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
   const defaultClient = dependencies.runtimeClient === undefined && isRuntimeInvocation(argv)
     ? new DaemonClient({ socketPath: defaultDaemonSocketPath() })
     : null;
+  const diagnosticStore = dependencies.dataSource === undefined && isDiagnosticInvocation(argv)
+    ? openDiagnosticStore(dependencies.diagnosticsDatabasePath ?? defaultProductionRuntimePaths().databasePath)
+    : null;
   const cancellation = dependencies.signal === undefined && isFollowInvocation(argv)
     ? new AbortController()
     : null;
@@ -663,6 +685,7 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
   const program = createCli({
     ...dependencies,
     ...(defaultClient === null ? {} : { runtimeClient: defaultClient }),
+    ...(diagnosticStore === null ? {} : { dataSource: createStateDiagnosticDataSource(diagnosticStore) }),
     ...(cancellation === null ? {} : { signal: cancellation.signal }),
     ...(jsonRequested ? { stderr: () => {} } : {}),
   }, { setExitCode: (value) => { exitCode = value; } });
@@ -678,7 +701,22 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
     throw error;
   } finally {
     if (cancellation !== null) process.off('SIGINT', onInterrupt);
+    diagnosticStore?.close();
     await defaultClient?.close();
+  }
+}
+
+function isDiagnosticInvocation(argv: readonly string[]): boolean {
+  const command = argv.find((argument) => !argument.startsWith('-'));
+  return command !== undefined && commands.some(([name]) => name === command);
+}
+
+function openDiagnosticStore(databasePath: string): SQLiteStateStore | null {
+  // An absent or unreadable database means nothing is registered yet, which the commands report.
+  try {
+    return new SQLiteStateStore(databasePath, { readonly: true });
+  } catch {
+    return null;
   }
 }
 

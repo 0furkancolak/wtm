@@ -51,12 +51,13 @@ Recommended:
 docs/
 packages/
 skills/
-tests/
 LICENSE
 README.md
 CONTRIBUTING.md
 SECURITY.md
 ```
+
+Tests are not a top-level directory: every test lives in a `__tests__/` directory beside the code it covers.
 
 ## TypeScript/runtime baseline
 
@@ -72,13 +73,12 @@ commander         CLI parsing
 smol-toml         TOML parsing
 zod               config/protocol validation
 better-sqlite3    transactional persistent state
-picocolors        lightweight TTY color
 ```
 
 Test tooling:
 
 ```text
-vitest
+bun test
 ```
 
 Dependencies are recommendations for implementation; package health/license checks are required before the first public release.
@@ -136,7 +136,9 @@ The tag workflow (`.github/workflows/release.yml`):
 - refuses to publish a **stable** release whose executable is not Developer ID signed. Prereleases
   may ship ad-hoc signed;
 - attests the artifacts, uploads them to the GitHub Release, publishes to npm with provenance, and
-  only then renders and commits the Homebrew formula from the final checksums.
+  only then renders and commits the Homebrew formula from the final checksums. The formula job runs
+  for stable tags only — it is gated by `!contains(github.ref_name, '-')`, so a prerelease never
+  becomes the default `brew install` formula.
 
 Required repository configuration before the first real release:
 

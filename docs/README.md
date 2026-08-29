@@ -1,6 +1,6 @@
 # WTM — Worktree Runtime Manager
 
-Status: **Architecture/design package for implementation**  
+Status: **Implemented and pre-release — no published artifact or release tag yet**  
 Primary platform: **macOS**  
 Primary implementation language: **TypeScript**  
 Runtime baseline: **Node.js 24 LTS**  

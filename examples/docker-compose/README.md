@@ -11,5 +11,5 @@ wtm start compose-up
 Compose is deliberately opt-in: initialization and daemon installation do not start containers. Stop the stack explicitly when finished:
 
 ```bash
-wtm start compose-down
+wtm run compose-down
 ```

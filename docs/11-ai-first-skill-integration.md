@@ -26,9 +26,9 @@ wtm status --json
 To run project operations:
 
 ```bash
-wtm dev
-wtm test
 wtm run <task>
+wtm start <task>
+wtm exec -- <argv>
 ```
 
 To understand decisions:
@@ -49,12 +49,12 @@ wtm analyze --json
 1. Do not manually choose a dev port when WTM manages the task.
 2. Do not copy `.env` files between worktrees unless the WTM config explicitly instructs it.
 3. Do not share `node_modules`, `.venv`, `.next`, `target` or build directories manually.
-4. Prefer exposed WTM tasks over raw parent Makefile commands.
+4. Prefer configured WTM tasks over raw parent Makefile commands.
 5. Use `wtm resolve <task>` when debugging what WTM will run.
 6. Use `--json` for reasoning/automation.
 7. Never use `git worktree remove -f` to bypass WTM safety.
 8. Never auto-commit/push/reset merely to satisfy deletion; report blockers unless the user explicitly asked for that Git action.
-9. If WTM is unhealthy, run `wtm doctor --json` and `wtm reconcile` before inventing local workarounds.
+9. If WTM is unhealthy, run `wtm doctor --json` and `wtm plan --json` before inventing local workarounds.
 
 ## Skill installation
 
@@ -82,7 +82,7 @@ During `wtm init`, WTM may print an optional snippet:
 ```md
 ## Worktree runtime
 
-This workspace uses WTM. Before running development/test commands, use `wtm doctor --json` and prefer WTM tasks such as `wtm dev` and `wtm test`. Do not manually select ports or remove worktrees with force.
+This workspace uses WTM. Before running development/test commands, use `wtm doctor --json` and prefer WTM tasks: `wtm run <task>` in the foreground, `wtm start <task>` in the background, and `wtm exec -- <argv>` for a raw command. Do not manually select ports or remove worktrees with force.
 ```
 
 An explicit future `wtm ai instructions --append-agents` command can update the file with user approval.

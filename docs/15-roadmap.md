@@ -93,6 +93,7 @@ Deliver:
 
 - performance benchmarks;
 - security review of cleanup/task execution;
+- standalone Node SEA distribution;
 - Homebrew distribution;
 - npm distribution;
 - upgrade/migration tests;
@@ -107,7 +108,6 @@ Deliver:
 - PR/GitHub API awareness;
 - automatic idle-runtime suspension;
 - resource budget enforcement;
-- standalone Node SEA as primary distribution;
 - GUI/menu bar application.
 
 The architecture supports these, but V1 should not carry their maintenance cost.

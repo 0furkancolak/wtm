@@ -148,13 +148,15 @@ run = ["make", "dev", "WTM_ID={id}"]
 cwd = "{workspace.root}"
 background = true
 
-[repo."services/search".tasks.test]
+[tasks."search.test"]
 run = ["go", "test", "./..."]
 cwd = "{worktree.root}/services/search"
 
-[repo."services/ml".capabilities]
+[capabilities]
 "python.environment-manager" = "uv"
 ```
+
+V1 has no per-repository override table in workspace `wtm.toml`. A repository that needs its own tasks or capabilities carries them in its own `.wtm.toml`.
 
 ## 6. Global-only registration
 

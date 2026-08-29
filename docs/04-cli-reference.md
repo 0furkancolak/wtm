@@ -12,7 +12,7 @@ Examples:
 wtm status
 wtm status --global
 wtm analyze --global
-wtm gc --global --dry-run
+wtm ports --global
 ```
 
 Destructive commands still require an explicit worktree selector even when global scope is used.
@@ -37,7 +37,7 @@ Options:
 
 ### `wtm init --global [path]`
 
-Registers a workspace without writing `wtm.toml` into the selected directory. Configuration is stored in user WTM data.
+Registers a workspace without writing `wtm.toml` into the selected directory; the configuration is stored in user WTM data. On `init` and `skill install`, `--global` selects a destination rather than scoping a read, and each carries its own help text saying so.
 
 ## Status and diagnostics
 
@@ -55,17 +55,27 @@ Explains why each adapter/resource/task/config value was selected and includes p
 
 ### `wtm plan [selector]`
 
-Shows desired changes without applying them.
-
-### `wtm apply [selector]`
-
-Applies the current plan. Daemon-driven worktree initialization uses the same plan/apply path.
+Shows desired changes without applying them. V1 ships `plan` only; there is no separate apply command.
 
 ## Task execution
 
 ### `wtm run <task>`
 
-Runs a task in the foreground with resolved environment/context.
+Runs a configured task in the foreground with resolved environment/context.
+
+```text
+--json      emit the stable JSON envelope
+-h, --help  display help for command
+```
+
+### `wtm exec <argv...>`
+
+Executes raw argv in the foreground with the same resolved environment/context. The argument is a command line, not a configured task name; use `wtm run <task>` for tasks.
+
+```text
+--json      emit the stable JSON envelope
+-h, --help  display help for command
+```
 
 ### `wtm start <task>`
 
@@ -92,16 +102,7 @@ cwd: /Users/me/DEVNAFRU
 command: make dev-with-worktree-7
 ```
 
-### Exposed task shortcuts
-
-A task with `expose = true` can be invoked directly:
-
-```bash
-wtm dev
-wtm test
-```
-
-Unknown top-level words do not automatically execute shell commands.
+Unknown top-level words do not automatically execute shell commands. Tasks are always addressed by name through `wtm run`, `wtm start`, `wtm restart` or `wtm resolve`.
 
 ## Runtime commands
 
@@ -115,13 +116,7 @@ Shows endpoint leases.
 
 ### `wtm env`
 
-Prints resolved runtime environment.
-
-```bash
-wtm env --shell
-```
-
-emits shell `export` lines for explicit user evaluation.
+Prints the resolved environment delta. Options are `--json` and `--global`.
 
 ### `wtm logs [task]`
 
@@ -168,12 +163,6 @@ BLOCKED: 2 commits are not present on an allowed remote ref
 
 WTM never runs the suggested commit/push/reset/clean action automatically.
 
-## Reconciliation
-
-### `wtm reconcile [selector]`
-
-Forces Git/config/adapter reconciliation. `--global` reconciles all registered workspaces.
-
 ## Storage
 
 ### `wtm disk`
@@ -182,13 +171,12 @@ Reports logical use, WTM-owned resources and reclaimable estimates.
 
 ### `wtm gc`
 
-Default safe GC only.
+Default safe GC only. It plans by default and applies the same guarded plan under `--apply`.
 
 ```bash
+wtm gc
 wtm gc --dry-run
-wtm gc --builds --dry-run
-wtm gc --builds
-wtm gc --dependencies --dry-run
+wtm gc --apply
 ```
 
 Dependency cache GC requires adapter-native cleanup plans and is never included in default GC.
@@ -199,7 +187,6 @@ Dependency cache GC requires adapter-native cleanup plans and is never included 
 wtm daemon install
 wtm daemon uninstall
 wtm daemon status
-wtm daemon restart
 wtm daemon serve
 ```
 
@@ -215,8 +202,10 @@ wtm skill install --global
 
 The canonical source is `skills/wtm/SKILL.md`.
 
+`skill install --global` installs into `~/.agents/skills` instead of the current workspace.
+
 ## JSON guarantee
 
-All operational commands support `--json` unless their purpose is raw stream output (`logs --follow`). Stable fields are versioned with `schemaVersion`.
+All operational commands support `--json` unless their purpose is raw stream output (`logs --follow`) or fixed canonical text (`skill print`). Stable fields are versioned with `schemaVersion`.
 
 Human-readable text is not an API.

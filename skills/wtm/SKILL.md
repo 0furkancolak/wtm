@@ -26,17 +26,17 @@ wtm init --yes --json
 
 ## Development and tests
 
-Prefer exposed WTM tasks:
-
-```bash
-wtm dev
-wtm test
-```
-
-For another task:
+Prefer WTM task execution over invoking a project command directly:
 
 ```bash
 wtm run <task>
+```
+
+For a long-running task WTM should supervise, and for raw argv that is not a configured task:
+
+```bash
+wtm start <task>
+wtm exec -- <argv>
 ```
 
 When a task behaves unexpectedly, inspect its resolved context before changing project files:
@@ -86,7 +86,7 @@ If WTM reports uncommitted/untracked work or local-only commits, report the bloc
 If daemon/runtime state appears stale:
 
 ```bash
-wtm reconcile
+wtm daemon status --json
 wtm doctor --json
 ```
 

@@ -92,7 +92,7 @@ skills/wtm/SKILL.md
 **Files:**
 - Create: root package/tooling files above.
 - Create: `packages/protocol/src/*.ts`.
-- Test: `packages/protocol/src/*.test.ts`.
+- Test: `packages/protocol/src/__tests__/*.test.ts`.
 
 **Interfaces:**
 - Produces `JsonEnvelope<T>`, `WtmError`, `ProtocolVersion`, adapter request/response schemas.
@@ -113,7 +113,7 @@ describe('jsonEnvelopeSchema', () => {
 - [ ] **Step 2: Run the focused tests and verify failure**
 
 ```bash
-bun test packages/protocol/src/json-envelope.test.ts
+bun test packages/protocol/src/__tests__/json-envelope.test.ts
 ```
 
 Expected: failure because the schema/module does not exist.
@@ -143,8 +143,8 @@ git commit -m "feat: bootstrap WTM protocol workspace"
 - Create: `packages/core/src/git/git-runner.ts`
 - Create: `packages/core/src/git/worktree-parser.ts`
 - Create: `packages/testkit/src/git-fixture.ts`
-- Test: `packages/core/src/git/worktree-parser.test.ts`
-- Test: `packages/core/src/git/git-runner.integration.test.ts`
+- Test: `packages/core/src/git/__tests__/worktree-parser.test.ts`
+- Test: `packages/core/src/git/__tests__/git-runner.integration.test.ts`
 
 **Interfaces:**
 
@@ -169,7 +169,7 @@ Construct byte fixtures representing `git worktree list --porcelain -z` with nor
 - [ ] **Step 2: Verify tests fail**
 
 ```bash
-bun test packages/core/src/git/worktree-parser.test.ts
+bun test packages/core/src/git/__tests__/worktree-parser.test.ts
 ```
 
 - [ ] **Step 3: Implement a byte-safe parser and runner**
@@ -251,7 +251,7 @@ git commit -m "feat: resolve WTM configuration"
 - Create: `packages/core/src/state/store.ts`
 - Create: `packages/core/src/state/sqlite-store.ts`
 - Create: `packages/core/src/state/migrations/001-initial.sql`
-- Test: `packages/core/src/state/sqlite-store.test.ts`
+- Test: `packages/core/src/state/__tests__/sqlite-store.test.ts`
 
 **Interfaces:**
 
@@ -269,7 +269,7 @@ export interface StateStore {
 - [ ] **Step 2: Verify failure**
 
 ```bash
-bun test packages/core/src/state/sqlite-store.test.ts
+bun test packages/core/src/state/__tests__/sqlite-store.test.ts
 ```
 
 - [ ] **Step 3: Implement `better-sqlite3` store behind `StateStore`**
@@ -309,7 +309,7 @@ export async function initializeWorkspace(input: InitInput): Promise<InitResult>
 - [ ] **Step 6: Run and commit**
 
 ```bash
-bun test packages/core/src/workspace packages/cli/src/commands/init.test.ts
+bun test packages/core/src/workspace packages/cli/src/commands/__tests__/init.test.ts
 git add packages/core/src/workspace packages/cli/src/commands/init.ts packages/testkit
 git commit -m "feat: initialize existing WTM workspaces"
 ```
@@ -345,7 +345,7 @@ export function assertRemovable(analysis: WorktreeAnalysis): void;
 - [ ] **Step 6: Run and commit**
 
 ```bash
-bun test packages/core/src/analysis packages/cli/src/commands/remove.test.ts
+bun test packages/core/src/analysis packages/cli/src/commands/__tests__/remove.test.ts
 git add packages/core/src/analysis packages/cli/src/commands/analyze.ts packages/cli/src/commands/remove.ts
 git commit -m "feat: add safe worktree analysis and removal"
 ```
@@ -381,7 +381,7 @@ export interface ResolvedTask {
 - [ ] **Step 6: Run and commit**
 
 ```bash
-bun test packages/core/src/runtime packages/cli/src/commands/resolve.test.ts
+bun test packages/core/src/runtime packages/cli/src/commands/__tests__/resolve.test.ts
 git add packages/core/src/runtime packages/cli/src/commands/resolve.ts packages/cli/src/commands/run.ts
 git commit -m "feat: resolve tasks and worktree runtime endpoints"
 ```
@@ -391,7 +391,7 @@ git commit -m "feat: resolve tasks and worktree runtime endpoints"
 **Files:**
 - Create: `packages/adapters/src/registry.ts`
 - Create adapter files listed in target structure.
-- Test: `packages/adapters/src/*.test.ts`.
+- Test: `packages/adapters/src/__tests__/*.test.ts`.
 
 **Interfaces:**
 
@@ -451,7 +451,7 @@ git commit -m "feat: expose WTM diagnostics CLI"
 - [ ] **Step 6: Run and commit**
 
 ```bash
-bun test packages/daemon packages/cli/src/client.test.ts
+bun test packages/daemon packages/cli/src/__tests__/client.test.ts
 git add packages/daemon packages/cli/src/client.ts
 git commit -m "feat: add WTM daemon reconciliation"
 ```
@@ -472,7 +472,7 @@ git commit -m "feat: add WTM daemon reconciliation"
 - [ ] **Step 6: Run and commit**
 
 ```bash
-bun test packages/daemon/src/process-supervisor.test.ts packages/cli/src/commands
+bun test packages/daemon/src/__tests__/process-supervisor.test.ts packages/cli/src/commands
 git add packages/daemon packages/cli/src/commands
 git commit -m "feat: supervise worktree runtime processes"
 ```
@@ -491,7 +491,7 @@ git commit -m "feat: supervise worktree runtime processes"
 - [ ] **Step 5: Commit**
 
 ```bash
-bun test packages/daemon/src/launchd.test.ts packages/cli/src/commands/daemon.test.ts
+bun test packages/daemon/src/__tests__/launchd.test.ts packages/cli/src/commands/__tests__/daemon.test.ts
 git add packages/daemon/src/launchd.ts packages/cli/src/commands/daemon.ts
 git commit -m "feat: manage macOS WTM launch agent"
 ```
@@ -513,7 +513,7 @@ git commit -m "feat: manage macOS WTM launch agent"
 - [ ] **Step 6: Commit**
 
 ```bash
-bun test packages/core/src/resources packages/cli/src/commands/gc.test.ts
+bun test packages/core/src/resources packages/cli/src/commands/__tests__/gc.test.ts
 git add packages/core/src/resources packages/cli/src/commands/disk.ts packages/cli/src/commands/gc.ts
 git commit -m "feat: add safe WTM resource lifecycle"
 ```
@@ -533,7 +533,7 @@ git commit -m "feat: add safe WTM resource lifecycle"
 - [ ] **Step 5: Run and commit**
 
 ```bash
-bun test packages/core/src/plan packages/cli/src/commands/adapter.test.ts
+bun test packages/core/src/plan packages/cli/src/commands/__tests__/adapter.test.ts
 git add packages/core/src/plan packages/cli/src/commands/adapter.ts packages/testkit
 git commit -m "feat: support trusted external WTM adapters"
 ```
@@ -552,7 +552,7 @@ git commit -m "feat: support trusted external WTM adapters"
 - [ ] **Step 5: Commit**
 
 ```bash
-bun test packages/cli/src/commands/skill.test.ts packages/cli/src/commands/init.test.ts
+bun test packages/cli/src/commands/__tests__/skill.test.ts packages/cli/src/commands/__tests__/init.test.ts
 git add skills/wtm/SKILL.md packages/cli/src/commands/skill.ts packages/cli/src/commands/init.ts
 git commit -m "feat: ship WTM agent skill"
 ```
@@ -562,7 +562,7 @@ git commit -m "feat: ship WTM agent skill"
 **Files:**
 - Create: `tests/perf/idle-daemon.ts`
 - Create: `tests/perf/workspace-scale.ts`
-- Create: `tests/e2e/full-workflow.test.ts`
+- Create: `packages/cli/src/__tests__/full-workflow.test.ts`
 - Create public repo policy files from `12-open-source-distribution.md`.
 
 - [ ] **Step 1: Build 10-repo/100-worktree generated benchmark fixture**

@@ -42,8 +42,8 @@ AI agents should be able to operate a WTM workspace with a very small command vo
 ```bash
 wtm doctor --json
 wtm status --json
-wtm dev
-wtm test
+wtm run <task>
+wtm start <task>
 wtm analyze --json
 ```
 

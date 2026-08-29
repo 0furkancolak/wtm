@@ -38,6 +38,8 @@ Replace `<VERSION>` with the published release version.
 
 ### npm (Node.js 24+)
 
+After a release publishes the package, install WTM globally:
+
 ```bash
 npm install --global worktree-runtime-manager
 wtm --version
@@ -69,7 +71,7 @@ wtm stop dev
 wtm analyze --all
 ```
 
-`wtm daemon install` is optional; installation never starts it automatically. Start with a configuration from the [published examples](examples/README.md), then use the complete [documentation](docs/README.md) for configuration, safety, and CLI details.
+`wtm daemon install` is optional; installation never starts it automatically. Start with a configuration from the [examples](examples/README.md), then use the complete [documentation](docs/README.md) for configuration, safety, and CLI details.
 
 ## Requirements
 

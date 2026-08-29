@@ -18,6 +18,12 @@ test('the public npm package contains runtime bundles, migrations, docs, license
   for (const excluded of ['dist/sea/wtm', 'dist/release/SHA256SUMS', 'dist/release/wtm-darwin-arm64.tar.gz'])
     expect(files).not.toContain(excluded);
   expect(files.filter((path) => path.endsWith('.tar.gz'))).toEqual([]);
+  // `bin` and `main` both resolve inside dist/cli, which is bundled; the other outputs are build
+  // byproducts, and the superpowers directory is this project's own planning ledger.
+  for (const directory of ['dist/protocol/', 'dist/core/', 'dist/adapters/', 'dist/daemon/', 'docs/superpowers/'])
+    expect(files.filter((path) => path.startsWith(directory))).toEqual([]);
+  // One field of the manifest is public; the dependency and script blocks are not.
+  expect(readFileSync('dist/cli/bin.js', 'utf8')).not.toContain('devDependencies');
   const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
   expect(manifest.dependencies.commander).toBe('14.0.2');
   const thirdParty = readFileSync('THIRD_PARTY_LICENSES.md', 'utf8');
