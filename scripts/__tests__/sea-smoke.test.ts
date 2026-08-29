@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFakeAdapter, type FakeAdapter } from '../../packages/testkit/src/fake-adapter';
@@ -27,7 +26,8 @@ afterEach(async () => {
 });
 
 async function isolatedHome(): Promise<{ home: string; repository: string; temporary: string }> {
-  const home = await mkdtemp(join(tmpdir(), 'wtm-sea-home-'));
+  // macOS caps Unix socket paths at 104 bytes, so the daemon needs a short home.
+  const home = await mkdtemp('/tmp/wtm-sea-');
   await chmod(home, 0o700);
   const repository = join(home, 'repository');
   const temporary = join(home, 'tmp');
@@ -67,6 +67,28 @@ async function initializedWorkspace() {
 }
 
 // `bun run binary:verify` builds the executable first; the default suite has nothing to check.
+function spawnDaemon(options: { cwd: string; home: string; temporary: string }): ChildProcess {
+  const daemon = spawn(executable, ['daemon', 'serve'], {
+    cwd: options.cwd,
+    stdio: 'ignore',
+    env: { PATH: systemPath, HOME: options.home, TMPDIR: options.temporary, LC_ALL: 'C', LANG: 'C' },
+  });
+  cleanups.push(async () => {
+    daemon.kill('SIGTERM');
+    await new Promise((resolve) => { daemon.once('exit', resolve); });
+  });
+  return daemon;
+}
+
+async function waitForDaemon(options: { cwd: string; home: string; temporary: string }): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    if (runStandalone(['ps', '--json'], options).status === 0) return;
+    await new Promise((resolve) => { setTimeout(resolve, 100); });
+  }
+  throw new Error('the standalone daemon did not accept requests');
+}
+
 describe.skipIf(!existsSync(executable))('standalone executable', () => {
   test('reports its branded version and help without any runtime on PATH', async () => {
     const paths = await isolatedHome();
@@ -144,6 +166,36 @@ describe.skipIf(!existsSync(executable))('standalone executable', () => {
     expect(started.record.state).toBe('RUNNING');
     expect((await supervisor.stop({ worktreeId: 'worktree-1', taskName: 'fixture' })).state).toBe('STOPPED');
     expect(readdirSync(paths.temporary).filter((entry) => entry.endsWith('.node'))).toEqual([]);
+  });
+
+  test('serves its daemon and owns a configured task end to end', async () => {
+    const paths = await initializedWorkspace();
+    const options = { cwd: paths.repository, home: paths.home, temporary: paths.temporary };
+    await writeFile(join(paths.repository, 'wtm.toml'), [
+      'version = 1',
+      '',
+      '[workspace]',
+      'name = "smoke"',
+      '',
+      '[tasks.hold]',
+      'description = "Hold a process for the standalone smoke test."',
+      'run = ["/bin/sleep", "30"]',
+      'cwd = "{worktree.root}"',
+      '',
+    ].join('\n'));
+    expect(runStandalone(['init', '--yes', '--json'], options).status).toBe(0);
+
+    const daemon = spawnDaemon(options);
+    await waitForDaemon(options);
+
+    const started = JSON.parse(runStandalone(['start', 'hold', '--json'], options).stdout);
+    const listed = JSON.parse(runStandalone(['ps', '--json'], options).stdout);
+    const stopped = JSON.parse(runStandalone(['stop', 'hold', '--json'], options).stdout);
+
+    expect(started.data.process.state).toBe('RUNNING');
+    expect(listed.data.processes.map((entry: { taskName: string }) => entry.taskName)).toContain('hold');
+    expect(stopped.data.processes[0].state).toBe('STOPPED');
+    expect(daemon.exitCode).toBeNull();
   });
 
   test('runs a trusted external adapter through its own guarded child', async () => {
