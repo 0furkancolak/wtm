@@ -69,6 +69,7 @@ export interface CliDependencies {
   daemonRuntimeFactory?: () => Promise<ForegroundDaemonRuntime>;
   daemonSignals?: DaemonSignalSource;
   daemonProgramArguments?: readonly string[];
+  runtimeInvocation?: RuntimeInvocation;
   diskRunner?: (input: { cwd: string }) => Promise<JsonEnvelope<unknown>>;
   gcRunner?: (input: { cwd: string; apply: boolean }) => Promise<JsonEnvelope<unknown>>;
   resourceDatabasePath?: string;
@@ -82,6 +83,11 @@ export interface CliDependencies {
   resolveRunner?: (input: { cwd: string; taskName: string }) => Promise<JsonEnvelope<unknown>>;
   analyzeRunner?: (input: { repoPath: string; selector?: string }) => Promise<JsonEnvelope<unknown>>;
   removeRunner?: (input: { repoPath: string; selector: string }) => Promise<JsonEnvelope<unknown>>;
+}
+
+export interface RuntimeInvocation {
+  executable: string;
+  prefixArgs: readonly string[];
 }
 
 interface CliHooks {
@@ -240,7 +246,8 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     addJsonOption(lifecycle);
     lifecycle.action(async (options: ScopeOptions) => {
       const manager = dependencies.daemonLifecycle ?? createLaunchdLifecycle({
-        programArguments: dependencies.daemonProgramArguments ?? defaultDaemonProgramArguments(),
+        programArguments: dependencies.daemonProgramArguments
+          ?? daemonProgramArguments(dependencies.runtimeInvocation ?? defaultRuntimeInvocation()),
       });
       renderRuntime(await runDaemonLifecycleCommand(action, manager), runtimeJson(program, options));
     });
@@ -249,7 +256,10 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   addJsonOption(serve);
   serve.action(async (options: ScopeOptions) => {
     const result = await serveDaemon({
-      runtimeFactory: dependencies.daemonRuntimeFactory ?? createProductionDaemon,
+      runtimeFactory: dependencies.daemonRuntimeFactory
+        ?? (() => createProductionDaemon({
+          runtimeInvocation: dependencies.runtimeInvocation ?? defaultRuntimeInvocation(),
+        })),
       ...(dependencies.daemonSignals === undefined ? {} : { signals: dependencies.daemonSignals }),
     });
     renderRuntime(result.envelope, runtimeJson(program, options));
@@ -735,10 +745,14 @@ function exitCodeForError(code: WtmErrorCode): number {
   return 1;
 }
 
-function defaultDaemonProgramArguments(): readonly string[] {
+export function defaultRuntimeInvocation(): RuntimeInvocation {
   const entry = process.argv[1];
   if (entry === undefined) throw new Error('WTM CLI entry path is unavailable');
-  return [resolve(process.execPath), resolve(entry), 'daemon', 'serve'];
+  return { executable: resolve(process.execPath), prefixArgs: [resolve(entry)] };
+}
+
+export function daemonProgramArguments(invocation: RuntimeInvocation): readonly string[] {
+  return [invocation.executable, ...invocation.prefixArgs, 'daemon', 'serve'];
 }
 
 function capitalize(value: string): string {

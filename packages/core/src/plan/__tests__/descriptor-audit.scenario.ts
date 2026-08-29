@@ -1,4 +1,5 @@
 import { readdir } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { createFakeAdapter } from '../../../../testkit/src/fake-adapter';
 import { createAdapterTrustStore, trustRepositoryAdapter } from '../adapter-trust';
 import { invokeExternalAdapter } from '../external-adapter';
@@ -22,6 +23,14 @@ try {
         snapshotArtifactSeen ||= (await readdir(process.env.TMPDIR!)).some((entry) =>
           entry.startsWith('wtm-adapter-snapshot-') || entry.startsWith('wtm-adapter-execution-'));
       },
+    },
+    runtimeInvocation: {
+      executable: process.execPath,
+      prefixArgs: [
+        '--import',
+        import.meta.resolve('tsx'),
+        fileURLToPath(new URL('../../../../cli/src/bin.ts', import.meta.url)),
+      ],
     },
   });
   process.stdout.write(`${JSON.stringify({ afterVerificationRan, snapshotArtifactSeen, response: actual })}\n`);

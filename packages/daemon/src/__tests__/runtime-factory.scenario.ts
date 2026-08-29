@@ -1,5 +1,6 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createWorkspaceFixture } from '../../../testkit/src/workspace-fixture';
 import { listGitWorktrees, readGitRepositoryIdentity } from '@wtm/core';
 import { DaemonClient } from '../../../cli/src/client';
@@ -10,15 +11,25 @@ const fixture = await createWorkspaceFixture();
 const socketDirectory = await mkdtemp('/tmp/wtm-socket-');
 const useDefaultClient = process.argv[2] === 'default-client';
 const closeWithLiveTask = process.argv[2] === 'close-live';
+const runtimeInvocation = {
+  executable: process.execPath,
+  prefixArgs: [
+    '--import',
+    import.meta.resolve('tsx'),
+    fileURLToPath(new URL('../../../cli/src/bin.ts', import.meta.url)),
+  ],
+};
 const runtime = await createProductionDaemon(useDefaultClient ? {
   gracePeriodMs: 100,
   pollIntervalMs: 10,
+  runtimeInvocation,
 } : {
   dataRoot: join(fixture.userDataDir, 'production'),
   socketPath: join(socketDirectory, 'wtmd.sock'),
   logRoot: join(fixture.userDataDir, 'logs'),
   gracePeriodMs: 100,
   pollIntervalMs: 10,
+  runtimeInvocation,
 });
 const client = new DaemonClient({ socketPath: runtime.paths.socketPath });
 try {
@@ -46,6 +57,7 @@ try {
   if (!useDefaultClient) await client.start();
 
   const start = await invoke(['start', 'hold', '--json']);
+  if (!start.envelope.ok) throw new Error(JSON.stringify(start.envelope));
   if (closeWithLiveTask) {
     await runtime.close();
     const processRecord = start.envelope.data.process;

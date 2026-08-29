@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   adapterRequestSchema,
   adapterMetadataResponseSchema,
@@ -39,7 +40,13 @@ export interface ExternalAdapterInvocation {
   trust: AdapterTrustStore;
   timeoutMs?: number;
   maxOutputBytes?: number;
+  runtimeInvocation?: RuntimeInvocation;
   hooks?: ExternalAdapterHooks;
+}
+
+export interface RuntimeInvocation {
+  executable: string;
+  prefixArgs: readonly string[];
 }
 
 export interface ExternalAdapterHooks {
@@ -93,7 +100,9 @@ export async function invokeExternalAdapter(input: ExternalAdapterInvocation): P
         operation: input.operation,
         timeoutMs: checkedTimeout(input.timeoutMs ?? defaultTimeoutMs[input.operation]),
         maxOutputBytes: checkedOutputLimit(input.maxOutputBytes ?? defaultMaxOutputBytes),
-        runtimeExecutable: input.hooks?.runtimeExecutable ?? nodeRuntimeExecutable(),
+        runtimeInvocation: input.hooks?.runtimeExecutable === undefined
+          ? (input.runtimeInvocation ?? defaultRuntimeInvocation())
+          : { executable: input.hooks.runtimeExecutable, prefixArgs: [] },
         ...(input.hooks?.afterTerminalCleanup === undefined
           ? {}
           : { afterTerminalCleanup: input.hooks.afterTerminalCleanup }),
@@ -135,7 +144,7 @@ function requestAdapter(
     operation: AdapterOperation;
     timeoutMs: number;
     maxOutputBytes: number;
-    runtimeExecutable: string;
+    runtimeInvocation: RuntimeInvocation;
     afterTerminalCleanup?: (state: ExternalAdapterCleanupState) => void;
   },
 ): Promise<Buffer> {
@@ -148,11 +157,10 @@ function requestAdapter(
     const stdout: Buffer[] = [];
     let failure: ExternalAdapterError | null = null;
     let terminateTimer: ReturnType<typeof setTimeout> | undefined;
-    const child = spawn(input.runtimeExecutable, [
-      '--import', moduleGuardPreload(descriptor.childDescriptor),
-      '--input-type=module',
-      '--eval', descriptorRunnerSource(),
-      `/dev/fd/${descriptor.childDescriptor}`,
+    const child = spawn(input.runtimeInvocation.executable, [
+      ...input.runtimeInvocation.prefixArgs,
+      '__wtm_internal_adapter',
+      String(descriptor.childDescriptor),
       descriptor.executableBasename,
     ], {
       // A dedicated process group lets timeout cleanup terminate adapter descendants
@@ -273,56 +281,22 @@ function assertDescriptorExecutionSupported(): void {
   }
 }
 
-function nodeRuntimeExecutable(): string {
+function defaultRuntimeInvocation(): RuntimeInvocation {
   // Bun drives the unit suite but production WTM requires Node 24; use the
-  // system Node binary there so descriptor inheritance matches production.
-  return process.versions.bun === undefined ? process.execPath : 'node';
-}
-
-function moduleGuardPreload(descriptor: number): string {
-  const descriptorPath = `/dev/fd/${descriptor}`;
-  const source = [
-    "import { isBuiltin, registerHooks } from 'node:module';",
-    `const entry = ${JSON.stringify(`file://${descriptorPath}`)};`,
-    `const descriptorPath = ${JSON.stringify(descriptorPath)};`,
-    `const sentinel = ${JSON.stringify(moduleDeniedSentinel)};`,
-    'function deny() { process.stderr.write(`${sentinel}\\n`); throw new Error("external adapter module dependency is not permitted"); }',
-    "function canonicalBuiltin(specifier) { return typeof specifier === 'string' ? (specifier.startsWith('node:') ? specifier : `node:${specifier}`) : ''; }",
-    "function isSupportedBuiltin(specifier) { const canonical = canonicalBuiltin(specifier); return canonical !== 'node:module' && isBuiltin(canonical); }",
-    'const getBuiltinModule = process.getBuiltinModule?.bind(process);',
-    'if (getBuiltinModule !== undefined) {',
-    "  Object.defineProperty(process, 'getBuiltinModule', {",
-    '    configurable: false, enumerable: true, writable: false,',
-    '    value(specifier) {',
-    '      const canonical = canonicalBuiltin(specifier);',
-    '      if (isBuiltin(canonical) && !isSupportedBuiltin(canonical)) return deny();',
-    '      return getBuiltinModule(specifier);',
-    '    },',
-    '  });',
-    '}',
-    'registerHooks({',
-    '  resolve(specifier, context, nextResolve) {',
-    '    if (specifier === entry || specifier === descriptorPath) return nextResolve(specifier, context);',
-    "    if (typeof specifier === 'string' && specifier.startsWith('node:') && isSupportedBuiltin(specifier)) {",
-    '      return nextResolve(specifier, context);',
-    '    }',
-    '    return deny();',
-    '  },',
-    '  load(url, context, nextLoad) {',
-    "    if (url === entry) return nextLoad(url, { ...context, format: 'module' });",
-    '    return nextLoad(url, context);',
-    '  },',
-    '});',
-  ].join('\n');
-  return `data:text/javascript,${encodeURIComponent(source)}`;
-}
-
-function descriptorRunnerSource(): string {
-  return [
-    'const [descriptorPath, originalBasename] = process.argv.slice(1);',
-    'process.argv[1] = originalBasename;',
-    'await import(descriptorPath);',
-  ].join('\n');
+  // absolute Node runtime there so descriptor inheritance matches production.
+  if (Object.hasOwn(process.versions, 'bun')) {
+    return {
+      executable: 'node',
+      prefixArgs: [
+        '--import',
+        import.meta.resolve('tsx'),
+        fileURLToPath(new URL('../../../cli/src/bin.ts', import.meta.url)),
+      ],
+    };
+  }
+  const entry = process.argv[1];
+  if (entry === undefined) throw new Error('WTM CLI entry path is unavailable');
+  return { executable: process.execPath, prefixArgs: [entry] };
 }
 
 function signalAdapterProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {

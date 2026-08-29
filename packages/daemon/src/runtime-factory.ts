@@ -15,7 +15,7 @@ import {
 } from '@wtm/core';
 import { WtmDaemon } from './main';
 import { ManagedLogStore } from './logs';
-import { ManagedProcessSupervisor } from './process-supervisor';
+import { ManagedProcessSupervisor, type RuntimeInvocation } from './process-supervisor';
 import { DaemonRuntimeController, type DaemonRuntimeResolver } from './runtime-controller';
 
 export interface ProductionRuntimePaths {
@@ -36,6 +36,7 @@ export interface ProductionDaemonOptions {
   gracePeriodMs?: number;
   pollIntervalMs?: number;
   onError?: (error: unknown) => void;
+  runtimeInvocation?: RuntimeInvocation;
 }
 
 export interface ProductionDaemonRuntime {
@@ -99,6 +100,7 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     ...(options.gracePeriodMs === undefined ? {} : { gracePeriodMs: options.gracePeriodMs }),
     ...(options.pollIntervalMs === undefined ? {} : { pollIntervalMs: options.pollIntervalMs }),
     ...(options.onError === undefined ? {} : { onError: options.onError }),
+    ...(options.runtimeInvocation === undefined ? {} : { runtimeInvocation: options.runtimeInvocation }),
   });
   const resolver = new ProductionRuntimeResolver(stateStore, paths.globalConfigPath);
   const controller = new DaemonRuntimeController({ supervisor, logs, resolver });
