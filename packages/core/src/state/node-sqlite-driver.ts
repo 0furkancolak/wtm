@@ -34,6 +34,7 @@ class NodeSqliteStatement implements SqliteStatement {
 
 class NodeSqliteDatabase implements SqliteDatabase {
   readonly #database: DatabaseSync;
+  #savepoints = 0;
 
   constructor(path: string, options: { readonly: boolean }) {
     this.#database = new DatabaseSync(path, { readOnly: options.readonly });
@@ -52,24 +53,45 @@ class NodeSqliteDatabase implements SqliteDatabase {
   }
 
   transaction<T>(fn: () => T): SqliteTransaction<T> {
-    const run = (mode: '' | ' IMMEDIATE'): T => {
-      if (this.#database.isTransaction) {
-        throw new Error('Nested SQLite transactions are not supported');
-      }
-      this.#database.exec(`BEGIN${mode}`);
-      try {
-        const result = fn();
-        this.#database.exec('COMMIT');
-        return result;
-      } catch (error) {
-        if (this.#database.isTransaction) this.#database.exec('ROLLBACK');
-        throw error;
-      }
-    };
+    const run = (mode: '' | ' IMMEDIATE'): T => (
+      this.#database.isTransaction ? this.#runNested(fn) : this.#runOutermost(fn, mode)
+    );
     return Object.assign(
       () => run(''),
       { immediate: () => run(' IMMEDIATE') },
     );
+  }
+
+  #runOutermost<T>(fn: () => T, mode: '' | ' IMMEDIATE'): T {
+    this.#database.exec(`BEGIN${mode}`);
+    try {
+      const result = fn();
+      this.#database.exec('COMMIT');
+      return result;
+    } catch (error) {
+      if (this.#database.isTransaction) this.#database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /** Nested wrappers join the open transaction through a savepoint, as `better-sqlite3` does. */
+  #runNested<T>(fn: () => T): T {
+    this.#savepoints += 1;
+    const savepoint = `wtm_savepoint_${this.#savepoints}`;
+    this.#database.exec(`SAVEPOINT ${savepoint}`);
+    try {
+      const result = fn();
+      this.#database.exec(`RELEASE ${savepoint}`);
+      return result;
+    } catch (error) {
+      if (this.#database.isTransaction) {
+        this.#database.exec(`ROLLBACK TO ${savepoint}`);
+        this.#database.exec(`RELEASE ${savepoint}`);
+      }
+      throw error;
+    } finally {
+      this.#savepoints -= 1;
+    }
   }
 
   close(): void {

@@ -1,6 +1,6 @@
 import { readdir } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
 import { createFakeAdapter } from '../../../../testkit/src/fake-adapter';
+import { developmentRuntimeInvocation } from '../../../../testkit/src/runtime-invocation';
 import { createAdapterTrustStore, trustRepositoryAdapter } from '../adapter-trust';
 import { invokeExternalAdapter } from '../external-adapter';
 
@@ -24,14 +24,7 @@ try {
           entry.startsWith('wtm-adapter-snapshot-') || entry.startsWith('wtm-adapter-execution-'));
       },
     },
-    runtimeInvocation: {
-      executable: process.execPath,
-      prefixArgs: [
-        '--import',
-        import.meta.resolve('tsx'),
-        fileURLToPath(new URL('../../../../cli/src/bin.ts', import.meta.url)),
-      ],
-    },
+    runtimeInvocation: developmentRuntimeInvocation(),
   });
   process.stdout.write(`${JSON.stringify({ afterVerificationRan, snapshotArtifactSeen, response: actual })}\n`);
 } finally {

@@ -13,9 +13,11 @@ import type {
   ManagedProcessUpdate,
   ManagedProcessReservationOptions,
 } from '@wtm/core';
+import { developmentRuntimeInvocation } from '../../../testkit/src/runtime-invocation';
 import { ManagedLogStore } from '../logs';
 import {
   ManagedProcessSupervisor,
+  type ManagedProcessSupervisorOptions,
   inspectProcess,
   inspectProcessGroup,
   inspectProcessIdentity,
@@ -28,6 +30,10 @@ const fixturePath = fileURLToPath(new URL('./process-group-fixture.scenario.ts',
 const tsxLoader = import.meta.resolve('tsx');
 const cleanups: Array<() => Promise<void>> = [];
 
+function createSupervisor(options: ManagedProcessSupervisorOptions): ManagedProcessSupervisor {
+  return new ManagedProcessSupervisor({ runtimeInvocation: developmentRuntimeInvocation(), ...options });
+}
+
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
@@ -36,7 +42,7 @@ async function setup(gracePeriodMs = 1_000) {
   const root = await mkdtemp(join(tmpdir(), 'wtm-supervisor-'));
   const store = new MemoryProcessStore();
   const worktree = { id: 'worktree-1' };
-  const supervisor = new ManagedProcessSupervisor({
+  const supervisor = createSupervisor({
     stateStore: store,
     logs: new ManagedLogStore({ root: join(root, 'logs') }),
     gracePeriodMs,
@@ -297,7 +303,7 @@ describe('ManagedProcessSupervisor', () => {
     store.throwOnCreate = true;
     let killedPgid = 0;
     let inspections = 0;
-    const supervisor = new ManagedProcessSupervisor({
+    const supervisor = createSupervisor({
       stateStore: store,
       logs: new ManagedLogStore({ root: join(root, 'logs') }),
       gracePeriodMs: 100,
@@ -326,7 +332,7 @@ describe('ManagedProcessSupervisor', () => {
     const { root, store, worktree } = await setup(25);
     const marker = join(root, 'must-not-launch');
     let anchorPid = 0;
-    const supervisor = new ManagedProcessSupervisor({
+    const supervisor = createSupervisor({
       stateStore: store,
       logs: new ManagedLogStore({ root: join(root, 'logs-preidentity') }),
       gracePeriodMs: 25,
@@ -359,7 +365,7 @@ describe('ManagedProcessSupervisor', () => {
     expect(await readFile(marker, 'utf8').then(() => true, () => false)).toBe(false);
 
     await supervisor.close();
-    const recovery = new ManagedProcessSupervisor({
+    const recovery = createSupervisor({
       stateStore: store,
       logs: new ManagedLogStore({ root: join(root, 'logs-preidentity') }),
       gracePeriodMs: 50,
@@ -393,7 +399,7 @@ describe('ManagedProcessSupervisor', () => {
     store.failRunningUpdate = true;
     let killedPgid = 0;
     let inspections = 0;
-    const supervisor = new ManagedProcessSupervisor({
+    const supervisor = createSupervisor({
       stateStore: store,
       logs: new ManagedLogStore({ root: join(root, 'logs') }),
       gracePeriodMs: 100,
@@ -422,7 +428,7 @@ describe('ManagedProcessSupervisor', () => {
     store.createFailuresRemaining = 1;
     const signalError = Object.assign(new Error('denied'), { code: 'EPERM' });
     let stableAnchorIdentity: ProcessIdentity | null = null;
-    const supervisor = new ManagedProcessSupervisor({
+    const supervisor = createSupervisor({
       stateStore: store,
       logs: new ManagedLogStore({ root: join(root, 'logs') }),
       gracePeriodMs: 25,
@@ -480,7 +486,7 @@ describe('ManagedProcessSupervisor', () => {
     const inspectionGate = new Promise<void>((resolve) => { releaseInspection = resolve; });
     let announceInspection = () => {};
     const inspectionEntered = new Promise<void>((resolve) => { announceInspection = resolve; });
-    const restarting = new ManagedProcessSupervisor({
+    const restarting = createSupervisor({
       stateStore: store,
       logs: new ManagedLogStore({ root: join(root, 'logs') }),
       gracePeriodMs: 100,
@@ -494,7 +500,7 @@ describe('ManagedProcessSupervisor', () => {
         return await inspectProcess(pid);
       },
     });
-    const competitor = new ManagedProcessSupervisor({
+    const competitor = createSupervisor({
       stateStore: store,
       logs: new ManagedLogStore({ root: join(root, 'logs') }),
       gracePeriodMs: 100,
@@ -542,7 +548,7 @@ describe('ManagedProcessSupervisor', () => {
     const root = await mkdtemp(join(tmpdir(), 'wtm-anchor-rotation-'));
     const store = new MemoryProcessStore();
     const logs = new ManagedLogStore({ root: join(root, 'logs'), rotationBytes: 32, retainedFiles: 3 });
-    const supervisor = new ManagedProcessSupervisor({ stateStore: store, logs, pollIntervalMs: 10 });
+    const supervisor = createSupervisor({ stateStore: store, logs, pollIntervalMs: 10 });
     cleanups.push(async () => {
       for (const record of store.listManagedProcesses()) {
         const identity = await inspectProcessIdentity(record.pid);
@@ -599,7 +605,7 @@ describe('ManagedProcessSupervisor', () => {
       if (scenario.archived) await rename(opened.stdoutPath, `${opened.stdoutPath}.1`);
       if (scenario.opened) await writeFile(opened.stdoutPath, '', { mode: 0o600 });
       await writeFile(`${opened.stdoutPath}.generation`, `rotating-2-${scenario.phase}-4242`, { mode: 0o600 });
-      const supervisor = new ManagedProcessSupervisor({ stateStore: store, logs, pollIntervalMs: 10 });
+      const supervisor = createSupervisor({ stateStore: store, logs, pollIntervalMs: 10 });
       cleanups.push(async () => {
         await supervisor.close();
         await rm(root, { recursive: true, force: true });
@@ -649,7 +655,7 @@ describe('ManagedProcessSupervisor', () => {
     if (retained) await rename(opened.stdoutPath, `${opened.stdoutPath}.1`);
     else await rm(opened.stdoutPath);
     await writeFile(`${opened.stdoutPath}.generation`, marker, { mode: 0o600 });
-    const supervisor = new ManagedProcessSupervisor({ stateStore: store, logs, pollIntervalMs: 10 });
+    const supervisor = createSupervisor({ stateStore: store, logs, pollIntervalMs: 10 });
     cleanups.push(async () => {
       await supervisor.close();
       await rm(root, { recursive: true, force: true });
@@ -763,7 +769,7 @@ describe('ManagedProcessSupervisor', () => {
       stdoutPath: join(root, 'race.stdout.log'),
       stderrPath: join(root, 'race.stderr.log'),
     });
-    const supervisor = new ManagedProcessSupervisor({
+    const supervisor = createSupervisor({
       stateStore: store,
       logs: new ManagedLogStore({ root: join(root, 'logs-race') }),
       gracePeriodMs: 1,
@@ -799,7 +805,7 @@ describe('ManagedProcessSupervisor', () => {
       stderrPath: join(root, 'failure.stderr.log'),
     });
     const signals: NodeJS.Signals[] = [];
-    const supervisor = new ManagedProcessSupervisor({
+    const supervisor = createSupervisor({
       stateStore: store,
       logs: new ManagedLogStore({ root: join(root, 'logs-failure') }),
       inspectProcess: async () => ({ status: 'failed', reason: 'PS_PERMISSION' }),
@@ -906,7 +912,7 @@ describe('ManagedProcessSupervisor', () => {
     const started = await supervisor.start(input);
     let now = new Date('2026-08-27T12:00:05.000Z');
     store.forceReservation(worktree.id, input.taskName, 'restart-owner', '2026-08-27T12:00:10.000Z', started.record.id);
-    const recovered = new ManagedProcessSupervisor({
+    const recovered = createSupervisor({
       stateStore: store,
       logs: new ManagedLogStore({ root: join(root, 'logs') }),
       now: () => now,
@@ -938,7 +944,7 @@ describe('ManagedProcessSupervisor', () => {
         stdoutPath: join(root, 'logs/wt/dev/stdout.log'), stderrPath: join(root, 'logs/wt/dev/stderr.log'),
       });
       store.forceReservation('wt', 'dev', 'restart-owner', '2026-08-27T12:00:01.000Z', record.id);
-      const candidate = new ManagedProcessSupervisor({
+      const candidate = createSupervisor({
         stateStore: store, logs: new ManagedLogStore({ root: join(root, 'logs') }),
         now: () => new Date('2026-08-27T12:00:02.000Z'), inspectProcess: async () => inspection,
       });
@@ -1025,7 +1031,7 @@ describe('ManagedProcessSupervisor', () => {
     const store = new MemoryProcessStore();
     const worktree = { id: 'worktree-1' };
     const logsRoot = join(root, 'logs');
-    const supervisor = new ManagedProcessSupervisor({
+    const supervisor = createSupervisor({
       stateStore: store,
       logs: new ManagedLogStore({ root: logsRoot, rotationBytes: 64, retainedFiles: 3 }),
       gracePeriodMs: 100,
@@ -1044,7 +1050,7 @@ describe('ManagedProcessSupervisor', () => {
     const recoveredLogs = new ManagedLogStore({
       root: logsRoot, rotationBytes: 64, retainedFiles: 3,
     });
-    const recoveredSupervisor = new ManagedProcessSupervisor({
+    const recoveredSupervisor = createSupervisor({
       stateStore: store,
       logs: recoveredLogs,
       gracePeriodMs: 100,

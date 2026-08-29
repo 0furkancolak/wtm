@@ -2,7 +2,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
 import type {
   ManagedProcessRecord, ManagedProcessState, ManagedProcessInput, ManagedProcessQuery,
   ManagedProcessUpdate, ManagedProcessCreateOptions, ManagedProcessReservationOptions,
@@ -948,17 +947,9 @@ function reservationExpiry(acquiredAt: string): string {
 }
 
 function defaultRuntimeInvocation(): RuntimeInvocation {
-  // Production runs on Node >=24. Bun drives the test/tooling process, so use
-  // the system Node runtime and source CLI entry for compatibility there.
-  if (Object.hasOwn(process.versions, 'bun')) {
-    return {
-      executable: 'node',
-      prefixArgs: [
-        '--import',
-        import.meta.resolve('tsx'),
-        fileURLToPath(new URL('../../cli/src/bin.ts', import.meta.url)),
-      ],
-    };
+  // A standalone executable re-invokes itself; there is no separate entry script.
+  if (process.getBuiltinModule?.('node:sea')?.isSea() === true) {
+    return { executable: process.execPath, prefixArgs: [] };
   }
   const entry = process.argv[1];
   if (entry === undefined) throw new Error('WTM CLI entry path is unavailable');

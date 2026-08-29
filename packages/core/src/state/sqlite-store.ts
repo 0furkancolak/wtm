@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { GitWorktreeRecord } from '../git/worktree-parser';
-import { filesystemMigrationAssets, type MigrationAssetProvider } from './assets';
-import { betterSqliteDatabaseFactory } from './better-sqlite-driver';
+import type { MigrationAssetProvider } from './assets';
 import type { SqliteDatabase, SqliteDatabaseFactory } from './database';
+import { stateStoreRuntime } from './runtime';
 import type {
   AdapterTrustInput,
   AdapterTrustRecord,
@@ -205,7 +205,8 @@ export class SQLiteStateStore implements StateStore {
   #closed = false;
 
   constructor(path: string, options: SQLiteStateStoreOptions = {}) {
-    this.#database = (options.databaseFactory ?? betterSqliteDatabaseFactory)(path, {
+    const runtime = stateStoreRuntime();
+    this.#database = (options.databaseFactory ?? runtime.databaseFactory)(path, {
       readonly: options.readonly === true,
     });
     try {
@@ -214,7 +215,7 @@ export class SQLiteStateStore implements StateStore {
         this.#database.pragma('journal_mode = WAL');
       }
       this.#database.pragma('busy_timeout = 5000');
-      if (options.readonly !== true) this.#migrate(options.migrationAssets ?? filesystemMigrationAssets);
+      if (options.readonly !== true) this.#migrate(options.migrationAssets ?? runtime.migrationAssets);
     } catch (error) {
       try {
         this.#database.close();

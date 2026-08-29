@@ -4,7 +4,7 @@ export interface MigrationAssetProvider {
   readMigrations(): readonly string[];
 }
 
-const migrationFiles = [
+export const migrationFileNames = [
   '001-initial.sql',
   '002-managed-process-indexes.sql',
   '003-managed-process-reservations.sql',
@@ -17,6 +17,6 @@ const migrationFiles = [
 
 export const filesystemMigrationAssets: MigrationAssetProvider = {
   readMigrations() {
-    return migrationFiles.map((file) => readFileSync(new URL(`./migrations/${file}`, import.meta.url), 'utf8'));
+    return migrationFileNames.map((file) => readFileSync(new URL(`./migrations/${file}`, import.meta.url), 'utf8'));
   },
 };

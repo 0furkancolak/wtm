@@ -39,8 +39,11 @@
     "test:e2e": "bun test packages/cli/src/__tests__/full-workflow.test.ts --timeout 30000",
     "test:perf": "bun test packages/core/src/state/__tests__/workspace-scale.test.ts packages/daemon/src/__tests__/idle-daemon.test.ts packages/daemon/src/__tests__/source-edit-storm.test.ts packages/daemon/src/__tests__/watcher.test.ts scripts/__tests__/performance-report.test.ts --timeout 45000 && node --import tsx scripts/performance-report.ts",
     "package:verify": "bun run build && npm pack --dry-run --json --ignore-scripts",
-    "release:verify": "bun run lint && bun run typecheck && bun run test --timeout 30000 && bun run test:e2e && bun run test:perf && bun run build && bun install --frozen-lockfile && bun run package:verify",
+    "release:verify": "bun run lint && bun run typecheck && bun run test --timeout 30000 && bun run test:e2e && bun run test:perf && bun run build && bun install --frozen-lockfile && bun run package:verify && bun run binary:verify && bun run release:artifacts",
     "prepack": "bun run build",
+    "build:binary": "bun scripts/build-sea.ts",
+    "binary:verify": "bun run build:binary && bun test scripts/__tests__/sea-smoke.test.ts --timeout 60000",
+    "release:artifacts": "bun scripts/release-artifacts.ts",
     "typecheck": "tsc --noEmit --project packages/protocol/tsconfig.json && tsc --noEmit --project packages/core/tsconfig.json && tsc --noEmit --project packages/testkit/tsconfig.json && tsc --noEmit --project packages/adapters/tsconfig.json && tsc --noEmit --project packages/cli/tsconfig.json && tsc --noEmit --project packages/daemon/tsconfig.json",
     "build": "bun build packages/protocol/src/index.ts --outdir dist/protocol --target node && bun build packages/core/src/index.ts --outdir dist/core --target node --external better-sqlite3 && bun build packages/adapters/src/index.ts --outdir dist/adapters --target node && bun build packages/cli/src/index.ts packages/cli/src/bin.ts --outdir dist/cli --target node --external better-sqlite3 && bun build packages/daemon/src/index.ts --outdir dist/daemon --target node --external better-sqlite3 && mkdir -p dist/core/migrations dist/cli/migrations dist/daemon/migrations dist/cli/skills/wtm && cp packages/core/src/state/migrations/*.sql dist/core/migrations/ && cp packages/core/src/state/migrations/*.sql dist/cli/migrations/ && cp packages/core/src/state/migrations/*.sql dist/daemon/migrations/ && cp skills/wtm/SKILL.md dist/cli/skills/wtm/SKILL.md"
   },
@@ -48,6 +51,7 @@
     "@types/better-sqlite3": "9.6.0",
     "@types/bun": "^1.3.0",
     "node-gyp": "13.0.1",
+    "postject": "1.0.0-alpha.6",
     "tsx": "4.23.12",
     "typescript": "^5.9.0"
   },

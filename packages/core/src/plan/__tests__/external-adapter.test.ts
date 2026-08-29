@@ -6,10 +6,19 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { AdapterMetadataResponse } from '@wtm/protocol';
 import { createFakeAdapter, type FakeAdapter } from '../../../../testkit/src/fake-adapter';
+import { developmentRuntimeInvocation } from '../../../../testkit/src/runtime-invocation';
 import { createAdapterTrustStore, trustRepositoryAdapter } from '../adapter-trust';
-import { invokeExternalAdapter, type ExternalAdapterCleanupState } from '../external-adapter';
+import {
+  invokeExternalAdapter as invokeAdapterDirectly,
+  type ExternalAdapterCleanupState,
+  type ExternalAdapterInvocation,
+} from '../external-adapter';
 
 const adapters: FakeAdapter[] = [];
+
+function invokeExternalAdapter(input: ExternalAdapterInvocation): Promise<unknown> {
+  return invokeAdapterDirectly({ runtimeInvocation: developmentRuntimeInvocation(), ...input });
+}
 const descriptorAuditScenarioPath = fileURLToPath(new URL('./descriptor-audit.scenario.ts', import.meta.url));
 
 afterEach(async () => {

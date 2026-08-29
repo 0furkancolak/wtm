@@ -746,6 +746,10 @@ function exitCodeForError(code: WtmErrorCode): number {
 }
 
 export function defaultRuntimeInvocation(): RuntimeInvocation {
+  // A standalone executable re-invokes itself; there is no separate entry script.
+  if (process.getBuiltinModule?.('node:sea')?.isSea() === true) {
+    return { executable: process.execPath, prefixArgs: [] };
+  }
   const entry = process.argv[1];
   if (entry === undefined) throw new Error('WTM CLI entry path is unavailable');
   return { executable: resolve(process.execPath), prefixArgs: [resolve(entry)] };

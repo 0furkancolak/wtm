@@ -180,6 +180,31 @@ async function run(driver: DriverName): Promise<Record<string, unknown>> {
     } catch (error) {
       rollbackError = error instanceof Error ? error.message : String(error);
     }
+    // WTM registers a workspace, its repositories, and their worktrees in one outer
+    // transaction while `reconcileWorktrees` opens its own, so nesting must behave alike.
+    let nestedInnerError: string | null = null;
+    const nestedStore = store;
+    nestedStore.transaction(() => {
+      nestedStore.upsertWorkspace({
+        name: 'nested-outer', root: '/projects/nested-outer', scope: 'local', configPath: null,
+      });
+      nestedStore.transaction(() => {
+        nestedStore.upsertWorkspace({
+          name: 'nested-committed', root: '/projects/nested-committed', scope: 'local', configPath: null,
+        });
+      });
+      try {
+        nestedStore.transaction(() => {
+          nestedStore.upsertWorkspace({
+            name: 'nested-discarded', root: '/projects/nested-discarded', scope: 'local', configPath: null,
+          });
+          throw new Error('nested rollback');
+        });
+      } catch (error) {
+        nestedInnerError = error instanceof Error ? error.message : String(error);
+      }
+    });
+
     store.close();
 
     store = new SQLiteStateStore(databasePath, { readonly: true, databaseFactory });
@@ -195,6 +220,7 @@ async function run(driver: DriverName): Promise<Record<string, unknown>> {
       readonlyWriteRejected = true;
     }
 
+    const roots = store.listWorkspaces().map(({ root }) => root);
     const persistedWorkspace = store.listWorkspaces()[0];
     const persistedRepository = store.listRepositories()[0];
     const persistedWorktree = store.listWorktrees()[0];
@@ -240,6 +266,12 @@ async function run(driver: DriverName): Promise<Record<string, unknown>> {
         resourceFinalizationError,
         finalizedResource.state,
         finalizedResource.cleanupLeaseToken,
+      ],
+      nested: [
+        nestedInnerError,
+        roots.includes('/projects/nested-outer'),
+        roots.includes('/projects/nested-committed'),
+        roots.includes('/projects/nested-discarded'),
       ],
       rollback: [
         rollbackError,

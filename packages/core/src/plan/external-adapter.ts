@@ -1,5 +1,4 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import {
   adapterRequestSchema,
   adapterMetadataResponseSchema,
@@ -282,17 +281,9 @@ function assertDescriptorExecutionSupported(): void {
 }
 
 function defaultRuntimeInvocation(): RuntimeInvocation {
-  // Bun drives the unit suite but production WTM requires Node 24; use the
-  // absolute Node runtime there so descriptor inheritance matches production.
-  if (Object.hasOwn(process.versions, 'bun')) {
-    return {
-      executable: 'node',
-      prefixArgs: [
-        '--import',
-        import.meta.resolve('tsx'),
-        fileURLToPath(new URL('../../../cli/src/bin.ts', import.meta.url)),
-      ],
-    };
+  // A standalone executable re-invokes itself; there is no separate entry script.
+  if (process.getBuiltinModule?.('node:sea')?.isSea() === true) {
+    return { executable: process.execPath, prefixArgs: [] };
   }
   const entry = process.argv[1];
   if (entry === undefined) throw new Error('WTM CLI entry path is unavailable');

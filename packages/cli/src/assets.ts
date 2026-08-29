@@ -18,6 +18,21 @@ export const filesystemSkillAssets: SkillAssetProvider = {
   },
 };
 
+let installedSkillAssets: SkillAssetProvider | null = null;
+
+/**
+ * Selects the skill asset provider for callers without explicit options. A packaged
+ * entrypoint installs its provider once, before any command runs.
+ */
+export function installSkillAssets(provider: SkillAssetProvider): void {
+  if (installedSkillAssets !== null) throw new Error('The WTM skill asset provider is already installed');
+  installedSkillAssets = provider;
+}
+
+export function skillAssets(): SkillAssetProvider {
+  return installedSkillAssets ?? filesystemSkillAssets;
+}
+
 export function canonicalSkillPathForModule(moduleUrl: string): string {
   const moduleDirectory = dirname(fileURLToPath(moduleUrl));
   const sourceDirectory = dirname(moduleDirectory);

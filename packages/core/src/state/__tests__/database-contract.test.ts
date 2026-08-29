@@ -27,6 +27,7 @@ describe('SQLite database drivers', () => {
       adapterTrust: ['contract-adapter', '/adapters/contract', 'a'.repeat(64)],
       resource: ['/resources/contract/cache', 'directory', 'READY', 1, 100, 128],
       resourceFinalization: [true, true, null, 'REMOVED', null],
+      nested: ['nested rollback', true, true, false],
       rollback: ['contract rollback', true],
       relationships: {
         repositoryWorkspace: true,

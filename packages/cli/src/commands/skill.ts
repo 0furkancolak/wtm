@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { filesystemSkillAssets, type SkillAssetProvider } from '../assets';
+import { skillAssets, type SkillAssetProvider } from '../assets';
 
 export { canonicalSkillPathForModule } from '../assets';
 
@@ -48,7 +48,7 @@ export interface SkillInstallResult {
   path: string;
 }
 
-export async function readCanonicalSkill(provider: SkillAssetProvider = filesystemSkillAssets): Promise<string> {
+export async function readCanonicalSkill(provider: SkillAssetProvider = skillAssets()): Promise<string> {
   return provider.readCanonicalSkill();
 }
 
