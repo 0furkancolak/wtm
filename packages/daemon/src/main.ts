@@ -325,7 +325,13 @@ export class WtmDaemon {
 
   async #runBatch(batch: ReconcileBatch): Promise<void> {
     if (batch.kinds.includes('watch-error')) this.#watchRefreshPending = true;
+    const registrations = registrationKey(this.#snapshot);
     this.#snapshot = await this.#availableRegistrations();
+    // A workspace registered or retired since the last pass changes what has to be watched.
+    // Without this the set of watchers was fixed at whatever the daemon started with, and a
+    // workspace added afterwards was reconciled — because this pass reads the refreshed
+    // snapshot — but never observed, so only somebody else's activity ever refreshed it.
+    if (registrationKey(this.#snapshot) !== registrations) this.#watchRefreshPending = true;
     const { topologyChanged, failures } = await this.#reconcileRepositories(this.#snapshot.repositories);
     if (batch.kinds.some((kind) => kind === 'config' || kind === 'manifest' || kind === 'fingerprint')) {
       await this.#adapterDiscovery(this.#snapshot);
@@ -357,6 +363,17 @@ export class WtmDaemon {
   async #handleRequest(request: IpcRequest): Promise<JsonEnvelope<unknown>> {
     if (request.command === 'ping') return successEnvelope('ping', { pid: process.pid });
     if (request.command === 'reconcile') {
+      // Read the registrations again before scheduling. A workspace registered since the
+      // daemon started is not in the snapshot yet, so a reconcile asked for immediately after
+      // `wtm init` scheduled nothing for it, discovered none of its worktrees, and — because
+      // watchers are built from the same snapshot — never would have: the new workspace was
+      // invisible until the daemon happened to restart. Refreshing here is also what puts it
+      // under a watcher, since the batch this schedules rebuilds them from what it finds.
+      const previous = registrationKey(this.#snapshot);
+      this.#snapshot = await this.#availableRegistrations();
+      // Only when the set actually changed: rebuilding watchers on every reconcile request
+      // tears down and re-establishes every watch for nothing.
+      if (registrationKey(this.#snapshot) !== previous) this.#watchRefreshPending = true;
       for (const workspace of this.#snapshot.workspaces) {
         this.#queue.schedule({ root: workspace.root, kind: 'git-topology' });
       }
@@ -504,6 +521,14 @@ function readTimedOut(failure: unknown): boolean {
 
 function timedOutReading(reading: RepositoryReading): boolean {
   return reading.snapshot === undefined && readTimedOut(reading.error);
+}
+
+/** What the watchers were built from, so a rebuild happens only when that has changed. */
+function registrationKey(snapshot: DaemonRegistrationSnapshot): string {
+  return [
+    ...snapshot.workspaces.map(({ id, root }) => `w:${id}:${root}`),
+    ...snapshot.repositories.map(({ id, mainRoot }) => `r:${id}:${mainRoot}`),
+  ].sort().join('\n');
 }
 
 /** Why a registered root cannot be used this pass, or `null` when it can. */

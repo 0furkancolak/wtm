@@ -388,7 +388,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   init.addOption(new Option('--global', 'register in user WTM data instead of wtm.toml'));
   init.option('--yes', 'accept non-destructive proposed defaults');
   init.option('--max-depth <n>', 'maximum discovery depth', parseNonNegativeInteger);
-  init.option('--no-ai-skill', 'skip local Agent Skill installation');
+  init.option('--ai-skill', 'also install the local Agent Skill, as `wtm skill install` does');
   init.option('--no-detect', 'write only a name and a version, reading no repository');
   init.action(async (path: string | undefined, options: ScopeOptions & {
     yes?: boolean;
@@ -405,12 +405,13 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       userDataDir,
       databasePath,
       globalOnly: global,
-      installAiSkill: options.aiSkill !== false,
+      installAiSkill: options.aiSkill === true,
       detect: options.detect !== false,
       acceptDefaults: options.yes === true,
       aiSkillInstaller: installer,
       ...(options.maxDepth === undefined ? {} : { maxDepth: options.maxDepth }),
     });
+    if (envelope.ok) await announceRegistration(dependencies.runtimeClient);
     renderRuntime(envelope, runtimeJson(program, options));
   });
 
@@ -924,6 +925,21 @@ function isDiagnosticInvocation(argv: readonly string[]): boolean {
  * must not bring a state directory into being by asking.
  */
 /** Whether anything is accepting on the daemon's socket right now. */
+/**
+ * Tells a running daemon that the registrations have changed.
+ *
+ * The daemon builds both its reconcile list and its watchers from a snapshot taken when it
+ * started, so a workspace registered afterwards was invisible: `git worktree add` in a
+ * freshly initialised workspace discovered nothing, and `wtm status` inside the new worktree
+ * answered about a different one, until the daemon happened to restart. Nothing about `init`
+ * needs the daemon, so a daemon that is down or slow to answer is not an error here.
+ */
+async function announceRegistration(client: RuntimeDaemonClient | undefined): Promise<void> {
+  if (client === undefined) return;
+  try { await client.request('reconcile'); }
+  catch { /* The registration is on disk; the next pass will find it. */ }
+}
+
 async function daemonReachable(socketPath: string): Promise<boolean> {
   return await new Promise<boolean>((settle) => {
     const socket = createConnection(socketPath);
@@ -986,9 +1002,17 @@ export function defaultDaemonSocketPath(home = homedir()): string {
   return join(home, 'Library', 'Application Support', 'WTM', 'wtmd.sock');
 }
 
+/**
+ * Which commands need the daemon.
+ *
+ * `init` is here not to be served by it but to tell it: a workspace registered while the
+ * daemon is running is in no watcher, so nothing in it raises an event, so nothing ever
+ * refreshes the registrations that would have added the watcher. Registering a workspace and
+ * creating a worktree in it discovered nothing at all until the daemon happened to restart.
+ */
 function isRuntimeInvocation(argv: readonly string[]): boolean {
   const command = argv.find((argument) => !argument.startsWith('-'));
-  return command !== undefined && ['start', 'stop', 'restart', 'ps', 'logs', 'exec'].includes(command);
+  return command !== undefined && ['start', 'stop', 'restart', 'ps', 'logs', 'exec', 'init'].includes(command);
 }
 
 function exitCodeForError(code: WtmErrorCode): number {

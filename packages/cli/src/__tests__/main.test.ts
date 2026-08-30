@@ -135,13 +135,16 @@ describe('Commander CLI', () => {
     expect(output.stdout()).toBe(canonical);
   });
 
-  test('registers init and forwards --no-ai-skill without invoking the installer', async () => {
+  test('registers a workspace without installing anything else into it', async () => {
     const output = capture();
     let installs = 0;
     const seen: unknown[] = [];
 
-    const exitCode = await runCli(['init', 'project', '--yes', '--max-depth', '3', '--no-ai-skill', '--json'], {
+    // Registering writes `wtm.toml`. Everything else — the Agent Skill included — is asked for.
+    const exitCode = await runCli(['init', 'project', '--yes', '--max-depth', '3', '--json'], {
       cwd: '/workspace',
+      // A stub, so that registering in a test never reaches the developer's own daemon.
+      runtimeClient: { request: async () => ({ schemaVersion: 1, ok: true, command: 'reconcile', data: null, warnings: [], errors: [] }) } as never,
       initRunner: async (input) => {
         seen.push(input);
         return {
@@ -172,6 +175,28 @@ describe('Commander CLI', () => {
       installAiSkill: false,
       acceptDefaults: true,
     })]);
+  });
+
+  test('installs the Agent Skill at init only when asked for it', async () => {
+    const output = capture();
+    const seen: unknown[] = [];
+
+    await runCli(['init', 'project', '--yes', '--ai-skill', '--json'], {
+      cwd: '/workspace',
+      // A stub, so that registering in a test never reaches the developer's own daemon.
+      runtimeClient: { request: async () => ({ schemaVersion: 1, ok: true, command: 'reconcile', data: null, warnings: [], errors: [] }) } as never,
+      initRunner: async (input) => {
+        seen.push(input);
+        return {
+          schemaVersion: 1, ok: true, command: 'init',
+          scope: { mode: 'local' as const, workspaceId: 'workspace-1' },
+          data: null, warnings: [], errors: [],
+        };
+      },
+      ...output.io,
+    });
+
+    expect(seen).toEqual([expect.objectContaining({ installAiSkill: true })]);
   });
 
   test('rejects an invalid init discovery depth as deterministic JSON usage', async () => {

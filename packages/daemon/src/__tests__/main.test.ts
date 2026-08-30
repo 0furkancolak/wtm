@@ -125,12 +125,15 @@ describe('WtmDaemon startup', () => {
     });
   });
 
-  test('reports a workspace root that disappeared and keeps serving until it returns', () => {
+  test('reports a workspace root that disappeared and watches it again when it returns', () => {
+    // The reconcile that finds the root back must also put it back under a watcher. Scheduling
+    // work for it while leaving it out of the watch set meant the recovered workspace was read
+    // once and then went unobserved again.
     expect(runScenario('watch-error-missing-root')).toEqual({
       reportedWhileMissing: ['Registered workspace root is unavailable'],
       reconcileOk: true,
-      startsAfterRecovery: 2,
-      closesAfterRecovery: 1,
+      startsAfterRecovery: 3,
+      closesAfterRecovery: 2,
       adapterDiscoveries: 0,
     });
   });
