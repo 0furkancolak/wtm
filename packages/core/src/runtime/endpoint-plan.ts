@@ -113,7 +113,7 @@ function leasedPort(
     return shared.port;
   }
 
-  const preferred = preferredPort(config, input.index, input.range);
+  const preferred = preferredPort(name, config, input.index, input.range);
   const lease = allocateStableEndpoint(store as StateStore, {
     worktreeId: input.worktreeId,
     name,
@@ -131,8 +131,22 @@ function leasedPort(
  * another process already holds is stepped over, because a worktree that cannot start is
  * worse than a worktree that starts one port along.
  */
-function preferredPort(config: PortConfig, index: number, range: PortRange): number | undefined {
+function preferredPort(name: string, config: PortConfig, index: number, range: PortRange): number | undefined {
   if (config.preferred === undefined) return undefined;
+  // The allocator only tries a preference that falls inside the range, so one that does not is
+  // a preference that never happens. Saying nothing about it is how a workspace ends up
+  // wondering why `preferred = 3000` put it on port 20000.
+  if (config.preferred < range.min || config.preferred > range.max) {
+    throw new WtmConfigError(
+      `Port ${name} prefers ${config.preferred}, which is outside the range ${range.min}-${range.max}.`,
+      {
+        port: name,
+        preferred: config.preferred,
+        range: `${range.min}-${range.max}`,
+        action: 'Widen [ports].range to contain it, or remove the preferred port.',
+      },
+    );
+  }
   if (config.strategy !== 'offset') return config.preferred;
   const candidate = config.preferred + (config.stride ?? 1) * Math.max(0, index - 1);
   return candidate > range.max ? undefined : candidate;

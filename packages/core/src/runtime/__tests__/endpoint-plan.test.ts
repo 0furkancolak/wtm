@@ -80,6 +80,17 @@ describe('endpoint planning', () => {
     expect(web.ports.api).toBe(api.ports.api as number);
   });
 
+  it('refuses a preferred port the range would never offer', () => {
+    // The allocator only tries a preference inside the range, so silence here is a workspace
+    // that asked for 3000, was given 20000, and has nothing to read that explains it.
+    expect(() => resolveEndpoints(createLeaseStore(), {
+      ports: { range: '20000-50000', api: { preferred: 3000 } },
+      worktreeId: 'worktree-a',
+      groupWorktreeIds: ['worktree-a'],
+      index: 1,
+    }, alwaysFree)).toThrow('outside the range 20000-50000');
+  });
+
   it('gives two features different ports for the same name', () => {
     const store = createLeaseStore();
     const ports = { range: '4100-4199', api: { preferred: 4100 } };

@@ -3,6 +3,10 @@ version = 1
 [workspace]
 name = "docker-compose"
 
+[ports]
+# The band has to contain every preferred port below.
+range = "3000-4999"
+
 [ports.web]
 preferred = 3000
 

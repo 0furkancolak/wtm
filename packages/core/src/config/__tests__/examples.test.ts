@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse } from 'smol-toml';
 import { resolveTask } from '../../runtime/task-resolver';
+import { resolveEndpoints } from '../../runtime/endpoint-plan';
+import type { EndpointLease, EndpointRequest } from '../../state/store';
 import { parseWtmConfig, type WtmConfig } from '../schema';
 
 const examplePaths = {
@@ -10,6 +12,7 @@ const examplePaths = {
   bun: 'examples/bun-monorepo/wtm.toml',
   compose: 'examples/docker-compose/wtm.toml',
   polyglot: 'examples/polyglot/wtm.toml',
+  multiRepo: 'examples/multi-repo/wtm.toml',
 } as const;
 
 async function readExample(path: string): Promise<WtmConfig> {
@@ -19,20 +22,28 @@ async function readExample(path: string): Promise<WtmConfig> {
 
 describe('published example configurations', () => {
   test('parse with supported V1 schema fields and production-resolve every task', async () => {
-    const [minimal, bun, compose, polyglot] = await Promise.all([
+    const [minimal, bun, compose, polyglot, multiRepo] = await Promise.all([
       readExample(examplePaths.minimal),
       readExample(examplePaths.bun),
       readExample(examplePaths.compose),
       readExample(examplePaths.polyglot),
+      readExample(examplePaths.multiRepo),
     ]);
 
-    for (const config of [minimal, bun, compose, polyglot]) {
+    for (const config of [minimal, bun, compose, polyglot, multiRepo]) {
       expect(Object.keys(config.tasks ?? {})).not.toHaveLength(0);
+      // A published example that pairs a preferred port with a range that cannot offer it is
+      // an example WTM refuses to run.
+      expect(() => resolveExampleEndpoints(config)).not.toThrow();
     }
     expect(minimal.workspace?.name).toBe('minimal');
     expect(compose.environment?.COMPOSE_PROJECT_NAME).toBe('{workspace.name}-{repo.name}-wt{id}');
     expect(polyglot.capabilities?.['python.environment-manager']).toBe('uv');
     expect(polyglot.tasks?.['python-test']?.cwd).toBe('{worktree.root}/services/api');
+    // Both repositories read PORT, and each entry has to mean its own endpoint.
+    expect(multiRepo.repos?.api?.environment?.PORT).toBe('{port.api}');
+    expect(multiRepo.repos?.web?.environment?.PORT).toBe('{port.web}');
+    expect(multiRepo.repos?.web?.environment?.VITE_API_URL).toBe('http://localhost:{port.api}');
 
     const context = {
       workspace: { root: '/projects/example', name: 'example' },
@@ -76,6 +87,14 @@ describe('published example configurations', () => {
           singleton: true,
         },
       },
+      multiRepo: {
+        'api-dev': {
+          argv: ['make', 'dev'], cwd: '/projects/example/api', envDelta: {}, background: true, singleton: true,
+        },
+        'web-dev': {
+          argv: ['make', 'dev'], cwd: '/projects/example/web', envDelta: {}, background: true, singleton: true,
+        },
+      },
       polyglot: {
         'js-test': {
           argv: ['bun', 'test'], cwd: '/projects/example/repo-feature/services/web', envDelta: {}, background: false, singleton: true,
@@ -89,7 +108,7 @@ describe('published example configurations', () => {
       },
     } as const;
 
-    for (const [exampleName, config] of Object.entries({ minimal, bun, compose, polyglot }) as [keyof typeof expected, WtmConfig][]) {
+    for (const [exampleName, config] of Object.entries({ minimal, bun, compose, polyglot, multiRepo }) as [keyof typeof expected, WtmConfig][]) {
       expect(Object.keys(config.tasks ?? {}).sort()).toEqual(Object.keys(expected[exampleName]).sort());
       for (const [taskName, taskExpected] of Object.entries(expected[exampleName])) {
         expect(resolveTask({ config, taskName, isMain: false, context })).toEqual({
@@ -100,3 +119,19 @@ describe('published example configurations', () => {
     }
   });
 });
+
+/** Endpoint resolution against a store that hands out whatever was asked for. */
+function resolveExampleEndpoints(config: WtmConfig): void {
+  const store = {
+    allocateEndpoint: (input: EndpointRequest): EndpointLease => ({
+      id: 'lease', worktreeId: input.worktreeId, name: input.name, protocol: input.protocol,
+      host: input.host, port: input.preferredPort ?? input.portRange.min, state: 'ACTIVE',
+      allocatedAt: '2026-01-01T00:00:00.000Z', lastVerifiedAt: '2026-01-01T00:00:00.000Z',
+    }),
+    listEndpointLeases: (): EndpointLease[] => [],
+  };
+  resolveEndpoints(store, {
+    ...(config.ports === undefined ? {} : { ports: config.ports }),
+    worktreeId: 'worktree', groupWorktreeIds: ['worktree'], index: 1,
+  }, () => true);
+}

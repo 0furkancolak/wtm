@@ -13,7 +13,8 @@ mode = "lazy"
 
 [ports]
 strategy = "stable-dynamic"
-range = "20000-50000"
+# The band has to contain every preferred port below.
+range = "3000-4999"
 
 [ports.web]
 preferred = 3000
@@ -47,6 +48,9 @@ version = 1
 
 [workspace]
 name = "product"
+
+[ports]
+range = "3000-4999"
 
 [ports.web]
 preferred = 3000
@@ -99,6 +103,9 @@ cwd = "{worktree.root}"
 background = true
 requires = ["deps.ready"]
 
+[ports]
+range = "8000-8999"
+
 [ports.api]
 preferred = 8000
 ```
@@ -135,6 +142,9 @@ version = 1
 
 [workspace]
 name = "platform"
+
+[ports]
+range = "3000-8999"
 
 [ports.web]
 preferred = 3000

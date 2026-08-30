@@ -5,7 +5,8 @@ name = "bun-monorepo"
 
 [ports]
 strategy = "stable-dynamic"
-range = "20000-50000"
+# The band has to contain every preferred port below.
+range = "3000-3999"
 
 [ports.web]
 preferred = 3000
