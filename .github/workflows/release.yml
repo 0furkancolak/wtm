@@ -159,11 +159,13 @@ jobs:
           WTM_RELEASE_SIGNING: ${{ steps.collect.outputs.signing }}
         run: bun run release:gate
 
-      - uses: actions/attest@v4
+      # Provenance has to describe the build that produced these archives. The generic attest
+      # action was handed the SLSA provenance type with an empty predicate, which the attestation
+      # API rejects outright: `build definition is nil`. This action derives the real one from the
+      # workflow that is running.
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/release/*.tar.gz
-          predicate-type: https://slsa.dev/provenance/v1
-          predicate: '{}'
 
       - name: Create the GitHub Release
         env:
