@@ -28,7 +28,10 @@ jobs:
           bun-version: 1.3.14
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          # Numbers taken to be compared across architectures have to come from one runtime. This
+          # asked for whatever Node 24 was latest and measured arm64 on 24.18.0 against x64 on
+          # 24.19.0.
+          node-version: 24.18.0
       - run: bun install --frozen-lockfile
       - run: bun run test:perf
       - uses: actions/upload-artifact@v4
