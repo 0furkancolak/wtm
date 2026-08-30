@@ -135,8 +135,9 @@ The tag workflow (`.github/workflows/release.yml`):
   publishes anything;
 - refuses to publish a **stable** release whose executable is not Developer ID signed. Prereleases
   may ship ad-hoc signed;
-- attests the artifacts, uploads them to the GitHub Release, publishes to npm with provenance, and
-  only then renders and commits the Homebrew formula from the final checksums. The formula job runs
+- attests the artifacts, uploads them to the GitHub Release, publishes to npm with provenance under
+  the `next` dist-tag for a prerelease and `latest` for a stable release, and only then renders and
+  commits the Homebrew formula from the final checksums. The formula job runs
   for stable tags only — it is gated by `!contains(github.ref_name, '-')`, so a prerelease never
   becomes the default `brew install` formula.
 
@@ -145,7 +146,7 @@ Required repository configuration before the first real release:
 | Secret / setting | Purpose |
 | --- | --- |
 | `MACOS_SIGNING_CERTIFICATE`, `MACOS_SIGNING_PASSWORD`, `MACOS_SIGNING_IDENTITY` | Developer ID signing for stable releases |
-| npm trusted publisher for `worktree-runtime-manager` | provenance-backed `npm publish` without a long-lived token |
+| `NPM_TOKEN` | npm automation token for `npm publish`; provenance still comes from the workflow's OIDC identity. Absent, the npm channel is skipped and the GitHub Release still stands |
 | `HOMEBREW_TAP_TOKEN` | write access to the tap repository that receives `Formula/wtm.rb` |
 
 The formula is never committed with guessed digests: it is rendered from the `SHA256SUMS` produced

@@ -173,7 +173,20 @@ jobs:
             dist/release/SHA256SUMS
 
       - name: Publish to npm with provenance
-        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            # The archives are already published and attested; an unconfigured second channel
+            # must not retract them by failing the job.
+            echo 'No npm credential configured; the GitHub Release stands without the npm channel.'
+            exit 0
+          fi
+          # A prerelease must never become what `npm install <name>` hands to everyone.
+          tag='latest'
+          case "${{ github.ref_name }}" in *-*) tag='next';; esac
+          npm publish --provenance --access public --tag "$tag"
 
   formula:
     name: Homebrew formula
