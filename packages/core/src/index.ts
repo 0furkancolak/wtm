@@ -35,7 +35,7 @@ export { removeWorktreeSafely } from './analysis/remove-worktree';
 export { resolveWorkspaceConfig, builtInConfig } from './config/load';
 export { mergeConfigLayers } from './config/merge';
 export { parseWtmConfig, wtmConfigSchema, WtmConfigError } from './config/schema';
-export type { WtmConfig } from './config/schema';
+export type { CorsConfig, PortConfig, PortsConfig, WtmConfig } from './config/schema';
 export type { ResolvedConfig, Provenance } from './config/provenance';
 export { resolveTemplate, WtmTemplateError } from './templates/resolve';
 export type { TemplateContext } from './templates/resolve';
@@ -45,14 +45,27 @@ export { resolveTask, WtmTaskResolutionError } from './runtime/task-resolver';
 export type { ResolvedTask, TaskResolutionInput } from './runtime/task-resolver';
 export {
   allocateStableEndpoint,
+  installEndpointProbe,
   isEndpointAvailable,
+  spawnedEndpointProbe,
   WtmEndpointAllocationError,
 } from './runtime/endpoints';
+export { probeEndpoint, runEndpointProbe } from './runtime/endpoint-probe';
+export {
+  defaultEndpointHost,
+  defaultOriginHost,
+  parsePortRange,
+  resolveEndpoints,
+} from './runtime/endpoint-plan';
+export type { EndpointPlanInput, ResolvedEndpoints } from './runtime/endpoint-plan';
+export { corsDeclarationFiles, detectCorsVariables, resolveCors } from './runtime/cors';
+export type { CorsResolutionInput, ResolvedCors } from './runtime/cors';
 export { SQLiteStateStore } from './state/sqlite-store';
 export { ensurePrivateDirectory, PrivateDirectoryError, verifyPrivateDirectory } from './state/private-directory';
 export type { PrivateDirectory, PrivateDirectoryIdentity } from './state/private-directory';
 export type {
   EndpointLease,
+  EndpointLeaseQuery,
   EndpointLeaseState,
   EndpointAvailabilityProbe,
   EndpointCandidate,

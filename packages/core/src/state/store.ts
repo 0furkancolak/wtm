@@ -90,6 +90,13 @@ export type EndpointAvailabilityProbe = (candidate: EndpointCandidate) => boolea
 
 export type EndpointLeaseState = 'ACTIVE' | 'RELEASED';
 
+export interface EndpointLeaseQuery {
+  /** Restricts the answer to the endpoints these worktrees hold. An empty list matches nothing. */
+  worktreeIds?: readonly string[];
+  name?: string;
+  states?: readonly EndpointLeaseState[];
+}
+
 export interface EndpointLease {
   id: string;
   worktreeId: string;
@@ -174,6 +181,7 @@ export interface StateStore extends AdapterTrustStateStore {
   upsertRepository(input: RepositoryInput): RepositoryRecord;
   reconcileWorktrees(repositoryId: string, snapshot: GitWorktreeRecord[]): ReconcileResult;
   allocateEndpoint(input: EndpointRequest, probe?: EndpointAvailabilityProbe): EndpointLease;
+  listEndpointLeases(query?: EndpointLeaseQuery): EndpointLease[];
   createManagedProcess(input: ManagedProcessInput, options?: ManagedProcessCreateOptions): ManagedProcessRecord;
   getManagedProcess(id: string): ManagedProcessRecord | null;
   updateManagedProcess(id: string, update: ManagedProcessUpdate): ManagedProcessRecord | null;

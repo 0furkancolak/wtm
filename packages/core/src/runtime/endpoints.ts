@@ -46,12 +46,41 @@ export class WtmEndpointAllocationError extends Error {
   }
 }
 
+let installedProbe: ((candidate: EndpointCandidate) => boolean) | null = null;
+
+/**
+ * Replaces how WTM asks whether a port is free.
+ *
+ * The default spawns `node -e` with the script above, which is correct wherever the running
+ * executable is a Node. The standalone build's executable is WTM itself, which has no `-e`:
+ * left alone it fails every probe, and a workspace with ports configured is told its whole
+ * range is taken. That build installs a probe that re-invokes itself instead.
+ */
+export function installEndpointProbe(probe: (candidate: EndpointCandidate) => boolean): void {
+  installedProbe = probe;
+}
+
 export function isEndpointAvailable(candidate: EndpointCandidate): boolean {
+  if (installedProbe !== null) return installedProbe(candidate);
   const result = spawnSync(process.execPath, ['-e', probeScript, JSON.stringify(candidate)], {
     stdio: 'ignore',
     timeout: 2_000,
   });
   return result.status === 0 && result.signal === null && result.error === undefined;
+}
+
+/** Runs `executable` as the probe child, the way the default runs `node -e`. */
+export function spawnedEndpointProbe(
+  executable: string,
+  prefixArgs: readonly string[],
+): (candidate: EndpointCandidate) => boolean {
+  return (candidate) => {
+    const result = spawnSync(executable, [...prefixArgs, JSON.stringify(candidate)], {
+      stdio: 'ignore',
+      timeout: 2_000,
+    });
+    return result.status === 0 && result.signal === null && result.error === undefined;
+  };
 }
 
 export function allocateStableEndpoint(

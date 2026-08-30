@@ -7,6 +7,7 @@ import type {
   AdapterTrustInput,
   AdapterTrustRecord,
   EndpointLease,
+  EndpointLeaseQuery,
   EndpointAvailabilityProbe,
   EndpointRequest,
   ManagedProcessInput,
@@ -848,6 +849,31 @@ export class SQLiteStateStore implements StateStore {
         .get(id) as EndpointRow;
       return endpointFromRow(row);
     });
+  }
+
+  listEndpointLeases(query: EndpointLeaseQuery = {}): EndpointLease[] {
+    this.#assertOpen();
+    const conditions: string[] = [];
+    const parameters: unknown[] = [];
+    if (query.worktreeIds !== undefined) {
+      if (query.worktreeIds.length === 0) return [];
+      conditions.push(`worktree_id IN (${query.worktreeIds.map(() => '?').join(', ')})`);
+      parameters.push(...query.worktreeIds);
+    }
+    if (query.name !== undefined) {
+      conditions.push('name = ?');
+      parameters.push(query.name);
+    }
+    if (query.states !== undefined) {
+      if (query.states.length === 0) return [];
+      conditions.push(`state IN (${query.states.map(() => '?').join(', ')})`);
+      parameters.push(...query.states);
+    }
+    const where = conditions.length === 0 ? '' : ` WHERE ${conditions.join(' AND ')}`;
+    const rows = this.#database
+      .prepare(`SELECT * FROM endpoint_leases${where} ORDER BY name, port`)
+      .all(...parameters) as EndpointRow[];
+    return rows.map(endpointFromRow);
   }
 
   createManagedProcess(

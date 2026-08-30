@@ -2,6 +2,7 @@ import { basename } from 'node:path';
 
 const anchorMode = '__wtm_internal_anchor';
 const adapterMode = '__wtm_internal_adapter';
+const endpointProbeMode = '__wtm_internal_endpoint_probe';
 const markerPattern = /^[a-f0-9]{64}$/;
 const maxDescriptor = 0x7fff_ffff;
 
@@ -31,6 +32,15 @@ export async function runInternalMode(argv: readonly string[]): Promise<number |
     try {
       const { runAdapterChild } = await import('../../core/src/plan/adapter-runner');
       return await runAdapterChild(descriptor, executableBasename);
+    }
+    catch { return 1; }
+  }
+  if (mode === endpointProbeMode) {
+    const candidate = argv[1];
+    if (argv.length !== 2 || candidate === undefined || candidate.length > 512) return 2;
+    try {
+      const { runEndpointProbe } = await import('../../core/src/runtime/endpoint-probe');
+      return await runEndpointProbe(candidate);
     }
     catch { return 1; }
   }

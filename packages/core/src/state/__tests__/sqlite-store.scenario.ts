@@ -18,6 +18,7 @@ type StateStoreDomainOperation =
   | 'allocateEndpoint'
   | 'upsertAdapterTrust'
   | 'listAdapterTrust'
+  | 'listEndpointLeases'
   | 'createManagedProcess'
   | 'getManagedProcess'
   | 'updateManagedProcess'

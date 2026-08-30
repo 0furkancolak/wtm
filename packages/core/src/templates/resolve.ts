@@ -9,6 +9,7 @@ export interface TemplateContext {
   branch?: string;
   branchSlug?: string;
   ports?: Record<string, string | number | undefined>;
+  cors?: { origins?: string };
   env?: Record<string, string | undefined>;
 }
 
@@ -44,6 +45,7 @@ function templateValue(variable: string, context: TemplateContext): string | num
     case 'slug': return context.slug;
     case 'branch': return context.branch;
     case 'branch.slug': return context.branchSlug;
+    case 'cors.origins': return context.cors?.origins;
     default:
       if (variable.startsWith('port.')) return ownTemplateValue(context.ports, variable.slice('port.'.length));
       if (variable.startsWith('env.')) return ownTemplateValue(context.env, variable.slice('env.'.length));

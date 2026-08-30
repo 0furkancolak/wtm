@@ -16,6 +16,8 @@ export interface TaskResolutionInput {
   taskName: string;
   isMain: boolean;
   context: TemplateContext;
+  /** Variables WTM derived for this worktree — endpoint ports, the CORS allowlist. */
+  automaticEnvironment?: Record<string, string>;
 }
 
 export class WtmTaskResolutionError extends Error {
@@ -47,6 +49,7 @@ export function resolveTask(input: TaskResolutionInput): ResolvedTask {
   }
 
   const envDelta = resolveEnvironment({
+    ...(input.automaticEnvironment === undefined ? {} : { automatic: input.automaticEnvironment }),
     ...(config.environment === undefined ? {} : { workspace: config.environment }),
     ...(task.env === undefined ? {} : { task: task.env }),
     context: input.context,

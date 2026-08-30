@@ -1,6 +1,12 @@
 import { resolveTemplate, WtmTemplateError, type TemplateContext } from '../templates/resolve';
 
 export interface EnvironmentResolutionInput {
+  /**
+   * Variables WTM derived rather than read: the port each endpoint was given, the CORS
+   * allowlist for this feature. They sit beneath the workspace's own block so that naming a
+   * variable in `wtm.toml` always overrides what WTM worked out on its own.
+   */
+  automatic?: Record<string, string>;
   workspace?: Record<string, string>;
   task?: Record<string, string>;
   context: TemplateContext;
@@ -19,7 +25,7 @@ export class WtmEnvironmentError extends Error {
 }
 
 export function resolveEnvironment(input: EnvironmentResolutionInput): Record<string, string> {
-  const declared = { ...input.workspace, ...input.task };
+  const declared = { ...input.automatic, ...input.workspace, ...input.task };
   const inherited = input.context.env ?? {};
   const resolved: Record<string, string> = {};
   const resolving: string[] = [];

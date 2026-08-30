@@ -7,6 +7,7 @@ import type {
   AdapterTrustInput,
   AdapterTrustRecord,
   EndpointLease,
+  EndpointLeaseQuery,
   EndpointRequest,
   ManagedProcessInput,
   ManagedProcessCreateOptions,
@@ -49,6 +50,10 @@ class FailingReconciliationStore implements StateStore {
 
   allocateEndpoint(input: EndpointRequest): EndpointLease {
     return this.inner.allocateEndpoint(input);
+  }
+
+  listEndpointLeases(query?: EndpointLeaseQuery): EndpointLease[] {
+    return this.inner.listEndpointLeases(query);
   }
 
   upsertAdapterTrust(input: AdapterTrustInput): AdapterTrustRecord {

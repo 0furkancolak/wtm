@@ -36,6 +36,29 @@ const portSchema = z.object({
   preferred: z.number().int().min(1).max(65535).optional(),
   stride: z.number().int().positive().optional(),
   port: z.number().int().min(1).max(65535).optional(),
+  /**
+   * The variable this endpoint is published under. Naming it here is what turns a port into
+   * something a process can read without the configuration also spelling out
+   * `PORT = "{port.web}"`, which is the same fact written twice.
+   */
+  env: z.string().min(1).optional(),
+  /**
+   * Whether this endpoint is a browser origin. Origins are what a CORS allowlist is made of,
+   * so an endpoint that serves something else — a database, a queue — says so and stays out.
+   */
+  origin: z.boolean().optional(),
+}).strict();
+
+const corsSchema = z.object({
+  /** Detection is on by default; this turns it off for a workspace that configures CORS itself. */
+  enabled: z.boolean().optional(),
+  /**
+   * The variables the allowlist is published under. Left unset, WTM reads the variable names
+   * the repository's own `.env` example files already declare.
+   */
+  env: z.array(z.string().min(1)).optional(),
+  /** Origins to allow in addition to the ones WTM allocated for this feature. */
+  origins: z.array(z.string().min(1)).optional(),
 }).strict();
 
 const resourceSchema = z.object({
@@ -74,6 +97,7 @@ export const wtmConfigSchema = z.object({
   }).strict().optional(),
   prepare: z.object({ mode: z.enum(['lazy', 'eager']).optional() }).strict().optional(),
   ports: portsSchema.optional(),
+  cors: corsSchema.optional(),
   environment: z.record(z.string(), z.string()).optional(),
   tasks: z.record(z.string(), taskSchema).optional(),
   events: z.record(z.string(), z.object({ tasks: z.array(z.string().min(1)) }).strict()).optional(),
@@ -86,6 +110,7 @@ export const wtmConfigSchema = z.object({
 }).strict();
 
 export type PortConfig = z.infer<typeof portSchema>;
+export type CorsConfig = z.infer<typeof corsSchema>;
 export type PortsConfig = {
   strategy?: 'stable-dynamic';
   range?: string;
