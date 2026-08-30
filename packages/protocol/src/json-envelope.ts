@@ -5,6 +5,11 @@ import { schemaVersionSchema, type SchemaVersion } from './schema-version';
 export const scopeSchema = z.object({
   mode: z.enum(['local', 'global']),
   workspaceId: z.string().min(1).optional(),
+  /**
+   * The worktree a runtime command acted on. A workspace holds many, so naming only the
+   * workspace leaves a caller unable to tell which branch — or which repository — answered.
+   */
+  worktreeId: z.string().min(1).optional(),
 }).strict();
 
 const envelopeBaseSchema = z.object({

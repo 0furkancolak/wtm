@@ -44,7 +44,7 @@ export type {
   ProcessIdentity,
   ProcessInspection,
 } from './process-supervisor';
-export { DaemonRuntimeController, runtimeCommandNames } from './runtime-controller';
+export { DaemonRegistrationError, DaemonRuntimeController, runtimeCommandNames } from './runtime-controller';
 export type {
   DaemonRuntimeControllerOptions,
   DaemonRuntimeLogReader,
@@ -52,6 +52,16 @@ export type {
   DaemonRuntimeSupervisor,
 } from './runtime-controller';
 export { createProductionDaemon, defaultProductionRuntimePaths } from './runtime-factory';
+export {
+  branchName,
+  execEnvironment,
+  featureGroup,
+  findRegistration,
+  resolveWorktreeRuntime,
+  taskResolutionInput,
+  templateContext,
+} from './task-resolution';
+export type { Registration, WorktreeRuntime, WorktreeRuntimeInput } from './task-resolution';
 export type {
   ProductionDaemonOptions,
   ProductionDaemonRuntime,

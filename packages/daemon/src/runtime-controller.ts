@@ -1,4 +1,12 @@
-import { WtmTaskResolutionError, type ManagedProcessRecord, type ResolvedTask } from '@wtm/core';
+import {
+  WtmConfigError,
+  WtmEndpointAllocationError,
+  WtmEnvironmentError,
+  WtmTaskResolutionError,
+  WtmTemplateError,
+  type ManagedProcessRecord,
+  type ResolvedTask,
+} from '@wtm/core';
 import {
   defaultMaxIpcFrameBytes,
   protocolVersion,
@@ -87,9 +95,14 @@ export interface DaemonRuntimeLogReader {
   }>;
 }
 
+export interface ResolvedRegistration {
+  workspaceId: string;
+  worktreeId: string;
+}
+
 export interface DaemonRuntimeResolver {
-  resolveTask(cwd: string, taskName: string): Promise<{ worktreeId: string; task: ResolvedTask }>;
-  resolveWorktree(cwd: string): Promise<{ worktreeId: string }>;
+  resolveTask(cwd: string, taskName: string): Promise<ResolvedRegistration & { task: ResolvedTask }>;
+  resolveWorktree(cwd: string): Promise<ResolvedRegistration>;
   resolveExec(cwd: string): Promise<{ cwd: string; envDelta: Record<string, string> }>;
 }
 
@@ -135,12 +148,13 @@ export class DaemonRuntimeController {
         const result = request.command === 'start'
           ? await this.#supervisor.start(input)
           : await this.#supervisor.restart(input);
-        return success(request.command, { process: result.record, existing: result.existing }, resolved.worktreeId);
+        return success(request.command, { process: result.record, existing: result.existing }, scopeOf(resolved));
       }
 
       if (request.command === 'stop') {
         const taskName = args.taskName;
-        const { worktreeId } = await this.#resolver.resolveWorktree(cwd);
+        const registration = await this.#resolver.resolveWorktree(cwd);
+        const { worktreeId } = registration;
         const records = taskName === undefined
           ? await this.#supervisor.stopAll(worktreeId)
           : [await this.#supervisor.stop({ worktreeId, taskName })];
@@ -158,17 +172,18 @@ export class DaemonRuntimeController {
             },
           });
         }
-        return success('stop', { processes: records }, worktreeId);
+        return success('stop', { processes: records }, scopeOf(registration));
       }
 
       if (request.command === 'ps') {
-        const { worktreeId } = await this.#resolver.resolveWorktree(cwd);
-        return success('ps', { processes: this.#supervisor.list(worktreeId) }, worktreeId);
+        const registration = await this.#resolver.resolveWorktree(cwd);
+        return success('ps', { processes: this.#supervisor.list(registration.worktreeId) }, scopeOf(registration));
       }
 
       if (request.command === 'logs') {
         const taskName = args.taskName;
-        const { worktreeId } = await this.#resolver.resolveWorktree(cwd);
+        const registration = await this.#resolver.resolveWorktree(cwd);
+        const { worktreeId } = registration;
         const allRecords = latestRecords(this.#supervisor.list(worktreeId), taskName);
         const records = allRecords.slice(0, maximumLogTasks);
         const logs: Array<{
@@ -233,12 +248,12 @@ export class DaemonRuntimeController {
             }),
           });
         }
-        const responseWorktreeId = truncateUtf8Tail(worktreeId, 128);
-        let envelope = success('logs', { logs, ...(truncated ? { truncated: true } : {}) }, responseWorktreeId);
+        const responseScope = scopeOf(registration);
+        let envelope = success('logs', { logs, ...(truncated ? { truncated: true } : {}) }, responseScope);
         while (!fitsIpcResponse(request.id, envelope) && logs.length > 0) {
           logs.pop();
           truncated = true;
-          envelope = success('logs', { logs, truncated: true }, responseWorktreeId);
+          envelope = success('logs', { logs, truncated: true }, responseScope);
         }
         return envelope;
       }
@@ -285,15 +300,23 @@ function latestRecords(records: ManagedProcessRecord[], taskName?: string): Mana
   return [...latest.values()].sort((left, right) => left.taskName.localeCompare(right.taskName));
 }
 
-function success(command: string, data: unknown, workspaceId?: string): JsonEnvelope<unknown> {
+function success(command: string, data: unknown, scope?: ResolvedRegistration): JsonEnvelope<unknown> {
   return {
     schemaVersion: 1,
     ok: true,
     command,
-    ...(workspaceId === undefined ? {} : { scope: { mode: 'local' as const, workspaceId } }),
+    ...(scope === undefined ? {} : { scope: { mode: 'local' as const, ...scope } }),
     data,
     warnings: [],
     errors: [],
+  };
+}
+
+/** Identifiers are echoed back to a client, so they are bounded the way every other field is. */
+function scopeOf(registration: ResolvedRegistration): ResolvedRegistration {
+  return {
+    workspaceId: truncateUtf8Tail(registration.workspaceId, 128),
+    worktreeId: truncateUtf8Tail(registration.worktreeId, 128),
   };
 }
 
@@ -310,17 +333,32 @@ function invalidRequest(command: string): JsonEnvelope<null> {
   });
 }
 
+/**
+ * The errors whose message is written for the person who typed the command rather than for a
+ * log. They are the only ones allowed to cross the socket verbatim: an unexpected throw
+ * carries a stack and filesystem paths, and a client has no business reading either.
+ *
+ * Everything a workspace can get wrong belongs here. `{port.api}` with no such endpoint
+ * configured used to arrive as "Runtime request failed", which says nothing at all about the
+ * one line that needs changing.
+ */
+const forwardedErrors = [
+  WtmTaskResolutionError,
+  DaemonRegistrationError,
+  WtmConfigError,
+  WtmEnvironmentError,
+  WtmTemplateError,
+  WtmEndpointAllocationError,
+] as const;
+
 function runtimeError(error: unknown, command: string): WtmError {
-  if (error instanceof WtmTaskResolutionError || error instanceof DaemonRegistrationError) {
-    // These two are the only errors whose message is written for the person who typed the
-    // command rather than for a log, so they are the only ones allowed to cross the socket
-    // verbatim. Everything else keeps a fixed message: an unexpected throw carries a stack
-    // and filesystem paths, and a client has no business reading either.
+  if (forwardedErrors.some((candidate) => error instanceof candidate)) {
+    const forwarded = error as InstanceType<(typeof forwardedErrors)[number]>;
     return {
-      code: error.code,
-      message: error.message,
+      code: forwarded.code,
+      message: forwarded.message,
       severity: 'error',
-      context: { command, ...safeContext(error) },
+      context: { command, ...safeContext(forwarded) },
     };
   }
   const code = safeRuntimeCode(error);
@@ -363,7 +401,13 @@ function safeContext(error: unknown): Record<string, unknown> {
   if (typeof error !== 'object' || error === null || !('context' in error)) return {};
   const raw = error.context;
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {};
-  const allowed = ['worktreeId', 'taskName', 'processId', 'state', 'reason'];
+  // Names and numbers a caller needs in order to find the line at fault. Deliberately
+  // excludes everything that identifies the machine — `source`, paths, causes — which is why
+  // the list is spelled out rather than filtered.
+  const allowed = [
+    'worktreeId', 'taskName', 'processId', 'state', 'reason',
+    'variable', 'name', 'port', 'range', 'protocol', 'host', 'target',
+  ];
   return Object.fromEntries(Object.entries(raw).filter(([key, value]) =>
     allowed.includes(key) && (typeof value === 'string' || typeof value === 'number' || value === null),
   ));

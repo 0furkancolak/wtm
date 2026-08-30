@@ -6,7 +6,12 @@ import {
   protocolVersion,
   type IpcRequest,
 } from '@wtm/protocol';
-import { WtmTaskResolutionError, type ManagedProcessRecord, type ResolvedTask } from '@wtm/core';
+import {
+  WtmTaskResolutionError,
+  WtmTemplateError,
+  type ManagedProcessRecord,
+  type ResolvedTask,
+} from '@wtm/core';
 import { DaemonRegistrationError, DaemonRuntimeController } from '../runtime-controller';
 
 const processRecord: ManagedProcessRecord = {
@@ -51,8 +56,8 @@ describe('DaemonRuntimeController', () => {
       },
       logs: { read: async (path, limit) => `${path}:${limit}` },
       resolver: {
-        resolveTask: async () => ({ worktreeId: 'worktree-7', task }),
-        resolveWorktree: async () => ({ worktreeId: 'worktree-7' }),
+        resolveTask: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
         resolveExec: async () => ({ cwd: '/repo/wt', envDelta: { WTM_WORKTREE_ID: '7' } }),
       },
     });
@@ -89,8 +94,8 @@ describe('DaemonRuntimeController', () => {
       supervisor: noProcesses(),
       logs: { read: async () => '' },
       resolver: {
-        resolveTask: async () => ({ worktreeId: 'worktree-7', task }),
-        resolveWorktree: async () => ({ worktreeId: 'worktree-7' }),
+        resolveTask: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
         resolveExec: async () => ({ cwd: '/repo/wt', envDelta: { SAFE: '$HOME; rm literal' } }),
       },
     });
@@ -107,7 +112,7 @@ describe('DaemonRuntimeController', () => {
       logs: { read: async () => '' },
       resolver: {
         resolveTask: async () => { throw new Error('secret=/Users/private stack trace'); },
-        resolveWorktree: async () => ({ worktreeId: 'worktree-7' }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
         resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
       },
     });
@@ -134,7 +139,7 @@ describe('DaemonRuntimeController', () => {
         resolveTask: async () => {
           throw new WtmTaskResolutionError('Unknown task: dev', { taskName: 'dev' });
         },
-        resolveWorktree: async () => ({ worktreeId: 'worktree-7' }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
         resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
       },
     });
@@ -155,7 +160,7 @@ describe('DaemonRuntimeController', () => {
       logs: { read: async () => '' },
       resolver: {
         resolveTask: async () => { throw new DaemonRegistrationError('Not registered.'); },
-        resolveWorktree: async () => ({ worktreeId: 'worktree-7' }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
         resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
       },
     });
@@ -168,14 +173,53 @@ describe('DaemonRuntimeController', () => {
     });
   });
 
+  test('names the configuration mistake behind an unresolvable template', async () => {
+    const controller = new DaemonRuntimeController({
+      supervisor: noProcesses(),
+      logs: { read: async () => '' },
+      resolver: {
+        resolveTask: async () => { throw new WtmTemplateError('port.api'); },
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
+        resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
+      },
+    });
+
+    const failed = await controller.handle(request('start', { cwd: '/repo/wt', taskName: 'dev' }));
+
+    // Referring to an endpoint the workspace never configured is a one-line mistake, and used
+    // to arrive as "Runtime request failed", which names neither the line nor the endpoint.
+    expect(failed.errors[0]).toMatchObject({
+      code: 'WTM_TEMPLATE_UNRESOLVED',
+      message: 'Unable to resolve template variable {port.api}.',
+      context: { command: 'start', variable: 'port.api' },
+    });
+  });
+
+  test('reports both the workspace and the worktree a runtime command acted on', async () => {
+    const controller = new DaemonRuntimeController({
+      supervisor: noProcesses(),
+      logs: { read: async () => '' },
+      resolver: {
+        resolveTask: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
+        resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
+      },
+    });
+
+    // A workspace holds many worktrees, so the worktree id alone answered a different question
+    // from the one the field name asks.
+    expect((await controller.handle(request('ps', { cwd: '/repo/wt' }))).scope)
+      .toEqual({ mode: 'local', workspaceId: 'workspace-1', worktreeId: 'worktree-7' });
+  });
+
   test('strictly rejects command-specific unknown argument keys before resolution', async () => {
     let resolutions = 0;
     const controller = new DaemonRuntimeController({
       supervisor: noProcesses(),
       logs: { read: async () => '' },
       resolver: {
-        resolveTask: async () => { resolutions += 1; return { worktreeId: 'worktree-7', task }; },
-        resolveWorktree: async () => { resolutions += 1; return { worktreeId: 'worktree-7' }; },
+        resolveTask: async () => { resolutions += 1; return { workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }; },
+        resolveWorktree: async () => { resolutions += 1; return { workspaceId: 'workspace-1', worktreeId: 'worktree-7' }; },
         resolveExec: async () => { resolutions += 1; return { cwd: '/repo/wt', envDelta: {} }; },
       },
     });
@@ -203,8 +247,8 @@ describe('DaemonRuntimeController', () => {
       supervisor: { ...noProcesses(), list: () => records },
       logs: { read: async () => '🧪'.repeat(300_000) },
       resolver: {
-        resolveTask: async () => ({ worktreeId: 'worktree-7', task }),
-        resolveWorktree: async () => ({ worktreeId: 'worktree-7' }),
+        resolveTask: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
         resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
       },
     });
@@ -228,8 +272,8 @@ describe('DaemonRuntimeController', () => {
       supervisor: { ...noProcesses(), list: () => records },
       logs: { read: async () => '\0\b\f\n\r\t'.repeat(100_000) },
       resolver: {
-        resolveTask: async () => ({ worktreeId: 'worktree-7', task }),
-        resolveWorktree: async () => ({ worktreeId: 'w'.repeat(10_000) }),
+        resolveTask: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'w'.repeat(10_000) }),
         resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
       },
     });
@@ -268,8 +312,8 @@ describe('DaemonRuntimeController', () => {
         },
       },
       resolver: {
-        resolveTask: async () => ({ worktreeId: 'worktree-7', task }),
-        resolveWorktree: async () => ({ worktreeId: 'worktree-7' }),
+        resolveTask: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
         resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
       },
     });
@@ -300,8 +344,8 @@ describe('DaemonRuntimeController', () => {
         },
       },
       resolver: {
-        resolveTask: async () => ({ worktreeId: 'worktree-7', task }),
-        resolveWorktree: async () => ({ worktreeId: 'worktree-7' }),
+        resolveTask: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
         resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
       },
     });
@@ -336,8 +380,8 @@ describe('DaemonRuntimeController', () => {
       },
       logs: { read: async () => '' },
       resolver: {
-        resolveTask: async () => ({ worktreeId: 'worktree-7', task }),
-        resolveWorktree: async () => ({ worktreeId: 'worktree-7' }),
+        resolveTask: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
         resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
       },
     });

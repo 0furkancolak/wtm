@@ -12,7 +12,8 @@
     "./runtime-controller": "./src/runtime-controller.ts",
     "./runtime-factory": "./src/runtime-factory.ts",
     "./launchd": "./src/launchd.ts",
-    "./adapter-tasks": "./src/adapter-tasks.ts"
+    "./adapter-tasks": "./src/adapter-tasks.ts",
+    "./task-resolution": "./src/task-resolution.ts"
   },
   "dependencies": {
     "@wtm/adapters": "workspace:*",

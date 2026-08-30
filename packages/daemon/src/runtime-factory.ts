@@ -1,24 +1,22 @@
 import { homedir } from 'node:os';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import {
   SQLiteStateStore,
   ensurePrivateDirectory,
   verifyPrivateDirectory,
-  resolveEnvironment,
   resolveTask,
-  resolveWorkspaceConfig,
   type DaemonStateStore,
-  type RepositoryRecord,
-  type TemplateContext,
-  type WorkspaceRecord,
-  type WorktreeRecord,
 } from '@wtm/core';
-import { withAdapterTasks } from './adapter-tasks';
-import type { AdapterContext } from '@wtm/protocol';
 import { WtmDaemon } from './main';
 import { ManagedLogStore } from './logs';
 import { ManagedProcessSupervisor, type RuntimeInvocation } from './process-supervisor';
-import { DaemonRegistrationError, DaemonRuntimeController, type DaemonRuntimeResolver } from './runtime-controller';
+import { DaemonRuntimeController, type DaemonRuntimeResolver } from './runtime-controller';
+import {
+  execEnvironment,
+  findRegistration,
+  resolveWorktreeRuntime,
+  taskResolutionInput,
+} from './task-resolution';
 
 export interface ProductionRuntimePaths {
   dataRoot: string;
@@ -138,96 +136,32 @@ class ProductionRuntimeResolver implements DaemonRuntimeResolver {
   ) {}
 
   async resolveTask(cwd: string, taskName: string) {
-    const registration = this.#registration(cwd);
-    const config = await resolveWorkspaceConfig({
-      workspaceRoot: registration.workspace.root,
-      repoRoot: registration.worktree.path,
-      globalConfigPath: this.globalConfigPath,
-    });
+    const runtime = await this.#runtime(cwd);
     return {
-      worktreeId: registration.worktree.id,
-      task: resolveTask({
-        config: await withAdapterTasks(config.value, adapterContext(registration)),
-        taskName,
-        isMain: registration.worktree.isMain,
-        context: templateContext(registration),
-      }),
+      workspaceId: runtime.registration.workspace.id,
+      worktreeId: runtime.registration.worktree.id,
+      task: resolveTask(taskResolutionInput(runtime, taskName)),
     };
   }
 
   async resolveWorktree(cwd: string) {
-    return { worktreeId: this.#registration(cwd).worktree.id };
+    const registration = findRegistration(this.store, cwd);
+    return { workspaceId: registration.workspace.id, worktreeId: registration.worktree.id };
   }
 
   async resolveExec(cwd: string) {
-    const registration = this.#registration(cwd);
-    const config = await resolveWorkspaceConfig({
-      workspaceRoot: registration.workspace.root,
-      repoRoot: registration.worktree.path,
-      globalConfigPath: this.globalConfigPath,
-    });
+    const runtime = await this.#runtime(cwd);
     return {
-      cwd: registration.worktree.path,
-      envDelta: resolveEnvironment({
-        ...(config.value.environment === undefined ? {} : { workspace: config.value.environment }),
-        context: templateContext(registration),
-      }),
+      cwd: runtime.registration.worktree.path,
+      envDelta: execEnvironment(runtime),
     };
   }
 
-  #registration(cwd: string): Registration {
-    const absolute = resolve(cwd);
-    const worktree = this.store.listWorktrees()
-      .filter((candidate) => contains(candidate.path, absolute))
-      .sort((left, right) => right.path.length - left.path.length)[0];
-    if (worktree === undefined) {
-      throw new DaemonRegistrationError(
-        'This directory is not inside a worktree WTM has registered. Run `wtm init` in the workspace root.',
-      );
-    }
-    const repository = this.store.listRepositories().find(({ id }) => id === worktree.repositoryId);
-    if (repository === undefined) {
-      throw new DaemonRegistrationError('The registered worktree has no repository on record.');
-    }
-    const workspace = this.store.listWorkspaces().find(({ id }) => id === repository.workspaceId);
-    if (workspace === undefined) {
-      throw new DaemonRegistrationError('The registered repository has no workspace on record.');
-    }
-    return { workspace, repository, worktree };
+  async #runtime(cwd: string) {
+    return await resolveWorktreeRuntime({
+      store: this.store,
+      cwd,
+      globalConfigPath: this.globalConfigPath,
+    });
   }
-}
-
-interface Registration {
-  workspace: WorkspaceRecord;
-  repository: RepositoryRecord;
-  worktree: WorktreeRecord;
-}
-
-function adapterContext({ workspace, repository, worktree }: Registration): AdapterContext {
-  return {
-    workspace: { root: workspace.root },
-    repository: { root: worktree.path, mainRoot: repository.mainRoot },
-    worktree: { root: worktree.path, id: worktree.numericId, branch: worktree.branch ?? null },
-  };
-}
-
-function templateContext({ workspace, repository, worktree }: Registration): TemplateContext {
-  const branch = worktree.branch ?? '';
-  return {
-    workspace: { root: workspace.root, name: workspace.name },
-    repo: { root: worktree.path, name: basename(repository.mainRoot) },
-    main: { root: repository.mainRoot },
-    worktree: { root: worktree.path },
-    id: worktree.numericId,
-    key: String(worktree.numericId),
-    slug: basename(worktree.path),
-    branch,
-    branchSlug: branch.replace(/[^A-Za-z0-9._-]+/g, '-'),
-    env: process.env,
-  };
-}
-
-function contains(root: string, candidate: string): boolean {
-  const child = relative(resolve(root), candidate);
-  return child === '' || (!child.startsWith(`..${sep}`) && child !== '..');
 }

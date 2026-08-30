@@ -43,7 +43,10 @@ try {
     });
   }
 
-  const source = createStateDiagnosticDataSource(store);
+  const source = createStateDiagnosticDataSource(store, {
+    cwd: root,
+    globalConfigPath: join(root, 'config.toml'),
+  });
   const globalSamples: number[] = [];
   for (let index = 0; index < 10; index += 1) {
     globalSamples.push(await measure(async () => {

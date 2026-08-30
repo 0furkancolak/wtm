@@ -1,7 +1,8 @@
 import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
-import { constants } from 'node:os';
-import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { constants as fsConstants, existsSync } from 'node:fs';
+import { access } from 'node:fs/promises';
+import { constants, homedir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
 import type { AdapterTrustStore } from '@wtm/core';
 import {
@@ -12,9 +13,13 @@ import {
 } from '@wtm/core';
 import type { GitWorktreeRecord } from '@wtm/core';
 import {
+  DaemonRegistrationError,
+  branchName,
   createLaunchdLifecycle,
   createProductionDaemon,
   defaultProductionRuntimePaths,
+  resolveWorktreeRuntime,
+  taskResolutionInput,
   type LaunchdLifecycle,
 } from '@wtm/daemon';
 import {
@@ -49,7 +54,7 @@ import { runAdapterCommand } from './commands/adapter';
 import { runAnalyzeCommand } from './commands/analyze';
 import { runRemoveCommand } from './commands/remove';
 import { toGitSafetyError } from './commands/git-error';
-import { runResolveCommand } from './commands/resolve';
+import { runResolveCommand, toRuntimeCommandError } from './commands/resolve';
 import { runRunCommand } from './commands/run';
 import {
   runProductionInitCommand,
@@ -168,7 +173,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   const runTaskCommand = program.command('run <task>').description('Run a configured task in the foreground.');
   addJsonOption(runTaskCommand);
   runTaskCommand.action(async (taskName: string, options: ScopeOptions) => {
-    renderRuntime(await runRunCommand(await productionTaskResolution({ cwd, taskName })), runtimeJson(program, options));
+    renderRuntime(await runProductionRun({ cwd, taskName }), runtimeJson(program, options));
   });
 
   const analyze = program.command('analyze [selector]').description('Analyze worktree removal safety.');
@@ -625,48 +630,134 @@ function operationFailure(
 }
 
 async function runProductionResolve(input: { cwd: string; taskName: string }): Promise<JsonEnvelope<unknown>> {
-  return runResolveCommand(await productionTaskResolution(input));
+  try {
+    return await runResolveCommand(await productionTaskResolution(input));
+  } catch (error) {
+    return resolutionFailure('resolve', input.taskName, error);
+  }
+}
+
+async function runProductionRun(input: { cwd: string; taskName: string }): Promise<JsonEnvelope<unknown>> {
+  try {
+    return await runRunCommand(await productionTaskResolution(input));
+  } catch (error) {
+    return resolutionFailure('run', input.taskName, error);
+  }
+}
+
+/**
+ * Working out what a task is can fail before there is a task to report on — an endpoint range
+ * with nothing free in it, a registry that cannot be read. Without this the failure escapes
+ * the envelope entirely and a `--json` caller receives a bare line of prose.
+ */
+function resolutionFailure(
+  command: 'resolve' | 'run',
+  taskName: string,
+  error: unknown,
+): JsonEnvelope<null> {
+  return {
+    schemaVersion: 1,
+    ok: false,
+    command,
+    scope: { mode: 'local' },
+    data: null,
+    warnings: [],
+    errors: [toRuntimeCommandError(error, command, taskName)],
+  };
 }
 
 /** `resolve` and `run` answer the same question; only one of them then executes the task. */
-async function productionTaskResolution(input: { cwd: string; taskName: string }): Promise<TaskResolutionInput> {
+async function productionTaskResolution(
+  input: { cwd: string; taskName: string },
+  databasePath = defaultProductionRuntimePaths().databasePath,
+): Promise<TaskResolutionInput & { workspaceId?: string }> {
+  // The registry is what knows where the workspace root is, which in a directory holding
+  // several repositories is nowhere near the current one. Resolving without it read the
+  // wrong `wtm.toml` — or none — and answered differently from the supervised path.
+  const store = openStateStore(databasePath);
+  if (store !== null) {
+    try {
+      const runtime = await resolveWorktreeRuntime({
+        store,
+        cwd: input.cwd,
+        globalConfigPath: defaultProductionRuntimePaths().globalConfigPath,
+      });
+      return {
+        ...taskResolutionInput(runtime, input.taskName),
+        workspaceId: runtime.registration.workspace.id,
+      };
+    } catch (error) {
+      if (!(error instanceof DaemonRegistrationError)) throw error;
+    } finally {
+      store.close();
+    }
+  }
+  return await unregisteredTaskResolution(input);
+}
+
+/**
+ * Resolution for a repository WTM has not been asked to manage. Nothing is allocated and no
+ * state is written, so `wtm resolve` still answers inside a clone someone is only visiting —
+ * but the workspace root is still located by its `wtm.toml`, not assumed to be here.
+ */
+async function unregisteredTaskResolution(
+  input: { cwd: string; taskName: string },
+): Promise<TaskResolutionInput> {
   const topology = await listGitWorktrees(input.cwd);
   const worktree = topology.find(({ path }) => containsPath(path, input.cwd)) ?? topology[0];
   if (worktree === undefined) {
     return { config: {}, taskName: input.taskName, isMain: true, context: { env: process.env } };
   }
-  const config = await resolveWorkspaceConfig({
-    workspaceRoot: input.cwd,
-    repoRoot: worktree.path,
-    globalConfigPath: join(homedir(), 'Library', 'Application Support', 'WTM', 'config.toml'),
-  });
   const mainRoot = topology[0]?.path ?? worktree.path;
-  const branch = worktree.branch?.replace(/^refs\/heads\//, '') ?? '';
+  const workspaceRoot = await findWorkspaceRoot(input.cwd) ?? worktree.path;
+  const config = await resolveWorkspaceConfig({
+    workspaceRoot,
+    repoRoot: worktree.path,
+    globalConfigPath: defaultProductionRuntimePaths().globalConfigPath,
+  });
+  const numericId = Math.max(1, topology.findIndex(({ path }) => path === worktree.path) + 1);
+  const branch = branchName(worktree.branch);
   return {
     config: await withAdapterTasks(config.value, {
-      workspace: { root: input.cwd },
+      workspace: { root: workspaceRoot },
       repository: { root: worktree.path, mainRoot },
-      worktree: {
-        root: worktree.path,
-        id: Math.max(0, topology.findIndex(({ path }) => path === worktree.path)),
-        branch: worktree.branch ?? null,
-      },
+      worktree: { root: worktree.path, id: numericId, branch: worktree.branch ?? null },
     }),
     taskName: input.taskName,
     isMain: worktree.path === topology[0]?.path,
     context: {
-      workspace: { root: input.cwd, name: input.cwd.split('/').at(-1) ?? 'workspace' },
-      repo: { root: worktree.path, name: worktree.path.split('/').at(-1) ?? 'repo' },
+      workspace: { root: workspaceRoot, name: basename(workspaceRoot) },
+      repo: { root: worktree.path, name: basename(mainRoot) },
       main: { root: mainRoot },
       worktree: { root: worktree.path },
-      id: Math.max(1, topology.findIndex(({ path }) => path === worktree.path) + 1),
-      key: String(Math.max(1, topology.findIndex(({ path }) => path === worktree.path) + 1)),
-      slug: worktree.path.split('/').at(-1) ?? 'worktree',
+      id: numericId,
+      key: String(numericId),
+      slug: basename(worktree.path),
       branch,
       branchSlug: branch.replace(/[^A-Za-z0-9._-]+/g, '-'),
       env: process.env,
     },
   };
+}
+
+/** The nearest enclosing directory holding a `wtm.toml`, which is what `wtm init` writes. */
+async function findWorkspaceRoot(from: string): Promise<string | null> {
+  let current = resolve(from);
+  while (true) {
+    if (await readable(join(current, 'wtm.toml'))) return current;
+    const parent = dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+async function readable(path: string): Promise<boolean> {
+  try {
+    await access(path, fsConstants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function containsPath(root: string, candidate: string): boolean {
@@ -690,7 +781,7 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
     ? new DaemonClient({ socketPath: defaultDaemonSocketPath() })
     : null;
   const diagnosticStore = dependencies.dataSource === undefined && isDiagnosticInvocation(argv)
-    ? openDiagnosticStore(dependencies.diagnosticsDatabasePath ?? defaultProductionRuntimePaths().databasePath)
+    ? openStateStore(dependencies.diagnosticsDatabasePath ?? defaultProductionRuntimePaths().databasePath)
     : null;
   const cancellation = dependencies.signal === undefined && isFollowInvocation(argv)
     ? new AbortController()
@@ -701,7 +792,12 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
   const program = createCli({
     ...dependencies,
     ...(defaultClient === null ? {} : { runtimeClient: defaultClient }),
-    ...(diagnosticStore === null ? {} : { dataSource: createStateDiagnosticDataSource(diagnosticStore) }),
+    ...(diagnosticStore === null ? {} : {
+      dataSource: createStateDiagnosticDataSource(diagnosticStore, {
+        cwd: dependencies.cwd ?? process.cwd(),
+        globalConfigPath: defaultProductionRuntimePaths().globalConfigPath,
+      }),
+    }),
     ...(cancellation === null ? {} : { signal: cancellation.signal }),
     ...(jsonRequested ? { stderr: () => {} } : {}),
   }, { setExitCode: (value) => { exitCode = value; } });
@@ -727,11 +823,18 @@ function isDiagnosticInvocation(argv: readonly string[]): boolean {
   return command !== undefined && commands.some(([name]) => name === command);
 }
 
-function openDiagnosticStore(databasePath: string): SQLiteStateStore | null {
-  // An absent or unreadable database means nothing is registered yet, which the commands report.
+/**
+ * Opens the registry for writing, if it exists. Resolution allocates endpoints, so a
+ * read-only handle would answer with the ports a worktree already has and fail for one that
+ * has none yet. An absent file means nothing is registered, and a command that only reads
+ * must not bring a state directory into being by asking.
+ */
+function openStateStore(databasePath: string): SQLiteStateStore | null {
+  if (!existsSync(databasePath)) return null;
   try {
-    return new SQLiteStateStore(databasePath, { readonly: true });
+    return new SQLiteStateStore(databasePath);
   } catch {
+    // Unreadable, locked, or written by another user: the commands report nothing registered.
     return null;
   }
 }
