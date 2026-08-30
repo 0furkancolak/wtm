@@ -55,6 +55,18 @@ bun run build
 node dist/cli/bin.js --version
 ```
 
+To get a real `wtm` on PATH before a release exists, build the standalone
+executable and install it. `make install` writes to `~/.local/bin` by default;
+pass `PREFIX` for a shared location:
+
+```bash
+make install
+```
+
+```bash
+sudo make install PREFIX=/usr/local
+```
+
 ## Quick start
 
 Inside an existing Git workspace, initialize WTM, then copy or write a `wtm.toml` that defines the `dev` task before resolving it. The following uses the Bun monorepo example and assumes the project has `apps/web`:
@@ -89,6 +101,8 @@ bun test
 bun run test:e2e
 bun run test:perf
 ```
+
+Every routine action also has a `make` target; `make help` lists them. `make check` runs the fast gate, `make verify` runs the full release gate.
 
 Build the distributable package with `bun run build`; verify its public contents with `bun run package:verify`.
 
