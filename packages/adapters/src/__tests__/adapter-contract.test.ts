@@ -97,7 +97,7 @@ describe('built-in adapter contract', () => {
       const composePlan = await compose?.plan(fixture.context);
 
       expect(makePlan?.tasks).toEqual({
-        make: { run: ['make'], cwd: '{worktree.root}' },
+        make: { description: 'Run the default goal', run: ['make'], cwd: '{worktree.root}' },
       });
       expect(composePlan?.tasks).toEqual({
         'compose-up': {

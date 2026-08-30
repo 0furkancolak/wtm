@@ -11,9 +11,11 @@
     "./process-supervisor": "./src/process-supervisor.ts",
     "./runtime-controller": "./src/runtime-controller.ts",
     "./runtime-factory": "./src/runtime-factory.ts",
-    "./launchd": "./src/launchd.ts"
+    "./launchd": "./src/launchd.ts",
+    "./adapter-tasks": "./src/adapter-tasks.ts"
   },
   "dependencies": {
+    "@wtm/adapters": "workspace:*",
     "@wtm/core": "workspace:*",
     "@wtm/protocol": "workspace:*"
   }

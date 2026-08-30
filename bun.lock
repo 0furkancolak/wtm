@@ -47,6 +47,7 @@
       "name": "@wtm/daemon",
       "version": "0.1.0",
       "dependencies": {
+        "@wtm/adapters": "workspace:*",
         "@wtm/core": "workspace:*",
         "@wtm/protocol": "workspace:*",
       },
