@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { realpath, rm } from 'node:fs/promises';
+import { realpath, rm, symlink } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { GitSafetyFixture } from '../../../../testkit/src/git-fixture';
 import { createGitSafetyFixture } from '../../../../testkit/src/git-fixture';
 import { analyzeWorktree, type WorktreeAnalysis } from '../worktree-analysis';
@@ -115,6 +116,22 @@ describe('analyzeWorktree', () => {
 
     expect(blockerCodes(analysis)).toEqual(['GIT_UNTRACKED']);
     expect(analysis.workingTree.paths.untracked).toEqual(['ignored.log']);
+  });
+
+  test('a symbolic link is not work a removal could lose', async () => {
+    const fixture = await createFixture();
+    // What WTM's own `[resources]` table creates: the worktree's `.env`, linked at the main
+    // working tree's. Blocking on it meant a worktree a task had run in could never be removed.
+    await fixture.write(fixture.repoPath, '.env', 'DATABASE_URL=postgres://local\n');
+    await symlink(
+      join(fixture.repoPath, '.env'),
+      join(fixture.linkedWorktreePath, '.env'),
+    );
+
+    const analysis = await analyze(fixture);
+
+    expect(analysis.workingTree.paths.untracked).toEqual([]);
+    expect(analysis.workingTree.classifications).toEqual(['clean']);
   });
 
   test('blocks ignored files matched by the repository info/exclude file', async () => {

@@ -102,12 +102,21 @@ V1 blocks removal when any of these are true:
 2. Git worktree is locked;
 3. staged changes exist;
 4. unstaged tracked changes exist;
-5. untracked files exist;
+5. untracked or Git-ignored files exist;
 6. unresolved/unmerged paths exist;
 7. submodule state is dirty where Git reports it;
 8. branch has commits not safely represented on an allowed remote-tracking ref;
 9. detached HEAD contains commits not safely represented on an allowed remote-tracking ref;
 10. upstream/ref analysis is internally inconsistent or Git reports repository corruption.
+
+An ignored file blocks removal for the same reason an untracked one does: Git cannot give it
+back, and a `.env` or a local database is exactly the kind of thing `.gitignore` names.
+
+A **symbolic link** is the one exception. It holds no content of its own: removing the worktree
+removes the link, and what it points at is somewhere else and survives — and if that somewhere
+is inside this worktree, it is reported in its own right. Without the exception WTM blocked
+itself, because a `[resources]` table that links a worktree's `.env` at the main working tree's
+meant no worktree a task had ever run in could be removed.
 
 ## "Unpushed" definition
 

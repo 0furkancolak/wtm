@@ -149,7 +149,42 @@ async function readWorkingTree(worktreePath: string): Promise<WorkingTreeAnalysi
   const result = await runGit(worktreePath, [
     'status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignored=matching',
   ]);
-  return parseStatusPorcelainV2(result.stdout);
+  return await withoutSymbolicLinks(worktreePath, parseStatusPorcelainV2(result.stdout));
+}
+
+/**
+ * Drops symbolic links from what removal treats as work that would be lost.
+ *
+ * Ignored and untracked files block removal because they are content Git could not give back —
+ * a `.env`, a local database. A symbolic link is not content: removing the worktree removes
+ * the link, and whatever it points at is somewhere else and survives. If the target happens to
+ * be inside this worktree, the target is listed in its own right, so nothing goes unreported.
+ *
+ * Without this, WTM blocked itself: a `[resources]` table that links a worktree's `.env` at
+ * the main working tree's meant that any worktree a task had ever run in could never be removed.
+ */
+async function withoutSymbolicLinks(
+  worktreePath: string,
+  analysis: WorkingTreeAnalysis,
+): Promise<WorkingTreeAnalysis> {
+  const links = await Promise.all(analysis.paths.untracked.map(async (path) => {
+    try {
+      return (await lstat(resolve(worktreePath, path))).isSymbolicLink() ? path : null;
+    } catch {
+      // Gone between `git status` and now: not something a removal could lose either.
+      return path;
+    }
+  }));
+  const dropped = new Set(links.filter((path): path is string => path !== null));
+  if (dropped.size === 0) return analysis;
+  const untracked = analysis.paths.untracked.filter((path) => !dropped.has(path));
+  const counts = { ...analysis.counts, untracked: untracked.length };
+  return {
+    ...analysis,
+    classifications: classifyWorkingTree(counts),
+    counts,
+    paths: { ...analysis.paths, untracked },
+  };
 }
 
 export function parseStatusPorcelainV2(output: Uint8Array): WorkingTreeAnalysis {
@@ -229,13 +264,17 @@ export function parseStatusPorcelainV2(output: Uint8Array): WorkingTreeAnalysis 
     unmerged: paths.unmerged.length,
     submoduleDirty: paths.submoduleDirty.length,
   };
+  return { available: true, classifications: classifyWorkingTree(counts), counts, paths };
+}
+
+function classifyWorkingTree(counts: WorkingTreeAnalysis['counts']): WorkingTreeClassification[] {
   const classifications: WorkingTreeClassification[] = [];
   if (counts.staged > 0) classifications.push('staged');
   if (counts.unstaged > 0) classifications.push('unstaged');
   if (counts.untracked > 0) classifications.push('untracked');
   if (counts.unmerged > 0) classifications.push('unmerged');
   if (classifications.length === 0) classifications.push('clean');
-  return { available: true, classifications, counts, paths };
+  return classifications;
 }
 
 async function readUpstream(
