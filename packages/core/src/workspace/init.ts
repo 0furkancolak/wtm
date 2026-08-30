@@ -3,7 +3,9 @@ import { constants } from 'node:fs';
 import { link, mkdir, open, realpath, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { parse } from 'smol-toml';
-import { parseWtmConfig, WtmConfigError } from '../config/schema';
+import { parseWtmConfig, WtmConfigError, type WtmConfig } from '../config/schema';
+import { renderConfigDraft, type OutOfRangePort } from '../detect/config-draft';
+import { detectWorkspaceServices, type WorkspaceDetection } from '../detect/service-detection';
 import type { ReconcileResult, RepositoryRecord, StateStore, WorkspaceRecord } from '../state/store';
 import { discoverWorkspace, type DiscoveryReport } from './discover';
 
@@ -14,6 +16,12 @@ export interface InitInput {
   userDataDir: string;
   stateStore: StateStore;
   workspaceName?: string;
+  /**
+   * Whether to read the repositories for the ports, allowlists, and cross-service addresses
+   * they already declare, and write what is found into the configuration. On by default;
+   * turning it off leaves `wtm.toml` with nothing but its name and version.
+   */
+  detect?: boolean;
   beforeConfigCommit?: (context: { path: string }) => Promise<void> | void;
 }
 
@@ -28,6 +36,20 @@ export interface InitResult {
   configChanged: boolean;
   discovery: DiscoveryReport;
   repositories: InitializedRepository[];
+  /** What the repositories were read to be, or `null` when detection was turned off. */
+  detection: WorkspaceDetection | null;
+  /**
+   * Every table detection would write, and whether the configuration already has it. The
+   * tables themselves are in the file, or in `pendingConfig`, rather than repeated here.
+   */
+  configBlocks: Array<{ path: string; present: boolean }>;
+  /**
+   * The tables an existing configuration does not have yet. `wtm init` never edits a file it
+   * did not write, so this is what `wtm detect --write` would append.
+   */
+  pendingConfig: string;
+  /** Ports a repository asked for that the configuration's own range would never offer. */
+  outOfRangePorts: OutOfRangePort[];
 }
 
 export async function initializeWorkspace(input: InitInput): Promise<InitResult> {
@@ -37,12 +59,17 @@ export async function initializeWorkspace(input: InitInput): Promise<InitResult>
     : join(discovery.root, 'wtm.toml');
   const defaultName = basename(discovery.root);
   const selectedName = input.workspaceName ?? defaultName;
-  const config = await ensureMinimalConfig(
-    configPath,
+  const detection = input.detect === false ? null : await detectWorkspaceServices({
+    root: discovery.root,
+    repositories: discovery.repositories.map(({ mainRoot }) => ({ root: mainRoot })),
+  });
+  const config = await ensureMinimalConfig({
+    path: configPath,
     selectedName,
     defaultName,
-    input.beforeConfigCommit,
-  );
+    detection,
+    ...(input.beforeConfigCommit === undefined ? {} : { beforeConfigCommit: input.beforeConfigCommit }),
+  });
 
   const registered = input.stateStore.transaction(() => {
     const workspace = input.stateStore.upsertWorkspace({
@@ -72,6 +99,10 @@ export async function initializeWorkspace(input: InitInput): Promise<InitResult>
     configChanged: config.changed,
     discovery,
     repositories: registered.repositories,
+    detection,
+    configBlocks: config.blocks,
+    pendingConfig: config.pending,
+    outOfRangePorts: config.outOfRange,
   };
 }
 
@@ -90,25 +121,36 @@ async function globalOnlyConfigPath(userDataDir: string, workspaceRoot: string):
   return path;
 }
 
-async function ensureMinimalConfig(
-  path: string,
-  selectedName: string,
-  defaultName: string,
-  beforeConfigCommit?: InitInput['beforeConfigCommit'],
-): Promise<{
+interface MinimalConfigInput {
+  path: string;
+  selectedName: string;
+  defaultName: string;
+  detection: WorkspaceDetection | null;
+  beforeConfigCommit?: InitInput['beforeConfigCommit'];
+}
+
+async function ensureMinimalConfig(input: MinimalConfigInput): Promise<{
   workspaceName: string;
   changed: boolean;
+  blocks: Array<{ path: string; present: boolean }>;
+  pending: string;
+  outOfRange: OutOfRangePort[];
 }> {
+  const { path } = input;
   const snapshot = await readConfigSnapshot(path);
   const original = snapshot.state === 'present' ? snapshot.content : '';
 
   const existing = original.length === 0
     ? parseWtmConfig({}, path)
     : parseConfigToml(original, path);
-  const workspaceName = existing.workspace?.name ?? selectedName;
-  const requiredChanges = requiredConfigChanges(existing, defaultName);
+  const workspaceName = existing.workspace?.name ?? input.selectedName;
+  const draft = configDraft(input.detection, snapshot.state === 'present' ? existing : undefined);
+  const requiredChanges = requiredConfigChanges(existing, input.defaultName);
   if (snapshot.state === 'present') {
-    if (requiredChanges.length === 0) return { workspaceName, changed: false };
+    // The file is the workspace's, not WTM's: what detection found is reported, never applied.
+    if (requiredChanges.length === 0) {
+      return { workspaceName, changed: false, blocks: blockIndex(draft.blocks), pending: draft.additions, outOfRange: draft.outOfRange };
+    }
     throw configUpdateRequired(path, requiredChanges);
   }
 
@@ -116,10 +158,20 @@ async function ensureMinimalConfig(
 
   if (existing.version === undefined) updated = `version = 1\n${updated}`;
   if (existing.workspace?.name === undefined) updated = addWorkspaceName(updated, workspaceName);
+  if (draft.document.length > 0) updated = `${updated}\n${draft.document}`;
 
   parseConfigToml(updated, path);
-  await atomicCreateFile(path, updated, beforeConfigCommit);
-  return { workspaceName, changed: true };
+  await atomicCreateFile(path, updated, input.beforeConfigCommit);
+  return { workspaceName, changed: true, blocks: blockIndex(draft.blocks), pending: '', outOfRange: draft.outOfRange };
+}
+
+function blockIndex(blocks: ReadonlyArray<{ path: string; present: boolean }>): Array<{ path: string; present: boolean }> {
+  return blocks.map(({ path, present }) => ({ path, present }));
+}
+
+function configDraft(detection: WorkspaceDetection | null, existing: WtmConfig | undefined) {
+  if (detection === null) return { blocks: [], outOfRange: [], additions: '', document: '' };
+  return renderConfigDraft({ detection, ...(existing === undefined ? {} : { existing }) });
 }
 
 function parseConfigToml(content: string, source: string): ReturnType<typeof parseWtmConfig> {

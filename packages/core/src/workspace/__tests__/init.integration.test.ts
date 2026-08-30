@@ -22,6 +22,49 @@ describe('initializeWorkspace', () => {
     });
   });
 
+  test('writes what the repositories declare into the configuration it creates', () => {
+    const result = runScenario('detection') as {
+      services: Array<[string, string]>;
+      pendingConfig: string;
+      config: string;
+    };
+
+    expect(result.services).toEqual([
+      ['first-repo', 'services/first repo'],
+      ['second-repo', 'tools/second-repo'],
+    ]);
+    // A band that contains both preferred ports: the built-in 20000-50000 would offer neither.
+    expect(result.config).toContain('range = "4000-5373"');
+    expect(result.config).toContain('[ports.first-repo]\npreferred = 4000');
+    // Two repositories both read PORT, and each one has to mean its own endpoint.
+    expect(result.config).toContain('[repos.first-repo.environment]');
+    expect(result.config).toContain('PORT = "{port.first-repo}"');
+    expect(result.config).toContain('PORT = "{port.second-repo}"');
+    expect(result.config).toContain('CORS_ORIGINS = "{cors.origins}"');
+    // The second repository's address named the first repository's port, so it is written as it.
+    expect(result.config).toContain('API_URL = "http://localhost:{port.first-repo}/v1"');
+    expect(result.pendingConfig).toBe('');
+  });
+
+  test('writes nothing but a name and a version when detection is turned off', () => {
+    expect(runScenario('detection-disabled')).toEqual({
+      detection: null,
+      config: 'version = 1\n\n[workspace]\nname = "workspace with spaces"\n',
+    });
+  });
+
+  test('reports what it found rather than editing a configuration it did not write', () => {
+    expect(runScenario('detection-existing')).toEqual({
+      configUnchanged: true,
+      pendingMentionsPort: true,
+      pendingBlocks: [
+        ['ports', false],
+        ['ports.first-repo', false],
+        ['repos.first-repo', false],
+      ],
+    });
+  });
+
   test('global-only initialization writes only beneath user data and scans the selected root', () => {
     expect(runScenario('global-only')).toEqual({
       scope: 'global-only',

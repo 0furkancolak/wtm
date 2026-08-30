@@ -173,6 +173,50 @@ try {
       ),
       config: await readFile(configPath, 'utf8'),
     });
+  } else if (scenario === 'detection') {
+    const configPath = join(fixture.root, 'wtm.toml');
+    await writeFile(join(fixture.firstRepoPath, '.env.example'), 'PORT=4000\nCORS_ORIGINS=\n');
+    await writeFile(join(fixture.secondRepoPath, '.env.example'), 'PORT=5173\nAPI_URL=http://localhost:4000/v1\n');
+    const result = await initializeWorkspace({
+      root: fixture.root,
+      globalOnly: false,
+      userDataDir: fixture.userDataDir,
+      stateStore: store,
+    });
+    print({
+      services: result.detection?.services.map(({ name, path }) => [name, path]) ?? null,
+      pendingConfig: result.pendingConfig,
+      config: await readFile(configPath, 'utf8'),
+    });
+  } else if (scenario === 'detection-disabled') {
+    await writeFile(join(fixture.firstRepoPath, '.env.example'), 'PORT=4000\n');
+    const result = await initializeWorkspace({
+      root: fixture.root,
+      globalOnly: false,
+      detect: false,
+      userDataDir: fixture.userDataDir,
+      stateStore: store,
+    });
+    print({
+      detection: result.detection,
+      config: await readFile(join(fixture.root, 'wtm.toml'), 'utf8'),
+    });
+  } else if (scenario === 'detection-existing') {
+    const configPath = join(fixture.root, 'wtm.toml');
+    const original = 'version = 1\n\n[workspace]\nname = "chosen-by-user"\n';
+    await writeFile(configPath, original);
+    await writeFile(join(fixture.firstRepoPath, '.env.example'), 'PORT=4000\n');
+    const result = await initializeWorkspace({
+      root: fixture.root,
+      globalOnly: false,
+      userDataDir: fixture.userDataDir,
+      stateStore: store,
+    });
+    print({
+      configUnchanged: await readFile(configPath, 'utf8') === original,
+      pendingMentionsPort: result.pendingConfig.includes('preferred = 4000'),
+      pendingBlocks: result.configBlocks.map(({ path, present }) => [path, present]),
+    });
   } else if (scenario === 'global-only') {
     const result = await initializeWorkspace({
       root: fixture.root,

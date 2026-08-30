@@ -48,7 +48,13 @@ export async function runInitCommand(input: InitCommandInput): Promise<InitComma
   }
 
   let aiSkill: InitAiSkillStatus = { status: 'skipped' };
-  const warnings: WtmError[] = [];
+  const warnings: WtmError[] = result.outOfRangePorts.map((port) => ({
+    code: 'WTM_CONFIG_INVALID' as const,
+    message: `${port.service} asks for port ${port.preferred}, outside [ports].range = "${port.range}". `
+      + `Widen it to "${port.suggested}" to give it that port.`,
+    severity: 'warning' as const,
+    context: { service: port.service, port: port.preferred, range: port.range },
+  }));
   if (input.installAiSkill !== false && input.aiSkillInstaller !== undefined) {
     try {
       const installed = await runSkillInstallCommand({
@@ -93,6 +99,8 @@ export interface ProductionInitCommandInput {
   workspaceName?: string;
   aiSkillInstaller?: SkillInstaller;
   installAiSkill?: boolean;
+  /** Whether to read the repositories and write what they declare. On by default. */
+  detect?: boolean;
   /** Explicit `--yes` intent forwarded into the init result contract. */
   acceptDefaults?: boolean;
 }
@@ -121,6 +129,7 @@ export async function runProductionInitCommand(
       ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }),
       ...(input.aiSkillInstaller === undefined ? {} : { aiSkillInstaller: input.aiSkillInstaller }),
       ...(input.installAiSkill === undefined ? {} : { installAiSkill: input.installAiSkill }),
+      ...(input.detect === undefined ? {} : { detect: input.detect }),
       ...(input.acceptDefaults === undefined ? {} : { acceptDefaults: input.acceptDefaults }),
     });
   } finally {

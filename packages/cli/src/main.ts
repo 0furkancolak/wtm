@@ -60,6 +60,7 @@ import {
   runProductionInitCommand,
   type ProductionInitCommandInput,
 } from './commands/init';
+import { runDetectCommand, type DetectCommandInput } from './commands/detect';
 import {
   createFilesystemSkillInstaller,
   readCanonicalSkill,
@@ -91,6 +92,7 @@ export interface CliDependencies {
   adapterTrustStore?: AdapterTrustStore;
   skillInstaller?: SkillInstaller;
   initRunner?: (input: ProductionInitCommandInput) => ReturnType<typeof runProductionInitCommand>;
+  detectRunner?: (input: DetectCommandInput) => ReturnType<typeof runDetectCommand>;
   initDatabasePath?: string;
   initUserDataDir?: string;
   analysisDatabasePath?: string;
@@ -350,10 +352,12 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   init.option('--yes', 'accept non-destructive proposed defaults');
   init.option('--max-depth <n>', 'maximum discovery depth', parseNonNegativeInteger);
   init.option('--no-ai-skill', 'skip local Agent Skill installation');
+  init.option('--no-detect', 'write only a name and a version, reading no repository');
   init.action(async (path: string | undefined, options: ScopeOptions & {
     yes?: boolean;
     maxDepth?: number;
     aiSkill?: boolean;
+    detect?: boolean;
   }) => {
     const global = options.global === true || program.opts<ScopeOptions>().global === true;
     const databasePath = dependencies.initDatabasePath ?? defaultProductionRuntimePaths().databasePath;
@@ -365,11 +369,29 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       databasePath,
       globalOnly: global,
       installAiSkill: options.aiSkill !== false,
+      detect: options.detect !== false,
       acceptDefaults: options.yes === true,
       aiSkillInstaller: installer,
       ...(options.maxDepth === undefined ? {} : { maxDepth: options.maxDepth }),
     });
     renderRuntime(envelope, runtimeJson(program, options));
+  });
+
+  const detect = program
+    .command('detect [path]')
+    .description('Read the repositories for the ports, allowlists, and service addresses they declare.');
+  addJsonOption(detect);
+  detect.option('--write', 'append the tables wtm.toml does not have yet');
+  detect.option('--max-depth <n>', 'maximum discovery depth', parseNonNegativeInteger);
+  detect.action(async (path: string | undefined, options: ScopeOptions & {
+    write?: boolean;
+    maxDepth?: number;
+  }) => {
+    renderRuntime(await (dependencies.detectRunner ?? runDetectCommand)({
+      root: resolve(cwd, path ?? '.'),
+      ...(options.write === undefined ? {} : { write: options.write }),
+      ...(options.maxDepth === undefined ? {} : { maxDepth: options.maxDepth }),
+    }), runtimeJson(program, options));
   });
 
   const skill = program.command('skill').description('Print or install the WTM Agent Skill.');
