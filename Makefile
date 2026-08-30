@@ -50,6 +50,7 @@ install: binary ## Build and install the executable, and register the daemon
 	@'$(INSTALLED)' --version | head -1 | tr -d '\n'
 	@printf ')\n'
 	@command -v wtm >/dev/null 2>&1 || printf 'note: %s is not on your PATH yet.\n' '$(BINDIR)'
+	@[ '$(WITH_DAEMON)' = '0' ] || '$(INSTALLED)' daemon status
 
 uninstall: ## Unregister the daemon and remove the installed executable
 	@[ ! -x '$(INSTALLED)' ] || '$(INSTALLED)' daemon uninstall

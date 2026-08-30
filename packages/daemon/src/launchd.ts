@@ -103,7 +103,7 @@ export type LaunchdTransactionPhase =
   | 'removal-quarantined'
   | 'removal-cleaned';
 
-export type LaunchdInstallState = 'installed' | 'reinstalled' | 'already-installed';
+export type LaunchdInstallState = 'installed' | 'reinstalled' | 'restarted' | 'already-installed';
 export type LaunchdUninstallState = 'uninstalled' | 'already-absent';
 export type LaunchdStatusState = 'loaded' | 'installed-not-loaded' | 'absent';
 
@@ -237,6 +237,11 @@ export function generateLaunchdPlist(options: LaunchdPlistOptions): string {
 ${environment.map(([key, value]) => `    <key>${escapeXml(key)}</key>\n    <string>${escapeXml(value)}</string>`).join('\n')}
   </dict>
 `;
+  // ProcessType is Adaptive rather than Background. launchd throttles a Background job's CPU
+  // and disk I/O, and everything it spawns inherits the throttle: the port prober — one
+  // short-lived process per candidate port — took longer than its own two-second timeout, so
+  // every port read as taken, and the developer's own dev server ran throttled too. Nothing
+  // this daemon does is unattended work; it exists to serve commands a person just typed.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -257,7 +262,7 @@ ${environmentXml}  <key>WorkingDirectory</key>
     <false/>
   </dict>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Adaptive</string>
   <key>ExitTimeOut</key>
   <integer>5</integer>
   <key>Umask</key>
@@ -340,7 +345,17 @@ export function createLaunchdLifecycle(options: LaunchdLifecycleOptions): Launch
           await transaction.assertOwned();
           const enable = await runner(commands.enable);
           if (enable.outcome !== 'success') throw commandError('enable', enable);
-          return lifecycleResult('install', 'already-installed', paths.plistPath);
+          // The definition names the executable by path, so installing a new build over the
+          // old one leaves this plist byte-identical while launchd goes on running the
+          // previous binary. Returning here was what let `make install` report success and
+          // change nothing: every command afterwards was answered by the daemon installed
+          // before it, and verifying the new build was impossible. Restarting the service in
+          // place is both the fix and the cheapest guarantee that the daemon now running is
+          // the one just installed.
+          await transaction.assertOwned();
+          const kickstart = await runner(commands.kickstart);
+          if (kickstart.outcome !== 'success') throw commandError('kickstart', kickstart);
+          return lifecycleResult('install', 'restarted', paths.plistPath);
         }
 
         const changed = existing?.content !== plist;

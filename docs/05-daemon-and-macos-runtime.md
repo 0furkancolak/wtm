@@ -32,6 +32,14 @@ The exact label can change before public release if the final reverse-DNS projec
 
 The LaunchAgent invokes the resolved `wtmd` binary/script and restarts it on unexpected failure. Installation never requires root.
 
+`ProcessType` is `Adaptive`, not `Background`. launchd throttles a Background job's CPU and disk I/O, and everything it spawns inherits the throttle — the port prober is one short-lived process per candidate port, and under the throttle it outlived its own two-second timeout, so every port read as taken; the developer's own dev server ran throttled too. Nothing this daemon does is unattended work.
+
+`wtm daemon install` waits for the daemon to answer on its socket before it reports success, and both `install` and `status` report `reachable`. launchd reports a service as running the moment it forks, which said nothing about whether a command would work.
+
+`wtm daemon install` restarts a service that is already loaded. The plist names the executable by path, so installing a new build leaves the definition byte-identical and launchd goes on running the previous binary — an install that reported success and changed nothing, and made verifying a new build impossible. Restarting in place is the cheapest guarantee that the daemon now answering is the one just installed; the state it needs is all in SQLite, and startup recovery is designed for exactly this.
+
+macOS may withhold disk access from a background agent. The executable is signed under one stable identifier (`dev.wtm.cli`) so the grant is not invalidated by every rebuild — but WTM asks for nothing up front, and names the grant only on evidence: a registered directory that exists and refuses to open. A timeout is not that evidence. A `git` that overran its bound on a volume answering slowly is indistinguishable from a denied one until the directory is opened directly, and telling somebody to hand a background agent every file on their disk on the strength of a timeout is advice too large to give on a guess.
+
 ## Watching scope
 
 WTM watches only registered workspaces and repository administrative roots associated with those workspaces.

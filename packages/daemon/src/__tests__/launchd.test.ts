@@ -68,7 +68,7 @@ describe('launchd plist', () => {
     <false/>
   </dict>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Adaptive</string>
   <key>ExitTimeOut</key>
   <integer>5</integer>
   <key>Umask</key>
@@ -174,7 +174,7 @@ describe('launchd lifecycle', () => {
     expect(calls.map((argv) => argv[1])).toEqual(['print', 'bootout', 'print', 'enable', 'bootstrap']);
   });
 
-  test('does not rewrite an identical plist for an already-loaded service', async () => {
+  test('restarts a loaded service so a newly installed executable is the one running', async () => {
     const home = await fakeHome();
     const options = {
       home, uid: 506, platform: 'darwin' as const,
@@ -192,12 +192,35 @@ describe('launchd lifecycle', () => {
       commandRunner: async (argv) => { calls.push([...argv]); return success(); },
     });
 
-    expect((await repeated.install()).state).toBe('already-installed');
+    // The plist names the executable by path, so a new build leaves it byte-identical: the
+    // definition must not be rewritten, and the service must still be restarted, or launchd
+    // goes on running the binary that was installed before this one.
+    expect((await repeated.install()).state).toBe('restarted');
     const after = await lstat(path);
     expect({ dev: after.dev, ino: after.ino, mtimeMs: after.mtimeMs }).toEqual({
       dev: before.dev, ino: before.ino, mtimeMs: before.mtimeMs,
     });
-    expect(calls.map((argv) => argv[1])).toEqual(['print', 'enable']);
+    expect(calls.map((argv) => argv[1])).toEqual(['print', 'enable', 'kickstart']);
+    expect(calls.at(-1)).toEqual(['/bin/launchctl', 'kickstart', '-k', 'gui/506/dev.wtm.daemon']);
+  });
+
+  test('does not report an unrestarted service as installed', async () => {
+    const home = await fakeHome();
+    const options = {
+      home, uid: 507, platform: 'darwin' as const,
+      programArguments: ['/opt/node/bin/node', '/opt/wtm/cli.js', 'daemon', 'serve'],
+      commandRunner: async (argv: readonly string[]) => argv[1] === 'print' && argv[2]?.includes('/dev.wtm.daemon')
+        ? missingService() : success(),
+    };
+    await createLaunchdLifecycle(options).install();
+    const repeated = createLaunchdLifecycle({
+      ...options,
+      commandRunner: async (argv) => argv[1] === 'kickstart' ? failure(3, 'Could not kickstart') : success(),
+    });
+
+    await expect(repeated.install()).rejects.toMatchObject({
+      code: 'LAUNCHD_COMMAND_FAILED', context: { operation: 'kickstart', exitCode: 3 },
+    });
   });
 
   test('does not report an identical loaded definition as installed when enable fails', async () => {

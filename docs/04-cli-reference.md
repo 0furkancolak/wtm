@@ -282,6 +282,19 @@ wtm daemon serve
 
 `serve` is the internal foreground command used by launchd and development tests.
 
+`install` reports one of four states:
+
+| State | Meaning |
+| --- | --- |
+| `installed` | No LaunchAgent was registered; one is now. |
+| `reinstalled` | The definition changed and the service was replaced. |
+| `restarted` | The definition was already correct, and the service was restarted so that the executable now running is the one just installed. |
+| `already-installed` | Another `install` won the race and its service is loaded. |
+
+`restarted` is the ordinary result of installing a new build over an old one. The plist names
+the executable by path, so a new build leaves the definition identical — without the restart,
+launchd goes on running the previous binary and the install changes nothing you can observe.
+
 ## Skill
 
 ```bash
