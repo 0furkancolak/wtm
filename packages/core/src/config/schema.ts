@@ -130,6 +130,7 @@ export const wtmConfigSchema = z.object({
 export type PortConfig = z.infer<typeof portSchema>;
 export type CorsConfig = z.infer<typeof corsSchema>;
 export type RepoConfig = z.infer<typeof repoSchema>;
+export type ResourceConfig = z.infer<typeof resourceSchema>;
 export type PortsConfig = {
   strategy?: 'stable-dynamic';
   range?: string;

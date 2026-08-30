@@ -8,6 +8,7 @@ export {
 } from './git/git-runner';
 export type { GitCommandOptions, GitCommandResult, GitRepositoryIdentity } from './git/git-runner';
 export { parseGitWorktreePorcelain } from './git/worktree-parser';
+export { containsPath } from './paths/contains';
 export type { GitWorktreeRecord } from './git/worktree-parser';
 export {
   analyzeWorktree,
@@ -35,7 +36,7 @@ export { removeWorktreeSafely } from './analysis/remove-worktree';
 export { resolveWorkspaceConfig, builtInConfig } from './config/load';
 export { mergeConfigLayers } from './config/merge';
 export { parseWtmConfig, wtmConfigSchema, WtmConfigError } from './config/schema';
-export type { CorsConfig, PortConfig, PortsConfig, RepoConfig, WtmConfig } from './config/schema';
+export type { CorsConfig, PortConfig, PortsConfig, RepoConfig, ResourceConfig, WtmConfig } from './config/schema';
 export { repoEnvironment, resolveRepoScope } from './config/repos';
 export type { RepoScopeInput, ResolvedRepoScope } from './config/repos';
 export type { ResolvedConfig, Provenance } from './config/provenance';
@@ -58,8 +59,9 @@ export {
   defaultOriginHost,
   parsePortRange,
   resolveEndpoints,
+  resolveExistingEndpoints,
 } from './runtime/endpoint-plan';
-export type { EndpointPlanInput, ResolvedEndpoints } from './runtime/endpoint-plan';
+export type { EndpointPlanInput, ObservedEndpoint, ResolvedEndpoints } from './runtime/endpoint-plan';
 export { corsDeclarationFiles, corsVariablePattern, detectCorsVariables, resolveCors } from './runtime/cors';
 export type { CorsResolutionInput, ResolvedCors } from './runtime/cors';
 export { declarationFiles, exampleDeclarationFiles, readDeclaredNames, readEnvDeclarations } from './detect/declarations';
@@ -102,7 +104,10 @@ export type {
   RepositoryInput,
   RepositoryRecord,
   StateStore,
+  LifecycleEventStore,
+  LifecycleEventSubject,
   StateRegistrationReader,
+  StateRegistrationWriter,
   WorkspaceInput,
   WorkspaceRecord,
   WorkspaceScope,
@@ -144,6 +149,8 @@ export type {
   MaterializationRequest,
   MaterializationResult,
 } from './resources/materializer';
+export { inspectResources, prepareResources } from './resources/preparation';
+export type { PreparedResource, ResourcePreparationInput, ResourceState } from './resources/preparation';
 export { applyGcPlan, buildGcPlan, executeGcPlan, planResourceGc, recoverGcJournalEntry } from './resources/gc';
 export type {
   ApplyGcOptions,

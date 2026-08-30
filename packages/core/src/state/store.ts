@@ -207,6 +207,29 @@ export interface StateRegistrationReader {
   listWorktrees(repositoryId?: string): WorktreeRecord[];
 }
 
+/** Retiring a registration whose directory is not coming back. */
+export interface StateRegistrationWriter {
+  /** Removes the workspace and everything that exists only because of it. */
+  forgetWorkspace(workspaceId: string): boolean;
+  /** Removes one repository and everything that exists only because of it. */
+  forgetRepository(repositoryId: string): boolean;
+}
+
+/** What a once-only lifecycle event can be about. */
+export type LifecycleEventSubject = 'workspace' | 'repository' | 'worktree';
+
+export interface LifecycleEventStore {
+  /** True when this call is the one that announced the event for this subject. */
+  claimLifecycleEvent(
+    subjectType: LifecycleEventSubject,
+    subjectId: string,
+    event: string,
+    now?: string,
+  ): boolean;
+  /** Withdraws an announcement that could not be carried out, so a later pass can retry it. */
+  releaseLifecycleEvent(subjectType: LifecycleEventSubject, subjectId: string, event: string): boolean;
+}
+
 export type DaemonStateStore = StateStore & StateRegistrationReader;
 
 export interface ResourceSandboxInput {

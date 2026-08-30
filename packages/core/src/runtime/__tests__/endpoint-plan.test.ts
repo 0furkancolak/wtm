@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { resolveEndpoints, parsePortRange } from '../endpoint-plan';
+import { resolveEndpoints, resolveExistingEndpoints, parsePortRange } from '../endpoint-plan';
 import { WtmConfigError } from '../../config/schema';
 import type {
   EndpointAvailabilityProbe,
@@ -172,5 +172,52 @@ describe('port range parsing', () => {
     for (const range of ['3000', '3999-3000', '0-100', '1-70000', 'three-four']) {
       expect(() => parsePortRange(range)).toThrow(WtmConfigError);
     }
+  });
+});
+
+describe('observing endpoints without allocating', () => {
+  it('reports a name with no lease as having no port, and takes none', () => {
+    const store = createLeaseStore();
+
+    const observed = resolveExistingEndpoints(store, {
+      ports: { range: '4100-4199', api: { preferred: 4100 } },
+      groupWorktreeIds: ['worktree-a'],
+    });
+
+    expect(observed.endpoints).toEqual([{ name: 'api', port: null, fixed: false }]);
+    expect(observed.resolved.ports).toEqual({});
+    expect(store.listEndpointLeases()).toEqual([]);
+  });
+
+  it('reports the port the feature already holds, whichever worktree took it', () => {
+    const store = createLeaseStore();
+    resolveEndpoints(store, {
+      ports: { range: '4100-4199', api: { preferred: 4100, env: 'PORT' } },
+      worktreeId: 'worktree-a',
+      groupWorktreeIds: ['worktree-a'],
+      index: 1,
+    }, alwaysFree);
+
+    const observed = resolveExistingEndpoints(store, {
+      ports: { range: '4100-4199', api: { preferred: 4100, env: 'PORT' } },
+      groupWorktreeIds: ['worktree-a', 'worktree-b'],
+    });
+
+    expect(observed.endpoints).toEqual([
+      { name: 'api', port: 4100, fixed: false, env: 'PORT', origin: 'http://localhost:4100' },
+    ]);
+    expect(observed.resolved.env).toEqual({ PORT: '4100' });
+    expect(observed.resolved.origins).toEqual(['http://localhost:4100']);
+  });
+
+  it('reports a fixed port as fixed, because nothing is ever leased for one', () => {
+    const observed = resolveExistingEndpoints(createLeaseStore(), {
+      ports: { range: '4100-4199', db: { strategy: 'fixed', port: 5432, origin: false } },
+      groupWorktreeIds: ['worktree-a'],
+    });
+
+    expect(observed.endpoints).toEqual([{ name: 'db', port: 5432, fixed: true }]);
+    expect(observed.resolved.ports).toEqual({ db: 5432 });
+    expect(observed.resolved.origins).toEqual([]);
   });
 });

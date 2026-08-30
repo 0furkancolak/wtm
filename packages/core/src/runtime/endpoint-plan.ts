@@ -179,3 +179,61 @@ export function parsePortRange(range: string | undefined): PortRange {
   }
   return { min, max };
 }
+
+/** One declared endpoint, and the lease behind it — or the absence of one. */
+export interface ObservedEndpoint {
+  name: string;
+  /** The port in force, or `null` when nothing has been leased for this name yet. */
+  port: number | null;
+  /** True when the configuration names the port itself, so no lease is ever taken. */
+  fixed: boolean;
+  /** The variable the endpoint publishes itself under, when it asks for one. */
+  env?: string;
+  origin?: string;
+}
+
+/**
+ * What `[ports]` resolves to *without* allocating anything.
+ *
+ * `resolveEndpoints` leases a port for every name that does not have one, which is right when
+ * something is about to be run and wrong when the question is only what would happen. `wtm
+ * plan` must be able to say "this feature has no port for `api` yet" without that ceasing to
+ * be true by the act of asking.
+ */
+export function resolveExistingEndpoints(
+  store: Pick<StateStore, 'listEndpointLeases'>,
+  input: Pick<EndpointPlanInput, 'ports' | 'groupWorktreeIds' | 'host'>,
+): { endpoints: ObservedEndpoint[]; resolved: ResolvedEndpoints } {
+  const resolved: ResolvedEndpoints = { ports: {}, env: {}, origins: [], leases: [] };
+  const endpoints: ObservedEndpoint[] = [];
+  if (input.ports === undefined) return { endpoints, resolved };
+  const host = input.host ?? defaultEndpointHost;
+
+  for (const [name, raw] of Object.entries(input.ports)) {
+    if (reservedPortKeys.has(name)) continue;
+    const config = portConfig(name, raw);
+    const lease = config.strategy === 'fixed' ? undefined : store.listEndpointLeases({
+      worktreeIds: input.groupWorktreeIds,
+      name,
+      states: ['ACTIVE'],
+    })[0];
+    const port = config.strategy === 'fixed' ? config.port ?? null : lease?.port ?? null;
+    if (lease !== undefined) resolved.leases.push(lease);
+    const origin = port === null || config.origin === false
+      ? undefined
+      : `http://${originHost(host)}:${port}`;
+    if (port !== null) {
+      resolved.ports[name] = port;
+      if (config.env !== undefined) resolved.env[config.env] = String(port);
+      if (origin !== undefined) resolved.origins.push(origin);
+    }
+    endpoints.push({
+      name,
+      port,
+      fixed: config.strategy === 'fixed',
+      ...(config.env === undefined ? {} : { env: config.env }),
+      ...(origin === undefined ? {} : { origin }),
+    });
+  }
+  return { endpoints, resolved };
+}
