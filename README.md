@@ -1,26 +1,98 @@
-# Worktree Runtime Manager (WTM)
+# WTM — Worktree Runtime Manager
 
-WTM is a local-first macOS runtime and safety manager for Git worktrees. It discovers existing repositories and linked worktrees, resolves per-worktree tasks and environments, supervises processes, allocates endpoints, and refuses unsafe worktree or resource removal.
+**Run many Git worktrees at once, on macOS, without port collisions, `.env` copying, or losing uncommitted work.**
+
+WTM is a local-first runtime and safety manager for Git worktrees. It discovers your
+repositories and linked worktrees, resolves per-worktree tasks and environments, supervises
+long-running processes, allocates endpoints, and refuses unsafe worktree removal.
+
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#requirements)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D24-green.svg)](#requirements)
+[![JSON output](https://img.shields.io/badge/output-stable%20JSON-orange.svg)](#json-output-for-scripts-and-agents)
 
 Powered by [nafru.com](https://nafru.com).
 
+---
+
+## Why WTM
+
+Working on three branches at once used to mean three copies of a repository, three sets of
+ports picked by hand, three `.env` files kept in sync, and a lingering fear of running
+`git worktree remove` on the one that still had uncommitted work.
+
+Git worktrees solve the checkout problem. They do not solve the *runtime* problem:
+
+| Problem | What WTM does |
+| --- | --- |
+| Two worktrees both want port 3000 | Allocates and persists an endpoint per worktree |
+| `.env` copied by hand into every worktree | Resolves a shared config into a per-worktree environment delta |
+| A workspace `Makefile` is invisible from a nested worktree | Detects it and exposes each target as a task |
+| Which `next dev` belongs to which branch? | Supervises processes, attributes them, and streams their logs |
+| `worktree remove` can destroy unpushed work | Analyzes safety first and refuses when work would be lost |
+| An AI agent rediscovers your project every session | Ships an Agent Skill and stable `--json` output for every command |
+
+WTM does not replace Git, Make, Bun, npm, pnpm, uv, Cargo, Go, or Docker. It is a
+context-aware orchestration layer around them.
+
+## Table of contents
+
+- [Install](#install)
+- [Quick start](#quick-start)
+- [How to use WTM](#how-to-use-wtm)
+  - [1. Initialize a workspace](#1-initialize-a-workspace)
+  - [2. See where you are](#2-see-where-you-are)
+  - [3. Define or inherit tasks](#3-define-or-inherit-tasks)
+  - [4. Run a task in the foreground](#4-run-a-task-in-the-foreground)
+  - [5. Supervise a long-running task](#5-supervise-a-long-running-task)
+  - [6. Remove a worktree safely](#6-remove-a-worktree-safely)
+  - [7. Reclaim disk](#7-reclaim-disk)
+- [Makefile support](#makefile-support)
+- [Configuration](#configuration)
+- [The daemon](#the-daemon)
+- [JSON output for scripts and agents](#json-output-for-scripts-and-agents)
+- [Command reference](#command-reference)
+- [Make targets for this repository](#make-targets-for-this-repository)
+- [What V1 does and does not answer](#what-v1-does-and-does-not-answer)
+- [Requirements](#requirements)
+- [Uninstall](#uninstall)
+- [Development](#development)
+- [Documentation](#documentation)
+- [License](#license)
+
 ## Install
 
-The commands below describe the release channels that will be available after a matching WTM release is published; this repository does not yet have a published release artifact or tag.
+### From source, today (recommended while pre-release)
 
-### Homebrew (macOS release channel)
-
-After a release publishes the formula, install WTM from its custom tap:
+Requires [Bun](https://bun.sh) 1.3+ and Node.js 24+ to build. The result is a single
+standalone executable that needs neither afterwards.
 
 ```bash
-brew tap 0furkancolak/wtm
-brew install 0furkancolak/wtm/wtm
-wtm --version
+git clone https://github.com/0furkancolak/wtm.git && cd wtm && make install
 ```
 
-### Direct macOS binary (release channel)
+`make install` builds the executable, installs it into `~/.local/bin`, and registers the
+per-user daemon. For a shared prefix:
 
-After a release publishes its archives, select the archive matching the current macOS architecture, verify it against `SHA256SUMS`, then extract it:
+```bash
+sudo make install PREFIX=/usr/local
+```
+
+To install the binary alone and leave launchd untouched:
+
+```bash
+make install WITH_DAEMON=0
+```
+
+### Homebrew (after a release is published)
+
+```bash
+brew tap 0furkancolak/wtm && brew install 0furkancolak/wtm/wtm
+```
+
+### Direct macOS binary (after a release is published)
+
+Select the archive matching your architecture, verify it against `SHA256SUMS`, then extract:
 
 ```bash
 case "$(uname -m)" in
@@ -34,79 +106,340 @@ shasum -a 256 -c --ignore-missing SHA256SUMS
 tar -xzf "$archive"
 ```
 
-Replace `<VERSION>` with the published release version.
-
-### npm (Node.js 24+)
-
-After a release publishes the package, install WTM globally:
+### npm (Node.js 24+, after a release is published)
 
 ```bash
 npm install --global worktree-runtime-manager
-wtm --version
 ```
 
-### Source (development)
-
-Requires Bun 1.3+ and Node.js 24+:
-
-```bash
-bun install --frozen-lockfile
-bun run build
-node dist/cli/bin.js --version
-```
-
-To get a real `wtm` on PATH before a release exists, build the standalone
-executable and install it. `make install` writes to `~/.local/bin` by default;
-pass `PREFIX` for a shared location:
-
-```bash
-make install
-```
-
-```bash
-sudo make install PREFIX=/usr/local
-```
+The npm package carries no runtime of its own and uses the Node.js you already have. The
+standalone executable embeds one, which is why it is roughly 97 MB on disk.
 
 ## Quick start
 
-Inside an existing Git workspace, initialize WTM, then copy or write a `wtm.toml` that defines the `dev` task before resolving it. The following uses the Bun monorepo example and assumes the project has `apps/web`:
-
 ```bash
+cd /path/to/your/workspace
 wtm init --yes
-cp /path/to/wtm/examples/bun-monorepo/wtm.toml ./wtm.toml
-wtm daemon install
 wtm status
 wtm resolve dev
 wtm start dev
 wtm logs dev --follow
 wtm stop dev
-wtm analyze --all
 ```
 
-`wtm daemon install` is optional; installation never starts it automatically. Start with a configuration from the [examples](examples/README.md), then use the complete [documentation](docs/README.md) for configuration, safety, and CLI details.
+## How to use WTM
+
+### 1. Initialize a workspace
+
+Run this once, at the root of the directory that holds your repositories:
+
+```bash
+wtm init --yes
+```
+
+`init` walks the tree (five levels deep by default), records every repository and linked
+worktree it finds, and writes a `wtm.toml` next to itself. It registers the workspace in
+WTM's own state under `~/Library/Application Support/WTM`; nothing outside that directory
+and the `wtm.toml` is modified.
+
+A workspace root need not itself be a Git repository. A directory holding ten sibling
+repositories, each with its own worktrees, is a valid workspace.
+
+### 2. See where you are
+
+```bash
+wtm status
+```
+
+`status` answers "which worktree am I in, what is running here, and on which ports". Add a
+selector to ask about another worktree, or `--global` to aggregate every registered
+workspace.
+
+```bash
+wtm analyze
+```
+
+`analyze` reports the safety picture for the current worktree: staged, unstaged, untracked
+and unmerged counts, the upstream relationship, and whether removal would lose work.
+
+### 3. Define or inherit tasks
+
+A task is a named command WTM can resolve, run, and supervise. Tasks come from two places:
+
+**Your `wtm.toml`:**
+
+```toml
+version = 1
+
+[tasks.dev]
+run = ["bun", "run", "dev"]
+cwd = "{worktree.root}"
+background = true
+
+[tasks.test]
+run = ["bun", "test"]
+```
+
+**Adapters, automatically.** If your project already describes its commands somewhere WTM
+understands — a `Makefile`, a `docker-compose.yml` — those become tasks without being
+written twice. See [Makefile support](#makefile-support). Anything `wtm.toml` names always
+wins over an adapter of the same name.
+
+Templates such as `{worktree.root}`, `{branch}`, `{id}`, and `{slug}` resolve per worktree,
+which is what keeps two branches from fighting over the same directory or port.
+
+### 4. Run a task in the foreground
+
+```bash
+wtm resolve test    # show the exact argv, cwd, and environment delta — run nothing
+wtm run test        # run it in the foreground, streaming its output
+```
+
+`resolve` before `run` is the habit worth forming: it shows precisely what will execute,
+which is far easier to reason about than a failure after the fact.
+
+### 5. Supervise a long-running task
+
+Background tasks need the daemon (see [The daemon](#the-daemon)).
+
+```bash
+wtm start dev              # start it under supervision
+wtm ps                     # list every WTM-managed process group
+wtm logs dev --follow      # tail its rotating logs
+wtm restart dev            # stop and start it safely
+wtm stop dev               # stop it; `wtm stop` with no task stops all
+```
+
+Each supervised task runs inside its own process group behind an anchor process, so
+stopping a task stops everything it spawned rather than leaving orphans behind.
+
+### 6. Remove a worktree safely
+
+```bash
+wtm analyze feature-branch   # what would be lost?
+wtm remove feature-branch    # refuses if the answer is "something"
+```
+
+`remove` will not delete a worktree with uncommitted changes or unpushed commits. That is
+the point of it existing rather than typing `git worktree remove`.
+
+### 7. Reclaim disk
+
+```bash
+wtm disk        # logical and allocated usage per resource
+wtm gc          # plan the collection
+wtm gc --apply  # carry it out
+```
+
+## Makefile support
+
+Many projects already keep their commands in a `Makefile`. WTM reads it and offers every
+target as a task, so you do not describe the same commands twice.
+
+Given this `Makefile`:
+
+```make
+dev: ## Start the dev server
+	bun run dev
+
+test:
+	bun test
+```
+
+WTM offers:
+
+| Task | Runs |
+| --- | --- |
+| `make` | `make` (the default goal) |
+| `make:dev` | `make dev` — described as "Start the dev server" |
+| `make:test` | `make test` |
+
+```bash
+wtm resolve make:dev
+wtm start make:dev
+```
+
+The Makefile is **parsed, never evaluated**. WTM does not run `make -p` to enumerate
+targets, because that would execute the `$(shell …)` expansions of a repository it has not
+been told to trust. Pattern rules (`%.o:`), variable targets (`$(BINARY):`), assignments,
+`define` blocks, and the dot-prefixed special targets are all skipped; `GNUmakefile`,
+`makefile`, and `Makefile` are read in the order GNU make itself reads them.
+
+Detected adapters, and the tasks they contribute, are visible with:
+
+```bash
+wtm doctor --json
+```
+
+## Configuration
+
+`wtm.toml` lives at the workspace root. A user-level `~/Library/Application Support/WTM/config.toml`
+is merged underneath it.
+
+```toml
+version = 1
+
+[environment]
+DATABASE_URL = "postgres://localhost/app_{slug}"
+
+[ports]
+strategy = "stable-dynamic"
+range = "3000-3999"
+
+[ports.web]
+env = "PORT"
+
+[tasks.dev]
+run = ["bun", "run", "dev"]
+cwd = "{worktree.root}"
+background = true
+singleton = true
+
+[tasks.migrate]
+run = ["bun", "run", "db:migrate"]
+```
+
+Copyable configurations for common stacks live in [examples/](examples/README.md):
+[minimal](examples/minimal), [bun-monorepo](examples/bun-monorepo),
+[docker-compose](examples/docker-compose), and [polyglot](examples/polyglot). The full
+schema is in [docs/03-configuration-spec.md](docs/03-configuration-spec.md).
+
+## The daemon
+
+Background supervision (`start`, `stop`, `restart`, `ps`, `logs`) needs a per-user daemon
+registered as a macOS LaunchAgent. `make install` registers it for you.
+
+```bash
+wtm daemon install     # register the LaunchAgent
+wtm daemon status      # is it registered and reachable?
+wtm daemon uninstall   # remove it
+```
+
+Foreground commands — `status`, `analyze`, `resolve`, `run`, `exec`, `init` — work without
+it. Installing WTM never starts your tasks; only `wtm start` does.
+
+## JSON output for scripts and agents
+
+Every command accepts `--json` and answers with the same envelope:
+
+```json
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "resolve",
+  "data": { "argv": ["make", "test"], "cwd": "/path/to/worktree" },
+  "warnings": [],
+  "errors": []
+}
+```
+
+`ok` is the single field to branch on; `errors[].code` is stable and documented in
+[docs/18-errors-json-contract.md](docs/18-errors-json-contract.md). Attribution and human
+formatting never leak into JSON or into a task's own output streams.
+
+WTM ships an Agent Skill so a coding agent can use all of this without being taught:
+
+```bash
+wtm skill --install
+```
+
+## Command reference
+
+| Command | What it answers |
+| --- | --- |
+| `wtm init [path]` | Register this workspace and discover its repositories |
+| `wtm status [selector]` | Identity, state, endpoints, processes, resources |
+| `wtm analyze [selector]` | Would removing this worktree lose work? |
+| `wtm remove <selector>` | Remove a linked worktree, refusing when unsafe |
+| `wtm resolve <task>` | The exact argv, cwd, and environment for a task |
+| `wtm run <task>` | Run a task in the foreground |
+| `wtm start/stop/restart <task>` | Supervise a task in the background |
+| `wtm ps` | Every WTM-managed process group |
+| `wtm logs [task] --follow` | Rotating per-task logs |
+| `wtm exec <argv...>` | Raw argv in the resolved environment |
+| `wtm disk` / `wtm gc` | Resource usage and safe collection |
+| `wtm daemon <action>` | Register, inspect, or remove the LaunchAgent |
+| `wtm adapter <action>` | Manage trusted external adapters |
+| `wtm skill` | Print or install the Agent Skill |
+| `wtm doctor` | Deterministic workspace diagnostics |
+
+Full detail: [docs/04-cli-reference.md](docs/04-cli-reference.md).
+
+## Make targets for this repository
+
+`make` on its own lists everything:
+
+| Target | What it does |
+| --- | --- |
+| `make install` | Build, install to `~/.local/bin`, register the daemon |
+| `make reinstall` | Rebuild and reinstall |
+| `make uninstall` | Unregister the daemon and remove the executable |
+| `make purge` | Uninstall, then delete this user's WTM state |
+| `make where` | Which `wtm` is on PATH, its version, the daemon |
+| `make check` | Lint, typecheck, unit suites |
+| `make verify` | The full release gate |
+| `make clean` | Remove build output |
+
+Override the prefix with `PREFIX=…`, and skip daemon registration with `WITH_DAEMON=0`.
+
+## What V1 does and does not answer
+
+WTM is pre-release and honest about its edges. In this version:
+
+- `status`, `analyze`, `resolve`, `run`, `start`, `stop`, `ps`, `logs`, `remove`, `disk`,
+  `gc`, `daemon`, `init`, and `skill` carry real payloads.
+- `explain`, `plan`, `env`, and `ports` accept their arguments and return well-formed but
+  empty collections.
+- `doctor` reports every check as `unknown`.
+
+They are wired end to end and shaped correctly; they are not yet answering. Nothing in this
+list is a crash, and none of it affects the commands above it.
 
 ## Requirements
 
-- Node.js 24 or newer for npm installation
-- macOS for the LaunchAgent-managed daemon
-- Bun 1.3 or newer for development and tests
+- **macOS** for the LaunchAgent-managed daemon
+- **Node.js 24+** for the npm installation (the standalone executable embeds its own)
+- **Bun 1.3+** to build from source and to run the tests
+
+## Uninstall
+
+```bash
+make uninstall   # unregister the daemon, remove the executable
+make purge       # the above, plus this user's WTM state and configuration
+```
+
+By hand, if you installed some other way:
+
+```bash
+wtm daemon uninstall
+rm -f "$(command -v wtm)"
+rm -rf "$HOME/Library/Application Support/WTM"
+```
+
+Removing WTM never touches your repositories or worktrees.
 
 ## Development
 
 ```bash
 bun install --frozen-lockfile
-bun run lint
-bun run typecheck
-bun test
-bun run test:e2e
-bun run test:perf
+make check      # lint, typecheck, unit suites
+make e2e        # end-to-end workflow suite
+make verify     # the whole release gate
 ```
 
-Every routine action also has a `make` target; `make help` lists them. `make check` runs the fast gate, `make verify` runs the full release gate.
+Every routine action has a `make` target; `make help` lists them. Contribution guidance is
+in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Build the distributable package with `bun run build`; verify its public contents with `bun run package:verify`.
+## Documentation
 
-WTM has no required account, cloud control plane, default telemetry, or implicit fetch/push behavior. See [the documentation](docs/README.md), [security policy](SECURITY.md), and bundled [WTM Agent Skill](skills/wtm/SKILL.md).
+- [Full documentation](docs/README.md) — architecture, configuration, safety, CLI
+- [Configuration examples](examples/README.md)
+- [Error and JSON contract](docs/18-errors-json-contract.md)
+- [Security policy](SECURITY.md)
+- [WTM Agent Skill](skills/wtm/SKILL.md)
+
+WTM has no required account, no cloud control plane, no default telemetry, and no implicit
+fetch or push behaviour.
 
 ## License
 

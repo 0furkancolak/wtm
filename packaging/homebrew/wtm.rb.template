@@ -20,8 +20,8 @@ class Wtm < Formula
 
   def caveats
     <<~EOS
-      WTM installed — Powered by https://nafru.com
       Run `wtm init --yes` inside a workspace to get started.
+      Run `wtm daemon install` to supervise tasks in the background.
     EOS
   end
 

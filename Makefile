@@ -10,9 +10,13 @@ PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 BINARY := dist/sea/wtm
 INSTALLED := $(BINDIR)/wtm
+STATEDIR := $(HOME)/Library/Application Support/WTM
+# Installing registers the LaunchAgent, so supervised tasks work straight away.
+# Set WITH_DAEMON=0 for an install that touches nothing outside the prefix.
+WITH_DAEMON ?= 1
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build binary install uninstall reinstall where \
+.PHONY: help setup build binary install uninstall reinstall purge where \
 	lint typecheck test e2e perf check package smoke verify \
 	dist gate formula daemon-install daemon-status daemon-uninstall \
 	clean distclean
@@ -38,21 +42,28 @@ binary: ## Build the standalone executable at dist/sea/wtm
 
 ##@ Install
 
-install: binary ## Build the executable and install it into the prefix below
+install: binary ## Build and install the executable, and register the daemon
 	@mkdir -p '$(BINDIR)'
 	install -m 0755 '$(BINARY)' '$(INSTALLED)'
+	@[ '$(WITH_DAEMON)' = '0' ] || '$(INSTALLED)' daemon install
 	@printf 'installed %s (' '$(INSTALLED)'
 	@'$(INSTALLED)' --version | head -1 | tr -d '\n'
 	@printf ')\n'
 	@command -v wtm >/dev/null 2>&1 || printf 'note: %s is not on your PATH yet.\n' '$(BINDIR)'
 
-uninstall: ## Remove the installed executable
+uninstall: ## Unregister the daemon and remove the installed executable
+	@[ ! -x '$(INSTALLED)' ] || '$(INSTALLED)' daemon uninstall
 	rm -f '$(INSTALLED)'
 
 reinstall: uninstall install ## Remove, rebuild, and install again
 
-where: ## Report which wtm PATH resolves to, and its version
+purge: uninstall ## Uninstall, then delete this user's WTM state and configuration
+	@printf 'removing %s\n' '$(STATEDIR)'
+	rm -rf '$(STATEDIR)'
+
+where: ## Report which wtm PATH resolves to, its version, and the daemon
 	@command -v wtm && wtm --version | head -1 || printf 'wtm is not on PATH\n'
+	@command -v wtm >/dev/null 2>&1 && wtm daemon status || true
 
 ##@ Checks
 

@@ -97,7 +97,7 @@ describe.skipIf(!existsSync(executable))('standalone executable', () => {
     const help = runStandalone(['--help'], { cwd: paths.home, ...paths });
 
     expect(version.status).toBe(0);
-    expect(version.stdout).toContain('Powered by https://nafru.com');
+    expect(version.stdout).not.toContain('Powered by https://nafru.com');
     expect(version.stdout.split('\n')[0])
       .toBe(JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version);
     expect(help.status).toBe(0);

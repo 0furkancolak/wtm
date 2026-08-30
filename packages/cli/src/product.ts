@@ -6,5 +6,7 @@ export const WTM_VERSION = version;
 export const WTM_BRAND = 'Powered by https://nafru.com' as const;
 
 export function configureProductMetadata(program: Command): Command {
-  return program.version(`${WTM_VERSION}\n${WTM_BRAND}`).addHelpText('after', `\n${WTM_BRAND}\n`);
+  // Attribution belongs in help, where a reader is already asking about the tool.
+  // `--version` stays a single machine-readable line, as every other CLI's does.
+  return program.version(WTM_VERSION).addHelpText('after', `\n${WTM_BRAND}\n`);
 }

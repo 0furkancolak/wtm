@@ -31,12 +31,12 @@ describe('formula metadata', () => {
     expect(rendered).toContain('bin.install "wtm"');
   });
 
-  test('carries exactly the branded caveats', () => {
+  test('carries exactly the getting-started caveats', () => {
     expect(rendered).toContain([
       '  def caveats',
       '    <<~EOS',
-      '      WTM installed — Powered by https://nafru.com',
       '      Run `wtm init --yes` inside a workspace to get started.',
+      '      Run `wtm daemon install` to supervise tasks in the background.',
       '    EOS',
       '  end',
     ].join('\n'));

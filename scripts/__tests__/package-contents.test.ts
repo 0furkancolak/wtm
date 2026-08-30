@@ -22,8 +22,12 @@ test('the public npm package contains runtime bundles, migrations, docs, license
   // byproducts, and the superpowers directory is this project's own planning ledger.
   for (const directory of ['dist/protocol/', 'dist/core/', 'dist/adapters/', 'dist/daemon/', 'docs/superpowers/'])
     expect(files.filter((path) => path.startsWith(directory))).toEqual([]);
-  // One field of the manifest is public; the dependency and script blocks are not.
-  expect(readFileSync('dist/cli/bin.js', 'utf8')).not.toContain('devDependencies');
+  // One field of the manifest is public; the dependency and script blocks are not. The
+  // identifier itself appears in adapter source that reads a project's own package.json,
+  // so the guard looks for the JSON shape a bundled manifest would take.
+  const bundle = readFileSync('dist/cli/bin.js', 'utf8');
+  for (const manifestKey of ['"devDependencies"', '"dependencies"', '"scripts"', '"trustedDependencies"'])
+    expect(bundle).not.toContain(manifestKey);
   const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
   expect(manifest.dependencies.commander).toBe('14.0.2');
   const thirdParty = readFileSync('THIRD_PARTY_LICENSES.md', 'utf8');

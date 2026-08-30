@@ -55,12 +55,12 @@ function capture() {
 }
 
 describe('Commander CLI', () => {
-  test('prints package version and Nafru attribution', async () => {
+  test('prints the package version alone', async () => {
     const output = capture();
 
     expect(await runCli(['--version'], output.io)).toBe(0);
     expect(output.stderr()).toBe('');
-    expect(output.stdout()).toBe('0.1.0\nPowered by https://nafru.com\n');
+    expect(output.stdout()).toBe('0.1.0\n');
   });
 
   test('includes the Nafru attribution once in root help', async () => {
