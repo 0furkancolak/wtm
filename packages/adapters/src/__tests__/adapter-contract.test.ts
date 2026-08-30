@@ -96,9 +96,9 @@ describe('built-in adapter contract', () => {
       const makePlan = await make?.plan(fixture.context);
       const composePlan = await compose?.plan(fixture.context);
 
-      expect(makePlan?.tasks).toEqual({
-        make: { description: 'Run the default goal', run: ['make'], cwd: '{worktree.root}' },
-      });
+      // Nothing here declares a makefile, so make contributes nothing: a `make` task in a
+      // worktree without one is a task that can only fail.
+      expect(makePlan?.tasks).toEqual({});
       expect(composePlan?.tasks).toEqual({
         'compose-up': {
           run: ['docker', 'compose', 'up'],

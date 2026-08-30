@@ -1,3 +1,5 @@
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describe, expect, it } from 'bun:test';
 import { builtInAdapters } from '../registry';
 import { parseMakeTargets } from '../make';
@@ -101,10 +103,39 @@ describe('make adapter plan', () => {
     }
   });
 
-  it('reads no target when the worktree has no makefile', async () => {
+  it('contributes nothing when neither the worktree nor the workspace has a makefile', async () => {
     const fixture = await createAdapterFixture();
     try {
-      expect(Object.keys((await makeAdapter?.plan(fixture.context))?.tasks ?? {})).toEqual(['make']);
+      expect(Object.keys((await makeAdapter?.plan(fixture.context))?.tasks ?? {})).toEqual([]);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it('offers the workspace root makefile under its own namespace', async () => {
+    const fixture = await createAdapterFixture({ Makefile: 'dev:\n\t@true\n' });
+    try {
+      await writeFile(join(fixture.context.workspace.root, 'Makefile'), 'up: ## Bring the stack up\n\t@true\n');
+      const plan = await makeAdapter?.plan(fixture.context);
+
+      expect(plan?.tasks['make:dev']).toEqual({ run: ['make', 'dev'], cwd: '{worktree.root}' });
+      expect(plan?.tasks['workspace:up']).toEqual({
+        description: 'Bring the stack up',
+        run: ['make', 'up'],
+        cwd: '{workspace.root}',
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it('detects a workspace root makefile from a worktree that has none', async () => {
+    const fixture = await createAdapterFixture();
+    try {
+      await writeFile(join(fixture.context.workspace.root, 'Makefile'), 'up:\n\t@true\n');
+
+      expect((await makeAdapter?.detect(fixture.context))?.detected).toBe(true);
+      expect(Object.keys((await makeAdapter?.plan(fixture.context))?.tasks ?? {})).toEqual(['workspace:up']);
     } finally {
       await fixture.cleanup();
     }

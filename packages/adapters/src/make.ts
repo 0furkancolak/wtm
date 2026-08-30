@@ -33,25 +33,49 @@ export const makeAdapter = defineBuiltInAdapter({
   metadata: {
     id: 'make',
     name: 'Make',
-    version: '1.1.0',
+    version: '1.2.0',
     kind: 'task-runner',
     provides: ['make.task-runner'],
   },
-  detect: ({ worktree }) => detectMarkers(worktree.root, [...detectionMarkers]),
-  plan: async ({ worktree }) => {
-    const tasks: Record<string, { description?: string; run: string[]; cwd: string }> = {
-      make: { description: 'Run the default goal', run: ['make'], cwd: '{worktree.root}' },
-    };
-    for (const target of await readMakeTargets(worktree.root)) {
-      tasks[`make:${target.name}`] = {
-        ...(target.description === undefined ? {} : { description: target.description }),
-        run: ['make', target.name],
-        cwd: '{worktree.root}',
-      };
+  detect: async (context) => {
+    const worktree = await detectMarkers(context.worktree.root, [...detectionMarkers]);
+    if (worktree.detected || !hasSeparateWorkspace(context)) return worktree;
+    // A root holding several repositories often keeps the commands that span them in its own
+    // Makefile, and nothing else there marks it as a project. Without this, that Makefile is
+    // reachable from no worktree at all.
+    return await detectMarkers(context.workspace.root, [...detectionMarkers]);
+  },
+  plan: async (context) => {
+    const tasks: Record<string, { description?: string; run: string[]; cwd: string }> = {};
+    const makefile = await readMakefile(context.worktree.root);
+    if (makefile !== null) {
+      tasks.make = { description: 'Run the default goal', run: ['make'], cwd: '{worktree.root}' };
+      for (const target of parseMakeTargets(makefile)) {
+        tasks[`make:${target.name}`] = makeTask(target, '{worktree.root}');
+      }
+    }
+    if (hasSeparateWorkspace(context)) {
+      // Workspace targets keep their own namespace: they run at the root, across every
+      // repository, and a repository's own `dev` is not the same work as the root's.
+      for (const target of await readMakeTargets(context.workspace.root)) {
+        tasks[`workspace:${target.name}`] = makeTask(target, '{workspace.root}');
+      }
     }
     return { resources: [], actions: [], capabilities: {}, tasks };
   },
 });
+
+function makeTask(target: MakeTarget, cwd: string): { description?: string; run: string[]; cwd: string } {
+  return {
+    ...(target.description === undefined ? {} : { description: target.description }),
+    run: ['make', target.name],
+    cwd,
+  };
+}
+
+function hasSeparateWorkspace(context: { workspace: { root: string }; worktree: { root: string } }): boolean {
+  return context.workspace.root !== context.worktree.root;
+}
 
 /**
  * Reads the worktree's makefile and returns the targets it declares. The file is parsed,
@@ -59,16 +83,20 @@ export const makeAdapter = defineBuiltInAdapter({
  * expansions of a repository WTM has not been told to trust.
  */
 export async function readMakeTargets(root: string): Promise<MakeTarget[]> {
+  const contents = await readMakefile(root);
+  return contents === null ? [] : parseMakeTargets(contents);
+}
+
+/** The contents of the makefile `make` itself would read in `root`, or null if there is none. */
+export async function readMakefile(root: string): Promise<string | null> {
   for (const name of makefileNames) {
-    let contents: string;
     try {
-      contents = await readFile(join(root, name), 'utf8');
+      return await readFile(join(root, name), 'utf8');
     } catch {
       continue;
     }
-    return parseMakeTargets(contents);
   }
-  return [];
+  return null;
 }
 
 export function parseMakeTargets(contents: string): MakeTarget[] {
