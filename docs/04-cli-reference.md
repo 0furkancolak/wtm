@@ -98,7 +98,7 @@ Example:
 
 ```text
 $ wtm resolve dev
-cwd: /Users/me/DEVNAFRU
+cwd: /Users/me/workspace/api
 command: make dev-with-worktree-7
 ```
 

@@ -6,7 +6,7 @@
 version = 1
 
 [workspace]
-name = "devnafru"
+name = "workspace"
 
 [prepare]
 mode = "lazy"

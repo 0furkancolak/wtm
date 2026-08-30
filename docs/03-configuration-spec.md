@@ -62,7 +62,7 @@ Auto detection is enabled by default.
 version = 1
 
 [workspace]
-name = "devnafru"
+name = "workspace"
 
 [discovery]
 repos = true
