@@ -7,7 +7,19 @@ permissions:
   contents: read
 jobs:
   release-budgets:
-    runs-on: macos-15
+    name: Budgets ${{ matrix.arch }}
+    # Budgets are measured per architecture, because they differ per architecture: idle RSS sits
+    # near its blocker on x64 while arm64 has room. The release does not gate on these numbers, so
+    # this is the only place they are taken — it has to cover what the release ships.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -21,6 +33,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: wtm-performance-${{ github.sha }}
+          name: wtm-performance-${{ matrix.arch }}-${{ github.sha }}
           path: artifacts/performance.json
           if-no-files-found: error

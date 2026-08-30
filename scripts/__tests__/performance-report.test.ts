@@ -4,7 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-test('performance report is machine-readable and records release budget semantics', async () => {
+// This drives the whole performance harness — all three scenarios, end to end — and the ordinary
+// suite has already run each of them individually. That duplicate is 45 seconds on a fast machine
+// and more than the timeout on a slow one, which is how it failed a release twice while measuring
+// nothing the suite had not already measured. `bun run test:perf` sets this, and is where the
+// harness belongs.
+const performanceSuite = process.env['WTM_PERFORMANCE_SUITE'] === '1';
+
+test.skipIf(!performanceSuite)('performance report is machine-readable and records release budget semantics', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wtm-perf-report-'));
   try {
     const outputPath = join(root, 'performance.json');
