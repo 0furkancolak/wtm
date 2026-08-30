@@ -55,7 +55,12 @@ export async function runInitCommand(input: InitCommandInput): Promise<InitComma
     severity: 'warning' as const,
     context: { service: port.service, port: port.preferred, range: port.range },
   }));
-  if (input.installAiSkill !== false && input.aiSkillInstaller !== undefined) {
+  // Registering a workspace writes `wtm.toml` and nothing else. Installing the Agent Skill
+  // put a `.agents/skills/wtm/SKILL.md` tree into the repository as well — a second structure,
+  // in someone else's project, that they had not asked for and would have to notice, gitignore
+  // or commit. It stays available as `wtm skill install`, and `init --ai-skill` for whoever
+  // wants both in one step.
+  if (input.installAiSkill === true && input.aiSkillInstaller !== undefined) {
     try {
       const installed = await runSkillInstallCommand({
         scope: 'local',

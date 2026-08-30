@@ -148,7 +148,20 @@ describe('runInitCommand', () => {
     });
   }, 15_000);
 
-  test('--no-ai-skill performs zero Agent Skill installs and leaves AGENTS.md untouched', () => {
+  test('installs no Agent Skill unless asked, and leaves AGENTS.md untouched', () => {
+    // Registering a workspace writes `wtm.toml` and nothing else. Installing the skill by
+    // default put a `.agents/skills/wtm/SKILL.md` tree into a project that had not asked for
+    // it, and that its owner would have to notice, gitignore, or commit.
+    expect(runScenario('default-no-skill')).toEqual({
+      ok: true,
+      installs: 0,
+      aiSkill: { status: 'skipped' },
+      confirmation: { defaultsAccepted: false },
+      agentsContent: 'project-owned instructions\n',
+    });
+  }, 15_000);
+
+  test('performs zero Agent Skill installs when installation is declined', () => {
     const result = runScenario('no-ai-skill');
 
     expect(result).toEqual({

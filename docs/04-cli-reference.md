@@ -30,13 +30,17 @@ Options:
 ```text
 --yes             accept non-destructive proposed defaults
 --max-depth <n>   discovery depth
---no-ai-skill     skip local Agent Skill installation
+--ai-skill        also install the local Agent Skill, as `wtm skill install` does
 --no-detect       write only a name and a version, reading no repository
 --json            machine-readable result
 ```
 
 `--yes` records explicit acceptance of WTM's non-destructive defaults in the result contract as
 `data.confirmation.defaultsAccepted`. V1 init is non-interactive, so this flag never approves destructive work.
+
+Registering writes `wtm.toml` and nothing else into the project. Everything else WTM can put
+there — the Agent Skill among them — is asked for explicitly, so adopting WTM in someone else's
+repository adds one file they can read, and leaves the rest of it exactly as it was.
 
 ### `wtm init --global [path]`
 

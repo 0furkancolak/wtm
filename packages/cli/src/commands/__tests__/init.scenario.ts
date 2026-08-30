@@ -39,7 +39,7 @@ try {
     },
   };
   const agentsPath = join(fixture.root, 'AGENTS.md');
-  if (scenario === 'skill-install' || scenario === 'no-ai-skill') {
+  if (scenario === 'skill-install' || scenario === 'no-ai-skill' || scenario === 'default-no-skill') {
     await writeFile(agentsPath, 'project-owned instructions\n');
   }
   const input = {
@@ -53,9 +53,12 @@ try {
       aiSkillInstaller: installer,
       installAiSkill: scenario !== 'no-ai-skill',
     } : {}),
+    // An installer is available and nothing asked for it: registering must still write only
+    // `wtm.toml`, and leave the project without a `.agents` tree it did not ask for.
+    ...(scenario === 'default-no-skill' ? { aiSkillInstaller: installer } : {}),
   };
   const envelope = await runInitCommand(input);
-  if (scenario === 'skill-install' || scenario === 'no-ai-skill') {
+  if (scenario === 'skill-install' || scenario === 'no-ai-skill' || scenario === 'default-no-skill') {
     process.stdout.write(`${JSON.stringify({
       ok: envelope.ok,
       installs,

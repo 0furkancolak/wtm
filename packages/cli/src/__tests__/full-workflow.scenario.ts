@@ -38,8 +38,11 @@ try {
 
   const { runCli } = await import('../main');
   const { SQLiteStateStore, listGitWorktrees } = await import('@wtm/core');
-  const initialized = await invoke(runCli, ['init', '--yes', '--no-ai-skill', '--json'], {
+  const initialized = await invoke(runCli, ['init', '--yes', '--json'], {
     cwd: main, initDatabasePath: databasePath, initUserDataDir: dataRoot,
+    // Registering tells a running daemon to re-read its registrations; this fixture has none,
+    // and must never reach the one on the machine running the suite.
+    runtimeClient: { request: async () => ({ schemaVersion: 1, ok: true, command: 'reconcile', data: null, warnings: [], errors: [] }) } as never,
   });
   await writeFile(join(main, 'wtm.toml'), `${await readFile(join(main, 'wtm.toml'), 'utf8')}\n[tasks.dev]\nrun = ["node", "-e", 'console.log("dev")']\n`);
   git(main, 'add', 'wtm.toml');
