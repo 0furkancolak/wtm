@@ -91,8 +91,14 @@ describe('registry-backed diagnostics', () => {
       .toEqual([['api', 4100], ['web', 4200]]);
   });
 
-  it('falls back to the workspace when the command was run outside every worktree', async () => {
-    expect((await sourceAt('/elsewhere').readStatus(registered)).identity.worktreeId).toBe('api-main');
+  it('answers about no worktree, rather than another one, outside every worktree', async () => {
+    // Substituting a worktree is how `wtm status` inside a brand-new feature branch — one the
+    // daemon has not read yet — reported `main`: its branch, its state, its ports, with
+    // nothing to say the answer was about somewhere else.
+    const { identity, state } = await sourceAt('/elsewhere').readStatus(registered);
+
+    expect({ worktreeId: identity.worktreeId, branch: identity.branch, state })
+      .toEqual({ worktreeId: null, branch: null, state: 'UNKNOWN' });
   });
 
   it('lists every endpoint the workspace holds, across its repositories', async () => {

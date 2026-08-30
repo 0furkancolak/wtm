@@ -43,17 +43,21 @@ export function createStateDiagnosticDataSource(
   });
 
   /**
-   * The worktree the question is about. `status` used to answer for whichever worktree the
-   * registry happened to list first, so standing in one branch's directory reported another
-   * branch's state — and in a workspace of several repositories, another repository's.
+   * The worktree the question is about — only ever one that actually contains the directory
+   * the question was asked in.
+   *
+   * `status` used to answer for whichever worktree the registry happened to list first, so
+   * standing in one branch's directory reported another branch's state, and in a workspace of
+   * several repositories, another repository's. Narrowing it to the containing worktree fixed
+   * that for directories WTM knows; falling back to the first one when it knows none kept the
+   * same bug for the case that matters most. A worktree created a moment ago, before the
+   * daemon has read it, is exactly such a directory: `wtm status` inside a new feature branch
+   * reported `main` — its branch, its state, its ports — with nothing to say it had answered
+   * about somewhere else. No worktree is a truthful answer; the wrong worktree is not.
    */
-  const currentWorktree = (workspaceId: string): WorktreeRecord | undefined => {
-    const worktrees = workspaceWorktrees(workspaceId);
-    const containing = worktrees
-      .filter((worktree) => containsPath(worktree.path, options.cwd))
-      .sort((left, right) => right.path.length - left.path.length)[0];
-    return containing ?? worktrees[0];
-  };
+  const currentWorktree = (workspaceId: string): WorktreeRecord | undefined => workspaceWorktrees(workspaceId)
+    .filter((worktree) => containsPath(worktree.path, options.cwd))
+    .sort((left, right) => right.path.length - left.path.length)[0];
 
   /** Every worktree of this workspace that shares the given worktree's branch. */
   const featureWorktreeIds = (workspaceId: string, worktree: WorktreeRecord): string[] => {
