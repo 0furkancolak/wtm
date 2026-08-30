@@ -72,7 +72,7 @@
     "test:e2e": "bun test packages/cli/src/__tests__/full-workflow.test.ts --timeout 30000",
     "test:perf": "bun test packages/core/src/state/__tests__/workspace-scale.test.ts packages/daemon/src/__tests__/idle-daemon.test.ts packages/daemon/src/__tests__/source-edit-storm.test.ts packages/daemon/src/__tests__/watcher.test.ts scripts/__tests__/performance-report.test.ts --timeout 45000 && node --import tsx scripts/performance-report.ts",
     "package:verify": "bun run build && npm pack --dry-run --json --ignore-scripts",
-    "release:verify": "bun run lint && bun run typecheck && bun run test --timeout 30000 && bun run test:e2e && bun run test:perf && bun run build && bun install --frozen-lockfile && bun run package:verify && bun run binary:verify && bun run release:artifacts",
+    "release:verify": "bun run lint && bun run typecheck && bun run build && bun run binary:verify && bun run test --timeout 30000 && bun run test:e2e && bun run test:perf && bun install --frozen-lockfile && bun run package:verify && bun run release:artifacts",
     "prepack": "bun run build",
     "build:binary": "bun scripts/build-sea.ts",
     "binary:verify": "bun run build:binary && bun test scripts/__tests__/sea-smoke.test.ts --timeout 60000",

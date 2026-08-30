@@ -6,6 +6,9 @@ import { jsonEnvelopeSchema } from '@wtm/protocol';
 import { createFakeAdapter } from '../../../testkit/src/fake-adapter';
 import type { DiagnosticDataSource, RegisteredWorkspace } from '../diagnostics';
 import { createCli, DiagnosticSourceError, runCli } from '../index';
+// The assertion is that `--version` prints the shipped version alone, not that the shipped
+// version is any particular string; releasing a new one must not fail this test.
+import { version } from '../../../../package.json' with { type: 'json' };
 
 const workspace: RegisteredWorkspace = {
   id: 'workspace-1',
@@ -60,7 +63,7 @@ describe('Commander CLI', () => {
 
     expect(await runCli(['--version'], output.io)).toBe(0);
     expect(output.stderr()).toBe('');
-    expect(output.stdout()).toBe('0.1.0\n');
+    expect(output.stdout()).toBe(`${version}\n`);
   });
 
   test('includes the Nafru attribution once in root help', async () => {
