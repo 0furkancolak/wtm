@@ -2,7 +2,7 @@
 
 All notable changes are documented here. This project follows Semantic Versioning.
 
-## [Unreleased]
+## [0.1.0-rc.1] - 2026-08-30
 
 ### Added
 
@@ -29,6 +29,21 @@ All notable changes are documented here. This project follows Semantic Versionin
   tested but never registered on the CLI, so the documented foreground path did not exist.
 - Public documentation, the bundled Agent Skill and the examples no longer describe commands the
   CLI does not have.
+- `make install` restarts a daemon that is already running. The definition names the executable by
+  path, so installing a new build left launchd serving the previous binary indefinitely.
+- Registering a workspace writes `wtm.toml` and nothing else. `wtm init` also wrote an
+  `.agents/skills/wtm/` tree into the repository; the Agent Skill is now opt-in through
+  `wtm init --ai-skill` or `wtm skill install`.
+- A workspace registered while the daemon is running is watched immediately, instead of staying
+  undiscovered until the next daemon restart.
+- `wtm status` run outside every known worktree reports no worktree, instead of answering with a
+  different worktree's branch, state and ports.
+- Endpoint leases are released whenever a worktree is found absent, not only on its first
+  transition, so a removed worktree no longer holds its ports permanently.
+- `wtm forget <path>` retires a single repository, leaving the rest of its workspace registered.
+- A command whose reader closes the pipe exits quietly rather than printing an `EPIPE` stack trace.
+- Repository reads that time out are retried serially with a wider bound, and an unreadable
+  repository is diagnosed from an actual probe rather than assumed to be a permission problem.
 
 ### Changed
 
@@ -38,7 +53,9 @@ All notable changes are documented here. This project follows Semantic Versionin
 
 ### Notes
 
-- No public release, npm version, GitHub Release or Homebrew tap exists yet. The channels are
-  prepared and verified locally; publication happens only when a matching tag workflow succeeds.
-- Stable releases are refused unless the executable is Developer ID signed. Prereleases may ship
-  ad-hoc signed.
+- This is a prerelease. Its executables are ad-hoc signed, not Developer ID signed: macOS may
+  require an explicit approval the first time one runs. Stable releases are refused by the release
+  gate unless the executable is Developer ID signed.
+- Install from the GitHub Release archives, from npm under the `next` dist-tag, or from source with
+  `make install`. No Homebrew tap exists yet: the formula job runs for stable tags only.
+- macOS only, on both Apple silicon and Intel.

@@ -1,6 +1,6 @@
 {
   "name": "worktree-runtime-manager",
-  "version": "0.1.0",
+  "version": "0.1.0-rc.1",
   "description": "Local-first runtime and safety manager for Git worktrees on macOS: per-worktree tasks, environments, ports, process supervision, and safe removal.",
   "keywords": [
     "git",

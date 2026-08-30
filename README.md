@@ -88,13 +88,16 @@ To install the binary alone and leave launchd untouched:
 make install WITH_DAEMON=0
 ```
 
-### Homebrew (after a release is published)
+### Homebrew (not available yet)
+
+The formula is rendered and committed only for stable tags, and a stable release requires a
+Developer ID signed executable. Until one is published there is no tap to add:
 
 ```bash
 brew tap 0furkancolak/wtm && brew install 0furkancolak/wtm/wtm
 ```
 
-### Direct macOS binary (after a release is published)
+### Direct macOS binary
 
 Select the archive matching your architecture, verify it against `SHA256SUMS`, then extract:
 
@@ -110,11 +113,13 @@ shasum -a 256 -c --ignore-missing SHA256SUMS
 tar -xzf "$archive"
 ```
 
-### npm (Node.js 24+, after a release is published)
+### npm (Node.js 24+)
 
 ```bash
-npm install --global worktree-runtime-manager
+npm install --global worktree-runtime-manager@next
 ```
+
+`@next` is where prereleases are published. Drop it once a stable version exists.
 
 The npm package carries no runtime of its own and uses the Node.js you already have. The
 standalone executable embeds one, which is why it is roughly 97 MB on disk.
