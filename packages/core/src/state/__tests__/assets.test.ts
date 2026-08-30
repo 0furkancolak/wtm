@@ -13,6 +13,7 @@ const migrationFiles = [
   '006-resource-lifecycle.sql',
   '007-resource-gc-deleting-phase.sql',
   '008-resource-gc-container-identity.sql',
+  '009-lifecycle-events.sql',
 ] as const;
 const scenarioPath = fileURLToPath(new URL('./assets.scenario.ts', import.meta.url));
 
@@ -25,7 +26,7 @@ function runScenario(): Record<string, unknown> {
 }
 
 describe('filesystem migration assets', () => {
-  test('reads the eight canonical migrations in exact byte order', () => {
+  test('reads the nine canonical migrations in exact byte order', () => {
     const expected = migrationFiles.map((file) => readFileSync(new URL(`../migrations/${file}`, import.meta.url), 'utf8'));
 
     expect(filesystemMigrationAssets.readMigrations()).toEqual(expected);

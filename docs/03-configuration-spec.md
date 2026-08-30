@@ -361,18 +361,42 @@ env                 map<string,string>
 
 ## Events
 
-V1 events:
+An event runs the tasks named in its table, in the worktree the event is about, resolved
+exactly as `wtm run` would resolve them.
 
-```text
-workspace.discovered
-repo.discovered
-worktree.discovered
-worktree.created
-worktree.ready
-worktree.removed
-runtime.started
-runtime.stopped
-```
+| Event | When it fires | Announced |
+| --- | --- | --- |
+| `workspace.discovered` | The first time WTM records this workspace | Once per workspace |
+| `repo.discovered` | The first time WTM records this repository | Once per repository |
+| `worktree.discovered` | A worktree found during a repository's first reconcile | Once per worktree |
+| `worktree.created` | A worktree that appeared while WTM was watching | Once per worktree |
+| `worktree.ready` | Resources for the worktree have been prepared | Once per worktree |
+| `worktree.removed` | A worktree Git no longer reports; runs in the repository's main worktree | Every time |
+| `runtime.started` | A supervised task started through the daemon | Every time |
+| `runtime.stopped` | A supervised task stopped through the daemon | Every time |
+
+`worktree.discovered` and `worktree.created` are mutually exclusive: a worktree fires exactly
+one of them.
+
+Once-only events are recorded in WTM's state, not in memory, so restarting the daemon does not
+announce them again — otherwise an event bound to `deps.install` would install dependencies on
+every reboot. A workspace registered before this version announces `workspace.discovered` and
+`repo.discovered` once, on the daemon's next pass. `wtm forget` clears a workspace's records
+along with the workspace, so registering that directory again starts over.
+
+A task started by an event does not itself dispatch events, so `[events."runtime.started"]`
+cannot set itself off. A task that fails to start is reported and does not fail the event; an
+event that fails does not fail the reconcile that raised it, because one workspace's event must
+not take every other workspace's daemon down with it.
+
+An event that could not be dispatched at all — a configuration that does not resolve, a
+resource that could not be created — withdraws its announcement and is tried again on the next
+pass. An event that *did* run and whose task then failed keeps it: the event happened, and
+running the task again by itself would be worse than reporting that it failed.
+
+The tasks an event names must exist in every repository the event can fire for, because
+`[events]` belongs to the workspace. Naming a task only one repository defines means the others
+report a task that will not start.
 
 Event names contain a dot, so the table key must be quoted. `[events.worktree.created]` is parsed as a nested table and rejected.
 
@@ -410,6 +434,32 @@ policy = "clone"
 source = "{main.root}/.data/dev.sqlite"
 retention = "ephemeral"
 ```
+
+`path` is relative to the worktree; `source` is a template, and must name something inside the
+workspace. WTM creates whatever is declared and missing — which is what a linked worktree's
+`.env` is for. When: under `[prepare] mode = "lazy"`, the default, before the first task runs
+in that worktree; under `"eager"`, as soon as the daemon learns the worktree exists. Lazy is
+what keeps twenty speculative branches cheap; eager is for a workspace whose `.env` must be
+there before anybody opens an editor. Either way `worktree.ready` fires once, when it is done.
+
+Nothing is ever replaced. A resource is created only when:
+
+- the path resolves strictly inside its own worktree and names no `.git` component;
+- no directory on the way to it is a symbolic link, group-writable, or another user's;
+- Git does not track it;
+- nothing is there already — a file the worktree has is left exactly as it is;
+- its source exists, inside the workspace. A source that is missing is an error, unless the
+  resource is `optional = true`, which reports it as `missing` and carries on.
+
+`shared`, `native-cache`, `external`, and `ignore` name something WTM does not own, so it
+creates nothing for them and only reports whether it is there.
+
+`wtm status` lists every declared resource and whether this worktree has it, and `wtm doctor`
+reports the ones that could not be created, with the reason.
+
+A symbolic link a resource creates does not block `wtm remove`: the link holds no content of
+its own, and whatever it points at lives outside the worktree and survives. A copied or cloned
+resource is real content in the worktree, and does block, like any other untracked file.
 
 ## Capability provider override
 

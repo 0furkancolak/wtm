@@ -13,6 +13,7 @@ export const migrationFileNames = [
   '006-resource-lifecycle.sql',
   '007-resource-gc-deleting-phase.sql',
   '008-resource-gc-container-identity.sql',
+  '009-lifecycle-events.sql',
 ] as const;
 
 export const filesystemMigrationAssets: MigrationAssetProvider = {

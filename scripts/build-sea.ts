@@ -75,7 +75,10 @@ export async function buildSea(host: SeaBuildHost): Promise<SeaBuildResult> {
       '--macho-segment-name',
       'NODE_SEA',
     ]);
-    check(host, '/usr/bin/codesign', ['--sign', '-', '--force', executable]);
+    // A stable signing identifier. Without `--identifier`, codesign derives one from the file
+    // name and content, so every build signed itself as a different program: macOS records a
+    // disk-access grant against the code it was given, and each rebuild asked for it again.
+    check(host, '/usr/bin/codesign', ['--sign', '-', '--identifier', signingIdentifier, '--force', executable]);
     check(host, '/usr/bin/codesign', ['--verify', '--strict', executable]);
   } catch (error) {
     host.remove(executable);
@@ -85,6 +88,9 @@ export async function buildSea(host: SeaBuildHost): Promise<SeaBuildResult> {
   }
   return { executable, version, arch: host.arch };
 }
+
+/** The identity macOS remembers this executable by, across every build of it. */
+const signingIdentifier = 'dev.wtm.cli';
 
 export function seaAssetManifest(root: string): Record<string, string> {
   const manifest: Record<string, string> = {};

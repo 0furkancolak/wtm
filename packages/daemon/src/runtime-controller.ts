@@ -98,6 +98,12 @@ export interface DaemonRuntimeLogReader {
 export interface ResolvedRegistration {
   workspaceId: string;
   worktreeId: string;
+  /**
+   * Every worktree of this workspace, so that `ps` can answer for the workspace the way the
+   * scoping rule says it does. Listing only the current worktree showed one server of the four
+   * a two-repository feature actually runs.
+   */
+  workspaceWorktreeIds?: readonly string[];
 }
 
 export interface DaemonRuntimeResolver {
@@ -110,17 +116,26 @@ export interface DaemonRuntimeControllerOptions {
   supervisor: DaemonRuntimeSupervisor;
   logs: DaemonRuntimeLogReader;
   resolver: DaemonRuntimeResolver;
+  /**
+   * Told when a supervised task actually started or stopped, so that `[events."runtime.started"]`
+   * and `[events."runtime.stopped"]` can run what the workspace attached to them. It is never
+   * awaited into the reply: what a person asked to start has started, and an event's own
+   * failure is that event's business, not the start's.
+   */
+  onRuntimeEvent?(event: 'runtime.started' | 'runtime.stopped', worktreeId: string): void;
 }
 
 export class DaemonRuntimeController {
   readonly #supervisor: DaemonRuntimeSupervisor;
   readonly #logs: DaemonRuntimeLogReader;
   readonly #resolver: DaemonRuntimeResolver;
+  readonly #onRuntimeEvent: NonNullable<DaemonRuntimeControllerOptions['onRuntimeEvent']>;
 
   constructor(options: DaemonRuntimeControllerOptions) {
     this.#supervisor = options.supervisor;
     this.#logs = options.logs;
     this.#resolver = options.resolver;
+    this.#onRuntimeEvent = options.onRuntimeEvent ?? (() => {});
   }
 
   async handle(request: IpcRequest): Promise<JsonEnvelope<unknown>> {
@@ -148,6 +163,9 @@ export class DaemonRuntimeController {
         const result = request.command === 'start'
           ? await this.#supervisor.start(input)
           : await this.#supervisor.restart(input);
+        if (!result.existing || request.command === 'restart') {
+          this.#onRuntimeEvent('runtime.started', resolved.worktreeId);
+        }
         return success(request.command, { process: result.record, existing: result.existing }, scopeOf(resolved));
       }
 
@@ -172,12 +190,15 @@ export class DaemonRuntimeController {
             },
           });
         }
+        if (records.length > 0) this.#onRuntimeEvent('runtime.stopped', worktreeId);
         return success('stop', { processes: records }, scopeOf(registration));
       }
 
       if (request.command === 'ps') {
         const registration = await this.#resolver.resolveWorktree(cwd);
-        return success('ps', { processes: this.#supervisor.list(registration.worktreeId) }, scopeOf(registration));
+        const scope = registration.workspaceWorktreeIds ?? [registration.worktreeId];
+        const processes = scope.flatMap((worktreeId) => this.#supervisor.list(worktreeId));
+        return success('ps', { processes }, scopeOf(registration));
       }
 
       if (request.command === 'logs') {

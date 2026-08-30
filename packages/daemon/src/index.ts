@@ -44,6 +44,16 @@ export type {
   ProcessIdentity,
   ProcessInspection,
 } from './process-supervisor';
+export { LifecycleEventDispatcher, lifecycleEventNames } from './events';
+export type {
+  LifecycleDispatchResult,
+  LifecycleEventDispatch,
+  LifecycleEventDispatcherOptions,
+  LifecycleEventName,
+  LifecycleTaskOutcome,
+} from './events';
+export { inspectAdapters } from './adapter-report';
+export type { AdapterInspection, AdapterReport } from './adapter-report';
 export { DaemonRegistrationError, DaemonRuntimeController, runtimeCommandNames } from './runtime-controller';
 export type {
   DaemonRuntimeControllerOptions,

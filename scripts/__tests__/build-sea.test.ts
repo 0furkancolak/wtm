@@ -57,7 +57,7 @@ describe('SEA configuration', () => {
     expect(configuration.output).toMatch(/\.blob$/);
   });
 
-  test('embeds the eight ordered migrations and the canonical skill from their repository sources', async () => {
+  test('embeds the nine ordered migrations and the canonical skill from their repository sources', async () => {
     const { host, recording } = createHost();
 
     await buildSea(host);
@@ -67,6 +67,7 @@ describe('SEA configuration', () => {
     expect(seaAssetKeys).toEqual([
       'migration/001', 'migration/002', 'migration/003', 'migration/004',
       'migration/005', 'migration/006', 'migration/007', 'migration/008',
+      'migration/009',
       'skill/wtm/SKILL.md',
     ]);
     for (const path of Object.values(assets)) expect(existsSync(path)).toBe(true);
@@ -135,7 +136,7 @@ describe('SEA executable assembly', () => {
     expect(stripped).toBeLessThan(indexOf(({ args }) => args[0]?.endsWith('postject/dist/cli.js') === true));
   });
 
-  test('removes the inherited signature, re-signs, verifies, and leaves an executable file', async () => {
+  test('re-signs under one identifier, so macOS knows every build as the same program', async () => {
     const { host, recording } = createHost();
 
     const result = await buildSea(host);
@@ -143,7 +144,10 @@ describe('SEA executable assembly', () => {
     const codesign = recording.commands.filter(({ command }) => command === '/usr/bin/codesign');
     expect(codesign.map(({ args }) => args)).toEqual([
       ['--remove-signature', result.executable],
-      ['--sign', '-', '--force', result.executable],
+      // Without an explicit identifier codesign derives one from the file name and content,
+      // and every build signs itself as a different program — so every build has to ask the
+      // user for disk access again.
+      ['--sign', '-', '--identifier', 'dev.wtm.cli', '--force', result.executable],
       ['--verify', '--strict', result.executable],
     ]);
     expect(recording.modes).toEqual([{ path: result.executable, mode: 0o755 }]);
