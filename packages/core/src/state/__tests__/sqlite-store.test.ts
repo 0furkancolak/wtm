@@ -145,7 +145,7 @@ describe('SQLiteStateStore', () => {
       activeAfterStop: null,
       orderedStates: ['STOPPED', 'FAILED'],
       rejectedSecondActiveSingleton: true,
-      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8],
+      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9],
     });
   });
 
@@ -192,7 +192,47 @@ describe('SQLiteStateStore', () => {
       tieWinner: 'tie-z',
       tieLoserCleanupRequired: false,
       leaseSurvivedExpiry: true,
-      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8],
+      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9],
+    });
+  });
+
+  test('retires a workspace registration with everything that depended on it', () => {
+    expect(runScenario('registration-retirement')).toEqual({
+      removed: true,
+      removingAgain: false,
+      remainingWorkspaces: ['kept'],
+      remainingRepositories: ['/projects/kept/repo'],
+      remainingWorktrees: ['/projects/kept/repo'],
+      remainingLeases: 0,
+      reclaimable: true,
+    });
+  });
+
+  test('announces a once-only lifecycle event once per subject, across restarts', () => {
+    expect(runScenario('lifecycle-event-claims')).toEqual({
+      claimed: true,
+      claimedTwice: false,
+      otherEvent: true,
+      afterRestart: false,
+      otherSubject: true,
+      withdrawn: true,
+      withdrawnTwice: false,
+      reclaimedAfterWithdrawal: true,
+    });
+  });
+
+  test('gives back the ports of a worktree Git no longer reports, and returns them if it comes back', () => {
+    expect(runScenario('orphaned-endpoint-release')).toEqual({
+      allocatedPort: 4100,
+      activeAfterOrphan: 0,
+      releasedState: 'RELEASED',
+      portAfterReturn: 4100,
+      activeAfterReturn: 1,
+      // Absence releases, not the transition into it: a lease that survived the pass which
+      // orphaned its worktree is otherwise unreachable for the life of the database.
+      leakedPort: 4100,
+      activeWhileStillAbsent: 1,
+      activeAfterLaterPass: 0,
     });
   });
 });

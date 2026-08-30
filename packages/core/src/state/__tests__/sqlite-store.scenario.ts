@@ -975,6 +975,159 @@ function adapterTrustPersistence() {
   });
 }
 
+/**
+ * Retiring a registration whose directory is gone must take everything that only existed
+ * because of it — and nothing that did not.
+ */
+function registrationRetirement() {
+  return withDatabase((_, open, close) => {
+    const store = open();
+    try {
+      const gone = createRepository(store);
+      const kept = store.upsertWorkspace({
+        name: 'kept', root: '/projects/kept', scope: 'local', configPath: null,
+      });
+      const keptRepository = store.upsertRepository({
+        workspaceId: kept.id,
+        commonGitDir: '/projects/kept/repo/.git',
+        mainRoot: '/projects/kept/repo',
+        remoteIdentity: null,
+      });
+      store.reconcileWorktrees(keptRepository.id, [
+        worktree('/projects/kept/repo', 'kept-head', 'refs/heads/main'),
+      ]);
+      const reconciled = store.reconcileWorktrees(gone.id, [
+        worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
+        worktree('/projects/demo/repo-feature', 'feature-head', 'refs/heads/feature'),
+      ]);
+      const worktreeId = reconciled.discovered[0]?.id as string;
+      store.allocateEndpoint({
+        worktreeId,
+        name: 'api',
+        protocol: 'tcp',
+        host: '127.0.0.1',
+        portRange: { min: 4100, max: 4199 },
+      });
+      store.claimLifecycleEvent('worktree', worktreeId, 'worktree.discovered');
+      store.claimLifecycleEvent('workspace', gone.workspaceId, 'workspace.discovered');
+
+      const removed = store.forgetWorkspace(gone.workspaceId);
+      return {
+        removed,
+        removingAgain: store.forgetWorkspace(gone.workspaceId),
+        remainingWorkspaces: store.listWorkspaces().map(({ name }) => name),
+        remainingRepositories: store.listRepositories().map(({ mainRoot }) => mainRoot),
+        remainingWorktrees: store.listWorktrees().map(({ path }) => path),
+        remainingLeases: store.listEndpointLeases().length,
+        // The claim is gone with it, so registering the same directory again starts over.
+        reclaimable: store.claimLifecycleEvent('worktree', worktreeId, 'worktree.discovered'),
+      };
+    } finally {
+      close();
+    }
+  });
+}
+
+/** A once-only event is announced once per subject, and survives the store being reopened. */
+function lifecycleEventClaims() {
+  return withDatabase((_, open, close) => {
+    const first = open();
+    const repository = createRepository(first);
+    const claimed = first.claimLifecycleEvent('repository', repository.id, 'repo.discovered');
+    const claimedTwice = first.claimLifecycleEvent('repository', repository.id, 'repo.discovered');
+    const otherEvent = first.claimLifecycleEvent('repository', repository.id, 'worktree.created');
+    close();
+
+    const reopened = open();
+    try {
+      const withdrawn = reopened.releaseLifecycleEvent('repository', repository.id, 'worktree.created');
+      return {
+        claimed,
+        claimedTwice,
+        otherEvent,
+        afterRestart: reopened.claimLifecycleEvent('repository', repository.id, 'repo.discovered'),
+        otherSubject: reopened.claimLifecycleEvent('repository', 'another', 'repo.discovered'),
+        withdrawn,
+        withdrawnTwice: reopened.releaseLifecycleEvent('repository', repository.id, 'worktree.created'),
+        // Withdrawing puts the announcement back, so a later pass can make it again.
+        reclaimedAfterWithdrawal: reopened.claimLifecycleEvent('repository', repository.id, 'worktree.created'),
+      };
+    } finally {
+      close();
+    }
+  });
+}
+
+/**
+ * A worktree Git stops reporting gives its ports back, and gets them again if it returns.
+ */
+function orphanedEndpointRelease() {
+  return withDatabase((_, open, close) => {
+    const store = open();
+    try {
+      const repository = createRepository(store);
+      const both = [
+        worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
+        worktree('/projects/demo/repo-feature', 'feature-head', 'refs/heads/feature'),
+      ];
+      const initial = store.reconcileWorktrees(repository.id, both);
+      const feature = initial.discovered.find(({ path }) => path.endsWith('repo-feature'));
+      const lease = store.allocateEndpoint({
+        worktreeId: feature?.id as string,
+        name: 'api',
+        protocol: 'tcp',
+        host: '127.0.0.1',
+        portRange: { min: 4100, max: 4199 },
+        preferredPort: 4100,
+      });
+
+      store.reconcileWorktrees(repository.id, [both[0] as ReturnType<typeof worktree>]);
+      const afterOrphan = store.listEndpointLeases({ states: ['ACTIVE'] }).length;
+      const releasedPort = store.listEndpointLeases()[0];
+
+      store.reconcileWorktrees(repository.id, both);
+      const reactivated = store.allocateEndpoint({
+        worktreeId: feature?.id as string,
+        name: 'api',
+        protocol: 'tcp',
+        host: '127.0.0.1',
+        portRange: { min: 4100, max: 4199 },
+        preferredPort: 4100,
+      });
+
+      const activeAfterReturn = store.listEndpointLeases({ states: ['ACTIVE'] }).length;
+
+      // A lease that outlived the pass which orphaned its worktree — leaked by an older
+      // version, or by an interruption at that exact moment. Nothing reaches it again unless
+      // absence, not the transition to absence, is what releases.
+      store.reconcileWorktrees(repository.id, [both[0] as ReturnType<typeof worktree>]);
+      const leaked = store.allocateEndpoint({
+        worktreeId: feature?.id as string,
+        name: 'api',
+        protocol: 'tcp',
+        host: '127.0.0.1',
+        portRange: { min: 4100, max: 4199 },
+        preferredPort: 4100,
+      });
+      const activeWhileStillAbsent = store.listEndpointLeases({ states: ['ACTIVE'] }).length;
+      store.reconcileWorktrees(repository.id, [both[0] as ReturnType<typeof worktree>]);
+
+      return {
+        allocatedPort: lease.port,
+        activeAfterOrphan: afterOrphan,
+        releasedState: releasedPort?.state,
+        portAfterReturn: reactivated.port,
+        activeAfterReturn,
+        leakedPort: leaked.port,
+        activeWhileStillAbsent,
+        activeAfterLaterPass: store.listEndpointLeases({ states: ['ACTIVE'] }).length,
+      };
+    } finally {
+      close();
+    }
+  });
+}
+
 function requireMigration(file: string): string {
   return readFileSync(new URL(`../migrations/${file}`, import.meta.url), 'utf8');
 }
@@ -996,6 +1149,9 @@ const scenarios: Record<string, () => unknown> = {
   'managed-process-reservations': managedProcessReservations,
   'managed-process-v4-cleanup-upgrade': managedProcessV4CleanupUpgrade,
   'adapter-trust-persistence': adapterTrustPersistence,
+  'registration-retirement': registrationRetirement,
+  'lifecycle-event-claims': lifecycleEventClaims,
+  'orphaned-endpoint-release': orphanedEndpointRelease,
 };
 
 const scenarioName = process.argv[2];

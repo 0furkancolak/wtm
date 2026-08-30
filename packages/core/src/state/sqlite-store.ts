@@ -4,6 +4,7 @@ import type { MigrationAssetProvider } from './assets';
 import type { SqliteDatabase, SqliteDatabaseFactory } from './database';
 import { stateStoreRuntime } from './runtime';
 import type {
+  LifecycleEventSubject,
   AdapterTrustInput,
   AdapterTrustRecord,
   EndpointLease,
@@ -32,6 +33,13 @@ import type {
   WorktreeRecord,
   WorktreeState,
 } from './store';
+
+/**
+ * How many ports one allocation may ask the operating system about. Each question is a
+ * process, so the answer to "is this whole range busy?" must cost a bounded amount rather
+ * than one spawn per port in a range that is thirty thousand wide by default.
+ */
+const maxProbedEndpointCandidates = 256;
 
 interface WorkspaceRow {
   id: string;
@@ -344,8 +352,29 @@ export class SQLiteStateStore implements StateStore {
         'REMOVED',
         'DEGRADED_CLEANUP',
       ]);
+      // Absence is settled for these two; the other cleanup-owned states are mid-teardown and
+      // their ports belong to whatever is still tearing them down.
+      const settledAbsentStates = new Set<WorktreeState>(['ORPHANED', 'REMOVED']);
       for (const existing of existingRows.sort(compareWorktreePaths(repository.main_root))) {
-        if (presentPaths.has(existing.path) || cleanupOwnedStates.has(existing.state)) continue;
+        if (presentPaths.has(existing.path)) continue;
+        const cleanupOwned = cleanupOwnedStates.has(existing.state);
+        if (!cleanupOwned || settledAbsentStates.has(existing.state)) {
+          // A worktree Git no longer reports is not listening on anything, and its ports were
+          // being held forever: a workspace that opens and finishes ten branches ended up with
+          // ten dead leases inside a fixed band, and `wtm ports` listed addresses for
+          // directories that were gone. Releasing is reversible — a worktree that comes back
+          // reactivates its own lease, and keeps its port unless something else has taken it.
+          //
+          // Every pass that finds it absent releases, not only the pass that first noticed.
+          // Tying the release to the transition meant a lease leaked before this existed — by
+          // an older version, or by an interruption at exactly that moment — held its port for
+          // the life of the database, with nothing able to reach it again. The statement costs
+          // nothing once there is nothing left to release.
+          this.#database.prepare(`
+            UPDATE endpoint_leases SET state = 'RELEASED' WHERE worktree_id = ? AND state = 'ACTIVE'
+          `).run(existing.id);
+        }
+        if (cleanupOwned) continue;
         this.#database.prepare("UPDATE worktrees SET state = 'ORPHANED' WHERE id = ?").run(existing.id);
         const row = this.#database.prepare('SELECT * FROM worktrees WHERE id = ?').get(existing.id) as WorktreeRow;
         orphaned.push(worktreeFromRow(row));
@@ -364,6 +393,108 @@ export class SQLiteStateStore implements StateStore {
       .prepare('SELECT * FROM workspaces ORDER BY root, id')
       .all() as WorkspaceRow[];
     return rows.map(workspaceFromRow);
+  }
+
+  /**
+   * Removes one workspace registration, and everything that only exists because of it.
+   *
+   * A registration outlives the directory it names — a finished migration deleted, a clone
+   * moved, a volume gone for good — and there was no way to say so. The daemon now serves the
+   * rest of the machine regardless, but `wtm doctor` still reports the absence on every run,
+   * with nothing a person can do about it. Repositories, worktrees, endpoint leases and
+   * process records cascade from the workspace row, so one delete retires the whole of it.
+   */
+  forgetWorkspace(workspaceId: string): boolean {
+    this.#assertOpen();
+    return this.#database.transaction(() => {
+      const worktreeIds = this.#database
+        .prepare(`SELECT worktrees.id AS id FROM worktrees
+          JOIN repositories ON repositories.id = worktrees.repository_id
+          WHERE repositories.workspace_id = ?`)
+        .all(workspaceId) as Array<{ id: string }>;
+      for (const { id } of worktreeIds) {
+        // Reservation rows key on a worktree without declaring a foreign key to it, so the
+        // cascade does not reach them and they would outlive everything they refer to.
+        this.#database.prepare('DELETE FROM managed_process_start_reservations WHERE worktree_id = ?').run(id);
+      }
+      const repositoryIds = this.#database
+        .prepare('SELECT id FROM repositories WHERE workspace_id = ?')
+        .all(workspaceId) as Array<{ id: string }>;
+      // Announcement records carry no foreign key, so that forgetting a subject cannot be
+      // undone by a cascade resurrecting it. They are cleared here instead.
+      const forgetEvents = this.#database
+        .prepare('DELETE FROM lifecycle_event_dispatches WHERE subject_type = ? AND subject_id = ?');
+      forgetEvents.run('workspace', workspaceId);
+      for (const { id } of repositoryIds) forgetEvents.run('repository', id);
+      for (const { id } of worktreeIds) forgetEvents.run('worktree', id);
+      const result = this.#database.prepare('DELETE FROM workspaces WHERE id = ?').run(workspaceId);
+      return result.changes > 0;
+    }).immediate();
+  }
+
+  /**
+   * Records that a once-only lifecycle event has been announced for this subject, and reports
+   * whether this call is the one that announced it.
+   *
+   * Some events describe something that happens once — a worktree WTM has just learned of, a
+   * repository registered for the first time. Deciding that from memory means announcing it
+   * again after every daemon restart, which for an event bound to `deps.install` means
+   * installing dependencies again on every reboot.
+   */
+  claimLifecycleEvent(
+    subjectType: LifecycleEventSubject,
+    subjectId: string,
+    event: string,
+    now = new Date().toISOString(),
+  ): boolean {
+    this.#assertOpen();
+    return this.#database.prepare(`
+      INSERT OR IGNORE INTO lifecycle_event_dispatches (subject_type, subject_id, event, dispatched_at)
+      VALUES (?, ?, ?, ?)
+    `).run(subjectType, subjectId, event, now).changes === 1;
+  }
+
+  /**
+   * Removes one repository registration, and everything that only exists because of it.
+   *
+   * Retiring the whole workspace is the wrong instrument when the workspace is alive and only
+   * one of its repositories has gone: six finished migrations inside a workspace whose other
+   * repositories are in daily use reported themselves as unavailable on every pass, and the
+   * only thing that could have silenced them would also have retired the live ones. Worktrees,
+   * leases and process records cascade from the repository row.
+   */
+  forgetRepository(repositoryId: string): boolean {
+    this.#assertOpen();
+    return this.#database.transaction(() => {
+      const worktreeIds = this.#database
+        .prepare('SELECT id FROM worktrees WHERE repository_id = ?')
+        .all(repositoryId) as Array<{ id: string }>;
+      for (const { id } of worktreeIds) {
+        this.#database.prepare('DELETE FROM managed_process_start_reservations WHERE worktree_id = ?').run(id);
+      }
+      const forgetEvents = this.#database
+        .prepare('DELETE FROM lifecycle_event_dispatches WHERE subject_type = ? AND subject_id = ?');
+      forgetEvents.run('repository', repositoryId);
+      for (const { id } of worktreeIds) forgetEvents.run('worktree', id);
+      const result = this.#database.prepare('DELETE FROM repositories WHERE id = ?').run(repositoryId);
+      return result.changes > 0;
+    }).immediate();
+  }
+
+  /**
+   * Withdraws an announcement, so the event can be announced again.
+   *
+   * Claiming has to happen before the work, or two passes could run the same event at once;
+   * but an event that could not be dispatched at all — a configuration that would not resolve,
+   * a resource that could not be created — has not happened, and a spent claim would mean it
+   * never does. Withdrawing puts it back for the next pass to try.
+   */
+  releaseLifecycleEvent(subjectType: LifecycleEventSubject, subjectId: string, event: string): boolean {
+    this.#assertOpen();
+    return this.#database.prepare(`
+      DELETE FROM lifecycle_event_dispatches
+      WHERE subject_type = ? AND subject_id = ? AND event = ?
+    `).run(subjectType, subjectId, event).changes === 1;
   }
 
   listRepositories(workspaceId?: string): RepositoryRecord[] {
@@ -805,14 +936,29 @@ export class SQLiteStateStore implements StateStore {
         SELECT id FROM endpoint_leases
         WHERE protocol = ? AND port = ? AND state = 'ACTIVE' AND id <> ?
       `);
+      // Every probe costs a process, so the search is bounded. The default range is thirty
+      // thousand ports wide, and a probe that systematically answers "taken" — a throttled
+      // daemon whose prober outlives its own timeout, a probe that cannot run at all — turned
+      // one allocation into thirty thousand spawns that never finished. Ports already leased
+      // are rejected by the statement above and cost nothing, so they do not count.
+      let probed = 0;
+      let exhausted = false;
       const port = candidates.find((candidate) => {
+        if (exhausted) return false;
         if (collisionStatement.get(input.protocol, candidate, existing?.id ?? '') !== undefined) return false;
-        return probe?.({ protocol: input.protocol, host: input.host, port: candidate }) ?? true;
+        if (probe === undefined) return true;
+        if (probed >= maxProbedEndpointCandidates) {
+          exhausted = true;
+          return false;
+        }
+        probed += 1;
+        return probe({ protocol: input.protocol, host: input.host, port: candidate });
       });
       if (port === undefined) {
-        throw new Error(
-          `No available ${input.protocol} endpoint on ${input.host} in range ${input.portRange.min}-${input.portRange.max}`,
-        );
+        const where = `on ${input.host} in range ${input.portRange.min}-${input.portRange.max}`;
+        throw new Error(exhausted
+          ? `No available ${input.protocol} endpoint ${where}: ${probed} ports were offered and every one was refused.`
+          : `No available ${input.protocol} endpoint ${where}`);
       }
 
       const timestamp = new Date().toISOString();
