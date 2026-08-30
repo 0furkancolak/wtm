@@ -122,7 +122,11 @@ describe('SEA executable assembly', () => {
     });
   });
 
-  test('strips the copied runtime between signature removal and injection', async () => {
+  test('strips the copied runtime before removing its signature, and injects after', async () => {
+    // Order, not presence, is the property under test. Removing the signature first leaves link
+    // edit information that no longer fills __LINKEDIT, and on x64 `strip` rejects that outright:
+    // `file not in an order that can be processed`. arm64 tolerates it, so building only on
+    // Apple silicon proves nothing about the executable half the release ships.
     const { host, recording } = createHost();
 
     const result = await buildSea(host);
@@ -132,8 +136,9 @@ describe('SEA executable assembly', () => {
     const stripped = indexOf(({ command }) => command === '/usr/bin/strip');
     expect(recording.commands[stripped])
       .toEqual({ command: '/usr/bin/strip', args: ['-x', '-S', result.executable] });
-    expect(indexOf(({ args }) => args[0] === '--remove-signature')).toBeLessThan(stripped);
-    expect(stripped).toBeLessThan(indexOf(({ args }) => args[0]?.endsWith('postject/dist/cli.js') === true));
+    expect(stripped).toBeLessThan(indexOf(({ args }) => args[0] === '--remove-signature'));
+    expect(indexOf(({ args }) => args[0] === '--remove-signature'))
+      .toBeLessThan(indexOf(({ args }) => args[0]?.endsWith('postject/dist/cli.js') === true));
   });
 
   test('re-signs under one identifier, so macOS knows every build as the same program', async () => {

@@ -61,10 +61,13 @@ export async function buildSea(host: SeaBuildHost): Promise<SeaBuildResult> {
 
     host.copyFile(host.nodeExecutable, executable);
     host.chmod(executable, 0o755);
+    // The published runtime ships unstripped; its debug and local symbols are ~25 MB of dead weight.
+    // Stripping comes first: removing the signature leaves link edit information that no longer
+    // fills __LINKEDIT, and on x64 `strip` refuses that layout outright. Stripping a still-signed
+    // binary only warns that it invalidates the signature, which is what the next line removes.
+    check(host, '/usr/bin/strip', ['-x', '-S', executable]);
     // The inherited runtime signature does not cover the injected blob.
     check(host, '/usr/bin/codesign', ['--remove-signature', executable]);
-    // The published runtime ships unstripped; its debug and local symbols are ~25 MB of dead weight.
-    check(host, '/usr/bin/strip', ['-x', '-S', executable]);
     check(host, host.nodeExecutable, [
       join(host.root, 'node_modules/postject/dist/cli.js'),
       executable,
