@@ -1,6 +1,8 @@
 import { runInternalMode } from './internal';
+import { ignoreClosedOutput } from './pipe';
 
 async function run(): Promise<number> {
+  ignoreClosedOutput();
   const argv = process.argv.slice(2);
   const internalExitCode = await runInternalMode(argv);
   if (internalExitCode !== null) return internalExitCode;
