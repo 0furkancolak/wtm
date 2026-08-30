@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
-import { lstat, realpath } from 'node:fs/promises';
-import { relative, resolve, sep } from 'node:path';
+import { lstat, readdir, realpath } from 'node:fs/promises';
+import { join, relative, resolve, sep } from 'node:path';
 import {
   SQLiteStateStore,
   buildGcPlan,
@@ -13,12 +13,14 @@ import {
   type ResourceSandboxIdentity,
 } from '@wtm/core';
 import type { JsonEnvelope, WtmError } from '@wtm/protocol';
-import { runDiskCommand, type DiskCommandResult } from './disk';
+import { inspectRuntimeResources, resolveWorktreeRuntime } from '@wtm/daemon';
+import { runDiskCommand, type DiskCommandResult, type DiskUsageSummary } from './disk';
 import { runGcCommand, type GcCommandResult } from './gc';
 
 export async function runProductionDiskCommand(input: {
   databasePath: string;
   cwd: string;
+  globalConfigPath?: string;
 }): Promise<JsonEnvelope<DiskCommandResult | null>> {
   if (!existsSync(input.databasePath)) return unavailableResourceEnvelope('disk');
   const store = new SQLiteStateStore(input.databasePath, { readonly: true });
@@ -26,16 +28,89 @@ export async function runProductionDiskCommand(input: {
     const records = await localRecords(
       store.listResourceGcEvidence(new Date().toISOString()), store.listWorkspaces(), input.cwd,
     );
-    return runDiskCommand({ sandboxes: sandboxIdentities(records), records: records.map(toGcEvidence) });
+    const worktree = await worktreeResourceUsage(store, input.cwd, input.globalConfigPath);
+    return runDiskCommand({
+      sandboxes: sandboxIdentities(records),
+      records: records.map(toGcEvidence),
+      worktree: worktree.summary,
+    });
   } finally {
     store.close();
   }
+}
+
+/**
+ * What the `[resources]` table has actually put inside this worktree, measured.
+ *
+ * These have no lifecycle record on purpose — a Git working tree may never be a resource
+ * sandbox, because `gc` must never walk a repository — so nothing counted them, and `wtm disk`
+ * reported zero for a workspace whose every worktree carried a linked `.env`. A symbolic link
+ * is measured as the link it is, not as the file in the main worktree it points at, which
+ * belongs to that worktree and would otherwise be counted once per branch.
+ */
+async function worktreeResourceUsage(
+  store: SQLiteStateStore,
+  cwd: string,
+  globalConfigPath?: string,
+): Promise<{ summary: DiskUsageSummary; resources: Array<{ name: string; path: string }> }> {
+  const empty = { summary: { objects: 0, logicalBytes: 0, allocatedBytes: 0 }, resources: [] };
+  if (globalConfigPath === undefined) return empty;
+  let prepared;
+  try {
+    prepared = await inspectRuntimeResources(await resolveWorktreeRuntime({
+      store, cwd, globalConfigPath, allocate: false,
+    }));
+  } catch {
+    // Outside a registered worktree there is nothing local to measure, and the sandbox
+    // figures above are still the answer to the question that was asked.
+    return empty;
+  }
+  const resources: Array<{ name: string; path: string }> = [];
+  const summary: DiskUsageSummary = { objects: 0, logicalBytes: 0, allocatedBytes: 0 };
+  for (const resource of prepared) {
+    if (resource.state !== 'ready') continue;
+    const usage = await measure(resource.path);
+    resources.push({ name: resource.name, path: resource.path });
+    summary.objects += usage.objects;
+    summary.logicalBytes += usage.logicalBytes;
+    summary.allocatedBytes += usage.allocatedBytes;
+  }
+  return { summary, resources };
+}
+
+/** Enough of a directory to size it without turning a report into a filesystem walk. */
+const maximumMeasuredEntries = 20_000;
+
+async function measure(path: string): Promise<DiskUsageSummary> {
+  const total: DiskUsageSummary = { objects: 0, logicalBytes: 0, allocatedBytes: 0 };
+  const pending = [path];
+  while (pending.length > 0 && total.objects < maximumMeasuredEntries) {
+    const current = pending.pop() as string;
+    let stat;
+    try {
+      stat = await lstat(current);
+    } catch {
+      continue;
+    }
+    total.objects += 1;
+    total.logicalBytes += stat.size;
+    total.allocatedBytes += stat.blocks * 512;
+    // A symbolic link is one entry; whatever it points at is somebody else's to account for.
+    if (!stat.isDirectory()) continue;
+    try {
+      for (const entry of await readdir(current)) pending.push(join(current, entry));
+    } catch {
+      // A directory that cannot be read is still one object, already counted.
+    }
+  }
+  return total;
 }
 
 export async function runProductionGcCommand(input: {
   databasePath: string;
   cwd: string;
   apply: boolean;
+  globalConfigPath?: string;
 }): Promise<JsonEnvelope<GcCommandResult | null>> {
   if (!existsSync(input.databasePath)) return unavailableResourceEnvelope('gc');
   const store = new SQLiteStateStore(input.databasePath, { readonly: !input.apply });
@@ -122,6 +197,21 @@ export async function runProductionGcCommand(input: {
       excluded,
       items,
     };
+    // Worktree-local resources are deliberately outside every sandbox, so they never appear in
+    // a plan. Silence there reads as "there is nothing else", which is the wrong thing to
+    // believe about the `.env` in each of your branches.
+    const local = await worktreeResourceUsage(store, input.cwd, input.globalConfigPath);
+    const one = local.resources.length === 1;
+    const warnings: WtmError[] = local.resources.length === 0 ? [] : [{
+      code: 'GC_ACTIVE_WORKTREE_PROTECTED',
+      message: `${local.resources.length} resource${one ? '' : 's'} declared by [resources] `
+        + `${one ? 'lives' : 'live'} inside this worktree `
+        + `(${local.resources.map(({ name }) => name).join(', ')}) and ${one ? 'is' : 'are'} never `
+        + 'collected: gc does not walk a Git working tree. Removing the worktree removes '
+        + `${one ? 'it' : 'them'}.`,
+      severity: 'warning',
+      context: { resources: local.resources.map(({ path }) => path).join(', ') },
+    }];
     if (errors.length > 0) {
       return {
         schemaVersion: 1,
@@ -129,7 +219,7 @@ export async function runProductionGcCommand(input: {
         command: 'gc',
         scope: { mode: 'local' },
         data,
-        warnings: [],
+        warnings,
         errors: errors as [WtmError, ...WtmError[]],
       };
     }
@@ -139,7 +229,7 @@ export async function runProductionGcCommand(input: {
       command: 'gc',
       scope: { mode: 'local' },
       data,
-      warnings: [],
+      warnings,
       errors: [],
     };
   } finally {

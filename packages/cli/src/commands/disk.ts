@@ -7,6 +7,12 @@ export interface DiskCommandInput {
   sandboxes?: readonly ResourceSandboxIdentity[];
   records: readonly GcEvidence[];
   workspaceId?: string;
+  /**
+   * What the `[resources]` table put inside this worktree. These live in a Git working tree,
+   * which is never a resource sandbox and never swept, so they carry no lifecycle record —
+   * and the report they were left out of was the one that says how much disk WTM is using.
+   */
+  worktree?: DiskUsageSummary;
 }
 
 export interface DiskUsageSummary {
@@ -24,6 +30,8 @@ export interface DiskCommandResult {
   totals: Omit<DiskUsageSummary, 'objects'>;
   owned: DiskUsageSummary;
   unknown: DiskUsageSummary;
+  /** Worktree-local resources, which `wtm gc` never collects: removing the worktree does. */
+  worktree: DiskUsageSummary;
 }
 
 export type DiskCommandEnvelope = JsonEnvelope<DiskCommandResult>;
@@ -37,6 +45,7 @@ export async function runDiskCommand(input: DiskCommandInput): Promise<DiskComma
       && containsStrict(sandbox.root, record.path)));
   const owned = summarize(matching.filter((record) => record.owned));
   const unknown = summarize(matching.filter((record) => !record.owned));
+  const worktree = input.worktree ?? { objects: 0, logicalBytes: 0, allocatedBytes: 0 };
   return {
     schemaVersion: 1,
     ok: true,
@@ -49,11 +58,12 @@ export async function runDiskCommand(input: DiskCommandInput): Promise<DiskComma
         reclaimable: 'not-estimated',
       },
       totals: {
-        logicalBytes: owned.logicalBytes + unknown.logicalBytes,
-        allocatedBytes: owned.allocatedBytes + unknown.allocatedBytes,
+        logicalBytes: owned.logicalBytes + unknown.logicalBytes + worktree.logicalBytes,
+        allocatedBytes: owned.allocatedBytes + unknown.allocatedBytes + worktree.allocatedBytes,
       },
       owned,
       unknown,
+      worktree,
     },
     warnings: [],
     errors: [],

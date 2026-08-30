@@ -101,6 +101,14 @@ Worktree creation allocates lightweight identity/env/resource metadata. Dependen
 
 This prevents ten speculative AI worktrees from immediately creating ten dependency/build trees.
 
+`mode = "eager"` moves the same work forward to the moment the daemon learns the worktree exists, for a workspace that would rather pay it up front.
+
+## Worktree-local resources
+
+The files `[resources]` creates inside a worktree are outside every sandbox, deliberately: a Git working tree may never be a resource sandbox, because GC must never walk a repository. They therefore carry no lifecycle record, and `gc` will not collect them at any point. What removes them is removing the worktree.
+
+`wtm disk` still counts them, under `worktree`, so the total is the whole total. A symbolic link counts as the link, not as the file in the main worktree it points at — that file belongs to the main worktree and would otherwise be counted once per branch. `wtm gc` names them in a warning, so that finding nothing to collect is not read as there being nothing else.
+
 ## Resource registry
 
 Storage records include:

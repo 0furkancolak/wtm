@@ -64,6 +64,30 @@ describe('disk and gc commands', () => {
     });
   });
 
+  test('counts worktree-local resources, which no sandbox record ever describes', async () => {
+    const { sandbox, record } = await fixture();
+
+    const envelope = await runDiskCommand({
+      sandbox,
+      records: [record],
+      worktree: { objects: 2, logicalBytes: 40, allocatedBytes: 8192 },
+    });
+
+    expect(envelope.data).toMatchObject({
+      totals: { logicalBytes: 44, allocatedBytes: record.allocatedBytes + 8192 },
+      owned: { objects: 1, logicalBytes: 4 },
+      worktree: { objects: 2, logicalBytes: 40, allocatedBytes: 8192 },
+    });
+  });
+
+  test('reports no worktree-local usage as zero rather than leaving it out', async () => {
+    const { sandbox, record } = await fixture();
+
+    const envelope = await runDiskCommand({ sandbox, records: [record] });
+
+    expect(envelope.data?.worktree).toEqual({ objects: 0, logicalBytes: 0, allocatedBytes: 0 });
+  });
+
   test('gc command is dry-run by default and returns structured apply failures', async () => {
     const { sandbox, guard, record, target } = await fixture();
     const plan = buildGcPlan({ sandbox, records: [record], now: '2026-08-28T00:00:00.000Z' });

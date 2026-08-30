@@ -10,7 +10,7 @@ DISCOVERED -> ALLOCATED -> PREPARING -> READY
 
 `READY` means identity/config/plan is ready. It does not mean dev servers are running.
 
-By default WTM prepares a worktree automatically and never starts runtime tasks automatically. This is built-in behavior, not a configuration key: the root config schema is strict and has no `runtime` table. Preparation eagerness is configured through `[prepare] mode`.
+By default WTM prepares a worktree automatically and never starts runtime tasks automatically. This is built-in behavior, not a configuration key: the root config schema is strict and has no `runtime` table. Preparation eagerness is configured through `[prepare] mode`: `lazy`, the default, prepares before the first task runs in the worktree; `eager` prepares as soon as the daemon learns the worktree exists. Both are idempotent — preparation creates only what is not there — and both announce `worktree.ready` once.
 
 This makes 20 inactive worktrees cheap.
 
@@ -36,6 +36,10 @@ lookup previous stable assignment
 ```
 
 WTM guarantees no collision among active WTM-managed leases. External processes are detected through the OS probe and cause reallocation.
+
+A lease belongs to a worktree, so a worktree Git no longer reports gives its ports back: reconciliation releases every active lease of a worktree it marks `ORPHANED`. Otherwise a workspace that opens and finishes ten branches ends up holding ten dead leases inside a fixed band, and `wtm ports` lists addresses for directories that are gone. Releasing is reversible — a worktree that reappears reactivates its own lease and keeps its port, unless something else has taken it meanwhile.
+
+Each probe is a process, so one allocation asks the operating system about at most 256 ports before it gives up and says so. Ports already leased are refused from the registry and cost nothing. Without the bound, a probe that systematically answered "taken" — one that cannot run, or one whose process is throttled past its own timeout — turned a single allocation into one spawn per port in a band that is thirty thousand wide by default.
 
 ## Stable dynamic strategy
 

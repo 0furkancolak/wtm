@@ -222,7 +222,10 @@ WTM never runs the suggested commit/push/reset/clean action automatically.
 
 ### `wtm disk`
 
-Reports logical use, WTM-owned resources and reclaimable estimates.
+Reports logical use, WTM-owned resources and reclaimable estimates, split three ways: `owned`
+and `unknown` for the objects in adapter-managed sandboxes, and `worktree` for what
+`[resources]` has put inside this worktree. The third is measured but never collected, and a
+symbolic link is counted as the link it is, not as the file in the main worktree it points at.
 
 ### `wtm gc`
 
