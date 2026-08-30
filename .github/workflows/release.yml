@@ -141,8 +141,10 @@ jobs:
           signing="$(cat staged/*/SIGNING | sort -u)"
           test "$(printf '%s\n' "$signing" | wc -l | tr -d ' ')" -eq 1
           echo "signing=$signing" >> "$GITHUB_OUTPUT"
+          # The name the gate reads. Exporting it as anything else leaves the gate with no smoke
+          # evidence at all, which it refuses.
           {
-            echo 'smoke<<WTM_SMOKE_EOF'
+            echo 'WTM_RELEASE_SMOKE<<WTM_SMOKE_EOF'
             bun -e 'const {readdirSync,readFileSync}=require("node:fs");
               const roots=readdirSync("staged");
               const merged=roots.flatMap((dir)=>JSON.parse(readFileSync(`staged/${dir}/SMOKE.json`,"utf8"))
