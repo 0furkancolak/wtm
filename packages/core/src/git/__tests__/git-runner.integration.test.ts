@@ -111,6 +111,9 @@ describe('runGit timeouts', () => {
       expect(failure).toBeInstanceOf(GitCommandError);
       expect((failure as GitCommandError).timedOut).toBe(true);
       expect((failure as GitCommandError).message).toContain('Timed out after 1ms');
+      // Twenty-two of these a pass, none of them naming a repository, is the same as silence.
+      expect((failure as GitCommandError).message)
+        .toBe(`Git worktree list in ${fixture.repoPath} failed (signal SIGTERM): Timed out after 1ms`);
       expect(Date.now() - startedAt).toBeLessThan(4_000);
     } finally {
       await fixture.cleanup();

@@ -29,13 +29,25 @@ export interface DaemonServeResult {
   envelope: JsonEnvelope<{ state: 'stopped'; signal: 'SIGINT' | 'SIGTERM' } | null>;
 }
 
+/** How long `install` waits for the daemon launchd just started to answer on its socket. */
+const readinessDeadlineMs = 20_000;
+const readinessIntervalMs = 100;
+
 export async function runDaemonLifecycleCommand(
   action: DaemonLifecycleAction,
   lifecycle: LaunchdLifecycle,
+  /**
+   * Whether the daemon is answering. launchd reports a service as running the moment it forks,
+   * so `install` used to return while the socket was not accepting yet and the very next
+   * `wtm start` failed as unavailable — and `status` claimed it was running throughout.
+   */
+  reachable?: () => Promise<boolean>,
 ): Promise<JsonEnvelope<unknown>> {
   try {
     const data = await lifecycle[action]();
-    return successEnvelope(`daemon ${action}`, data);
+    if (action === 'uninstall' || reachable === undefined) return successEnvelope(`daemon ${action}`, data);
+    const ready = action === 'install' ? await waitUntilReachable(reachable) : await reachable();
+    return successEnvelope(`daemon ${action}`, { ...data as object, reachable: ready });
   } catch (error) {
     return {
       schemaVersion: 1,
@@ -45,6 +57,15 @@ export async function runDaemonLifecycleCommand(
       warnings: [],
       errors: [launchdError(action, error)],
     };
+  }
+}
+
+async function waitUntilReachable(reachable: () => Promise<boolean>): Promise<boolean> {
+  const deadline = Date.now() + readinessDeadlineMs;
+  for (;;) {
+    if (await reachable()) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((settle) => { setTimeout(settle, readinessIntervalMs); });
   }
 }
 
@@ -111,20 +132,53 @@ function successEnvelope<T>(command: string, data: T): JsonEnvelope<T> {
 }
 
 /**
- * Writes daemon failures to stderr, which launchd routes to the daemon's error log. Repeats
- * are collapsed because a permanently unreadable repository re-reports on every reconcile
- * pass, and an unbounded log is its own kind of silence.
+ * How long a condition already recorded is counted rather than written out again.
+ *
+ * Collapsing only *consecutive* repeats did nothing for the shape this log actually takes: a
+ * pass reports the same handful of conditions once per repository, so no two consecutive
+ * lines ever matched and six permanently missing directories filled a quarter of a megabyte.
+ */
+const repeatWindowMs = 10 * 60_000;
+/** A bound on distinct remembered conditions, so a varied stream of one-offs cannot grow. */
+const maxTrackedConditions = 256;
+
+/**
+ * Writes daemon failures to stderr, which launchd routes to the daemon's error log.
+ *
+ * Every line is stamped, because an unstamped log cannot answer the only question worth
+ * asking of it: whether a condition is happening now or happened once at startup. Without the
+ * stamps, a burst of timeouts while an external volume was still cold was indistinguishable
+ * from a daemon that had been unable to read anything for hours -- and was read as the latter.
  */
 export function createDaemonErrorReporter(
   write: (line: string) => void = (line) => { process.stderr.write(line); },
+  clock: () => number = () => Date.now(),
 ): (error: unknown) => void {
-  let previous: string | null = null;
+  const seen = new Map<string, { since: number; suppressed: number }>();
   return (error: unknown) => {
     const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    if (detail === previous) return;
-    previous = detail;
-    write(`${detail}\n`);
+    const at = clock();
+    const previous = seen.get(detail);
+    if (previous !== undefined && at - previous.since < repeatWindowMs) {
+      previous.suppressed += 1;
+      return;
+    }
+    // Re-inserting keeps the map in least-recently-written order, so eviction drops the
+    // condition that has gone quietest rather than an arbitrary one.
+    seen.delete(detail);
+    if (seen.size >= maxTrackedConditions) {
+      const oldest = seen.keys().next();
+      if (oldest.done !== true) seen.delete(oldest.value);
+    }
+    seen.set(detail, { since: at, suppressed: 0 });
+    write(`${new Date(at).toISOString()} ${detail}${recurrence(previous)}\n`);
   };
+}
+
+function recurrence(previous: { since: number; suppressed: number } | undefined): string {
+  if (previous === undefined || previous.suppressed === 0) return '';
+  const times = previous.suppressed === 1 ? 'time' : 'times';
+  return ` [also ${previous.suppressed} ${times} since ${new Date(previous.since).toISOString()}]`;
 }
 
 const defaultErrorReport = createDaemonErrorReporter();

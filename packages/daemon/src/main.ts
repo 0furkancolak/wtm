@@ -1,6 +1,7 @@
-import { lstat } from 'node:fs/promises';
+import { lstat, readdir } from 'node:fs/promises';
 import {
   listGitWorktrees as defaultListGitWorktrees,
+  retriedWorktreeListTimeoutMs,
   type DaemonStateStore,
   type GitWorktreeRecord,
   type ReconcileResult,
@@ -56,7 +57,7 @@ export interface WtmDaemonOptions {
   adapterDiscovery?: (snapshot: DaemonRegistrationSnapshot) => Promise<void> | void;
   onReconciled?: (reconciliation: ReconciledRepository) => Promise<void> | void;
   onError?: (error: unknown) => void;
-  listGitWorktrees?: (repositoryRoot: string) => Promise<GitWorktreeRecord[]>;
+  listGitWorktrees?: (repositoryRoot: string, timeoutMs?: number) => Promise<GitWorktreeRecord[]>;
   watcherFactory?: (
     registrations: readonly WorkspaceWatchRegistration[],
     schedule: (signal: ReconcileSignal) => void,
@@ -177,24 +178,31 @@ export class WtmDaemon {
   async #start(): Promise<void> {
     assertSupportedRuntime(this.#platform, this.#nodeVersion);
     try {
-      this.#snapshot = this.#loadRegistrations();
-      await validateRegistrationRoots(this.#snapshot);
-      // Startup is the one pass that must finish: the IPC socket opens at the end of it, so
-      // a repository that cannot be read here would otherwise leave every command in the
-      // workspace facing a daemon that never starts listening.
-      for (const failure of (await this.#reconcileRepositories(this.#snapshot.repositories)).failures) {
-        this.#onError(failure);
-      }
+      this.#snapshot = await this.#availableRegistrations();
       await this.#recoveryHooks.verifyProcessIdentities(this.#snapshot);
       await this.#recoveryHooks.verifyEndpointLeases(this.#snapshot);
       await this.#recoveryHooks.scheduleCleanupRetries(this.#snapshot);
-      await this.#replaceWatcher();
       if (this.#closed) throw new Error('WTM daemon closed during startup');
+      // The socket opens before the first reconcile, not after it. Reading every registered
+      // repository is the slowest thing the daemon ever does — one `git` per repository, each
+      // with its own timeout — and a machine with a few dozen of them on a slow volume spent
+      // minutes there. launchd reported the service as running the whole time while every
+      // command in every workspace failed as `WTM_DAEMON_UNAVAILABLE`, with nothing to read
+      // that said why. Answering from the last known topology is worse than answering from a
+      // fresh one, and far better than not answering.
       this.#server = this.#serverFactory({
         socketPath: this.#socketPath,
         handler: async (request) => this.#handleRequest(request),
       });
       await this.#server.start();
+      for (const failure of (await this.#reconcileRepositories(this.#snapshot.repositories)).failures) {
+        this.#onError(failure);
+      }
+      if (this.#closed) throw new Error('WTM daemon closed during startup');
+      await this.#replaceWatcher();
+      // A close that arrives while the watcher is starting must not leave a daemon that calls
+      // itself started, with a socket still accepting requests it can no longer serve.
+      if (this.#closed) throw new Error('WTM daemon closed during startup');
       this.#started = true;
     } catch (error) {
       await this.#closeResourcesIgnoringErrors();
@@ -202,6 +210,36 @@ export class WtmDaemon {
       this.#closed = true;
       throw error;
     }
+  }
+
+  /**
+   * The registrations whose directories are on disk right now.
+   *
+   * A registered root can disappear — a finished migration deleted, a volume unmounted, a
+   * clone moved. Refusing to start over one of them denied every other workspace a daemon at
+   * all, and because launchd restarts a service that exits non-zero, one deleted directory
+   * became a permanent restart loop whose only trace was a line in a log nobody is pointed at.
+   * The registration is kept, because the directory may well come back; it is simply left out
+   * of this pass, and each disappearance is reported once.
+   */
+  async #availableRegistrations(): Promise<DaemonRegistrationSnapshot> {
+    const loaded = this.#loadRegistrations();
+    const workspaces = [];
+    for (const workspace of loaded.workspaces) {
+      const missing = await missingDirectory(workspace.root, 'workspace');
+      if (missing === null) workspaces.push(workspace);
+      else this.#onError(missing);
+    }
+    const workspaceIds = new Set(workspaces.map(({ id }) => id));
+    const repositories = [];
+    for (const repository of loaded.repositories) {
+      if (!workspaceIds.has(repository.workspaceId)) continue;
+      const missing = await missingDirectory(repository.mainRoot, 'repository')
+        ?? await missingDirectory(repository.commonGitDir, 'Git common');
+      if (missing === null) repositories.push(repository);
+      else this.#onError(missing);
+    }
+    return { workspaces, repositories };
   }
 
   #loadRegistrations(): DaemonRegistrationSnapshot {
@@ -239,24 +277,55 @@ export class WtmDaemon {
         }
       },
     );
+    // A git that timed out was not necessarily refused. On a cold external volume the first
+    // reads of a session are slow enough that eight of them at once all overrun the tight
+    // per-repository bound, and the whole pass then reports nothing — which is how a
+    // transient warm-up came to look like a daemon that could read nothing at all. The
+    // overrun repositories are read once more, one at a time, so contention is removed as an
+    // explanation before the failure is believed.
+    const settled = await this.#retryTimedOutReads(readings);
     let topologyChanged = false;
+    let read = 0;
     const failures: unknown[] = [];
-    for (const reading of readings) {
+    const unread: RepositoryRecord[] = [];
+    for (const reading of settled) {
       if (reading.snapshot === undefined) {
         failures.push(reading.error);
+        unread.push(reading.repository);
         continue;
       }
+      read += 1;
       const result = this.#stateStore.reconcileWorktrees(reading.repository.id, reading.snapshot);
       if (result.discovered.length > 0 || result.orphaned.length > 0) topologyChanged = true;
       await this.#onReconciled({ repository: reading.repository, result });
     }
+    if (read === 0 && failures.length > 0) this.#onError(await unreadableRepositories(unread, failures));
     return { topologyChanged, failures };
+  }
+
+  async #retryTimedOutReads(readings: readonly RepositoryReading[]): Promise<RepositoryReading[]> {
+    if (!readings.some(timedOutReading)) return [...readings];
+    const settled: RepositoryReading[] = [];
+    for (const reading of readings) {
+      if (!timedOutReading(reading)) {
+        settled.push(reading);
+        continue;
+      }
+      try {
+        settled.push({
+          repository: reading.repository,
+          snapshot: await this.#listGitWorktrees(reading.repository.mainRoot, retriedWorktreeListTimeoutMs),
+        });
+      } catch (error) {
+        settled.push({ repository: reading.repository, error });
+      }
+    }
+    return settled;
   }
 
   async #runBatch(batch: ReconcileBatch): Promise<void> {
     if (batch.kinds.includes('watch-error')) this.#watchRefreshPending = true;
-    this.#snapshot = this.#loadRegistrations();
-    await validateRegistrationRoots(this.#snapshot);
+    this.#snapshot = await this.#availableRegistrations();
     const { topologyChanged, failures } = await this.#reconcileRepositories(this.#snapshot.repositories);
     if (batch.kinds.some((kind) => kind === 'config' || kind === 'manifest' || kind === 'fingerprint')) {
       await this.#adapterDiscovery(this.#snapshot);
@@ -358,6 +427,13 @@ export function assertSupportedRuntime(platform: NodeJS.Platform, nodeVersion: s
  */
 const maxConcurrentRepositoryReads = 8;
 
+/** One repository's reading: the topology it reported, or why it could not be taken. */
+interface RepositoryReading {
+  repository: RepositoryRecord;
+  snapshot?: GitWorktreeRecord[];
+  error?: unknown;
+}
+
 /** Runs `action` over `items` at most `limit` at a time, preserving input order in the result. */
 async function mapConcurrent<Item, Result>(
   items: readonly Item[],
@@ -375,22 +451,81 @@ async function mapConcurrent<Item, Result>(
   return results;
 }
 
-async function validateRegistrationRoots(snapshot: DaemonRegistrationSnapshot): Promise<void> {
-  for (const workspace of snapshot.workspaces) await assertDirectory(workspace.root, 'workspace');
-  for (const repository of snapshot.repositories) {
-    await assertDirectory(repository.mainRoot, 'repository');
-    await assertDirectory(repository.commonGitDir, 'Git common');
+/**
+ * One named condition in place of N identical failures, and the evidence for it.
+ *
+ * When not a single repository could be read, these are not independent problems; they are one
+ * problem. Naming the likeliest one was not good enough: the message asserted that macOS had
+ * withheld disk access, an assertion nothing had tested, and on the machine that prompted it
+ * the real cause was a cold USB volume whose first reads simply took longer than the bound.
+ * Acting on that message means granting a background agent access to every file on the disk,
+ * which is far too large a thing to advise on a guess. So the guess is replaced by a reading:
+ * the directories are opened directly, and only a refusal to open them is reported as one.
+ */
+async function unreadableRepositories(
+  repositories: readonly RepositoryRecord[],
+  failures: readonly unknown[],
+): Promise<Error> {
+  const count = failures.length;
+  const subject = `None of ${count} registered ${count === 1 ? 'repository' : 'repositories'}`;
+  const refused = await refusedDirectory(repositories);
+  if (refused !== null) {
+    return new Error(`${subject} could be read: ${refused} could not be opened either `
+      + '(EACCES). A daemon launched by launchd holds no file-access grant of its own. Grant '
+      + 'it once in System Settings > Privacy & Security > Full Disk Access, to the installed '
+      + 'wtm executable. Until then WTM answers from the topology it last read.');
   }
+  if (failures.every(readTimedOut)) {
+    return new Error(`${subject} could be read: every git command overran its bound, twice, `
+      + 'although the directories themselves open normally — so this is a filesystem that is '
+      + 'answering too slowly rather than one WTM is not allowed to read. A cold external '
+      + 'volume does this while it spins up. WTM answers from the topology it last read and '
+      + 'reads again on the next change.');
+  }
+  return new Error(`${subject} could be read this pass; WTM answers from the topology it last read.`);
 }
 
-async function assertDirectory(path: string, kind: string): Promise<void> {
+/** The first registered root that exists but refuses to be opened, or `null` when none does. */
+async function refusedDirectory(repositories: readonly RepositoryRecord[]): Promise<string | null> {
+  for (const repository of repositories) {
+    try { await readdir(repository.mainRoot); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EACCES' || code === 'EPERM') return repository.mainRoot;
+    }
+  }
+  return null;
+}
+
+function readTimedOut(failure: unknown): boolean {
+  return typeof failure === 'object' && failure !== null
+    && 'timedOut' in failure && failure.timedOut === true;
+}
+
+function timedOutReading(reading: RepositoryReading): boolean {
+  return reading.snapshot === undefined && readTimedOut(reading.error);
+}
+
+/** Why a registered root cannot be used this pass, or `null` when it can. */
+async function missingDirectory(path: string, kind: string): Promise<Error | null> {
   let stat;
   try {
     stat = await lstat(path);
-  } catch {
-    throw new Error(`Registered ${kind} root is unavailable: ${path}`);
+  } catch (error) {
+    // A root that is refused is not a root that is gone, and calling both "unavailable" hid
+    // the only condition a person can actually do something about behind the one they cannot.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EACCES' || code === 'EPERM') {
+      return new Error(`Registered ${kind} root cannot be opened: ${path} (${code}). A daemon `
+        + 'launched by launchd holds no file-access grant of its own; grant it once in System '
+        + 'Settings > Privacy & Security > Full Disk Access, to the installed wtm executable.');
+    }
+    // The registration is deliberately kept — an unmounted volume comes back — but a root that
+    // has genuinely gone reports this on every pass forever, so the line says how to end it.
+    return new Error(`Registered ${kind} root is unavailable: ${path}`
+      + ' (the registration is kept in case it returns; retire it with `wtm forget`)');
   }
-  if (!stat.isDirectory()) throw new Error(`Registered ${kind} root is not a directory: ${path}`);
+  return stat.isDirectory() ? null : new Error(`Registered ${kind} root is not a directory: ${path}`);
 }
 
 async function buildWatchRegistrations(

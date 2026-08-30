@@ -88,16 +88,42 @@ On daemon startup:
 
 1. open/migrate state DB;
 2. load registered workspaces;
-3. validate workspace roots;
-4. run Git worktree snapshot for known repos;
-5. reconcile missing/new worktrees;
-6. verify managed process identities;
-7. verify endpoint leases;
-8. schedule pending cleanup retries;
-9. start filesystem watchers;
-10. open the Unix socket.
+3. set aside the registered roots that are not on disk, reporting each one;
+4. verify managed process identities;
+5. verify endpoint leases;
+6. schedule pending cleanup retries;
+7. **open the Unix socket**;
+8. run Git worktree snapshot for known repos;
+9. reconcile missing/new worktrees;
+10. start filesystem watchers.
 
 No previous in-memory state is required for recovery.
+
+Two properties of that order are deliberate, and both were learned from a daemon that would not start:
+
+- **A registered root that has gone is not fatal.** A finished migration deleted, a volume unmounted, a clone moved — refusing to start over one of them denied every other workspace a daemon, and because launchd restarts a service that exits non-zero, one deleted directory became a permanent restart loop whose only trace was a line in a log nobody is pointed at. The registration is kept, because the directory may come back; it is left out of this pass and reported. `wtm doctor` names it.
+- **A repository that overran its bound is read again, alone, before it is believed.** Eight concurrent reads off a volume that is still spinning up can each overrun a bound every one of them clears a moment later; believing the first reading discards the whole pass and leaves every registered repository stale. The overrun repositories are retried one at a time under a wider bound, which removes contention as an explanation before the failure is acted on.
+- **When not one repository can be read, that is one condition, not N — and the condition is read, not guessed.** The log filled with one identical timeout per repository, naming neither the repository nor the cause, while `wtm daemon status` reported the daemon as running and reachable, which it was. A pass that reads nothing now reports one line, and that line is based on opening the directories directly: a refusal (`EACCES`) names the privacy grant, while directories that open normally name a filesystem answering too slowly, which is the far commoner cause and needs no grant at all. Every git failure names its subcommand and its repository.
+- **Every line in the daemon log is stamped, and a recurring condition is counted rather than repeated.** Without the stamps there is no way to tell a burst at startup from a failure happening now — the question the log exists to answer. Collapsing only *consecutive* repeats collapsed nothing, because a pass reports each of its repositories in turn: six permanently missing directories wrote a quarter of a megabyte. A condition is written at most once per ten minutes, carrying the number of times it recurred in between.
+- **The socket opens before the first reconcile.** Reading every registered repository is the slowest thing the daemon does — one `git` per repository, each with its own timeout — and a machine with a few dozen of them spent minutes there while every command failed as `WTM_DAEMON_UNAVAILABLE`. Answering from the last known topology is worse than answering from a fresh one, and far better than not answering.
+
+## Preparation and lifecycle events
+
+Each reconcile that changes a repository's topology also decides what has to happen because of it, in one order:
+
+1. announce `workspace.discovered` and `repo.discovered`, each once per subject, ever;
+2. for each newly discovered worktree, announce `worktree.discovered` (first reconcile of that repository) or `worktree.created` (any later one);
+3. under `[prepare] mode = "eager"`, create that worktree's declared resources and announce `worktree.ready`;
+4. for each orphaned worktree, announce `worktree.removed` in the repository's main worktree, which is the only directory still there to run in.
+
+Under the default `lazy` mode, step 3 happens instead at the first `run`, `start` or `exec` in that worktree, and `worktree.ready` is announced there. `runtime.started` and `runtime.stopped` are announced by the runtime controller, after the supervisor has actually started or stopped something.
+
+Three rules keep an event from becoming a way for the daemon to hurt itself:
+
+- **Once-only events are recorded in the state database.** Deciding from memory would announce them again after every restart, which for an event bound to `deps.install` means installing dependencies again on every reboot.
+- **A task an event starts dispatches no events.** It goes straight to the supervisor, so `[events."runtime.started"]` cannot set itself off.
+- **An event never fails what raised it.** A task that will not start is reported through `onError` and the reconcile continues, because one workspace's event must not deny every other workspace a daemon.
+- **A dispatch that could not happen withdraws its announcement.** The claim is taken before the work, so two passes cannot run one event twice; if the configuration will not resolve or a resource cannot be created, the claim is given back and the next pass tries again. A claim is kept once the event has actually run, whatever became of its tasks.
 
 ## Sleep/wake and missed events
 

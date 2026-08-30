@@ -591,6 +591,27 @@ WTM is pre-release and honest about its edges. Every command carries a real payl
 - **Node.js 24+** for the npm installation (the standalone executable embeds its own)
 - **Bun 1.3+** to build from source and to run the tests
 
+### Disk access
+
+`make install` needs no permission you have to give by hand, and asks for none up front. A
+LaunchAgent reads the same files your shell does; the ordinary case is that it simply works.
+
+macOS *can* withhold access from a background agent — most often for an external or network
+volume — and if that happens WTM says so, in `~/Library/Logs/WTM/daemon.error.log`, with the
+reading it based that on: a directory that exists and still refuses to open. Only then is the
+grant worth making, and only then does WTM name it:
+
+**System Settings → Privacy & Security → Full Disk Access → `+` → `~/.local/bin/wtm`**
+
+The grant is recorded against the executable's signing identity, which is the same in every
+build of WTM, so it survives reinstalling and upgrading.
+
+WTM will not send you there on a guess. Handing a background process every file on your disk is
+too large a thing to advise because something timed out — a git that overran its bound on a
+volume that reads slowly looks identical from the outside, and is a great deal more common.
+Nothing here can be granted on your behalf either: refusing to let a program grant itself
+access to your files is the whole point of the permission.
+
 ## Uninstall
 
 ```bash

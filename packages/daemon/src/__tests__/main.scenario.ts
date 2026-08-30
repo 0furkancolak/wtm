@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import {
   SQLiteStateStore,
   readGitRepositoryIdentity,
+  retriedWorktreeListTimeoutMs,
   type DaemonStateStore,
   type GitWorktreeRecord,
 } from '../../../core/src/index';
@@ -303,9 +304,11 @@ async function watchErrorMissingRoot() {
       let starts = 0;
       let closes = 0;
       let adapterDiscoveries = 0;
+      const reported: string[] = [];
       const daemon = new WtmDaemon({
         stateStore: store,
         socketPath,
+        onError: (error) => { reported.push(error instanceof Error ? error.message : String(error)); },
         adapterDiscovery: async () => { adapterDiscoveries += 1; },
         watcherFactory: (_registrations, capturedSchedule) => {
           schedule = capturedSchedule;
@@ -322,16 +325,11 @@ async function watchErrorMissingRoot() {
         await client.start();
         schedule({ root: workspaceRoot, kind: 'watch-error' });
         await rm(workspaceRoot, { recursive: true, force: true });
-        let firstError = '';
-        try {
-          await daemon.flush();
-        } catch (error) {
-          firstError = error instanceof Error ? error.message.split(':')[0] ?? '' : String(error);
-        }
+        await daemon.flush();
         await mkdir(workspaceRoot);
         const response = await client.request('reconcile');
         return {
-          firstError,
+          reportedWhileMissing: reported.map((message) => message.split(':')[0] ?? ''),
           reconcileOk: response.ok,
           startsAfterRecovery: starts,
           closesAfterRecovery: closes,
@@ -546,6 +544,202 @@ async function unreadableRepositorySurvives() {
   });
 }
 
+/**
+ * When not one repository can be read, the daemon says so once, in the terms the condition
+ * actually has — not once per repository, in the terms of the git command that stalled.
+ *
+ * The terms matter as much as the count. Directories that open perfectly well while git
+ * overruns its bound describe a filesystem answering slowly, and must not be reported as one
+ * WTM is forbidden to read: acting on that reading means granting a background agent every
+ * file on the disk.
+ */
+async function unreadableWorkspaceIsNamed() {
+  return await withDirectory('wtm-unreadable-workspace-', async (root) => {
+    const store = new SQLiteStateStore(join(root, 'state.db'));
+    try {
+      const workspace = store.upsertWorkspace({ name: 'blocked', root, scope: 'local', configPath: null });
+      for (const name of ['one', 'two']) {
+        const path = join(root, name);
+        await mkdir(join(path, '.git'), { recursive: true });
+        store.upsertRepository({
+          workspaceId: workspace.id, commonGitDir: join(path, '.git'), mainRoot: path, remoteIdentity: null,
+        });
+      }
+      const reported: string[] = [];
+      const bounds: (number | undefined)[] = [];
+      const daemon = new WtmDaemon({
+        stateStore: store,
+        socketPath: join(root, 'wtmd.sock'),
+        onError: (error) => { reported.push(error instanceof Error ? error.message : String(error)); },
+        listGitWorktrees: async (_root, timeoutMs) => {
+          bounds.push(timeoutMs);
+          const failure = new Error('Git worktree list failed (signal SIGTERM): Timed out after 5000ms');
+          Object.assign(failure, { timedOut: true });
+          throw failure;
+        },
+        recoveryHooks: {
+          verifyProcessIdentities: async () => {},
+          verifyEndpointLeases: async () => {},
+          scheduleCleanupRetries: async () => {},
+        },
+        watcherFactory: () => ({ start: async () => {}, close: async () => {}, whenIdle: async () => {} }),
+        serverFactory: () => ({ start: async () => {}, close: async () => {} }),
+      });
+      await daemon.start();
+      await daemon.close();
+      return {
+        named: reported.filter((message) => message.startsWith('None of ')),
+        timeouts: reported.filter((message) => message.includes('Timed out')).length,
+        attempts: bounds.length,
+        retriedWithAWiderBound: bounds.filter((bound) => bound === retriedWorktreeListTimeoutMs).length,
+      };
+    } finally {
+      store.close();
+    }
+  });
+}
+
+/**
+ * The reason the retry exists: a pass that reads eight repositories at once off a volume still
+ * spinning up can overrun a bound every one of them clears a moment later. Believing the first
+ * reading discards the whole pass and leaves every registered repository stale.
+ */
+async function coldVolumeReadRecovers() {
+  return await withDirectory('wtm-cold-volume-', async (root) => {
+    const store = new SQLiteStateStore(join(root, 'state.db'));
+    try {
+      const workspace = store.upsertWorkspace({ name: 'cold', root, scope: 'local', configPath: null });
+      const path = join(root, 'repo');
+      await mkdir(join(path, '.git'), { recursive: true });
+      store.upsertRepository({
+        workspaceId: workspace.id, commonGitDir: join(path, '.git'), mainRoot: path, remoteIdentity: null,
+      });
+      const reported: string[] = [];
+      let attempts = 0;
+      const daemon = new WtmDaemon({
+        stateStore: store,
+        socketPath: join(root, 'wtmd.sock'),
+        onError: (error) => { reported.push(error instanceof Error ? error.message : String(error)); },
+        listGitWorktrees: async () => {
+          attempts += 1;
+          if (attempts === 1) {
+            const failure = new Error('Git worktree list failed (signal SIGTERM): Timed out after 5000ms');
+            Object.assign(failure, { timedOut: true });
+            throw failure;
+          }
+          return snapshot(path);
+        },
+        recoveryHooks: {
+          verifyProcessIdentities: async () => {},
+          verifyEndpointLeases: async () => {},
+          scheduleCleanupRetries: async () => {},
+        },
+        watcherFactory: () => ({ start: async () => {}, close: async () => {}, whenIdle: async () => {} }),
+        serverFactory: () => ({ start: async () => {}, close: async () => {} }),
+      });
+      await daemon.start();
+      await daemon.close();
+      return {
+        attempts,
+        reported,
+        worktrees: store.listWorktrees().map(({ path: worktreePath, state }) => [worktreePath, state]),
+      };
+    } finally {
+      store.close();
+    }
+  });
+}
+
+/**
+ * The one reading that does justify naming the privacy grant: a directory that exists and
+ * still refuses to open. Nothing short of that evidence should send anyone to Full Disk Access.
+ */
+async function refusedDirectoryNamesTheGrant() {
+  return await withDirectory('wtm-refused-directory-', async (root) => {
+    const store = new SQLiteStateStore(join(root, 'state.db'));
+    const path = join(root, 'refused');
+    try {
+      const workspace = store.upsertWorkspace({ name: 'refused', root, scope: 'local', configPath: null });
+      await mkdir(join(path, '.git'), { recursive: true });
+      store.upsertRepository({
+        workspaceId: workspace.id, commonGitDir: join(path, '.git'), mainRoot: path, remoteIdentity: null,
+      });
+      // Traversable but not listable: `.git` is still reachable, so the repository is taken as
+      // present and the read is what fails — the shape a privacy denial actually presents.
+      await chmod(path, 0o111);
+      const reported: string[] = [];
+      const daemon = new WtmDaemon({
+        stateStore: store,
+        socketPath: join(root, 'wtmd.sock'),
+        onError: (error) => { reported.push(error instanceof Error ? error.message : String(error)); },
+        listGitWorktrees: async () => {
+          const failure = new Error('Git worktree list failed (signal SIGTERM): Timed out after 5000ms');
+          Object.assign(failure, { timedOut: true });
+          throw failure;
+        },
+        recoveryHooks: {
+          verifyProcessIdentities: async () => {},
+          verifyEndpointLeases: async () => {},
+          scheduleCleanupRetries: async () => {},
+        },
+        watcherFactory: () => ({ start: async () => {}, close: async () => {}, whenIdle: async () => {} }),
+        serverFactory: () => ({ start: async () => {}, close: async () => {} }),
+      });
+      await daemon.start();
+      await daemon.close();
+      return { named: reported.filter((message) => message.startsWith('None of ')) };
+    } finally {
+      await chmod(path, 0o700).catch(() => {});
+      store.close();
+    }
+  });
+}
+
+/**
+ * A registered repository whose directory has been deleted must not stop the daemon: launchd
+ * restarts a service that exits, so refusing to start turned one removed directory into a
+ * permanent restart loop that denied every other workspace a daemon.
+ */
+async function deletedRepositorySurvives() {
+  return await withDirectory('wtm-deleted-repository-', async (root) => {
+    const healthyRoot = join(root, 'healthy');
+    const healthyGitDir = join(healthyRoot, '.git');
+    await mkdir(healthyGitDir, { recursive: true });
+    const store = new SQLiteStateStore(join(root, 'state.db'));
+    try {
+      const workspace = store.upsertWorkspace({ name: 'deleted', root, scope: 'local', configPath: null });
+      store.upsertRepository({
+        workspaceId: workspace.id,
+        commonGitDir: join(root, 'gone', '.git'),
+        mainRoot: join(root, 'gone'),
+        remoteIdentity: null,
+      });
+      const healthy = store.upsertRepository({
+        workspaceId: workspace.id, commonGitDir: healthyGitDir, mainRoot: healthyRoot, remoteIdentity: null,
+      });
+      const reported: string[] = [];
+      let socketOpened = false;
+      const daemon = new WtmDaemon({
+        stateStore: store,
+        socketPath: join(root, 'wtmd.sock'),
+        listGitWorktrees: async (repositoryRoot) => snapshot(repositoryRoot),
+        onError: (error) => { reported.push(error instanceof Error ? error.message : String(error)); },
+        watcherFactory: () => ({ start: async () => {}, close: async () => {}, whenIdle: async () => {} }),
+        serverFactory: () => ({ start: async () => { socketOpened = true; }, close: async () => {} }),
+      });
+      await daemon.start();
+      await daemon.close();
+      return {
+        socketOpened,
+        healthyRegistered: store.listWorktrees(healthy.id).some(({ path }) => path === healthyRoot),
+        reported: reported.map((message) => message.replace(root, '<root>')),
+      };
+    } finally {
+      store.close();
+    }
+  });
+}
+
 const scenarios: Record<string, () => Promise<unknown>> = {
   'startup-order': startupOrder,
   'startup-failure': startupFailure,
@@ -558,6 +752,10 @@ const scenarios: Record<string, () => Promise<unknown>> = {
   'watch-error-refresh': watchErrorRefresh,
   'watch-error-missing-root': watchErrorMissingRoot,
   'unreadable-repository': unreadableRepositorySurvives,
+  'deleted-repository': deletedRepositorySurvives,
+  'unreadable-workspace': unreadableWorkspaceIsNamed,
+  'cold-volume-read': coldVolumeReadRecovers,
+  'refused-directory': refusedDirectoryNamesTheGrant,
 };
 
 const name = process.argv[2];

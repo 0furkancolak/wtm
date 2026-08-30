@@ -16,11 +16,14 @@ function runScenario(name: string): Record<string, unknown> {
 }
 
 describe('WtmDaemon startup', () => {
-  test('recovers state in order and opens the socket last', () => {
+  test('recovers state, then answers, and only then reads every repository', () => {
+    // Reading the repositories is the slow part, and it happens behind an open socket: a
+    // machine with dozens of them used to have no reachable daemon for as long as that took.
     expect(runScenario('startup-order')).toEqual({
       events: [
-        'load-workspaces', 'load-repositories', 'git-snapshot', 'reconcile-state',
-        'verify-processes', 'verify-endpoints', 'schedule-cleanup', 'watcher-start', 'socket-start',
+        'load-workspaces', 'load-repositories',
+        'verify-processes', 'verify-endpoints', 'schedule-cleanup',
+        'socket-start', 'git-snapshot', 'reconcile-state', 'watcher-start',
       ],
       persistedMainWorktree: true,
     });
@@ -34,16 +37,63 @@ describe('WtmDaemon startup', () => {
     });
   });
 
-  test('closes already-opened resources in reverse order when socket startup fails', () => {
-    expect(runScenario('startup-failure')).toEqual({
-      error: 'bind failed',
-      events: ['watcher-start', 'socket-start', 'socket-close', 'watcher-close'],
+  test('a deleted repository directory does not stop the daemon serving the rest', () => {
+    expect(runScenario('deleted-repository')).toEqual({
+      socketOpened: true,
+      healthyRegistered: true,
+      reported: [
+        'Registered repository root is unavailable: <root>/gone'
+        + ' (the registration is kept in case it returns; retire it with `wtm forget`)',
+      ],
     });
   });
 
-  test('does not open the socket when close races with watcher startup', () => {
+  test('says once that it cannot read the repositories at all, and what to do about it', () => {
+    // Twenty-two identical timeouts in a log file, while `daemon status` reports the daemon as
+    // running and reachable, is the shape this failure had: entirely accurate, and useless.
+    const result = runScenario('unreadable-workspace') as {
+      named: string[]; timeouts: number; attempts: number; retriedWithAWiderBound: number;
+    };
+
+    expect(result.named).toHaveLength(1);
+    expect(result.named[0]).toContain('None of 2 registered repositories could be read');
+    expect(result.timeouts).toBe(2);
+    expect({ attempts: result.attempts, retried: result.retriedWithAWiderBound })
+      .toEqual({ attempts: 4, retried: 2 });
+    // Directories that open normally are evidence against a permission problem, so the report
+    // must not send anyone to grant a background agent every file on the disk.
+    expect(result.named[0]).toContain('answering too slowly');
+    expect(result.named[0]).not.toContain('Full Disk Access');
+  });
+
+  test('a repository that only overran a cold read is reconciled, not written off', () => {
+    const result = runScenario('cold-volume-read') as {
+      attempts: number; reported: string[]; worktrees: [string, string][];
+    };
+
+    expect(result.attempts).toBe(2);
+    expect(result.reported).toEqual([]);
+    expect(result.worktrees.map(([, state]) => state)).toEqual(['DISCOVERED']);
+  });
+
+  test('names the privacy grant only for a directory that exists and refuses to open', () => {
+    const result = runScenario('refused-directory') as { named: string[] };
+
+    expect(result.named).toHaveLength(1);
+    expect(result.named[0]).toContain('could not be opened either (EACCES)');
+    expect(result.named[0]).toContain('Full Disk Access');
+  });
+
+  test('a socket that cannot bind stops startup before anything is watched', () => {
+    expect(runScenario('startup-failure')).toEqual({
+      error: 'bind failed',
+      events: ['socket-start', 'socket-close'],
+    });
+  });
+
+  test('closes every resource in reverse order when close races with watcher startup', () => {
     expect(runScenario('shutdown-during-start')).toEqual({
-      events: ['watcher-start', 'watcher-close'],
+      events: ['socket-start', 'watcher-start', 'watcher-close', 'socket-close'],
       startError: 'WTM daemon closed during startup',
     });
   });
@@ -75,9 +125,9 @@ describe('WtmDaemon startup', () => {
     });
   });
 
-  test('retains watcher refresh intent across a missing-root failure until explicit reconcile succeeds', () => {
+  test('reports a workspace root that disappeared and keeps serving until it returns', () => {
     expect(runScenario('watch-error-missing-root')).toEqual({
-      firstError: 'Registered workspace root is unavailable',
+      reportedWhileMissing: ['Registered workspace root is unavailable'],
       reconcileOk: true,
       startsAfterRecovery: 2,
       closesAfterRecovery: 1,

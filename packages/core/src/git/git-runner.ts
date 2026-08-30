@@ -79,7 +79,10 @@ export class GitCommandError extends Error {
     const status = failure.exitCode === null
       ? `signal ${failure.signal ?? 'none'}`
       : `exit ${failure.exitCode}`;
-    super(`Git command failed (${status})${stderr.length === 0 ? '' : `: ${stderr}`}`);
+    // Which git, and in which repository. Without them the daemon's log said only that "a" git
+    // command timed out, twenty-two times a pass, naming neither the command nor the directory
+    // — which is no more use than silence when one repository on a slow volume is the cause.
+    super(`Git ${describeGitCommand(failure.argv)} failed (${status})${stderr.length === 0 ? '' : `: ${stderr}`}`);
     this.name = 'GitCommandError';
     this.argv = Object.freeze([...failure.argv]);
     this.exitCode = failure.exitCode;
@@ -89,10 +92,19 @@ export class GitCommandError extends Error {
   }
 }
 
-export async function listGitWorktrees(repoPath: string): Promise<GitWorktreeRecord[]> {
-  const result = await runGit(repoPath, ['worktree', 'list', '--porcelain', '-z'], {
-    timeoutMs: worktreeListTimeoutMs,
-  });
+/**
+ * A second, wider bound for a repository that overran the first one. The tight default is
+ * right for a pass over many repositories at once; it is the wrong verdict for a single cold
+ * read, and the difference between the two is what separates a slow disk from an unreadable
+ * one. Still bounded, because a repository that cannot be read must not hold a pass open.
+ */
+export const retriedWorktreeListTimeoutMs = 20_000;
+
+export async function listGitWorktrees(
+  repoPath: string,
+  timeoutMs: number = worktreeListTimeoutMs,
+): Promise<GitWorktreeRecord[]> {
+  const result = await runGit(repoPath, ['worktree', 'list', '--porcelain', '-z'], { timeoutMs });
   return parseGitWorktreePorcelain(result.stdout);
 }
 
@@ -215,6 +227,19 @@ export function createGitEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessE
 
 function gitArgv(repoPath: string, args: readonly string[]): readonly string[] {
   return ['git', '-C', repoPath, ...args];
+}
+
+/** `worktree list in /projects/demo/api` — the subcommand and the directory it ran in. */
+function describeGitCommand(argv: readonly string[]): string {
+  const repositoryIndex = argv.indexOf('-C');
+  const repository = repositoryIndex === -1 ? undefined : argv[repositoryIndex + 1];
+  const words = argv
+    .slice(1)
+    .filter((word, index) => index !== repositoryIndex - 1 && index !== repositoryIndex)
+    .filter((word) => !word.startsWith('-'))
+    .slice(0, 2);
+  const command = words.length === 0 ? 'command' : words.join(' ');
+  return repository === undefined ? command : `${command} in ${repository}`;
 }
 
 function sanitizeGitDiagnostic(value: string): string {

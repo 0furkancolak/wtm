@@ -4,6 +4,7 @@ export {
   listGitWorktrees,
   readGitRemoteOrigin,
   readGitRepositoryIdentity,
+  retriedWorktreeListTimeoutMs,
   worktreeListTimeoutMs,
 } from './git/git-runner';
 export type { GitCommandOptions, GitCommandResult, GitRepositoryIdentity } from './git/git-runner';
