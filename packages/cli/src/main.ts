@@ -1,11 +1,13 @@
 import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
 import { constants as fsConstants, existsSync } from 'node:fs';
+import { createConnection } from 'node:net';
 import { access } from 'node:fs/promises';
 import { constants, homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
 import type { AdapterTrustStore } from '@wtm/core';
 import {
+  containsPath,
   listGitWorktrees,
   resolveWorkspaceConfig,
   SQLiteStateStore,
@@ -18,6 +20,7 @@ import {
   createLaunchdLifecycle,
   createProductionDaemon,
   defaultProductionRuntimePaths,
+  prepareRuntimeResources,
   resolveWorktreeRuntime,
   taskResolutionInput,
   type LaunchdLifecycle,
@@ -50,6 +53,7 @@ import {
   type ForegroundDaemonRuntime,
 } from './commands/daemon';
 import { runProductionDiskCommand, runProductionGcCommand } from './commands/resource-production';
+import { runForgetCommand, type ForgetCommandEnvelope } from './commands/forget';
 import { runAdapterCommand } from './commands/adapter';
 import { runAnalyzeCommand } from './commands/analyze';
 import { runRemoveCommand } from './commands/remove';
@@ -100,6 +104,7 @@ export interface CliDependencies {
   resolveRunner?: (input: { cwd: string; taskName: string }) => Promise<JsonEnvelope<unknown>>;
   analyzeRunner?: (input: { repoPath: string; selector?: string }) => Promise<JsonEnvelope<unknown>>;
   removeRunner?: (input: { repoPath: string; selector: string }) => Promise<JsonEnvelope<unknown>>;
+  forgetRunner?: (input: { cwd: string; selector?: string; force: boolean }) => Promise<JsonEnvelope<unknown>>;
 }
 
 export interface RuntimeInvocation {
@@ -141,6 +146,8 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     .description('Worktree Runtime Manager')
     .showSuggestionAfterError(false)
     .showHelpAfterError(false)
+    // So that `wtm exec` can hand every remaining word to the command it runs.
+    .enablePositionalOptions()
     .exitOverride()
     .configureOutput({ writeOut: stdout, writeErr: stderr });
   configureProductMetadata(program);
@@ -255,6 +262,9 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   });
 
   const exec = program.command('exec <argv...>').description('Execute raw argv in the foreground.');
+  // Everything after the command word belongs to the command being run. Without this,
+  // `wtm exec sh -c 'echo hi'` is refused for an unknown option `-c` that was never ours.
+  exec.enablePositionalOptions().passThroughOptions().allowUnknownOption();
   addJsonOption(exec);
   exec.action(async (argv: string[], options: ScopeOptions) => {
     renderRuntime(
@@ -272,7 +282,10 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
         programArguments: dependencies.daemonProgramArguments
           ?? daemonProgramArguments(dependencies.runtimeInvocation ?? defaultRuntimeInvocation()),
       });
-      renderRuntime(await runDaemonLifecycleCommand(action, manager), runtimeJson(program, options));
+      renderRuntime(
+        await runDaemonLifecycleCommand(action, manager, () => daemonReachable(defaultDaemonSocketPath())),
+        runtimeJson(program, options),
+      );
     });
   }
   const serve = daemon.command('serve').description('Run the WTM daemon in the foreground.');
@@ -300,6 +313,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     const envelope = dependencies.diskRunner === undefined
       ? await runProductionDiskCommand({
         databasePath: dependencies.resourceDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+        globalConfigPath: defaultProductionRuntimePaths().globalConfigPath,
         cwd,
       })
       : await dependencies.diskRunner({ cwd });
@@ -316,11 +330,34 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     const envelope = dependencies.gcRunner === undefined
       ? await runProductionGcCommand({
         databasePath: dependencies.resourceDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+        globalConfigPath: defaultProductionRuntimePaths().globalConfigPath,
         cwd,
         apply,
       })
       : await dependencies.gcRunner({ cwd, apply });
     renderRuntime(envelope, runtimeJson(program, options));
+  });
+
+  const forget = program
+    .command('forget [selector]')
+    .description('Retire a registration whose directory is gone: a workspace by name, or one repository by path.');
+  addJsonOption(forget);
+  forget.option('--force', 'retire a registration whose directory is still on disk');
+  forget.action(async (selector: string | undefined, options: ScopeOptions & { force?: boolean }) => {
+    const envelope = dependencies.forgetRunner === undefined
+      ? await runProductionForget({
+        cwd,
+        ...(selector === undefined ? {} : { selector }),
+        force: options.force === true,
+        databasePath: dependencies.diagnosticsDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+      })
+      : await dependencies.forgetRunner({
+        cwd,
+        ...(selector === undefined ? {} : { selector }),
+        force: options.force === true,
+      });
+    renderRuntime(envelope, runtimeJson(program, options));
+    hooks.setExitCode?.(exitCodeForEnvelope(envelope));
   });
 
   const adapter = program.command('adapter').description('Manage trusted external adapters.');
@@ -387,8 +424,13 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     write?: boolean;
     maxDepth?: number;
   }) => {
+    // Without a path, `detect` answers for the workspace the current directory belongs to,
+    // like every other command. Reading the current directory as if it were the workspace
+    // root reported one repository of several, and called tables missing that the workspace's
+    // own `wtm.toml` had already decided.
+    const root = path === undefined ? await findWorkspaceRoot(cwd) ?? cwd : resolve(cwd, path);
     renderRuntime(await (dependencies.detectRunner ?? runDetectCommand)({
-      root: resolve(cwd, path ?? '.'),
+      root,
       ...(options.write === undefined ? {} : { write: options.write }),
       ...(options.maxDepth === undefined ? {} : { maxDepth: options.maxDepth }),
     }), runtimeJson(program, options));
@@ -651,6 +693,37 @@ function operationFailure(
   };
 }
 
+/** Retiring a registration is a write, so the state database is opened for one. */
+async function runProductionForget(input: {
+  cwd: string;
+  selector?: string;
+  force: boolean;
+  databasePath: string;
+}): Promise<ForgetCommandEnvelope> {
+  if (!existsSync(input.databasePath)) {
+    return {
+      schemaVersion: 1,
+      ok: false,
+      command: 'forget',
+      scope: { mode: 'local' },
+      data: null,
+      warnings: [],
+      errors: [{ code: 'WTM_NOT_INITIALIZED', message: 'No WTM state is registered on this machine.', severity: 'error' }],
+    };
+  }
+  const store = new SQLiteStateStore(input.databasePath);
+  try {
+    return await runForgetCommand({
+      store,
+      cwd: input.cwd,
+      ...(input.selector === undefined ? {} : { selector: input.selector }),
+      force: input.force,
+    });
+  } finally {
+    store.close();
+  }
+}
+
 async function runProductionResolve(input: { cwd: string; taskName: string }): Promise<JsonEnvelope<unknown>> {
   try {
     return await runResolveCommand(await productionTaskResolution(input));
@@ -661,7 +734,7 @@ async function runProductionResolve(input: { cwd: string; taskName: string }): P
 
 async function runProductionRun(input: { cwd: string; taskName: string }): Promise<JsonEnvelope<unknown>> {
   try {
-    return await runRunCommand(await productionTaskResolution(input));
+    return await runRunCommand(await productionTaskResolution({ ...input, prepare: true }));
   } catch (error) {
     return resolutionFailure('run', input.taskName, error);
   }
@@ -688,9 +761,12 @@ function resolutionFailure(
   };
 }
 
-/** `resolve` and `run` answer the same question; only one of them then executes the task. */
+/**
+ * `resolve` and `run` answer the same question; only one of them then executes the task, and
+ * only that one may create the resources the task expects to find.
+ */
 async function productionTaskResolution(
-  input: { cwd: string; taskName: string },
+  input: { cwd: string; taskName: string; prepare?: boolean },
   databasePath = defaultProductionRuntimePaths().databasePath,
 ): Promise<TaskResolutionInput & { workspaceId?: string }> {
   // The registry is what knows where the workspace root is, which in a directory holding
@@ -704,6 +780,7 @@ async function productionTaskResolution(
         cwd: input.cwd,
         globalConfigPath: defaultProductionRuntimePaths().globalConfigPath,
       });
+      if (input.prepare === true) await prepareRuntimeResources(runtime);
       return {
         ...taskResolutionInput(runtime, input.taskName),
         workspaceId: runtime.registration.workspace.id,
@@ -782,11 +859,6 @@ async function readable(path: string): Promise<boolean> {
   }
 }
 
-function containsPath(root: string, candidate: string): boolean {
-  const relativePath = resolve(candidate).slice(resolve(root).length);
-  return relativePath === '' || relativePath.startsWith('/');
-}
-
 function parseNonNegativeInteger(value: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) {
@@ -851,6 +923,19 @@ function isDiagnosticInvocation(argv: readonly string[]): boolean {
  * has none yet. An absent file means nothing is registered, and a command that only reads
  * must not bring a state directory into being by asking.
  */
+/** Whether anything is accepting on the daemon's socket right now. */
+async function daemonReachable(socketPath: string): Promise<boolean> {
+  return await new Promise<boolean>((settle) => {
+    const socket = createConnection(socketPath);
+    const finish = (reachable: boolean) => {
+      socket.destroy();
+      settle(reachable);
+    };
+    socket.once('connect', () => { finish(true); });
+    socket.once('error', () => { finish(false); });
+  });
+}
+
 function openStateStore(databasePath: string): SQLiteStateStore | null {
   if (!existsSync(databasePath)) return null;
   try {

@@ -236,6 +236,41 @@ wtm gc --apply
 
 Dependency cache GC requires adapter-native cleanup plans and is never included in default GC.
 
+GC never walks a Git working tree, so the resources `[resources]` creates inside a worktree are
+outside every plan. `gc` warns which ones those are rather than leaving the silence to be read
+as "there is nothing else"; removing the worktree removes them.
+
+## Registration
+
+### `wtm forget [selector]`
+
+Retires a workspace registration. Rows only — it never deletes a file.
+
+```bash
+wtm forget                    # the workspace containing the current directory
+wtm forget old-migration      # by name, id, or path
+wtm forget live-workspace --force
+```
+
+A registered root can stop existing: a finished migration deleted, a clone moved, a volume gone
+for good. `wtm doctor` reports the absence on every run, and this is what answers it. A
+registration whose directory is still on disk is refused without `--force`, because retiring it
+loses its endpoint leases and process records. Registering again is one `wtm init`.
+
+The selector decides what is retired:
+
+| Selector | Retires |
+| --- | --- |
+| omitted | the workspace containing the current directory |
+| a workspace name or id | that workspace, with every repository in it |
+| a path that is exactly a registered repository root | that repository alone |
+| any other path | the workspace containing it |
+
+A repository can be retired on its own because the workspace-sized instrument is often the
+wrong one: finished migrations whose directories are gone sit inside a workspace whose other
+repositories are in daily use. A path that is both a repository root and the workspace root
+retires the workspace, since retiring the repository alone would leave nothing behind it.
+
 ## Daemon
 
 ```bash
