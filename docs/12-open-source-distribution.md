@@ -128,7 +128,11 @@ publishing job is guarded by `startsWith(github.ref, 'refs/tags/v')`.
 
 The tag workflow (`.github/workflows/release.yml`):
 
-- builds and fully verifies the executable natively on macOS arm64 and macOS x64;
+- builds and fully verifies the executable natively on macOS arm64 and macOS x64. Performance
+  budgets are not part of this gate: they are wall-clock measurements, and a shared CI runner
+  blocks budgets that the same commit met minutes earlier, which fails releases at random without
+  telling anyone anything about the product. The `Performance` workflow measures them on every
+  `v*` tag, on one consistent runner, and uploads the report;
 - requires the tag to equal the `package.json` version exactly — `v1.2.3` for `1.2.3`, and a
   prerelease tag only for the identical prerelease version;
 - recomputes every archive digest and requires exactly the two expected archives before it
