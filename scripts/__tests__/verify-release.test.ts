@@ -174,6 +174,24 @@ describe('release artifact gate', () => {
     );
   });
 
+  test('gates one architecture against its own archive, not the release it is half of', () => {
+    // Each matrix job builds a single executable. Requiring the whole release here failed a job
+    // for not having produced an archive it was never asked to build, and no tag could publish.
+    const arm64 = 'wtm-darwin-arm64.tar.gz';
+    const directory = stage({ [arm64]: payloads[arm64] as string });
+
+    const manifest = verifyReleaseArtifacts(request(directory, { archives: [arm64] }));
+
+    expect(manifest.archives.map(({ name }) => name)).toEqual([arm64]);
+  });
+
+  test('rejects an architecture that ships another architecture\'s archive', () => {
+    const directory = stage(payloads);
+
+    expect(() => verifyReleaseArtifacts(request(directory, { archives: ['wtm-darwin-arm64.tar.gz'] })))
+      .toThrow('SHA256SUMS lists unexpected entry wtm-darwin-x64.tar.gz');
+  });
+
   test('rejects an unexpected checksum entry', () => {
     const directory = stage(payloads, `${checksums(payloads)}${digest('notes')}  RELEASE_NOTES.md\n`);
 

@@ -16,7 +16,10 @@ jobs:
     permissions:
       contents: read
     strategy:
-      fail-fast: true
+      # One architecture failing must not cancel the other. A release publishes both, so a run
+      # that stops at the first failure reports half of what is wrong and costs another tag to
+      # learn the rest.
+      fail-fast: false
       matrix:
         include:
           # Each executable is built natively; the SEA embeds a host-architecture Node runtime.
@@ -89,6 +92,9 @@ jobs:
       - name: Gate the release artifacts
         env:
           WTM_RELEASE_SIGNING: ${{ steps.sign.outputs.signing }}
+          # This job built one architecture, so it gates one archive. The whole release is gated
+          # again by the job that collects both.
+          WTM_RELEASE_ARCH: ${{ matrix.arch }}
         run: bun run release:gate
 
       - uses: actions/upload-artifact@v4

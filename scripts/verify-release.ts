@@ -11,6 +11,15 @@ export const releaseSigningStatuses = ['signed', 'adhoc', 'unsigned'] as const;
 
 export type ReleaseSigningStatus = (typeof releaseSigningStatuses)[number];
 
+/** The one archive a single-architecture build produces. */
+export function releaseArchiveFor(arch: string): string {
+  const name = `wtm-darwin-${arch}.tar.gz`;
+  if (!(releaseArchiveNames as readonly string[]).includes(name)) {
+    throw new Error(`No release archive is defined for architecture ${arch}`);
+  }
+  return name;
+}
+
 export interface ReleaseVersion {
   tag: string;
   version: string;
@@ -41,6 +50,13 @@ export interface ReleaseVerification {
   packageVersion: string;
   smoke?: readonly ReleaseSmokeCheck[] | undefined;
   signing?: string | undefined;
+  /**
+   * The archives this directory is expected to hold, defaulting to the whole release. A job that
+   * builds one architecture can only produce one of them, and must gate exactly that one: asking
+   * it for the other architecture's archive fails a build that did nothing wrong, and asking it
+   * for nothing lets a half-built release through.
+   */
+  archives?: readonly string[] | undefined;
 }
 
 const semver =
@@ -77,14 +93,13 @@ export function verifyReleaseArtifacts(request: ReleaseVerification): ReleaseMan
   verifySmoke(request.smoke);
   verifySigning(release, request.signing);
 
+  const expected = request.archives ?? releaseArchiveNames;
   const listed = parseChecksums(directory);
   for (const name of listed.keys()) {
-    if (!(releaseArchiveNames as readonly string[]).includes(name)) {
-      throw new Error(`SHA256SUMS lists unexpected entry ${name}`);
-    }
+    if (!expected.includes(name)) throw new Error(`SHA256SUMS lists unexpected entry ${name}`);
   }
   const archives: ReleaseArchive[] = [];
-  for (const name of releaseArchiveNames) {
+  for (const name of expected) {
     const expected = listed.get(name);
     if (expected === undefined) throw new Error(`SHA256SUMS does not list ${name}`);
     const path = join(directory, name);
@@ -182,12 +197,15 @@ if (import.meta.main) {
   const root = resolve(fileURLToPath(import.meta.url), '../..');
   const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version: string };
   const release = verifyReleaseTag(process.argv[2] ?? process.env['GITHUB_REF'] ?? '', version);
+  // Unset means the whole release, which is what the job that collects both architectures gates.
+  const arch = process.env['WTM_RELEASE_ARCH']?.trim();
   const manifest = verifyReleaseArtifacts({
     directory: join(root, 'dist/release'),
     release,
     packageVersion: version,
     smoke: readSmokeResults(process.env['WTM_RELEASE_SMOKE']),
     signing: process.env['WTM_RELEASE_SIGNING'],
+    archives: arch === undefined || arch === '' ? releaseArchiveNames : [releaseArchiveFor(arch)],
   });
   process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
 }
