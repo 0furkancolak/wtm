@@ -16,9 +16,23 @@ export interface PrivateDirectoryIdentity {
 }
 
 export class PrivateDirectoryError extends Error {
-  constructor() {
-    super('WTM private directory is unsafe.');
+  readonly code = 'WTM_PRIVATE_DIRECTORY_UNSAFE' as const;
+  readonly context: Record<string, unknown>;
+
+  /**
+   * Says which directory failed and what about it failed. WTM keeps its state where only this
+   * user can reach it, and refusing without naming the directory leaves a reader with a policy
+   * they cannot act on — the fix is almost always one `chmod` on one path.
+   */
+  constructor(path?: string, reason?: string) {
+    super(path === undefined
+      ? 'WTM private directory is unsafe.'
+      : `WTM private directory is unsafe: ${path} ${reason ?? 'is not a directory only you can read'}.`);
     this.name = 'PrivateDirectoryError';
+    this.context = {
+      ...(path === undefined ? {} : { path }),
+      ...(reason === undefined ? {} : { reason }),
+    };
   }
 }
 
@@ -76,13 +90,18 @@ async function assertNoSymlinkComponents(target: string): Promise<void> {
     });
     if (stat === undefined) return;
     if (stat.isSymbolicLink() && (belowPrivateAnchor || stat.uid === currentUserId)) {
-      throw new PrivateDirectoryError();
+      throw new PrivateDirectoryError(current, 'is a symbolic link');
     }
-    if (belowPrivateAnchor && (
-      !stat.isDirectory()
-      || stat.uid !== currentUserId
-      || (stat.mode & 0o077) !== 0
-    )) throw new PrivateDirectoryError();
+    if (belowPrivateAnchor) {
+      if (!stat.isDirectory()) throw new PrivateDirectoryError(current, 'is not a directory');
+      if (stat.uid !== currentUserId) throw new PrivateDirectoryError(current, 'belongs to another user');
+      if ((stat.mode & 0o077) !== 0) {
+        throw new PrivateDirectoryError(
+          current,
+          `is readable by others (mode ${(stat.mode & 0o7777).toString(8)}); run chmod 700 on it`,
+        );
+      }
+    }
     // macOS exposes /var as a root-owned system symlink. System ancestors are
     // outside WTM's authority; once an owned 0700 anchor is reached, every
     // remaining lexical component is required to be a real directory.
@@ -103,11 +122,11 @@ export async function verifyPrivateDirectory(directory: PrivateDirectory): Promi
 
 async function inspectPrivateDirectory(path: string, initial?: Stats): Promise<PrivateDirectory> {
   const before = initial ?? await lstat(path).catch(() => {
-    throw new PrivateDirectoryError();
+    throw new PrivateDirectoryError(path, 'cannot be read');
   });
-  assertPrivateDirectory(before);
+  assertPrivateDirectory(before, path);
   const canonicalPath = await realpath(path).catch(() => {
-    throw new PrivateDirectoryError();
+    throw new PrivateDirectoryError(path, 'cannot be resolved');
   });
   const handle = await open(canonicalPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW).catch(() => {
     throw new PrivateDirectoryError();
@@ -132,15 +151,16 @@ async function inspectPrivateDirectory(path: string, initial?: Stats): Promise<P
   }
 }
 
-function assertPrivateDirectory(stat: Stats): void {
+function assertPrivateDirectory(stat: Stats, path?: string): void {
   const currentUserId = process.getuid?.();
-  if (
-    !stat.isDirectory()
-    || currentUserId === undefined
-    || stat.uid !== currentUserId
-    || (stat.mode & 0o077) !== 0
-  ) {
-    throw new PrivateDirectoryError();
+  if (currentUserId === undefined) throw new PrivateDirectoryError();
+  if (!stat.isDirectory()) throw new PrivateDirectoryError(path, 'is not a directory');
+  if (stat.uid !== currentUserId) throw new PrivateDirectoryError(path, 'belongs to another user');
+  if ((stat.mode & 0o077) !== 0) {
+    throw new PrivateDirectoryError(
+      path,
+      `is readable by others (mode ${(stat.mode & 0o7777).toString(8)}); run chmod 700 on it`,
+    );
   }
 }
 
