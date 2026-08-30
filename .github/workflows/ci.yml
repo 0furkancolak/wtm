@@ -6,7 +6,19 @@ permissions:
   contents: read
 jobs:
   validate:
-    runs-on: macos-15
+    name: Validate ${{ matrix.arch }}
+    # The release ships an executable per architecture, and they do not fail together: linking and
+    # signing behave differently on x64. Building only on Apple silicon left the other half of the
+    # release unproven until a tag tried to publish it.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -14,7 +26,8 @@ jobs:
           bun-version: 1.3.14
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          # The standalone build refuses any runtime but the pinned one, and this job builds it.
+          node-version: 24.18.0
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun run typecheck
