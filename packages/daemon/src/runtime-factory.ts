@@ -13,10 +13,12 @@ import {
   type WorkspaceRecord,
   type WorktreeRecord,
 } from '@wtm/core';
+import { withAdapterTasks } from './adapter-tasks';
+import type { AdapterContext } from '@wtm/protocol';
 import { WtmDaemon } from './main';
 import { ManagedLogStore } from './logs';
 import { ManagedProcessSupervisor, type RuntimeInvocation } from './process-supervisor';
-import { DaemonRuntimeController, type DaemonRuntimeResolver } from './runtime-controller';
+import { DaemonRegistrationError, DaemonRuntimeController, type DaemonRuntimeResolver } from './runtime-controller';
 
 export interface ProductionRuntimePaths {
   dataRoot: string;
@@ -145,7 +147,7 @@ class ProductionRuntimeResolver implements DaemonRuntimeResolver {
     return {
       worktreeId: registration.worktree.id,
       task: resolveTask({
-        config: config.value,
+        config: await withAdapterTasks(config.value, adapterContext(registration)),
         taskName,
         isMain: registration.worktree.isMain,
         context: templateContext(registration),
@@ -178,11 +180,19 @@ class ProductionRuntimeResolver implements DaemonRuntimeResolver {
     const worktree = this.store.listWorktrees()
       .filter((candidate) => contains(candidate.path, absolute))
       .sort((left, right) => right.path.length - left.path.length)[0];
-    if (worktree === undefined) throw new Error('WORKTREE_NOT_REGISTERED');
+    if (worktree === undefined) {
+      throw new DaemonRegistrationError(
+        'This directory is not inside a worktree WTM has registered. Run `wtm init` in the workspace root.',
+      );
+    }
     const repository = this.store.listRepositories().find(({ id }) => id === worktree.repositoryId);
-    if (repository === undefined) throw new Error('REPOSITORY_NOT_REGISTERED');
+    if (repository === undefined) {
+      throw new DaemonRegistrationError('The registered worktree has no repository on record.');
+    }
     const workspace = this.store.listWorkspaces().find(({ id }) => id === repository.workspaceId);
-    if (workspace === undefined) throw new Error('WORKSPACE_NOT_REGISTERED');
+    if (workspace === undefined) {
+      throw new DaemonRegistrationError('The registered repository has no workspace on record.');
+    }
     return { workspace, repository, worktree };
   }
 }
@@ -191,6 +201,14 @@ interface Registration {
   workspace: WorkspaceRecord;
   repository: RepositoryRecord;
   worktree: WorktreeRecord;
+}
+
+function adapterContext({ workspace, repository, worktree }: Registration): AdapterContext {
+  return {
+    workspace: { root: workspace.root },
+    repository: { root: worktree.path, mainRoot: repository.mainRoot },
+    worktree: { root: worktree.path, id: worktree.numericId, branch: worktree.branch ?? null },
+  };
 }
 
 function templateContext({ workspace, repository, worktree }: Registration): TemplateContext {

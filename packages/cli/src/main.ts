@@ -38,6 +38,7 @@ import { runExecCommand, type ForegroundExecutor } from './commands/exec';
 import type { RuntimeDaemonClient } from './commands/runtime-client';
 import { DaemonClient } from './client';
 import {
+  createDaemonErrorReporter,
   runDaemonLifecycleCommand,
   serveDaemon,
   type DaemonSignalSource,
@@ -62,6 +63,7 @@ import {
   type SkillInstaller,
 } from './commands/skill';
 import { configureProductMetadata } from './product';
+import { withAdapterTasks } from '@wtm/daemon/adapter-tasks';
 import { createStateDiagnosticDataSource } from './state-diagnostics';
 
 export interface CliDependencies {
@@ -269,9 +271,14 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   const serve = daemon.command('serve').description('Run the WTM daemon in the foreground.');
   addJsonOption(serve);
   serve.action(async (options: ScopeOptions) => {
+    // One reporter for the whole daemon: startup failures and every error raised while it
+    // runs land in the same log, which is the only place an unattended process can speak.
+    const reportError = createDaemonErrorReporter();
     const result = await serveDaemon({
+      reportError,
       runtimeFactory: dependencies.daemonRuntimeFactory
         ?? (() => createProductionDaemon({
+          onError: reportError,
           runtimeInvocation: dependencies.runtimeInvocation ?? defaultRuntimeInvocation(),
         })),
       ...(dependencies.daemonSignals === undefined ? {} : { signals: dependencies.daemonSignals }),
@@ -633,15 +640,24 @@ async function productionTaskResolution(input: { cwd: string; taskName: string }
     repoRoot: worktree.path,
     globalConfigPath: join(homedir(), 'Library', 'Application Support', 'WTM', 'config.toml'),
   });
+  const mainRoot = topology[0]?.path ?? worktree.path;
   const branch = worktree.branch?.replace(/^refs\/heads\//, '') ?? '';
   return {
-    config: config.value,
+    config: await withAdapterTasks(config.value, {
+      workspace: { root: input.cwd },
+      repository: { root: worktree.path, mainRoot },
+      worktree: {
+        root: worktree.path,
+        id: Math.max(0, topology.findIndex(({ path }) => path === worktree.path)),
+        branch: worktree.branch ?? null,
+      },
+    }),
     taskName: input.taskName,
     isMain: worktree.path === topology[0]?.path,
     context: {
       workspace: { root: input.cwd, name: input.cwd.split('/').at(-1) ?? 'workspace' },
       repo: { root: worktree.path, name: worktree.path.split('/').at(-1) ?? 'repo' },
-      main: { root: topology[0]?.path ?? worktree.path },
+      main: { root: mainRoot },
       worktree: { root: worktree.path },
       id: Math.max(1, topology.findIndex(({ path }) => path === worktree.path) + 1),
       key: String(Math.max(1, topology.findIndex(({ path }) => path === worktree.path) + 1)),
