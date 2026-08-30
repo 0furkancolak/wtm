@@ -6,8 +6,8 @@ import {
   protocolVersion,
   type IpcRequest,
 } from '@wtm/protocol';
-import type { ManagedProcessRecord, ResolvedTask } from '@wtm/core';
-import { DaemonRuntimeController } from '../runtime-controller';
+import { WtmTaskResolutionError, type ManagedProcessRecord, type ResolvedTask } from '@wtm/core';
+import { DaemonRegistrationError, DaemonRuntimeController } from '../runtime-controller';
 
 const processRecord: ManagedProcessRecord = {
   id: 'process-1',
@@ -124,6 +124,48 @@ describe('DaemonRuntimeController', () => {
     }]);
     expect(JSON.stringify(failed)).not.toContain('private');
     expect(JSON.stringify(failed)).not.toContain('stack trace');
+  });
+
+  test('reports a resolution failure by its own code and message', async () => {
+    const controller = new DaemonRuntimeController({
+      supervisor: noProcesses(),
+      logs: { read: async () => '' },
+      resolver: {
+        resolveTask: async () => {
+          throw new WtmTaskResolutionError('Unknown task: dev', { taskName: 'dev' });
+        },
+        resolveWorktree: async () => ({ worktreeId: 'worktree-7' }),
+        resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
+      },
+    });
+
+    const failed = await controller.handle(request('start', { cwd: '/repo/wt', taskName: 'dev' }));
+
+    expect(failed.errors).toEqual([{
+      code: 'WTM_CONFIG_INVALID',
+      message: 'Unknown task: dev',
+      severity: 'error',
+      context: { command: 'start', taskName: 'dev' },
+    }]);
+  });
+
+  test('reports an unregistered directory as a missing workspace, not a daemon failure', async () => {
+    const controller = new DaemonRuntimeController({
+      supervisor: noProcesses(),
+      logs: { read: async () => '' },
+      resolver: {
+        resolveTask: async () => { throw new DaemonRegistrationError('Not registered.'); },
+        resolveWorktree: async () => ({ worktreeId: 'worktree-7' }),
+        resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
+      },
+    });
+
+    const failed = await controller.handle(request('start', { cwd: '/repo/wt', taskName: 'dev' }));
+
+    expect(failed.errors[0]).toMatchObject({
+      code: 'WTM_WORKSPACE_NOT_FOUND',
+      message: 'Not registered.',
+    });
   });
 
   test('strictly rejects command-specific unknown argument keys before resolution', async () => {

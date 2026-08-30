@@ -109,12 +109,14 @@ describe('daemon serve', () => {
     for (const failure of ['start', 'close'] as const) {
       const signals = new FakeSignals();
       let closes = 0;
+      const reported: unknown[] = [];
       const serving = serveDaemon({
         runtimeFactory: async () => ({
           start: async () => { if (failure === 'start') throw new Error('raw startup secret'); },
           close: async () => { closes += 1; if (failure === 'close') throw new Error('raw close secret'); },
         }),
         signals,
+        reportError: (error) => { reported.push(error); },
       });
       if (failure === 'close') {
         await until(() => signals.listenerCount() === 2);
@@ -128,6 +130,9 @@ describe('daemon serve', () => {
         failure === 'start' ? 'WTM daemon could not start.' : 'WTM daemon could not close cleanly.',
       );
       expect(JSON.stringify(result)).not.toContain('secret');
+      // The cause is kept out of the envelope but must still reach the daemon's log.
+      expect(reported).toHaveLength(1);
+      expect((reported[0] as Error).message).toBe(`raw ${failure === 'start' ? 'startup' : 'close'} secret`);
       expect(closes).toBe(1);
       expect(signals.listenerCount()).toBe(0);
     }
@@ -205,7 +210,7 @@ function fakeManager(): LaunchdLifecycle {
   return {
     install: async () => ({ action: 'install', state: 'installed', label: 'dev.wtm.daemon', plistPath: '/tmp/agent.plist' }),
     uninstall: async () => ({ action: 'uninstall', state: 'uninstalled', label: 'dev.wtm.daemon', plistPath: '/tmp/agent.plist' }),
-    status: async () => ({ action: 'status', state: 'loaded', label: 'dev.wtm.daemon', plistPath: '/tmp/agent.plist' }),
+    status: async () => ({ action: 'status', state: 'loaded', label: 'dev.wtm.daemon', plistPath: '/tmp/agent.plist', runState: 'running' }),
   };
 }
 

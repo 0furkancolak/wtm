@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGitWorktreeFixture } from '../../../../testkit/src/git-fixture';
-import { createGitEnvironment, listGitWorktrees } from '../git-runner';
+import { GitCommandError, createGitEnvironment, listGitWorktrees, runGit } from '../git-runner';
 
 describe('listGitWorktrees', () => {
   it('reads normal, linked locked, and detached worktrees from Git porcelain', async () => {
@@ -94,5 +94,26 @@ describe('createGitEnvironment', () => {
     });
     expect(source.GIT_DIR).toBe('/tmp/wrong.git');
     expect(source.WTM_SENTINEL).toBe('preserved');
+  });
+});
+
+describe('runGit timeouts', () => {
+  it('kills a git that outlives its timeout instead of waiting on it forever', async () => {
+    const fixture = await createGitWorktreeFixture();
+    try {
+      // No git reaches `exec` inside a millisecond, so this stands in for any git that cannot
+      // make progress: a lock it will never win, a volume the process is not allowed to read,
+      // a privacy prompt no background agent can answer.
+      const startedAt = Date.now();
+      const failure = await runGit(fixture.repoPath, ['worktree', 'list'], { timeoutMs: 1 })
+        .then(() => null, (error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(GitCommandError);
+      expect((failure as GitCommandError).timedOut).toBe(true);
+      expect((failure as GitCommandError).message).toContain('Timed out after 1ms');
+      expect(Date.now() - startedAt).toBeLessThan(4_000);
+    } finally {
+      await fixture.cleanup();
+    }
   });
 });

@@ -26,6 +26,14 @@ describe('WtmDaemon startup', () => {
     });
   });
 
+  test('serves the workspace when one repository cannot be read', () => {
+    expect(runScenario('unreadable-repository')).toEqual({
+      socketOpened: true,
+      healthyRegistered: true,
+      reported: ['Timed out after 200ms'],
+    });
+  });
+
   test('closes already-opened resources in reverse order when socket startup fails', () => {
     expect(runScenario('startup-failure')).toEqual({
       error: 'bind failed',

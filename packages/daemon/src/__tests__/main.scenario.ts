@@ -496,6 +496,56 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
   }
 }
 
+async function unreadableRepositorySurvives() {
+  return await withDirectory('wtm-unreadable-', async (root) => {
+    const healthyRoot = join(root, 'healthy');
+    const blockedRoot = join(root, 'blocked');
+    for (const path of [healthyRoot, blockedRoot]) await mkdir(join(path, '.git'), { recursive: true });
+    const store = new SQLiteStateStore(join(root, 'state.db'));
+    try {
+      const workspace = store.upsertWorkspace({
+        name: 'unreadable', root, scope: 'local', configPath: join(root, 'wtm.toml'),
+      });
+      for (const path of [blockedRoot, healthyRoot]) {
+        store.upsertRepository({
+          workspaceId: workspace.id,
+          commonGitDir: join(path, '.git'),
+          mainRoot: path,
+          remoteIdentity: null,
+        });
+      }
+      const reported: string[] = [];
+      let socketOpened = false;
+      const daemon = new WtmDaemon({
+        stateStore: store,
+        socketPath: join(root, 'wtmd.sock'),
+        onError: (error) => { reported.push(error instanceof Error ? error.message : String(error)); },
+        listGitWorktrees: async (path: string) => {
+          if (path === blockedRoot) throw new Error('Timed out after 200ms');
+          return snapshot(path);
+        },
+        recoveryHooks: {
+          verifyProcessIdentities: async () => {},
+          verifyEndpointLeases: async () => {},
+          scheduleCleanupRetries: async () => {},
+        },
+        watcherFactory: () => ({
+          start: async () => {}, close: async () => {}, whenIdle: async () => {},
+        }),
+        serverFactory: () => ({
+          start: async () => { socketOpened = true; }, close: async () => {},
+        }),
+      });
+      await daemon.start();
+      const healthyRegistered = store.listWorktrees().some(({ path }) => path === healthyRoot);
+      await daemon.close();
+      return { socketOpened, healthyRegistered, reported };
+    } finally {
+      store.close();
+    }
+  });
+}
+
 const scenarios: Record<string, () => Promise<unknown>> = {
   'startup-order': startupOrder,
   'startup-failure': startupFailure,
@@ -507,6 +557,7 @@ const scenarios: Record<string, () => Promise<unknown>> = {
   'explicit-reconcile-failure': explicitReconcileFailure,
   'watch-error-refresh': watchErrorRefresh,
   'watch-error-missing-root': watchErrorMissingRoot,
+  'unreadable-repository': unreadableRepositorySurvives,
 };
 
 const name = process.argv[2];

@@ -1,8 +1,10 @@
 export {
   GitCommandError,
+  defaultGitTimeoutMs,
   listGitWorktrees,
   readGitRemoteOrigin,
   readGitRepositoryIdentity,
+  worktreeListTimeoutMs,
 } from './git/git-runner';
 export type { GitCommandOptions, GitCommandResult, GitRepositoryIdentity } from './git/git-runner';
 export { parseGitWorktreePorcelain } from './git/worktree-parser';

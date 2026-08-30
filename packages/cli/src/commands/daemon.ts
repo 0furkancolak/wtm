@@ -16,6 +16,12 @@ export interface DaemonSignalSource {
 export interface DaemonServeDependencies {
   runtimeFactory: () => Promise<ForegroundDaemonRuntime>;
   signals?: DaemonSignalSource;
+  /**
+   * Where a startup or shutdown failure is recorded. The daemon runs unattended, so its own
+   * stderr is the only place the cause can survive; without it, launchd reports a healthy
+   * service and every command against the dead daemon reads as an unexplained failure.
+   */
+  reportError?: (error: unknown) => void;
 }
 
 export interface DaemonServeResult {
@@ -44,6 +50,7 @@ export async function runDaemonLifecycleCommand(
 
 export async function serveDaemon(dependencies: DaemonServeDependencies): Promise<DaemonServeResult> {
   const signals = dependencies.signals ?? processSignalSource;
+  const reportError = dependencies.reportError ?? defaultErrorReport;
   let settleSignal: ((signal: 'SIGINT' | 'SIGTERM') => void) | null = null;
   let settled = false;
   const termination = new Promise<'SIGINT' | 'SIGTERM'>((resolve) => { settleSignal = resolve; });
@@ -71,14 +78,16 @@ export async function serveDaemon(dependencies: DaemonServeDependencies): Promis
     try {
       runtime = await dependencies.runtimeFactory();
       await runtime.start();
-    } catch {
+    } catch (error) {
+      reportError(error);
       await closeOnce().catch(() => {});
       return serveFailure('WTM daemon could not start.');
     }
     const signal = await termination;
     try {
       await closeOnce();
-    } catch {
+    } catch (error) {
+      reportError(error);
       return serveFailure('WTM daemon could not close cleanly.');
     }
     return {
@@ -101,6 +110,29 @@ function successEnvelope<T>(command: string, data: T): JsonEnvelope<T> {
   return { schemaVersion: 1, ok: true, command, data, warnings: [], errors: [] };
 }
 
+/**
+ * Writes daemon failures to stderr, which launchd routes to the daemon's error log. Repeats
+ * are collapsed because a permanently unreadable repository re-reports on every reconcile
+ * pass, and an unbounded log is its own kind of silence.
+ */
+export function createDaemonErrorReporter(
+  write: (line: string) => void = (line) => { process.stderr.write(line); },
+): (error: unknown) => void {
+  let previous: string | null = null;
+  return (error: unknown) => {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    if (detail === previous) return;
+    previous = detail;
+    write(`${detail}\n`);
+  };
+}
+
+const defaultErrorReport = createDaemonErrorReporter();
+
+/**
+ * The envelope stays deliberately free of the cause: it is rendered to whoever ran the
+ * command, while the full error goes to stderr through the reporter above.
+ */
 function serveFailure(message: string): DaemonServeResult {
   return {
     exitCode: 1,

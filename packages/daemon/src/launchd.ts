@@ -16,6 +16,13 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 export const launchdLabel = 'dev.wtm.daemon';
 const launchctlPath = '/bin/launchctl';
 const maxCommandOutputBytes = 4 * 1024;
+/**
+ * `launchctl print gui/<uid>` lists every service in the domain, which is hundreds of
+ * kilobytes on a working desktop session. Capping the child's own buffer at the reporting
+ * limit made execFile kill it and report a domain that is in fact perfectly available, so
+ * the command is allowed to speak freely and only what is retained stays truncated.
+ */
+const maxCommandBufferBytes = 8 * 1024 * 1024;
 const maxManagedPlistBytes = 64 * 1024;
 const maxTransactionMetadataBytes = 16 * 1024;
 const maxOwnerPredecessors = 8;
@@ -100,6 +107,14 @@ export type LaunchdInstallState = 'installed' | 'reinstalled' | 'already-install
 export type LaunchdUninstallState = 'uninstalled' | 'already-absent';
 export type LaunchdStatusState = 'loaded' | 'installed-not-loaded' | 'absent';
 
+export interface LaunchdStatusResult extends LaunchdLifecycleResult<LaunchdStatusState> {
+  /**
+   * launchd's own word for the job: `running` while a process is alive, `not running` when
+   * the job is loaded but idle, and `null` when launchd does not know the job at all.
+   */
+  runState: string | null;
+}
+
 export interface LaunchdLifecycleResult<State extends string> {
   action: 'install' | 'uninstall' | 'status';
   state: State;
@@ -110,7 +125,7 @@ export interface LaunchdLifecycleResult<State extends string> {
 export interface LaunchdLifecycle {
   install(): Promise<LaunchdLifecycleResult<LaunchdInstallState>>;
   uninstall(): Promise<LaunchdLifecycleResult<LaunchdUninstallState>>;
-  status(): Promise<LaunchdLifecycleResult<LaunchdStatusState>>;
+  status(): Promise<LaunchdStatusResult>;
 }
 
 export interface LaunchdLifecycleOptions {
@@ -285,9 +300,9 @@ export function createLaunchdLifecycle(options: LaunchdLifecycleOptions): Launch
     }
   };
 
-  const loaded = async (): Promise<boolean> => {
+  const describe = async (): Promise<{ loaded: boolean; runState: string | null }> => {
     const service = await runner(commands.print);
-    if (service.outcome === 'success') return true;
+    if (service.outcome === 'success') return { loaded: true, runState: runState(service.stdout) };
     if (!isAbsentResult(service)) throw commandError('print', service);
     const domain = await runner(commands.printDomain);
     if (domain.outcome !== 'success') {
@@ -297,8 +312,10 @@ export function createLaunchdLifecycle(options: LaunchdLifecycleOptions): Launch
         commandContext('print-domain', domain),
       );
     }
-    return false;
+    return { loaded: false, runState: null };
   };
+
+  const loaded = async (): Promise<boolean> => (await describe()).loaded;
 
   const waitUntilAbsent = async (): Promise<void> => {
     for (let attempt = 0; attempt < pollAttempts; attempt += 1) {
@@ -437,9 +454,13 @@ export function createLaunchdLifecycle(options: LaunchdLifecycleOptions): Launch
 
     status: async () => {
       assertPlatform();
-      const isLoaded = await loaded();
+      const service = await describe();
       const existing = await readSafeManagedFile(paths.home, paths.plistPath, ownerUid);
-      return lifecycleResult('status', isLoaded ? 'loaded' : existing === null ? 'absent' : 'installed-not-loaded', paths.plistPath);
+      const state = service.loaded ? 'loaded' : existing === null ? 'absent' : 'installed-not-loaded';
+      // `loaded` only says launchd knows the job. Reporting whether a process is actually
+      // alive is what separates "the daemon is down" from "the request itself failed", and
+      // without it every failed command looks like a dead daemon.
+      return { ...lifecycleResult('status', state, paths.plistPath), runState: service.runState };
     },
   };
 }
@@ -2172,7 +2193,7 @@ async function runLaunchctl(argv: readonly string[]): Promise<LaunchdCommandResu
   return await new Promise((resolvePromise) => {
     execFile(executable, argv.slice(1), {
       encoding: 'utf8',
-      maxBuffer: maxCommandOutputBytes,
+      maxBuffer: maxCommandBufferBytes,
       shell: false,
       env: { PATH: '/usr/bin:/bin', HOME: homedir(), LC_ALL: 'C', LANG: 'C' },
     }, (error: ExecException | null, stdout: string, stderr: string) => {
@@ -2194,6 +2215,11 @@ function lifecycleResult<Action extends 'install' | 'uninstall' | 'status', Stat
   plistPath: string,
 ): LaunchdLifecycleResult<State> & { action: Action } {
   return { action, state, label: launchdLabel, plistPath };
+}
+
+/** Reads the `state = <word>` line that `launchctl print` puts near the top of its report. */
+function runState(stdout: string): string | null {
+  return /^\s*state = (.+?)\s*$/m.exec(stdout)?.[1] ?? null;
 }
 
 function commandError(operation: string, result: LaunchdCommandResult): LaunchdLifecycleError {

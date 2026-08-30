@@ -1,4 +1,4 @@
-import type { ManagedProcessRecord, ResolvedTask } from '@wtm/core';
+import { WtmTaskResolutionError, type ManagedProcessRecord, type ResolvedTask } from '@wtm/core';
 import {
   defaultMaxIpcFrameBytes,
   protocolVersion,
@@ -13,6 +13,23 @@ import type {
   ManagedProcessStartInput,
   ManagedProcessStartResult,
 } from './process-supervisor';
+
+/**
+ * Raised when a request names a directory that no registered workspace, repository, or
+ * worktree covers. It is the single most common reason a runtime command cannot proceed, so
+ * it says which of the three is missing instead of reporting an unexplained daemon failure.
+ */
+export class DaemonRegistrationError extends Error {
+  readonly code = 'WTM_WORKSPACE_NOT_FOUND' as const;
+  readonly severity = 'error' as const;
+  readonly context: Record<string, unknown>;
+
+  constructor(message: string, context: Record<string, unknown> = {}) {
+    super(message);
+    this.name = 'DaemonRegistrationError';
+    this.context = context;
+  }
+}
 
 const maximumLogReadBytes = 1024 * 1024;
 // Every raw byte can expand to six JSON bytes (for example NUL -> "\\u0000").
@@ -294,6 +311,18 @@ function invalidRequest(command: string): JsonEnvelope<null> {
 }
 
 function runtimeError(error: unknown, command: string): WtmError {
+  if (error instanceof WtmTaskResolutionError || error instanceof DaemonRegistrationError) {
+    // These two are the only errors whose message is written for the person who typed the
+    // command rather than for a log, so they are the only ones allowed to cross the socket
+    // verbatim. Everything else keeps a fixed message: an unexpected throw carries a stack
+    // and filesystem paths, and a client has no business reading either.
+    return {
+      code: error.code,
+      message: error.message,
+      severity: 'error',
+      context: { command, ...safeContext(error) },
+    };
+  }
   const code = safeRuntimeCode(error);
   if (code !== null) {
     return {

@@ -12,10 +12,33 @@ interface GitCommandFailure {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   stderr: string;
+  timedOut?: boolean;
 }
+
+/**
+ * Every command this module runs is local plumbing that finishes in milliseconds on a healthy
+ * repository, so a git that is still going after this long is stuck rather than slow — waiting
+ * on a lock, an unresponsive filesystem, or a macOS privacy prompt no background agent can
+ * answer. Without a bound the caller waits forever: a single unreachable repository is enough
+ * to hang daemon startup before the IPC socket is ever created, which reads to everyone
+ * involved as a daemon that silently died.
+ */
+export const defaultGitTimeoutMs = 30_000;
+/** How long a timed-out git is given to die politely before it is killed outright. */
+const terminationGraceMs = 2_000;
+
+/**
+ * Listing worktrees is the daemon's health check for a repository: it runs for every
+ * registered repository on every reconcile pass, and takes single-digit milliseconds on a
+ * healthy one. It is bounded far more tightly than the general default so that a repository
+ * nobody can read is written off quickly instead of holding the pass open.
+ */
+export const worktreeListTimeoutMs = 5_000;
 
 export interface GitCommandOptions {
   acceptedExitCodes?: readonly number[];
+  /** Overrides {@link defaultGitTimeoutMs} for a call known to need longer. */
+  timeoutMs?: number;
 }
 
 export interface GitCommandResult {
@@ -48,6 +71,8 @@ export class GitCommandError extends Error {
   readonly exitCode: number | null;
   readonly signal: NodeJS.Signals | null;
   readonly stderr: string;
+  /** True when the command was killed for exceeding its timeout rather than failing on its own. */
+  readonly timedOut: boolean;
 
   constructor(failure: GitCommandFailure) {
     const stderr = sanitizeGitDiagnostic(failure.stderr);
@@ -60,11 +85,14 @@ export class GitCommandError extends Error {
     this.exitCode = failure.exitCode;
     this.signal = failure.signal;
     this.stderr = stderr;
+    this.timedOut = failure.timedOut === true;
   }
 }
 
 export async function listGitWorktrees(repoPath: string): Promise<GitWorktreeRecord[]> {
-  const result = await runGit(repoPath, ['worktree', 'list', '--porcelain', '-z']);
+  const result = await runGit(repoPath, ['worktree', 'list', '--porcelain', '-z'], {
+    timeoutMs: worktreeListTimeoutMs,
+  });
   return parseGitWorktreePorcelain(result.stdout);
 }
 
@@ -115,6 +143,7 @@ export function runGit(
   options: GitCommandOptions = {},
 ): Promise<GitCommandResult> {
   const argv = gitArgv(repoPath, args);
+  const timeoutMs = options.timeoutMs ?? defaultGitTimeoutMs;
   return new Promise((resolve, reject) => {
     const child = spawn(argv[0] ?? 'git', argv.slice(1), {
       env: createGitEnvironment(process.env),
@@ -122,13 +151,40 @@ export function runGit(
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
+    let timedOut = false;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      // A process blocked in an uninterruptible open() ignores SIGTERM, so the escalation is
+      // what actually frees the caller.
+      killTimer = setTimeout(() => child.kill('SIGKILL'), terminationGraceMs);
+      killTimer.unref();
+    }, timeoutMs);
+    timer.unref();
+    const clearTimers = () => {
+      clearTimeout(timer);
+      if (killTimer !== null) clearTimeout(killTimer);
+    };
 
     child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
     child.once('error', (error) => {
+      clearTimers();
       reject(new GitCommandError({ argv, exitCode: null, signal: null, stderr: error.message }));
     });
     child.once('close', (exitCode, signal) => {
+      clearTimers();
+      if (timedOut) {
+        reject(new GitCommandError({
+          argv,
+          exitCode: null,
+          signal,
+          stderr: `Timed out after ${timeoutMs}ms`,
+          timedOut: true,
+        }));
+        return;
+      }
       const acceptedExitCodes = options.acceptedExitCodes ?? [0];
       if (exitCode !== null && acceptedExitCodes.includes(exitCode)) {
         resolve({
