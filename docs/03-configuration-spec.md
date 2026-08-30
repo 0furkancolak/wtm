@@ -54,7 +54,8 @@ version = 1
 name = "dev"
 ```
 
-Auto detection is enabled by default.
+Auto detection is enabled by default. `wtm init` reads each repository and writes what it
+finds into this file — see [Detection](#detection).
 
 ## Recommended workspace example
 
@@ -74,7 +75,7 @@ mode = "lazy"
 
 [ports]
 strategy = "stable-dynamic"
-range = "20000-50000"
+range = "3000-4999"
 
 [ports.web]
 preferred = 3000
@@ -86,9 +87,21 @@ preferred = 4000
 WTM_ID = "{id}"
 WTM_REPO = "{repo.name}"
 WTM_BRANCH = "{branch}"
-WEB_PORT = "{port.web}"
-API_PORT = "{port.api}"
 COMPOSE_PROJECT_NAME = "{workspace.name}-{repo.name}-wt{id}"
+
+[repos.web]
+path = "web"
+
+[repos.web.environment]
+PORT = "{port.web}"
+API_URL = "http://localhost:{port.api}"
+
+[repos.api]
+path = "api"
+
+[repos.api.environment]
+PORT = "{port.api}"
+CORS_ORIGINS = "{cors.origins}"
 
 [resources.env]
 path = ".env"
@@ -170,9 +183,17 @@ Every named endpoint may publish itself:
 
 ```toml
 [ports.web]
-env = "PORT"      # the variable this port is exported under
+env = "PORT"      # the variable this port is exported under, in every repository
 origin = true     # counts toward the CORS allowlist; default true
 ```
+
+`env` here names the variable workspace-wide, which is enough for a workspace of one
+repository. Where two repositories both read `PORT` and each means its own endpoint, scope it
+with [`[repos]`](#repositories) instead.
+
+`preferred` is the port tried first. It must fall inside `[ports].range`; a preference outside
+the range is refused with `WTM_CONFIG_INVALID` rather than silently ignored, because a
+workspace that asked for 3000 and got 20000 has nothing to read that explains it.
 
 ### Stable dynamic
 
@@ -187,13 +208,18 @@ Allocation is persisted and reused when the OS port is available.
 ### Offset
 
 ```toml
+[ports]
+range = "3000-3999"
+
 [ports.web]
 strategy = "offset"
 preferred = 3000
 stride = 10
 ```
 
-Worktree 7 resolves to 3060 — `preferred + stride * (id - 1)` — before collision fallback.
+Worktree 7 resolves to 3060 — `preferred + stride * (id - 1)` — before collision fallback. A
+worktree whose offset lands past `range.max` falls back to anywhere in the range; a `preferred`
+that starts outside it is refused.
 
 ### Fixed
 
@@ -204,6 +230,38 @@ port = 9090
 ```
 
 A fixed endpoint is the workspace's decision, so WTM neither leases it nor moves it.
+
+## Repositories
+
+A workspace holds several repositories, and most of what is worth configuring belongs to one
+of them.
+
+```toml
+[repos.api]
+path = "api"                       # relative to the workspace root; defaults to the table name
+
+[repos.api.environment]
+PORT = "{port.api}"                # this repository's own endpoint
+CORS_ORIGINS = "{cors.origins}"
+
+[repos.web]
+path = "web"
+
+[repos.web.environment]
+PORT = "{port.web}"                # the same variable, a different endpoint
+VITE_API_URL = "http://localhost:{port.api}"
+```
+
+An entry matches a repository by `path`, resolved against the workspace root and compared to
+the repository's main working tree; without a `path`, the table's own name is matched against
+that directory's name. Two entries that name the same repository are refused.
+
+Environment layering, from weakest to strongest:
+
+1. what WTM derived (endpoint ports, the CORS allowlist)
+2. `[environment]`
+3. `[repos.<name>.environment]`
+4. `[tasks.<name>.env]`
 
 ## CORS
 
@@ -221,8 +279,42 @@ repository already declares in `.env.example`, `.env.sample`, `.env.template`,
 `ALLOWED_ORIGINS`, and the same spellings behind a project prefix.
 
 Only variable *names* are read from those files; no value is ever parsed out of them. Naming
-`env` here replaces detection; `enabled = false` turns it off. Anything `[environment]` sets
-by hand wins over what WTM derived.
+`env` here replaces detection; `enabled = false` turns it off — `{cors.origins}` still
+resolves, so a configuration that names the variables itself should set it.
+
+`wtm init` does exactly that: it writes the variables it found into
+`[repos.<name>.environment]` and sets `enabled = false`, so the file says what happens.
+
+## Detection
+
+`wtm init` and `wtm detect` read each repository and write what they find as configuration.
+
+| Read | For |
+| --- | --- |
+| `.env.example`, `.env.sample`, `.env.template`, `.env.defaults` | Variable names, and values that are a port or a loopback/service URL |
+| `.env` | Variable names only |
+| `package.json` | `scripts.dev`/`start`/`serve` port flags, workspace layout |
+| `compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml` | Published ports, and URL-valued `environment` entries |
+| `Makefile`, `makefile`, `GNUmakefile` | A `PORT = …` assignment |
+
+A value that is not a port (1–65535) or a bare `http(s)` address is dropped at the reader,
+query strings included. Nothing else ever leaves those files.
+
+What is written:
+
+- `[ports]` `range`, wide enough to contain every port the repositories asked for
+- `[ports.<name>]` `preferred`, per repository
+- `[repos.<name>]` `path`, and `[repos.<name>.environment]` with the port variable, the CORS
+  variables, and every address that resolved to another repository
+- `[cors] enabled = false`, when the allowlist variables were written explicitly
+
+An address resolves to another repository when its host is that repository's compose service
+name, or when its port is the port that repository asks for. Failing both, a variable whose
+own name contains a repository's name is written with a comment saying it was a guess.
+
+Neither command edits a line already in the file. `wtm init` writes only a file it creates;
+`wtm detect --write` appends only tables the file does not already define, and reports the
+rest. `wtm init --no-detect` skips it entirely.
 
 ## Tasks
 

@@ -5,6 +5,7 @@ These are copyable `wtm.toml` configurations for existing projects, not applicat
 - [`minimal/wtm.toml`](minimal/wtm.toml) defines one foreground `test` task that runs `npm test`.
 - [`bun-monorepo/wtm.toml`](bun-monorepo/wtm.toml) uses Bun, a worktree-local web app, one preferred port declaration, a background `dev` task, and a foreground `test` task. Its `apps/web` directory must exist; configure the application itself to consume its preferred port until WTM port allocation is available to runtime task resolution.
 - [`docker-compose/wtm.toml`](docker-compose/wtm.toml) supplies per-worktree Compose names and explicit `compose-up`/`compose-down` tasks. WTM does not start Docker during initialization.
+- [`multi-repo/wtm.toml`](multi-repo/wtm.toml) sits above several repositories rather than inside one. It allocates an endpoint per service per feature, gives each repository its own reading of `PORT`, and fills the API's CORS allowlist from the ports the feature was given. `wtm init` writes a file of this shape for you.
 - [`polyglot/wtm.toml`](polyglot/wtm.toml) defines the `js-test`, `python-test`, and `rust-test` tasks for JavaScript, Python/uv, and Rust. Its services live in `services/web`, `services/api`, and `services/worker`.
 
 Validate a copied configuration before starting a task:

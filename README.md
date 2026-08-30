@@ -51,6 +51,7 @@ context-aware orchestration layer around them.
   - [7. Reclaim disk](#7-reclaim-disk)
 - [Makefile support](#makefile-support)
 - [Ports and CORS](#ports-and-cors)
+- [Detection](#detection)
 - [Configuration](#configuration)
 - [The daemon](#the-daemon)
 - [JSON output for scripts and agents](#json-output-for-scripts-and-agents)
@@ -147,6 +148,10 @@ and the `wtm.toml` is modified.
 
 A workspace root need not itself be a Git repository. A directory holding ten sibling
 repositories, each with its own worktrees, is a valid workspace.
+
+It also *reads* those repositories, and writes what it finds into the `wtm.toml` as
+configuration you can edit — see [Detection](#detection). Pass `--no-detect` to skip that and
+get a file with nothing but a name and a version.
 
 ### 2. See where you are
 
@@ -297,43 +302,54 @@ rest of the stack unless they are told about it. Declare the endpoints once:
 range = "4100-4199"
 
 [ports.api]
-env = "PORT"
+preferred = 4100
 
 [ports.web]
-env = "WEB_PORT"
+preferred = 4150
+
+[repos.api]
+path = "api"
+
+[repos.api.environment]
+PORT = "{port.api}"
+
+[repos.web]
+path = "web"
+
+[repos.web.environment]
+PORT = "{port.web}"
+API_URL = "http://localhost:{port.api}"
 ```
 
 WTM then allocates a port per endpoint, per **feature** — where a feature is a branch,
 across every repository that has it checked out. Working on `feat/login` in both `api/` and
 `web/` gives you:
 
-| Worktree | `PORT` | `WEB_PORT` | `{port.api}` |
+| Worktree | `PORT` | `{port.api}` | `API_URL` |
 | --- | --- | --- | --- |
-| `api-feat` (`feat/login`) | 4100 | 4150 | 4100 |
-| `web-feat` (`feat/login`) | 4100 | 4150 | 4100 |
-| `api` (`main`) | 4101 | 4102 | 4101 |
-| `web` (`main`) | 4101 | 4102 | 4101 |
+| `api-feat` (`feat/login`) | 4100 | 4100 | — |
+| `web-feat` (`feat/login`) | 4150 | 4100 | `http://localhost:4100` |
+| `api` (`main`) | 4101 | 4101 | — |
+| `web` (`main`) | 4151 | 4101 | `http://localhost:4101` |
 
-That is what lets the web app reach the API of *its own* feature:
+That is what lets the web app reach the API of *its own* feature. Both repositories read
+`PORT` and each one means its own endpoint, which is what `[repos.<name>.environment]` is
+for: a workspace-wide `[environment]` cannot say two things about one variable.
 
-```toml
-[environment]
-API_URL = "http://localhost:{port.api}"
-```
-
-Ports are leased and persisted, so they survive restarts; a port something else has taken is
-stepped over rather than handed out. `strategy = "fixed"` with a `port` opts an endpoint out
-of allocation entirely, and `origin = false` marks one that no browser talks to.
+`preferred` is the port tried first, so the main worktree keeps the port your team already
+types; it has to fall inside `[ports].range`, and WTM says so plainly rather than quietly
+handing out something else. Ports are leased and persisted, so they survive restarts; a port
+something else has taken is stepped over. `strategy = "fixed"` with a `port` opts an endpoint
+out of allocation entirely, and `origin = false` marks one that no browser talks to.
 
 ### CORS, without writing it out per branch
 
-An API whose port moves per feature needs an allowlist that moves with it. If the repository
-declares the variable it reads — in `.env.example`, `.env.sample`, `.env.template`,
-`.env.defaults`, or `.env` — WTM fills it in:
+An API whose port moves per feature needs an allowlist that moves with it. `{cors.origins}`
+is every origin the feature runs on, across the repositories that share its branch:
 
-```bash
-# api/.env.example
-CORS_ORIGINS=
+```toml
+[repos.api.environment]
+CORS_ORIGINS = "{cors.origins}"
 ```
 
 ```bash
@@ -341,18 +357,91 @@ $ wtm resolve make:dev
 CORS_ORIGINS=http://localhost:4100,http://localhost:4150
 ```
 
-`CORS_ORIGIN`, `CORS_ORIGINS`, `CORS_ALLOWED_ORIGINS`, `ALLOWED_ORIGINS` and the same
-spellings behind a project prefix are recognized. Only the variable *names* are read — never
-a value, because a real `.env` holds credentials. Override or disable it explicitly:
+`wtm init` writes that line for you when the repository declares the variable in
+`.env.example`, `.env.sample`, `.env.template`, `.env.defaults`, or `.env` — see
+[Detection](#detection). Left unconfigured, WTM looks for it at run time instead:
 
 ```toml
 [cors]
-enabled = true
-env = ["MY_ORIGINS"]
-origins = ["https://staging.example"]
+enabled = true                        # false stops the search; the variables above still work
+env = ["MY_ORIGINS"]                  # look for these instead of what the repository declares
+origins = ["https://staging.example"] # allow these as well as the feature's own
 ```
 
-Anything `[environment]` sets by hand always wins over what WTM worked out.
+`CORS_ORIGIN`, `CORS_ORIGINS`, `CORS_ALLOWED_ORIGINS`, `ALLOWED_ORIGINS` and the same
+spellings behind a project prefix are recognized. Only the variable *names* are read — never
+a value, because a real `.env` holds credentials.
+
+Anything `[environment]` sets by hand always wins over what WTM worked out, and
+`[repos.<name>.environment]` wins over that.
+
+## Detection
+
+A workspace already says what it needs: `.env.example` names the port variable, `package.json`
+names the dev server's port, `compose.yaml` publishes ports and points one service at another.
+WTM reads all of it — and then **writes it into `wtm.toml`**, because configuration you cannot
+read is configuration you cannot correct.
+
+```bash
+wtm init --yes        # detect, and write it into the wtm.toml it creates
+wtm detect            # report what the repositories declare now
+wtm detect --write    # append the tables wtm.toml does not have yet
+```
+
+Given `api/.env.example` with `PORT=4000` and `CORS_ORIGINS=`, and `web/.env.example` with
+`PORT=5173` and `VITE_API_URL=http://localhost:4000/api`, `wtm init` writes:
+
+```toml
+[ports]
+range = "4000-5373"
+
+# api/.env.example: PORT=
+[ports.api]
+preferred = 4000
+
+# web/.env.example: PORT=
+[ports.web]
+preferred = 5173
+
+[repos.api]
+path = "api"
+
+[repos.api.environment]
+PORT = "{port.api}"
+CORS_ORIGINS = "{cors.origins}"
+
+[repos.web]
+path = "web"
+
+[repos.web.environment]
+PORT = "{port.web}"
+# web/.env.example: VITE_API_URL= points at api
+VITE_API_URL = "http://localhost:{port.api}/api"
+```
+
+`VITE_API_URL` named port 4000, which is the port the API repository asks for — so the two are
+connected, and the address is rewritten against `{port.api}`. A compose file connects them the
+same way, by service name (`http://api:4000`). When nothing but the variable's own name
+suggests a target, the line is written with a comment saying it was a guess.
+
+What is read, and what is not:
+
+| Read | For |
+| --- | --- |
+| `.env.example`, `.env.sample`, `.env.template`, `.env.defaults` | Variable names, and values that are a port or a loopback/service URL |
+| `.env` | Variable names only |
+| `package.json` | `scripts.dev`/`start`/`serve` port flags, workspace layout |
+| `compose.yaml` / `docker-compose.yml` | Published ports, and URL-valued `environment` entries |
+| `Makefile` | A `PORT = …` assignment |
+
+No other value ever leaves those files. A value that is not a port or a bare `http(s)` address
+is dropped at the reader, query strings included — `DATABASE_URL`, `JWT_SECRET`, and an API key
+in an example file never reach a report, a log, or your `wtm.toml`.
+
+`wtm init` never edits a `wtm.toml` it did not write, and `wtm detect --write` only appends
+tables the file does not already define. Anything already decided is reported and left alone.
+
+## Configuration
 
 ## Configuration
 
@@ -372,7 +461,13 @@ strategy = "stable-dynamic"
 range = "3000-3999"
 
 [ports.web]
-env = "PORT"
+preferred = 3000
+
+[repos.web]
+path = "web"
+
+[repos.web.environment]
+PORT = "{port.web}"
 
 [cors]
 enabled = true
@@ -388,8 +483,9 @@ run = ["bun", "run", "db:migrate"]
 ```
 
 Copyable configurations for common stacks live in [examples/](examples/README.md):
-[minimal](examples/minimal), [bun-monorepo](examples/bun-monorepo),
-[docker-compose](examples/docker-compose), and [polyglot](examples/polyglot). The full
+[minimal](examples/minimal), [multi-repo](examples/multi-repo),
+[bun-monorepo](examples/bun-monorepo), [docker-compose](examples/docker-compose), and
+[polyglot](examples/polyglot). The full
 schema is in [docs/03-configuration-spec.md](docs/03-configuration-spec.md).
 
 ## The daemon
@@ -436,6 +532,7 @@ wtm skill --install
 | Command | What it answers |
 | --- | --- |
 | `wtm init [path]` | Register this workspace and discover its repositories |
+| `wtm detect [path]` | What the repositories declare, and the TOML that says it |
 | `wtm status [selector]` | Identity, state, endpoints, processes, resources |
 | `wtm analyze [selector]` | Would removing this worktree lose work? |
 | `wtm remove <selector>` | Remove a linked worktree, refusing when unsafe |
@@ -475,7 +572,7 @@ Override the prefix with `PREFIX=…`, and skip daemon registration with `WITH_D
 WTM is pre-release and honest about its edges. In this version:
 
 - `status`, `analyze`, `resolve`, `run`, `start`, `stop`, `ps`, `logs`, `remove`, `env`,
-  `ports`, `disk`, `gc`, `daemon`, `init`, and `skill` carry real payloads.
+  `ports`, `disk`, `gc`, `daemon`, `init`, `detect`, and `skill` carry real payloads.
 - `explain` and `plan` accept their arguments and return well-formed but empty collections.
 - `doctor` reports every check as `unknown`.
 

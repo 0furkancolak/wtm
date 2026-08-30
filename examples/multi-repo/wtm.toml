@@ -1,0 +1,47 @@
+version = 1
+
+[workspace]
+name = "multi-repo"
+
+# The band every endpoint is allocated from. It has to contain every preferred port below,
+# and be wide enough for every worktree that runs at once.
+[ports]
+range = "4000-5999"
+
+[ports.api]
+preferred = 4000
+
+[ports.web]
+preferred = 5173
+
+# Each repository is told only what its own processes read. Both of these publish PORT, and
+# each one means its own endpoint — which a workspace-wide [environment] could not say.
+[repos.api]
+path = "api"
+
+[repos.api.environment]
+PORT = "{port.api}"
+CORS_ORIGINS = "{cors.origins}"
+
+[repos.web]
+path = "web"
+
+[repos.web.environment]
+PORT = "{port.web}"
+VITE_API_URL = "http://localhost:{port.api}"
+
+# The allowlist variables are named above, so WTM does not look for them itself.
+[cors]
+enabled = false
+
+[tasks.api-dev]
+description = "Run the API for this feature."
+run = ["make", "dev"]
+cwd = "{workspace.root}/api"
+background = true
+
+[tasks.web-dev]
+description = "Run the web application for this feature."
+run = ["make", "dev"]
+cwd = "{workspace.root}/web"
+background = true

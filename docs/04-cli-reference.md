@@ -23,12 +23,15 @@ Destructive commands still require an explicit worktree selector even when globa
 
 Creates a local `wtm.toml` when absent, scans repositories/worktrees, records adapter detection and registers the workspace. A complete existing file is used byte-for-byte; if required minimal fields are missing, init returns non-secret `requiredChanges` and remediation without modifying the file. It never returns reconstructed user configuration in ordinary error context.
 
+Into a file it creates, `init` also writes what the repositories declare — endpoint ports, CORS variables, and addresses that name another repository. Against a file that already exists, it reports them instead: `data.pendingConfig` carries the tables that are missing, and `data.configBlocks` says which are already decided. See [`wtm detect`](#wtm-detect-path) and [Detection](03-configuration-spec.md#detection).
+
 Options:
 
 ```text
 --yes             accept non-destructive proposed defaults
 --max-depth <n>   discovery depth
 --no-ai-skill     skip local Agent Skill installation
+--no-detect       write only a name and a version, reading no repository
 --json            machine-readable result
 ```
 
@@ -38,6 +41,20 @@ Options:
 ### `wtm init --global [path]`
 
 Registers a workspace without writing `wtm.toml` into the selected directory; the configuration is stored in user WTM data. On `init` and `skill install`, `--global` selects a destination rather than scoping a read, and each carries its own help text saying so.
+
+### `wtm detect [path]`
+
+Reports what each repository in the workspace declares — the port it wants and the variable it wants it under, the CORS allowlist variables it reads, and the addresses that point at another repository — together with the TOML that says it.
+
+```text
+--write           append the tables wtm.toml does not have yet
+--max-depth <n>   discovery depth
+--json            machine-readable result
+```
+
+`--write` never edits a line already in the file: it appends only tables the file does not define, and warns about the rest. A port a repository asks for that `[ports].range` cannot offer is written as a comment naming the range that would fit, so the configuration stays valid. Without a `wtm.toml` to add to, `--write` fails and points at `wtm init`.
+
+Only variable names and safe values — a port, or a bare `http(s)` address — are read from `.env` files; see [Detection](03-configuration-spec.md#detection) for the full list of sources.
 
 ## Status and diagnostics
 

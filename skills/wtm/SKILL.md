@@ -60,9 +60,24 @@ Resolve a task rather than guessing a command; `wtm resolve <task> --json` repor
 
 WTM allocates an endpoint per configured name, per feature — a branch, across every repository that has it checked out. Two worktrees of one feature therefore agree on every port, which is how a web application addresses the API of its own branch.
 
-- Read a port with `{port.<name>}` in `wtm.toml`, or let `[ports.<name>].env` publish it.
+- Read a port with `{port.<name>}` in `wtm.toml`.
+- Publish it per repository with `[repos.<name>.environment]`, not `[environment]`, when more than one repository reads the same variable name (`PORT` usually is).
 - Read the browser origins of the feature with `{cors.origins}`.
-- WTM fills a CORS allowlist variable the repository declares in its `.env.example` automatically. Do not write one per branch.
+- `preferred` must fall inside `[ports].range`; widen the range rather than removing the preference.
+
+## Configuration WTM writes for itself
+
+`wtm init` reads each repository — `.env.example`, `package.json`, compose files, `Makefile` — and writes what it finds into `wtm.toml`: the port each repository wants, the variable it wants it under, its CORS allowlist variable, and any address that points at another repository in the workspace.
+
+```bash
+wtm detect --json          # what the repositories declare now, and the TOML that says it
+wtm detect --write --json  # append the tables wtm.toml does not have yet
+```
+
+- Run `wtm detect` after adding a repository to the workspace, or after a repository starts reading a new address or port.
+- Read `data.additions` for the exact TOML, and the envelope's `warnings` for what was left alone and why.
+- Neither command edits a line already in the file. If detection is wrong, correct `wtm.toml` — it is the source of truth, and detection defers to it.
+- Values are read only from `.env` example files, and only when they are a port or a bare `http(s)` address. Do not expect WTM to carry any other value, and do not put a secret where it would have to.
 
 ## Rules
 
