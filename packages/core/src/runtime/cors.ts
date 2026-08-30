@@ -1,5 +1,5 @@
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { declarationFiles, readDeclaredNames } from '../detect/declarations';
 import type { CorsConfig } from '../config/schema';
 
 /**
@@ -7,13 +7,7 @@ import type { CorsConfig } from '../config/schema';
  * variable *names* only: a real `.env` holds credentials, and WTM has no business carrying
  * those anywhere, so no value is ever parsed out of these files.
  */
-export const corsDeclarationFiles = [
-  '.env.example',
-  '.env.sample',
-  '.env.template',
-  '.env.defaults',
-  '.env',
-] as const;
+export const corsDeclarationFiles = declarationFiles;
 
 /**
  * Names a CORS allowlist is conventionally published under, across the frameworks that read
@@ -21,11 +15,7 @@ export const corsDeclarationFiles = [
  * spellings behind a project prefix. Deliberately narrow — a variable WTM guesses wrong about
  * is a variable it overwrites for no reason.
  */
-const corsVariablePattern = /^(?:[A-Z0-9]+(?:_[A-Z0-9]+)*_)?(?:CORS_(?:ALLOWED_)?ORIGINS?|ALLOWED?_ORIGINS?)$/;
-/** `KEY=`, `export KEY=`, and the commented-out form an example file often uses. */
-const declarationPattern = /^\s*(?:#\s*)?(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
-/** An example file is a few dozen lines; anything longer is not one, and is not read. */
-const maxDeclarationBytes = 64 * 1024;
+export const corsVariablePattern = /^(?:[A-Z0-9]+(?:_[A-Z0-9]+)*_)?(?:CORS_(?:ALLOWED_)?ORIGINS?|ALLOWED?_ORIGINS?)$/;
 
 export interface CorsResolutionInput {
   cors?: CorsConfig;
@@ -68,19 +58,4 @@ export async function detectCorsVariables(root: string): Promise<string[]> {
     }
   }
   return [...found];
-}
-
-async function readDeclaredNames(path: string): Promise<string[]> {
-  let contents: string;
-  try {
-    contents = await readFile(path, 'utf8');
-  } catch {
-    // A repository that declares nothing is the normal case, not a failure worth reporting.
-    return [];
-  }
-  if (contents.length > maxDeclarationBytes) return [];
-  return contents
-    .split(/\r?\n/)
-    .map((line) => declarationPattern.exec(line)?.[1])
-    .filter((name): name is string => name !== undefined);
 }

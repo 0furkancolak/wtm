@@ -25,11 +25,11 @@ describe('worktree runtime resolution', () => {
       sharedAcrossRepositories: true,
       separateFromOtherFeature: true,
       publishedEnvironment: {
-        PORT: true,
         API_URL: true,
         BRANCH: 'feature/existing',
         CORS_ORIGINS: true,
       },
+      perRepositoryPort: { api: true, web: true, distinct: true },
       task: { argv: ['node', 'server.js'], cwd: true, port: true },
       unregistered: 'This directory is not inside a worktree WTM has registered. Run `wtm init` in the workspace root.',
     });

@@ -8,6 +8,12 @@ export interface EnvironmentResolutionInput {
    */
   automatic?: Record<string, string>;
   workspace?: Record<string, string>;
+  /**
+   * The `[repos.<name>.environment]` of the repository this worktree belongs to. It sits above
+   * the workspace block because it is the more specific statement about the same variable:
+   * two repositories that both publish `PORT` mean two different ports.
+   */
+  repo?: Record<string, string>;
   task?: Record<string, string>;
   context: TemplateContext;
 }
@@ -25,7 +31,7 @@ export class WtmEnvironmentError extends Error {
 }
 
 export function resolveEnvironment(input: EnvironmentResolutionInput): Record<string, string> {
-  const declared = { ...input.automatic, ...input.workspace, ...input.task };
+  const declared = { ...input.automatic, ...input.workspace, ...input.repo, ...input.task };
   const inherited = input.context.env ?? {};
   const resolved: Record<string, string> = {};
   const resolving: string[] = [];

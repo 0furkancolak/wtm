@@ -1,5 +1,6 @@
 import { basename, relative, resolve, sep } from 'node:path';
 import {
+  repoEnvironment,
   resolveCors,
   resolveEndpoints,
   resolveEnvironment,
@@ -32,6 +33,8 @@ export interface WorktreeRuntime {
   context: TemplateContext;
   /** Endpoint ports and the CORS allowlist, as variables, beneath the workspace's own block. */
   automaticEnvironment: Record<string, string>;
+  /** The `[repos.<name>.environment]` of the repository this worktree belongs to, if any. */
+  repoEnvironment?: Record<string, string>;
   endpoints: ResolvedEndpoints;
 }
 
@@ -72,6 +75,11 @@ export async function resolveWorktreeRuntime(input: WorktreeRuntimeInput): Promi
     origins: endpoints.origins,
   });
 
+  const repo = repoEnvironment(config.value, {
+    workspaceRoot: registration.workspace.root,
+    repoRoot: registration.repository.mainRoot,
+  });
+
   return {
     registration,
     config: await withAdapterTasks(config.value, adapterContext(registration)),
@@ -81,6 +89,7 @@ export async function resolveWorktreeRuntime(input: WorktreeRuntimeInput): Promi
       ...Object.fromEntries(cors.variables.map((name) => [name, cors.value])),
     },
     endpoints,
+    ...(repo === undefined ? {} : { repoEnvironment: repo }),
   };
 }
 
@@ -92,6 +101,7 @@ export function taskResolutionInput(runtime: WorktreeRuntime, taskName: string):
     isMain: runtime.registration.worktree.isMain,
     context: runtime.context,
     automaticEnvironment: runtime.automaticEnvironment,
+    ...(runtime.repoEnvironment === undefined ? {} : { repoEnvironment: runtime.repoEnvironment }),
   };
 }
 
@@ -100,6 +110,7 @@ export function execEnvironment(runtime: WorktreeRuntime): Record<string, string
   return resolveEnvironment({
     automatic: runtime.automaticEnvironment,
     ...(runtime.config.environment === undefined ? {} : { workspace: runtime.config.environment }),
+    ...(runtime.repoEnvironment === undefined ? {} : { repo: runtime.repoEnvironment }),
     context: runtime.context,
   });
 }

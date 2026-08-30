@@ -61,6 +61,23 @@ const corsSchema = z.object({
   origins: z.array(z.string().min(1)).optional(),
 }).strict();
 
+/**
+ * A repository inside the workspace, and what only its worktrees should be told.
+ *
+ * A workspace holds several repositories, and most of what is worth configuring belongs to
+ * one of them: the API publishes its port as `PORT`, and so does the web app — one workspace
+ * `[environment]` cannot say both. Naming the repository is what lets it.
+ */
+const repoSchema = z.object({
+  /**
+   * Where the repository sits, relative to the workspace root. Left unset, the table's own
+   * name is matched against the repository directory's name.
+   */
+  path: z.string().min(1).optional(),
+  /** Variables for this repository's worktrees, layered over the workspace's own. */
+  environment: z.record(z.string(), z.string()).optional(),
+}).strict();
+
 const resourceSchema = z.object({
   path: z.string().min(1),
   policy: z.enum(['shared', 'native-cache', 'clone', 'isolated', 'symlink', 'copy', 'ephemeral', 'external', 'ignore']),
@@ -98,6 +115,7 @@ export const wtmConfigSchema = z.object({
   prepare: z.object({ mode: z.enum(['lazy', 'eager']).optional() }).strict().optional(),
   ports: portsSchema.optional(),
   cors: corsSchema.optional(),
+  repos: z.record(z.string(), repoSchema).optional(),
   environment: z.record(z.string(), z.string()).optional(),
   tasks: z.record(z.string(), taskSchema).optional(),
   events: z.record(z.string(), z.object({ tasks: z.array(z.string().min(1)) }).strict()).optional(),
@@ -111,6 +129,7 @@ export const wtmConfigSchema = z.object({
 
 export type PortConfig = z.infer<typeof portSchema>;
 export type CorsConfig = z.infer<typeof corsSchema>;
+export type RepoConfig = z.infer<typeof repoSchema>;
 export type PortsConfig = {
   strategy?: 'stable-dynamic';
   range?: string;

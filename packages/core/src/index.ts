@@ -35,7 +35,9 @@ export { removeWorktreeSafely } from './analysis/remove-worktree';
 export { resolveWorkspaceConfig, builtInConfig } from './config/load';
 export { mergeConfigLayers } from './config/merge';
 export { parseWtmConfig, wtmConfigSchema, WtmConfigError } from './config/schema';
-export type { CorsConfig, PortConfig, PortsConfig, WtmConfig } from './config/schema';
+export type { CorsConfig, PortConfig, PortsConfig, RepoConfig, WtmConfig } from './config/schema';
+export { repoEnvironment, resolveRepoScope } from './config/repos';
+export type { RepoScopeInput, ResolvedRepoScope } from './config/repos';
 export type { ResolvedConfig, Provenance } from './config/provenance';
 export { resolveTemplate, WtmTemplateError } from './templates/resolve';
 export type { TemplateContext } from './templates/resolve';
@@ -58,8 +60,24 @@ export {
   resolveEndpoints,
 } from './runtime/endpoint-plan';
 export type { EndpointPlanInput, ResolvedEndpoints } from './runtime/endpoint-plan';
-export { corsDeclarationFiles, detectCorsVariables, resolveCors } from './runtime/cors';
+export { corsDeclarationFiles, corsVariablePattern, detectCorsVariables, resolveCors } from './runtime/cors';
 export type { CorsResolutionInput, ResolvedCors } from './runtime/cors';
+export { declarationFiles, exampleDeclarationFiles, readDeclaredNames, readEnvDeclarations } from './detect/declarations';
+export type { EnvDeclaration } from './detect/declarations';
+export { composeFiles, parseComposeServices, readComposeFile } from './detect/compose';
+export type { ComposeFileReport, ComposeService } from './detect/compose';
+export { detectWorkspaceServices } from './detect/service-detection';
+export type {
+  DetectedLink,
+  DetectedPort,
+  DetectedService,
+  DetectionConfidence,
+  DetectionEvidence,
+  DetectWorkspaceInput,
+  WorkspaceDetection,
+} from './detect/service-detection';
+export { renderConfigDraft } from './detect/config-draft';
+export type { ConfigDraft, ConfigDraftBlock, ConfigDraftInput, OutOfRangePort } from './detect/config-draft';
 export { SQLiteStateStore } from './state/sqlite-store';
 export { ensurePrivateDirectory, PrivateDirectoryError, verifyPrivateDirectory } from './state/private-directory';
 export type { PrivateDirectory, PrivateDirectoryIdentity } from './state/private-directory';

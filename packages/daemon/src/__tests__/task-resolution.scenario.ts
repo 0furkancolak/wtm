@@ -36,9 +36,24 @@ try {
     '[ports.api]',
     'env = "PORT"',
     '',
+    '[ports.web]',
+    'preferred = 31050',
+    '',
     '[environment]',
     'API_URL = "http://localhost:{port.api}"',
     'BRANCH = "{branch}"',
+    '',
+    '[repos.first-repo]',
+    'path = "services/first repo"',
+    '',
+    '[repos.first-repo.environment]',
+    'PORT = "{port.api}"',
+    '',
+    '[repos.second-repo]',
+    'path = "tools/second-repo"',
+    '',
+    '[repos.second-repo.environment]',
+    'PORT = "{port.web}"',
     '',
     '[tasks.serve]',
     'run = ["node", "server.js"]',
@@ -64,6 +79,8 @@ try {
   const main = await runtimeAt(fixture.firstRepoPath);
   const task = resolveTask(taskResolutionInput(first, 'serve'));
   const featurePort = first.context.ports?.api as number;
+  const webPort = first.context.ports?.web as number;
+  const firstEnvironment = execEnvironment(first);
   const secondEnvironment = execEnvironment(second);
 
   let unregistered = 'resolved';
@@ -86,10 +103,15 @@ try {
     sharedAcrossRepositories: second.context.ports?.api === featurePort,
     separateFromOtherFeature: main.context.ports?.api !== featurePort,
     publishedEnvironment: {
-      PORT: secondEnvironment.PORT === String(featurePort),
       API_URL: secondEnvironment.API_URL === `http://localhost:${featurePort}`,
       BRANCH: secondEnvironment.BRANCH,
-      CORS_ORIGINS: secondEnvironment.CORS_ORIGINS === `http://localhost:${featurePort}`,
+      CORS_ORIGINS: secondEnvironment.CORS_ORIGINS === `http://localhost:${featurePort},http://localhost:${webPort}`,
+    },
+    // Both repositories read PORT, and each one means the endpoint of its own service.
+    perRepositoryPort: {
+      api: firstEnvironment.PORT === String(featurePort),
+      web: secondEnvironment.PORT === String(webPort),
+      distinct: featurePort !== webPort,
     },
     task: { argv: task.argv, cwd: task.cwd === fixture.linkedWorktreePath, port: task.envDelta.PORT === String(featurePort) },
     unregistered,
