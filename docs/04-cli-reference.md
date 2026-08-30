@@ -46,6 +46,8 @@ Registers a workspace without writing `wtm.toml` into the selected directory; th
 
 Reports what each repository in the workspace declares — the port it wants and the variable it wants it under, the CORS allowlist variables it reads, and the addresses that point at another repository — together with the TOML that says it.
 
+Without a path, `detect` answers for the workspace the current directory belongs to, like every other command; a path is read as the workspace root instead.
+
 ```text
 --write           append the tables wtm.toml does not have yet
 --max-depth <n>   discovery depth
@@ -66,13 +68,49 @@ Shows resolved worktree identity, state, endpoints, processes and runtime resour
 
 Runs deterministic checks for Git, config, adapters, resources, ports and process records.
 
+| Check | What it answers |
+| --- | --- |
+| `git` | Whether every registered repository is still on disk |
+| `config` | Whether the configuration resolves, and whether `[ports].range` can offer the ports it prefers |
+| `adapters` | Which built-in adapters are in force, and why a detected one was left out |
+| `resources` | How many declared resources are in place, and why one is not |
+| `ports` | How many endpoints the workspace holds, and whether two worktrees hold the same one |
+| `process-records` | How many supervised tasks are running, and which records name a process that is gone |
+
 ### `wtm explain [selector]`
 
-Explains why each adapter/resource/task/config value was selected and includes provenance.
+Every choice in force in this worktree, and where it came from.
+
+| Kind | One per | Provenance |
+| --- | --- | --- |
+| `config` | Configuration leaf, and each variable the environment ends up with | The file and line that settled it, or `wtm:derived` |
+| `adapter` | Adapter that recognized the worktree | Why it is in force, or which rule excluded it |
+| `task` | Task that can be run here | The configuration, or `adapter:<id>` |
+| `resource` | `[resources.<name>]` | The line that declares it, and the state this worktree has it in |
+
+The `env.<NAME>` decisions are the useful half: they name the *layer* that won each variable —
+`[repos.<name>.environment]` over `[environment]` over what WTM derived — which is the question
+somebody asks when `PORT` is not what they expected.
+
+`explain` resolves the way a task would, so an endpoint with no lease is given one. Use `plan`
+for the question that must not change its own answer.
 
 ### `wtm plan [selector]`
 
-Shows desired changes without applying them. V1 ships `plan` only; there is no separate apply command.
+What WTM would do next, and what it would leave alone. Nothing here changes anything: the
+runtime is resolved without leasing a port, resources are inspected rather than created, and
+detection only reads.
+
+| Kind | `create` | `none` |
+| --- | --- | --- |
+| `config` | A table detection would add, with the TOML that says it | — |
+| `endpoint` | A declared endpoint this feature has no port for | The port it already holds |
+| `resource` | A declared resource that is not there | One that is |
+| `process` | — | A running task; `remove` for a record whose process is gone |
+| `adapter` | — | A detected adapter that was excluded, and why |
+
+V1 ships `plan` only; there is no separate apply command. `wtm detect --write` applies the
+`config` half.
 
 ## Task execution
 
@@ -125,7 +163,7 @@ Unknown top-level words do not automatically execute shell commands. Tasks are a
 
 ### `wtm ps`
 
-Lists WTM-managed process groups.
+Lists the WTM-managed process groups of the whole workspace — a feature that spans two repositories runs two servers, and both are the answer.
 
 ### `wtm ports`
 

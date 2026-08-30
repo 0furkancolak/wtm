@@ -1,12 +1,19 @@
-import { basename, relative, resolve, sep } from 'node:path';
+import { basename, resolve } from 'node:path';
 import {
+  containsPath,
+  inspectResources,
+  prepareResources,
   repoEnvironment,
   resolveCors,
   resolveEndpoints,
   resolveEnvironment,
+  resolveExistingEndpoints,
   resolveWorkspaceConfig,
   type DaemonStateStore,
   type EndpointAvailabilityProbe,
+  type ObservedEndpoint,
+  type PreparedResource,
+  type Provenance,
   type RepositoryRecord,
   type ResolvedEndpoints,
   type StateRegistrationReader,
@@ -36,6 +43,16 @@ export interface WorktreeRuntime {
   /** The `[repos.<name>.environment]` of the repository this worktree belongs to, if any. */
   repoEnvironment?: Record<string, string>;
   endpoints: ResolvedEndpoints;
+  /**
+   * Which file, and which line of it, each configuration key came from. `wtm explain` exists
+   * to answer that, and the answer was being resolved and then thrown away.
+   */
+  provenance: Map<string, Provenance>;
+  /**
+   * Every declared endpoint and whether a lease backs it. Only present when the runtime was
+   * resolved without allocating, which is the only case where "no port yet" can be observed.
+   */
+  observedEndpoints?: ObservedEndpoint[];
 }
 
 export interface WorktreeRuntimeInput {
@@ -43,6 +60,12 @@ export interface WorktreeRuntimeInput {
   cwd: string;
   globalConfigPath: string;
   probe?: EndpointAvailabilityProbe;
+  /**
+   * Whether resolving may take a port for an endpoint that has none. True everywhere something
+   * is about to run. `wtm plan` sets it false, because a question must not be answered by
+   * making its answer untrue.
+   */
+  allocate?: boolean;
 }
 
 /**
@@ -63,7 +86,13 @@ export async function resolveWorktreeRuntime(input: WorktreeRuntimeInput): Promi
   });
   const group = featureGroup(input.store, registration);
   const owner = group[0] ?? registration.worktree;
-  const endpoints = resolveEndpoints(input.store, {
+  const observed = input.allocate === false
+    ? resolveExistingEndpoints(input.store, {
+      ...(config.value.ports === undefined ? {} : { ports: config.value.ports }),
+      groupWorktreeIds: group.map(({ id }) => id),
+    })
+    : undefined;
+  const endpoints = observed?.resolved ?? resolveEndpoints(input.store, {
     ...(config.value.ports === undefined ? {} : { ports: config.value.ports }),
     worktreeId: owner.id,
     groupWorktreeIds: group.map(({ id }) => id),
@@ -89,9 +118,38 @@ export async function resolveWorktreeRuntime(input: WorktreeRuntimeInput): Promi
       ...Object.fromEntries(cors.variables.map((name) => [name, cors.value])),
     },
     endpoints,
+    provenance: config.provenance,
+    ...(observed === undefined ? {} : { observedEndpoints: observed.endpoints }),
     ...(repo === undefined ? {} : { repoEnvironment: repo }),
   };
 }
+
+/**
+ * Create whatever the workspace's `[resources]` table says this worktree should have and does
+ * not. Called before a task runs, so that a task which reads `.env` finds one.
+ */
+export async function prepareRuntimeResources(runtime: WorktreeRuntime): Promise<PreparedResource[]> {
+  const resources = runtime.config.resources;
+  if (resources === undefined) return [];
+  return await prepareResources({
+    resources,
+    context: runtime.context,
+    worktreeRoot: runtime.registration.worktree.path,
+    workspaceRoot: runtime.registration.workspace.root,
+  });
+}
+
+/** The same declarations, observed rather than acted on, for `wtm status`. */
+export async function inspectRuntimeResources(runtime: WorktreeRuntime): Promise<PreparedResource[]> {
+  const resources = runtime.config.resources;
+  if (resources === undefined) return [];
+  return await inspectResources({
+    resources,
+    context: runtime.context,
+    worktreeRoot: runtime.registration.worktree.path,
+  });
+}
+
 
 /** The task resolution the CLI and the daemon both hand to `resolveTask`. */
 export function taskResolutionInput(runtime: WorktreeRuntime, taskName: string): TaskResolutionInput {
@@ -133,7 +191,7 @@ export function featureGroup(store: StateRegistrationReader, registration: Regis
 export function findRegistration(store: StateRegistrationReader, cwd: string): Registration {
   const absolute = resolve(cwd);
   const worktree = store.listWorktrees()
-    .filter((candidate) => contains(candidate.path, absolute))
+    .filter((candidate) => containsPath(candidate.path, absolute))
     .sort((left, right) => right.path.length - left.path.length)[0];
   if (worktree === undefined) {
     throw new DaemonRegistrationError(
@@ -188,9 +246,4 @@ export function templateContext(
  */
 export function branchName(ref: string | null): string {
   return ref === null ? '' : ref.replace(/^refs\/heads\//, '');
-}
-
-function contains(root: string, candidate: string): boolean {
-  const child = relative(resolve(root), candidate);
-  return child === '' || (!child.startsWith(`..${sep}`) && child !== '..');
 }

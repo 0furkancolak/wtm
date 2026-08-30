@@ -54,6 +54,8 @@ const statusSchema = z.object({
     path: z.string().min(1),
     policy: z.enum(['shared', 'native-cache', 'clone', 'isolated', 'symlink', 'copy', 'ephemeral', 'external', 'ignore']),
     state: z.enum(['ready', 'missing', 'degraded', 'unknown']),
+    /** Why it is not ready — a source that is not there, a path the guard refused. */
+    detail: z.string().min(1).optional(),
   }).strict()),
 }).strict();
 

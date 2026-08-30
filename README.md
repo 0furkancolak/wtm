@@ -569,15 +569,21 @@ Override the prefix with `PREFIX=…`, and skip daemon registration with `WITH_D
 
 ## What V1 does and does not answer
 
-WTM is pre-release and honest about its edges. In this version:
+WTM is pre-release and honest about its edges. Every command carries a real payload, and
+`wtm doctor` answers every check it declares. What remains is scope rather than absence:
 
-- `status`, `analyze`, `resolve`, `run`, `start`, `stop`, `ps`, `logs`, `remove`, `env`,
-  `ports`, `disk`, `gc`, `daemon`, `init`, `detect`, and `skill` carry real payloads.
-- `explain` and `plan` accept their arguments and return well-formed but empty collections.
-- `doctor` reports every check as `unknown`.
-
-They are wired end to end and shaped correctly; they are not yet answering. Nothing in this
-list is a crash, and none of it affects the commands above it.
+- `explain` reports the configuration in force, so it resolves the way a task would, endpoint
+  leases included. `plan` never allocates, and never creates a resource.
+- `[events.*]` runs a workspace's own tasks. A task an event starts never sets off further
+  events, and an event that describes something happening once — a worktree discovered, a
+  repository registered — is announced once and recorded, so restarting the daemon does not
+  install your dependencies again. An installation that predates event dispatch announces
+  `workspace.discovered` and `repo.discovered` once, on the daemon's next pass.
+- `wtm gc` never collects the files `[resources]` creates inside a worktree, and says so:
+  garbage collection may not walk a Git working tree. `wtm disk` counts them, so the number is
+  the whole number. Removing the worktree removes them.
+- External adapters are a defined protocol with a trust store; only the built-in adapters ship
+  in this version.
 
 ## Requirements
 

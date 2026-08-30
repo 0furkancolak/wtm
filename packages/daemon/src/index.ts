@@ -53,10 +53,13 @@ export type {
 } from './runtime-controller';
 export { createProductionDaemon, defaultProductionRuntimePaths } from './runtime-factory';
 export {
+  adapterContext,
   branchName,
   execEnvironment,
   featureGroup,
   findRegistration,
+  inspectRuntimeResources,
+  prepareRuntimeResources,
   resolveWorktreeRuntime,
   taskResolutionInput,
   templateContext,

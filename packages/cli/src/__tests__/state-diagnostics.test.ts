@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type {
   DaemonStateStore,
   EndpointLease,
@@ -99,3 +102,86 @@ describe('registry-backed diagnostics', () => {
       .toEqual([['api', 4100], ['web', 4200]]);
   });
 });
+
+describe('doctor', () => {
+  it('says which registered repositories are no longer on disk', async () => {
+    // The finding that would have explained a daemon that refused to start at all.
+    const findings = (await sourceAt('/workspace/web-feature').readDoctor(registered)).findings;
+
+    expect(findings.find(({ check }) => check === 'git')).toEqual({
+      check: 'git',
+      status: 'error',
+      message: '2 registered repositories no longer on disk, starting with /workspace/api. '
+        + 'WTM keeps serving the rest; the registration returns on its own if the directory comes back.',
+      details: { registered: 2, unavailable: 2 },
+    });
+  });
+
+  it('counts the endpoints the workspace holds and the tasks it supervises', async () => {
+    const findings = (await sourceAt('/workspace/web-feature').readDoctor(registered)).findings;
+
+    expect(findings.find(({ check }) => check === 'ports')).toMatchObject({ status: 'pass', details: { leases: 2 } });
+    expect(findings.find(({ check }) => check === 'process-records'))
+      .toMatchObject({ status: 'pass', details: { running: 0 } });
+  });
+
+  it('answers every check it declares', async () => {
+    const findings = (await sourceAt('/workspace/web-feature').readDoctor(registered)).findings;
+
+    expect(findings.map(({ check }) => check))
+      .toEqual(['git', 'config', 'adapters', 'resources', 'ports', 'process-records']);
+  });
+
+  it('says no adapter recognizes a worktree rather than saying nothing at all', async () => {
+    const findings = (await sourceAt('/workspace/web-feature').readDoctor(registered)).findings;
+
+    expect(findings.find(({ check }) => check === 'adapters')).toEqual({
+      check: 'adapters',
+      status: 'pass',
+      message: 'No built-in adapter recognizes this worktree; only configured tasks are available.',
+      details: { detected: 0, active: 0 },
+    });
+  });
+
+  it('names the adapter in force, and how many tasks it contributes', async () => {
+    // Which adapter won is the first question after the wrong `dev` command runs, and the
+    // check that should answer it reported `unknown` no matter what was in the worktree.
+    const root = mkdtempSync(join(tmpdir(), 'wtm-doctor-'));
+    try {
+      mkdirSync(join(root, 'repo'), { recursive: true });
+      writeFileSync(join(root, 'repo/Makefile'), 'dev:\n\techo dev\n\ntest:\n\techo test\n');
+      const finding = (await doctorIn(root)).find(({ check }) => check === 'adapters');
+
+      expect(finding?.status).toBe('pass');
+      expect(finding?.message).toContain('make in force');
+      expect(finding?.details).toMatchObject({ detected: 1, active: 1 });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+/** The doctor findings for a real directory, which is what adapter detection needs to read. */
+async function doctorIn(root: string) {
+  const local: WorkspaceRecord = { ...workspace, root, configPath: null };
+  const repository: RepositoryRecord = {
+    ...repositories[0] as RepositoryRecord,
+    commonGitDir: join(root, 'repo/.git'),
+    mainRoot: join(root, 'repo'),
+  };
+  const only = worktree('only', repository.id, join(root, 'repo'), 1);
+  const localStore = {
+    listWorkspaces: () => [local],
+    listRepositories: () => [repository],
+    listWorktrees: () => [only],
+    listManagedProcesses: () => [],
+    listEndpointLeases: () => [],
+  } as unknown as DaemonStateStore;
+  const source = createStateDiagnosticDataSource(localStore, {
+    cwd: join(root, 'repo'),
+    globalConfigPath: join(root, 'config.toml'),
+  });
+  return (await source.readDoctor({
+    id: local.id, name: local.name, root: local.root, scope: local.scope,
+  })).findings;
+}
