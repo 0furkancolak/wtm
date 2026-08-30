@@ -43,12 +43,30 @@ When a task behaves unexpectedly, inspect its resolved context before changing p
 
 ```bash
 wtm resolve <task> --json
-wtm explain --json
+wtm env --json
+wtm ports --json
 ```
+
+## Tasks WTM already knows
+
+A workspace's tasks come from `wtm.toml` and from what the repository already describes:
+
+- `make:<target>` runs a target of this worktree's own `Makefile`.
+- `workspace:<target>` runs a target of the workspace root's `Makefile`, at that root, across every repository under it.
+
+Resolve a task rather than guessing a command; `wtm resolve <task> --json` reports the exact argv, working directory, and environment.
+
+## Ports and CORS
+
+WTM allocates an endpoint per configured name, per feature — a branch, across every repository that has it checked out. Two worktrees of one feature therefore agree on every port, which is how a web application addresses the API of its own branch.
+
+- Read a port with `{port.<name>}` in `wtm.toml`, or let `[ports.<name>].env` publish it.
+- Read the browser origins of the feature with `{cors.origins}`.
+- WTM fills a CORS allowlist variable the repository declares in its `.env.example` automatically. Do not write one per branch.
 
 ## Rules
 
-- Do not manually choose a port managed by WTM.
+- Do not manually choose a port managed by WTM, and do not read one out of a running process; ask `wtm resolve`/`wtm ports`.
 - Do not copy `.env` files between worktrees unless WTM's resolved resource plan explicitly requires it.
 - Do not symlink/shared-write `node_modules`, `.venv`, `.next`, `target`, `build`, or similar directories as a workaround.
 - Do not bypass a workspace-level Makefile/task convention by guessing a relative path; use WTM task resolution.

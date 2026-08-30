@@ -133,8 +133,11 @@ Supported template variables in V1:
 {branch}
 {branch.slug}
 {port.<name>}
+{cors.origins}
 {env.<NAME>}
 ```
+
+`{branch}` is the branch name — `feat/login`, not `refs/heads/feat/login`.
 
 Templates are resolved by WTM before process spawn. Missing required variables are configuration errors; WTM does not silently substitute an empty string.
 
@@ -158,6 +161,19 @@ slug = "nafru-feat-auth"
 
 ## Port strategies
 
+Endpoints are allocated per **feature**, not per worktree: a branch checked out across
+several repositories is one feature, and every worktree of it resolves `{port.<name>}` to the
+same port. That is what lets a web application address the API of its own branch. A worktree
+with no branch (a detached HEAD) is a feature of one.
+
+Every named endpoint may publish itself:
+
+```toml
+[ports.web]
+env = "PORT"      # the variable this port is exported under
+origin = true     # counts toward the CORS allowlist; default true
+```
+
 ### Stable dynamic
 
 ```toml
@@ -177,7 +193,7 @@ preferred = 3000
 stride = 10
 ```
 
-Worktree 7 resolves to 3070 before collision fallback.
+Worktree 7 resolves to 3060 — `preferred + stride * (id - 1)` — before collision fallback.
 
 ### Fixed
 
@@ -187,7 +203,26 @@ strategy = "fixed"
 port = 9090
 ```
 
-Fixed endpoints are rejected if two concurrently active WTM owners request the same endpoint.
+A fixed endpoint is the workspace's decision, so WTM neither leases it nor moves it.
+
+## CORS
+
+```toml
+[cors]
+enabled = true
+env = ["CORS_ORIGINS"]
+origins = ["https://staging.example"]
+```
+
+An API whose port changes per feature needs an allowlist that changes with it. WTM composes
+one from every endpoint marked as an origin, and publishes it under the variables the
+repository already declares in `.env.example`, `.env.sample`, `.env.template`,
+`.env.defaults`, or `.env` — matching `CORS_ORIGIN`, `CORS_ORIGINS`, `CORS_ALLOWED_ORIGINS`,
+`ALLOWED_ORIGINS`, and the same spellings behind a project prefix.
+
+Only variable *names* are read from those files; no value is ever parsed out of them. Naming
+`env` here replaces detection; `enabled = false` turns it off. Anything `[environment]` sets
+by hand wins over what WTM derived.
 
 ## Tasks
 

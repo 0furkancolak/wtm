@@ -28,6 +28,8 @@ Git worktrees solve the checkout problem. They do not solve the *runtime* proble
 | Two worktrees both want port 3000 | Allocates and persists an endpoint per worktree |
 | `.env` copied by hand into every worktree | Resolves a shared config into a per-worktree environment delta |
 | A workspace `Makefile` is invisible from a nested worktree | Detects it and exposes each target as a task |
+| The web app needs the API's port, and it moves per branch | Allocates one endpoint set per feature, shared by every repository on that branch |
+| Every branch needs its own CORS allowlist written by hand | Reads the variable your `.env.example` declares and fills it in |
 | Which `next dev` belongs to which branch? | Supervises processes, attributes them, and streams their logs |
 | `worktree remove` can destroy unpushed work | Analyzes safety first and refuses when work would be lost |
 | An AI agent rediscovers your project every session | Ships an Agent Skill and stable `--json` output for every command |
@@ -48,6 +50,7 @@ context-aware orchestration layer around them.
   - [6. Remove a worktree safely](#6-remove-a-worktree-safely)
   - [7. Reclaim disk](#7-reclaim-disk)
 - [Makefile support](#makefile-support)
+- [Ports and CORS](#ports-and-cors)
 - [Configuration](#configuration)
 - [The daemon](#the-daemon)
 - [JSON output for scripts and agents](#json-output-for-scripts-and-agents)
@@ -185,8 +188,10 @@ understands — a `Makefile`, a `docker-compose.yml` — those become tasks with
 written twice. See [Makefile support](#makefile-support). Anything `wtm.toml` names always
 wins over an adapter of the same name.
 
-Templates such as `{worktree.root}`, `{branch}`, `{id}`, and `{slug}` resolve per worktree,
-which is what keeps two branches from fighting over the same directory or port.
+Templates such as `{worktree.root}`, `{branch}`, `{id}`, `{slug}`, and `{port.<name>}`
+resolve per worktree, which is what keeps two branches from fighting over the same directory
+or port. `wtm.toml` is read from the workspace root, so one file covers every repository
+under it.
 
 ### 4. Run a task in the foreground
 
@@ -259,22 +264,102 @@ wtm resolve make:dev
 wtm start make:dev
 ```
 
+A workspace root holding several repositories usually keeps the commands that span them in a
+`Makefile` of its own. Those targets are offered too, under their own namespace and running
+at the root:
+
+| Task | Runs | Where |
+| --- | --- | --- |
+| `make:dev` | `make dev` | this worktree |
+| `workspace:up` | `make up` | the workspace root |
+
+The namespaces are separate because the work is: a repository's own `dev` is not the root's.
+
 The Makefile is **parsed, never evaluated**. WTM does not run `make -p` to enumerate
 targets, because that would execute the `$(shell …)` expansions of a repository it has not
 been told to trust. Pattern rules (`%.o:`), variable targets (`$(BINARY):`), assignments,
 `define` blocks, and the dot-prefixed special targets are all skipped; `GNUmakefile`,
 `makefile`, and `Makefile` are read in the order GNU make itself reads them.
 
-Detected adapters, and the tasks they contribute, are visible with:
+Every task WTM can see, whichever adapter contributed it, is visible with:
 
 ```bash
-wtm doctor --json
+wtm resolve <task>   # exactly what one of them would run
 ```
+
+## Ports and CORS
+
+Two branches cannot both listen on 3000, and the port a branch does get is of no use to the
+rest of the stack unless they are told about it. Declare the endpoints once:
+
+```toml
+[ports]
+range = "4100-4199"
+
+[ports.api]
+env = "PORT"
+
+[ports.web]
+env = "WEB_PORT"
+```
+
+WTM then allocates a port per endpoint, per **feature** — where a feature is a branch,
+across every repository that has it checked out. Working on `feat/login` in both `api/` and
+`web/` gives you:
+
+| Worktree | `PORT` | `WEB_PORT` | `{port.api}` |
+| --- | --- | --- | --- |
+| `api-feat` (`feat/login`) | 4100 | 4150 | 4100 |
+| `web-feat` (`feat/login`) | 4100 | 4150 | 4100 |
+| `api` (`main`) | 4101 | 4102 | 4101 |
+| `web` (`main`) | 4101 | 4102 | 4101 |
+
+That is what lets the web app reach the API of *its own* feature:
+
+```toml
+[environment]
+API_URL = "http://localhost:{port.api}"
+```
+
+Ports are leased and persisted, so they survive restarts; a port something else has taken is
+stepped over rather than handed out. `strategy = "fixed"` with a `port` opts an endpoint out
+of allocation entirely, and `origin = false` marks one that no browser talks to.
+
+### CORS, without writing it out per branch
+
+An API whose port moves per feature needs an allowlist that moves with it. If the repository
+declares the variable it reads — in `.env.example`, `.env.sample`, `.env.template`,
+`.env.defaults`, or `.env` — WTM fills it in:
+
+```bash
+# api/.env.example
+CORS_ORIGINS=
+```
+
+```bash
+$ wtm resolve make:dev
+CORS_ORIGINS=http://localhost:4100,http://localhost:4150
+```
+
+`CORS_ORIGIN`, `CORS_ORIGINS`, `CORS_ALLOWED_ORIGINS`, `ALLOWED_ORIGINS` and the same
+spellings behind a project prefix are recognized. Only the variable *names* are read — never
+a value, because a real `.env` holds credentials. Override or disable it explicitly:
+
+```toml
+[cors]
+enabled = true
+env = ["MY_ORIGINS"]
+origins = ["https://staging.example"]
+```
+
+Anything `[environment]` sets by hand always wins over what WTM worked out.
 
 ## Configuration
 
-`wtm.toml` lives at the workspace root. A user-level `~/Library/Application Support/WTM/config.toml`
-is merged underneath it.
+`wtm.toml` lives at the workspace root — the directory `wtm init` was run in, which in a
+multi-repository setup is above all of them. A user-level
+`~/Library/Application Support/WTM/config.toml` is merged underneath it, and a repository may
+override anything in its own `.wtm.toml`.
 
 ```toml
 version = 1
@@ -288,6 +373,9 @@ range = "3000-3999"
 
 [ports.web]
 env = "PORT"
+
+[cors]
+enabled = true
 
 [tasks.dev]
 run = ["bun", "run", "dev"]
@@ -386,10 +474,9 @@ Override the prefix with `PREFIX=…`, and skip daemon registration with `WITH_D
 
 WTM is pre-release and honest about its edges. In this version:
 
-- `status`, `analyze`, `resolve`, `run`, `start`, `stop`, `ps`, `logs`, `remove`, `disk`,
-  `gc`, `daemon`, `init`, and `skill` carry real payloads.
-- `explain`, `plan`, `env`, and `ports` accept their arguments and return well-formed but
-  empty collections.
+- `status`, `analyze`, `resolve`, `run`, `start`, `stop`, `ps`, `logs`, `remove`, `env`,
+  `ports`, `disk`, `gc`, `daemon`, `init`, and `skill` carry real payloads.
+- `explain` and `plan` accept their arguments and return well-formed but empty collections.
 - `doctor` reports every check as `unknown`.
 
 They are wired end to end and shaped correctly; they are not yet answering. Nothing in this
