@@ -309,9 +309,9 @@ function launch() {
   });
   child.once('error', (error) => {
     reportLaunch('ERROR ' + (/^[A-Z0-9_]+$/.test(error.code || '') ? error.code : 'SPAWN_FAILED'));
-    taskExited = true; taskExit = { code: 127, signal: null };
+    taskExited = true; taskExit = { code: 127, signal: null }; checkGroup();
   });
-  child.once('exit', (code, signal) => { taskExited = true; taskExit = { code, signal }; });
+  child.once('exit', (code, signal) => { taskExited = true; taskExit = { code, signal }; checkGroup(); });
   if (child.stdout) pipeline(child.stdout, stdoutLog, (error) => { logFailed ||= error !== undefined && error !== null; stdoutDrained = true; checkGroup(); });
   else { stdoutLog.end(() => { stdoutDrained = true; checkGroup(); }); }
   if (child.stderr) pipeline(child.stderr, stderrLog, (error) => { logFailed ||= error !== undefined && error !== null; stderrDrained = true; checkGroup(); });
@@ -326,6 +326,10 @@ function reportLaunch(value) {
 }
 function checkGroup() {
   if (finished) return;
+  // The group is only worth inspecting once the task has exited and its logs have drained.
+  // Polling while the task merely runs scans the whole process table every 25ms for the
+  // task's entire lifetime, which costs a core and grows the anchor's heap for nothing.
+  if (!taskExited || !stdoutDrained || !stderrDrained) return;
   const inspector = execFile('ps', ['-axo', 'pid=', '-o', 'pgid=', '-o', 'state='], {
     encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', LANG: 'C' }, maxBuffer: 4 * 1024 * 1024,
     timeout: 1000
@@ -335,7 +339,7 @@ function checkGroup() {
       const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(line);
       return match && Number(match[2]) === process.pid && !match[3].startsWith('Z') ? [Number(match[1])] : [];
     });
-    if (taskExited && stdoutDrained && stderrDrained && Date.now() >= anchorReadyAt
+    if (Date.now() >= anchorReadyAt
       && members.every((pid) => pid === process.pid || pid === inspector.pid)) {
       finished = true;
       process.exitCode = logFailed ? 1
