@@ -1,13 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
 
 const scenarioPath = fileURLToPath(new URL('./resource-lifecycle.scenario.ts', import.meta.url));
 const finalizationScenarioPath = fileURLToPath(new URL('./resource-finalization.scenario.ts', import.meta.url));
 
 describe('SQLite resource lifecycle ownership', () => {
   test('uses zero-reference leases and a monotonic GC journal', () => {
-    const result = spawnSync('node', ['--import', 'tsx', scenarioPath], { encoding: 'utf8' });
+    const result = spawnSync('node', ['--import', 'tsx', scenarioPath], { timeout: scenarioTimeoutMs, encoding: 'utf8' });
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.stderr).toBe('');
     expect(JSON.parse(result.stdout)).toEqual({
@@ -33,7 +34,7 @@ describe('SQLite resource lifecycle ownership', () => {
   });
 
   test('atomically finalizes exact object and journal evidence and replays legacy split state', () => {
-    const result = spawnSync('node', ['--import', 'tsx', finalizationScenarioPath], { encoding: 'utf8' });
+    const result = spawnSync('node', ['--import', 'tsx', finalizationScenarioPath], { timeout: scenarioTimeoutMs, encoding: 'utf8' });
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.stderr).toBe('');
     expect(JSON.parse(result.stdout)).toEqual({

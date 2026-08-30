@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scenarioTimeoutMs } from '../../../testkit/src/scenario-child';
 
 const scenarioPath = fileURLToPath(new URL('./production-commands.scenario.ts', import.meta.url));
 
@@ -13,7 +14,7 @@ test('the production CLI wires persistent diagnostics and the foreground task ru
   const reportPath = join(reportRoot, 'report.json');
 
   try {
-    const result = spawnSync('node', ['--import', 'tsx', scenarioPath, reportPath], { encoding: 'utf8' });
+    const result = spawnSync('node', ['--import', 'tsx', scenarioPath, reportPath], { timeout: scenarioTimeoutMs, encoding: 'utf8' });
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
     // The task writes to the inherited stdout, which is what makes `run` a foreground command.

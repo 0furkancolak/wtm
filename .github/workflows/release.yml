@@ -11,6 +11,10 @@ permissions:
 jobs:
   verify:
     name: Verify ${{ matrix.arch }}
+    # A verify takes about eight minutes. Twice a hung scenario child held one past forty,
+    # because `spawnSync` blocks and no per-test timeout can interrupt a blocking call. The
+    # children have their own bound now; this one makes a hang anywhere else end visibly.
+    timeout-minutes: 30
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -106,6 +110,7 @@ jobs:
 
   publish:
     name: Publish
+    timeout-minutes: 20
     needs: verify
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-15
@@ -200,6 +205,7 @@ jobs:
 
   formula:
     name: Homebrew formula
+    timeout-minutes: 20
     needs: publish
     # A prerelease must never become the default formula for `brew install`.
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')

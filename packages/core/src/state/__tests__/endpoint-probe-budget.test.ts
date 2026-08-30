@@ -1,12 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
 
 const scenarioPath = fileURLToPath(new URL('./endpoint-probe-budget.scenario.ts', import.meta.url));
 
 describe('endpoint allocation probe budget', () => {
   test('stops asking after a bounded number of ports and says that it did', () => {
-    const result = spawnSync('node', ['--import', 'tsx', scenarioPath], { encoding: 'utf8' });
+    const result = spawnSync('node', ['--import', 'tsx', scenarioPath], { timeout: scenarioTimeoutMs, encoding: 'utf8' });
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({
       // Every probe is a process. Without a budget this was one spawn per port in the band.

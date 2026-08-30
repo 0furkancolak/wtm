@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
 
 const scenarioPath = fileURLToPath(new URL('./git-environment.scenario.ts', import.meta.url));
 
@@ -39,6 +40,7 @@ describe('Git environment isolation', () => {
 
 function runScenario(name: string, extraEnvironment: Record<string, string> = {}): Record<string, unknown> {
   const result = spawnSync('node', ['--import', 'tsx', scenarioPath, name], {
+    timeout: scenarioTimeoutMs,
     encoding: 'utf8',
     env: { ...process.env, ...extraEnvironment },
   });

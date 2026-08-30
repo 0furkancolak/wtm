@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { runInternalMode } from '../internal';
 import { daemonProgramArguments, runCli } from '../main';
+import { scenarioTimeoutMs } from '../../../testkit/src/scenario-child';
 
 const cliEntry = fileURLToPath(new URL('../bin.ts', import.meta.url));
 const publicGraphProbe = `data:text/javascript,${encodeURIComponent([
@@ -19,7 +20,7 @@ function publicGraphModulesLoadedBy(argv: readonly string[]): number {
   const result = spawnSync(
     'node',
     ['--import', 'tsx', '--import', publicGraphProbe, cliEntry, ...argv],
-    { encoding: 'utf8', input: '' },
+    { timeout: scenarioTimeoutMs, encoding: 'utf8', input: '' },
   );
   const match = /WTM_PUBLIC_GRAPH (\d+)/.exec(result.stderr);
   if (match === null) throw new Error(`probe did not report: ${result.stderr}`);

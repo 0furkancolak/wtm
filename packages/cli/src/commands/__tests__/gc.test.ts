@@ -9,6 +9,7 @@ import { runGcCommand } from '../gc';
 import { runCli } from '../../main';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
 
 const roots: string[] = [];
 const productionScenario = fileURLToPath(new URL('./resource-cli.scenario.ts', import.meta.url));
@@ -129,7 +130,7 @@ describe('disk and gc commands', () => {
   });
 
   test('wires production disk and gc to SQLite state with dry-run default and explicit apply', () => {
-    const result = spawnSync('node', ['--import', 'tsx', productionScenario], { encoding: 'utf8' });
+    const result = spawnSync('node', ['--import', 'tsx', productionScenario], { timeout: scenarioTimeoutMs, encoding: 'utf8' });
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.stderr).toBe('');
     expect(JSON.parse(result.stdout)).toEqual({

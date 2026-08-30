@@ -7,6 +7,7 @@ permissions:
 jobs:
   validate:
     name: Validate ${{ matrix.arch }}
+    timeout-minutes: 30
     # The release ships an executable per architecture, and they do not fail together: linking and
     # signing behave differently on x64. Building only on Apple silicon left the other half of the
     # release unproven until a tag tried to publish it.

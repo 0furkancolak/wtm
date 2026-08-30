@@ -38,7 +38,9 @@ process.stdout.write(`${outputPath}\n`);
 if (report.release.blockers > 0) process.exitCode = 1;
 
 function runScenario(path: string): unknown {
-  const result = spawnSync('node', ['--import', 'tsx', path], { encoding: 'utf8' });
+  // `spawnSync` blocks, so a scenario that never exits stops this script for as long as whatever
+  // is above it will wait — in CI that was forty minutes of a job doing nothing.
+  const result = spawnSync('node', ['--import', 'tsx', path], { timeout: 120_000, encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr || result.stdout || `Scenario failed: ${path}`);
   return JSON.parse(result.stdout);
 }

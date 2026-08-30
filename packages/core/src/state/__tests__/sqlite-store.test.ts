@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
 
 const scenarioPath = fileURLToPath(new URL('./sqlite-store.scenario.ts', import.meta.url));
 
 function runScenario(name: string): Record<string, unknown> {
   const result = spawnSync('node', ['--import', 'tsx', scenarioPath, name], {
+    timeout: scenarioTimeoutMs,
     encoding: 'utf8',
   });
 

@@ -8,6 +8,7 @@ import type { AdapterMetadataResponse } from '@wtm/protocol';
 import { createFakeAdapter, type FakeAdapter } from '../../../../testkit/src/fake-adapter';
 import { developmentRuntimeInvocation } from '../../../../testkit/src/runtime-invocation';
 import { createAdapterTrustStore, trustRepositoryAdapter } from '../adapter-trust';
+import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
 import {
   invokeExternalAdapter as invokeAdapterDirectly,
   type ExternalAdapterCleanupState,
@@ -310,6 +311,7 @@ describe('external adapter bridge', () => {
 
     try {
       const result = spawnSync('node', ['--import', 'tsx', descriptorAuditScenarioPath], {
+        timeout: scenarioTimeoutMs,
         encoding: 'utf8', env: { ...process.env, TMPDIR: attackerTmp },
       });
       expect(result.status, result.stderr || result.stdout).toBe(0);

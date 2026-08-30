@@ -7,6 +7,7 @@ import { listGitWorktrees } from '@wtm/core';
 import type { GitSafetyFixture } from '../../../../testkit/src/git-fixture';
 import { createGitSafetyFixture } from '../../../../testkit/src/git-fixture';
 import { runRemoveCommand } from '../remove';
+import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
 
 const fixtures: GitSafetyFixture[] = [];
 const malformedScenarioPath = fileURLToPath(new URL('./remove-malformed.scenario.ts', import.meta.url));
@@ -181,7 +182,7 @@ describe('runRemoveCommand', () => {
   });
 
   test('maps malformed porcelain to degraded JSON and preserves the worktree', () => {
-    const result = spawnSync('node', ['--import', 'tsx', malformedScenarioPath], { encoding: 'utf8' });
+    const result = spawnSync('node', ['--import', 'tsx', malformedScenarioPath], { timeout: scenarioTimeoutMs, encoding: 'utf8' });
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.signal).toBeNull();
     expect(result.stderr).toBe('');
