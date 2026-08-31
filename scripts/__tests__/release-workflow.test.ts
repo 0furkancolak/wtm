@@ -110,6 +110,22 @@ describe('release workflow', () => {
     expect(jobs.formula?.permissions).toEqual({ contents: 'read' });
   });
 
+  test('does not retract a published release when the npm channel fails', () => {
+    const steps = workflow('release.yml').jobs?.publish?.steps ?? [];
+    const releaseIndex = steps.findIndex((step) => (step.run ?? '').includes('gh release create'));
+    const npmIndex = steps.findIndex((step) => (step.run ?? '').includes('npm publish'));
+
+    // The archives go out first, so by the time npm runs the release already stands on its own.
+    expect(releaseIndex).toBeGreaterThanOrEqual(0);
+    expect(npmIndex).toBeGreaterThan(releaseIndex);
+
+    // Neither a missing credential nor a rejected one may fail the job behind that release: the
+    // token expires, and an expired token must not read as a broken build.
+    const publishStep = (steps[npmIndex]?.run ?? '').replace(/\\\n\s*/gu, ' ');
+    expect(publishStep).toContain('exit 0');
+    expect(publishStep).toMatch(/npm publish .*\|\| echo/u);
+  });
+
   test('keeps every publishing command out of the untagged workflows', () => {
     const published = ['npm publish', 'gh release create', 'actions/attest', 'git -C tap push'];
 

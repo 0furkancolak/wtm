@@ -201,7 +201,12 @@ jobs:
           # A prerelease must never become what `npm install <name>` hands to everyone.
           tag='latest'
           case "${{ github.ref_name }}" in *-*) tag='next';; esac
-          npm publish --provenance --access public --tag "$tag"
+          # The same reasoning as the absent credential above, applied to one that is present but
+          # no longer works. This token expires, and npm can reject it for reasons that have nothing
+          # to do with the build: an expired token would otherwise turn a release that is already
+          # published and attested into a failed job. The annotation is the record that it happened.
+          npm publish --provenance --access public --tag "$tag" \
+            || echo "::warning::npm publish failed; ${{ github.ref_name }} stands on the GitHub Release without the npm channel."
 
   formula:
     name: Homebrew formula
