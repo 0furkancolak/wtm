@@ -41,6 +41,42 @@ describe('runAnalyzeCommand', () => {
     });
   });
 
+  test('reports local-only remote knowledge until the caller supplies a refresh it performed', async () => {
+    const fixture = await createFixture();
+    const context = {
+      repoPath: fixture.repoPath,
+      worktreePath: fixture.linkedWorktreePath,
+      baseRef: 'refs/heads/main',
+    };
+    const refreshedAt = '2026-08-31T09:15:00.000Z';
+
+    const local = await runAnalyzeCommand(context);
+    const refreshed = await runAnalyzeCommand({ ...context, remoteRefresh: { refreshedAt } });
+
+    expect(jsonEnvelopeSchema.parse(local)).toMatchObject({
+      ok: true,
+      data: {
+        remoteKnowledge: {
+          source: 'local-refs',
+          refreshed: false,
+          refreshedAt: null,
+          confidence: 'LOCAL_ONLY',
+        },
+      },
+    });
+    expect(jsonEnvelopeSchema.parse(refreshed)).toMatchObject({
+      ok: true,
+      data: {
+        remoteKnowledge: {
+          source: 'fetched-refs',
+          refreshed: true,
+          refreshedAt,
+          confidence: 'REFRESHED',
+        },
+      },
+    });
+  });
+
   test('maps typed Git failures to sanitized JSON error evidence', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'wtm-analyze-failure-'));
     try {

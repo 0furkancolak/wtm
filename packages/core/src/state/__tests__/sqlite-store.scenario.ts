@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { SQLiteStateStore } from '../sqlite-store';
-import type { StateStore } from '../store';
+import type { RepositoryOperationLeaseHolder, StateStore } from '../store';
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends
@@ -29,6 +29,12 @@ type StateStoreDomainOperation =
   | 'releaseExpiredManagedProcessStart'
   | 'releaseExpiredManagedProcessReplacement'
   | 'hasManagedProcessStartReservation'
+  | 'acquireRepositoryOperationLease'
+  | 'renewRepositoryOperationLease'
+  | 'advanceRepositoryOperationLease'
+  | 'releaseRepositoryOperationLease'
+  | 'readRepositoryOperationLease'
+  | 'releaseEndpointLeasesForWorktree'
   | 'transaction';
 type StateStoreHasExactlyPlannedOperations = Assert<Equal<keyof StateStore, StateStoreDomainOperation>>;
 
@@ -1128,6 +1134,331 @@ function orphanedEndpointRelease() {
   });
 }
 
+/**
+ * One destructive operation per repository at a time, decided by the database rather than by
+ * a map inside one process: the second `wtm` process is a different connection, and it is the
+ * one that has to see the refusal.
+ */
+function repositoryOperationLeases() {
+  return withDatabase((path, open, close) => {
+    const first = open();
+    const repository = createRepository(first);
+    const worktreeRecord = first.reconcileWorktrees(repository.id, [
+      worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
+    ]).discovered[0];
+    if (worktreeRecord === undefined) throw new Error('Expected discovered worktree');
+    close();
+    const firstStore = new SQLiteStateStore(path);
+    const secondStore = new SQLiteStateStore(path);
+    const key = { repositoryId: repository.id, operation: 'remove' } as const;
+    try {
+      const acquired = firstStore.acquireRepositoryOperationLease({
+        repositoryId: repository.id,
+        operation: 'remove',
+        token: 'token-1',
+        pid: 51422,
+        processStartTime: 'Mon Aug 31 10:14:02 2026',
+        subjectWorktreeId: worktreeRecord.id,
+        ttlMs: 120_000,
+      }, '2026-08-31T10:14:02.118Z');
+      const conflicted = secondStore.acquireRepositoryOperationLease({
+        repositoryId: repository.id,
+        operation: 'remove',
+        token: 'token-2',
+        pid: 51423,
+        processStartTime: 'Mon Aug 31 10:14:03 2026',
+        ttlMs: 120_000,
+      }, '2026-08-31T10:14:03.000Z');
+      // `gc` and `remove` are different rows: which operations exclude each other is a
+      // decision for the caller, not for the primary key.
+      const otherOperation = secondStore.acquireRepositoryOperationLease({
+        repositoryId: repository.id,
+        operation: 'gc',
+        token: 'token-gc',
+        pid: 51423,
+        processStartTime: 'Mon Aug 31 10:14:03 2026',
+        ttlMs: 120_000,
+      }, '2026-08-31T10:14:03.000Z');
+      let emptyTokenRejected = false;
+      try {
+        secondStore.acquireRepositoryOperationLease({
+          repositoryId: repository.id,
+          operation: 'repair',
+          token: '',
+          pid: 51423,
+          processStartTime: 'Mon Aug 31 10:14:03 2026',
+          ttlMs: 120_000,
+        }, '2026-08-31T10:14:03.000Z');
+      } catch (error) {
+        emptyTokenRejected = error instanceof TypeError;
+      }
+      const wrongTokenReleased = secondStore.releaseRepositoryOperationLease(key, 'token-2');
+      const survived = secondStore.readRepositoryOperationLease(key);
+      const releasedByHolder = secondStore.releaseRepositoryOperationLease(key, 'token-1');
+      const releasedTwice = secondStore.releaseRepositoryOperationLease(key, 'token-1');
+      const readAfterRelease = secondStore.readRepositoryOperationLease(key);
+      const reacquired = secondStore.acquireRepositoryOperationLease({
+        repositoryId: repository.id,
+        operation: 'remove',
+        token: 'token-2',
+        pid: 51423,
+        processStartTime: 'Mon Aug 31 10:14:03 2026',
+        ttlMs: 120_000,
+      }, '2026-08-31T10:14:04.000Z');
+      return {
+        acquiredOutcome: acquired.outcome,
+        acquiredToken: acquired.outcome === 'acquired' ? acquired.lease.token : null,
+        acquiredStage: acquired.outcome === 'acquired' ? acquired.lease.stage : null,
+        acquiredAdoptedStage: acquired.outcome === 'acquired' ? acquired.adoptedStage : null,
+        acquiredExpiresAt: acquired.outcome === 'acquired' ? acquired.lease.expiresAt : null,
+        conflictOutcome: conflicted.outcome,
+        conflictHolderPid: conflicted.outcome === 'acquired' ? null : conflicted.holder.pid,
+        conflictHolderAcquiredAt: conflicted.outcome === 'acquired' ? null : conflicted.holder.acquiredAt,
+        conflictHolderSubjectMatches: conflicted.outcome !== 'acquired'
+          && conflicted.holder.subjectWorktreeId === worktreeRecord.id,
+        // A diagnostic read is not a capability to release: the token stays inside the store.
+        holderViewKeys: survived === null ? null : Object.keys(survived).sort(),
+        otherOperationOutcome: otherOperation.outcome,
+        emptyTokenRejected,
+        wrongTokenReleased,
+        survivedWrongTokenPid: survived?.pid ?? null,
+        releasedByHolder,
+        releasedTwice,
+        readAfterRelease,
+        reacquiredOutcome: reacquired.outcome,
+      };
+    } finally {
+      firstStore.close();
+      secondStore.close();
+    }
+  });
+}
+
+/**
+ * A lapsed TTL is not evidence that the holder is gone. Only a caller-supplied liveness
+ * verdict makes an expired lease adoptable, and only `adopt` takes it over — so a half-done
+ * cleanup is never continued by a caller that does not know one happened.
+ */
+function repositoryOperationLeaseRecovery() {
+  return withDatabase((_, open, close) => {
+    const store = open();
+    try {
+      const repository = createRepository(store);
+      const key = { repositoryId: repository.id, operation: 'remove' } as const;
+      const livenessCalls: RepositoryOperationLeaseHolder[] = [];
+      const recordLiveness = (verdict: 'alive' | 'gone') => (holder: RepositoryOperationLeaseHolder) => {
+        livenessCalls.push(holder);
+        return verdict;
+      };
+      const holderRequest = {
+        repositoryId: repository.id,
+        operation: 'remove',
+        token: 'token-1',
+        pid: 900,
+        processStartTime: 'start-a',
+        ttlMs: 1000,
+      } as const;
+      const challenger = {
+        repositoryId: repository.id,
+        operation: 'remove',
+        token: 'token-2',
+        pid: 901,
+        processStartTime: 'start-b',
+        ttlMs: 1000,
+      } as const;
+
+      const acquired = store.acquireRepositoryOperationLease(
+        { ...holderRequest, ownerLiveness: recordLiveness('alive') },
+        '2026-08-31T10:00:00.000Z',
+      );
+      const freshLivenessCalls = livenessCalls.length;
+      const advanceWrongToken = store.advanceRepositoryOperationLease(
+        key, 'token-x', 'stop-processes', '2026-08-31T10:00:00.100Z',
+      );
+      const advanceHolder = store.advanceRepositoryOperationLease(
+        key, 'token-1', 'release-endpoints', '2026-08-31T10:00:00.100Z',
+      );
+      const afterAdvance = store.readRepositoryOperationLease(key);
+      const renewWrongToken = store.renewRepositoryOperationLease(
+        key, 'token-x', '2026-08-31T10:00:00.200Z', 1000,
+      );
+      const renewHolder = store.renewRepositoryOperationLease(
+        key, 'token-1', '2026-08-31T10:00:00.200Z', 1000,
+      );
+      const afterRenew = store.readRepositoryOperationLease(key);
+
+      const unexpiredConflict = store.acquireRepositoryOperationLease(
+        { ...challenger, ownerLiveness: recordLiveness('gone') },
+        '2026-08-31T10:00:00.500Z',
+      );
+      const unexpiredLivenessCalls = livenessCalls.length;
+
+      const expiredButLive = store.acquireRepositoryOperationLease(
+        { ...challenger, ownerLiveness: recordLiveness('alive') },
+        '2026-08-31T10:00:02.000Z',
+      );
+      const [livenessArgument] = livenessCalls;
+      // The same PID, a different start time: a recycled PID must not read as the holder.
+      const reusedPid = store.acquireRepositoryOperationLease(
+        {
+          ...challenger,
+          ownerLiveness: (holder) => (holder.pid === 900 && holder.processStartTime === 'start-b' ? 'alive' : 'gone'),
+        },
+        '2026-08-31T10:00:02.000Z',
+      );
+      const abandoned = store.acquireRepositoryOperationLease(
+        { ...challenger, adopt: false, ownerLiveness: () => 'gone' },
+        '2026-08-31T10:00:02.000Z',
+      );
+      const notTakenOver = store.readRepositoryOperationLease(key);
+      const renewExpired = store.renewRepositoryOperationLease(
+        key, 'token-1', '2026-08-31T10:00:02.000Z', 1000,
+      );
+      const adoptedResult = store.acquireRepositoryOperationLease(
+        { ...challenger, adopt: true, ownerLiveness: () => 'gone' },
+        '2026-08-31T10:00:02.000Z',
+      );
+      const displacedTokenCannotRelease = store.releaseRepositoryOperationLease(key, 'token-1');
+      const adoptOnLiveHolder = store.acquireRepositoryOperationLease(
+        {
+          repositoryId: repository.id,
+          operation: 'remove',
+          token: 'token-3',
+          pid: 902,
+          processStartTime: 'start-c',
+          ttlMs: 1000,
+          adopt: true,
+          ownerLiveness: () => 'alive',
+        },
+        '2026-08-31T10:00:09.000Z',
+      );
+      return {
+        acquiredOutcome: acquired.outcome,
+        freshLivenessCalls,
+        advanceWrongToken,
+        advanceHolder,
+        stageAfterAdvance: afterAdvance?.stage ?? null,
+        renewedAtAfterAdvance: afterAdvance?.renewedAt ?? null,
+        expiresAtAfterAdvance: afterAdvance?.expiresAt ?? null,
+        renewWrongToken,
+        renewHolder,
+        renewedAtAfterRenew: afterRenew?.renewedAt ?? null,
+        expiresAtAfterRenew: afterRenew?.expiresAt ?? null,
+        unexpiredConflictOutcome: unexpiredConflict.outcome,
+        unexpiredLivenessCalls,
+        expiredButLiveOutcome: expiredButLive.outcome,
+        livenessArgument: livenessArgument === undefined ? null : {
+          ...livenessArgument,
+          repositoryId: livenessArgument.repositoryId === repository.id ? '<repository>' : '<other>',
+        },
+        reusedPidOutcome: reusedPid.outcome,
+        abandonedOutcome: abandoned.outcome,
+        abandonedStage: abandoned.outcome === 'acquired' ? null : abandoned.holder.stage,
+        notTakenOverPid: notTakenOver?.pid ?? null,
+        renewExpired,
+        adoptedOutcome: adoptedResult.outcome,
+        adoptedStage: adoptedResult.outcome === 'acquired' ? adoptedResult.adoptedStage : null,
+        adoptedLeaseStage: adoptedResult.outcome === 'acquired' ? adoptedResult.lease.stage : null,
+        adoptedLeasePid: adoptedResult.outcome === 'acquired' ? adoptedResult.lease.pid : null,
+        adoptedAcquiredAt: adoptedResult.outcome === 'acquired' ? adoptedResult.lease.acquiredAt : null,
+        displacedTokenCannotRelease,
+        adoptOnLiveHolderOutcome: adoptOnLiveHolder.outcome,
+        finalRelease: store.releaseRepositoryOperationLease(key, 'token-2'),
+      };
+    } finally {
+      close();
+    }
+  });
+}
+
+/**
+ * Removal has to give a worktree's ports back before Git deletes it, and be able to say how
+ * many it gave back. Reconciliation's own release stays where it is; the two agree.
+ */
+function worktreeEndpointRelease() {
+  return withDatabase((_, open, close) => {
+    const store = open();
+    try {
+      const repository = createRepository(store);
+      const reconciled = store.reconcileWorktrees(repository.id, [
+        worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
+        worktree('/projects/demo/repo-feature', 'feature-head', 'refs/heads/feature'),
+      ]);
+      const main = reconciled.discovered.find(({ path }) => path.endsWith('/repo'));
+      const feature = reconciled.discovered.find(({ path }) => path.endsWith('-feature'));
+      if (main === undefined || feature === undefined) throw new Error('Expected two worktrees');
+      const range = { min: 4100, max: 4199 };
+      store.allocateEndpoint({
+        worktreeId: feature.id, name: 'api', protocol: 'tcp', host: '127.0.0.1', portRange: range, preferredPort: 4100,
+      });
+      store.allocateEndpoint({
+        worktreeId: feature.id, name: 'web', protocol: 'tcp', host: '127.0.0.1', portRange: range, preferredPort: 4101,
+      });
+      store.allocateEndpoint({
+        worktreeId: main.id, name: 'api', protocol: 'tcp', host: '127.0.0.1', portRange: range, preferredPort: 4102,
+      });
+
+      const released = store.releaseEndpointLeasesForWorktree(feature.id, '2026-08-31T10:00:00.000Z');
+      const releasedAgain = store.releaseEndpointLeasesForWorktree(feature.id, '2026-08-31T10:00:01.000Z');
+      const leases = store.listEndpointLeases();
+      const reallocated = store.allocateEndpoint({
+        worktreeId: main.id, name: 'takeover', protocol: 'tcp', host: '127.0.0.1', portRange: range, preferredPort: 4100,
+      });
+      return {
+        released,
+        releasedAgain,
+        leaseStates: leases.map(({ name, port, state }) => [name, port, state]),
+        releaseTimestamps: leases
+          .filter(({ state }) => state === 'RELEASED')
+          .map(({ lastVerifiedAt }) => lastVerifiedAt),
+        reallocatedPort: reallocated.port,
+        activeAfterReallocation: store.listEndpointLeases({ states: ['ACTIVE'] }).length,
+      };
+    } finally {
+      close();
+    }
+  });
+}
+
+/** Retiring a registration takes its operation leases with it, and nothing else's. */
+function operationLeaseRetirement() {
+  return withDatabase((_, open, close) => {
+    const store = open();
+    try {
+      const gone = createRepository(store);
+      const kept = store.upsertRepository({
+        workspaceId: gone.workspaceId,
+        commonGitDir: '/projects/demo/other/.git',
+        mainRoot: '/projects/demo/other',
+        remoteIdentity: null,
+      });
+      for (const [repositoryId, pid] of [[gone.id, 8801], [kept.id, 8802]] as const) {
+        store.acquireRepositoryOperationLease({
+          repositoryId,
+          operation: 'remove',
+          token: `token-${pid}`,
+          pid,
+          processStartTime: 'start',
+          ttlMs: 120_000,
+        }, '2026-08-31T10:00:00.000Z');
+      }
+      const forgotRepository = store.forgetRepository(gone.id);
+      const keptKey = { repositoryId: kept.id, operation: 'remove' } as const;
+      const survivingLease = store.readRepositoryOperationLease(keptKey);
+      const forgotWorkspace = store.forgetWorkspace(gone.workspaceId);
+      return {
+        forgotRepository,
+        leaseAfterForget: store.readRepositoryOperationLease({ repositoryId: gone.id, operation: 'remove' }),
+        survivingLeasePid: survivingLease?.pid ?? null,
+        forgotWorkspace,
+        leaseAfterWorkspaceForget: store.readRepositoryOperationLease(keptKey),
+      };
+    } finally {
+      close();
+    }
+  });
+}
+
 function requireMigration(file: string): string {
   return readFileSync(new URL(`../migrations/${file}`, import.meta.url), 'utf8');
 }
@@ -1152,6 +1483,10 @@ const scenarios: Record<string, () => unknown> = {
   'registration-retirement': registrationRetirement,
   'lifecycle-event-claims': lifecycleEventClaims,
   'orphaned-endpoint-release': orphanedEndpointRelease,
+  'repository-operation-leases': repositoryOperationLeases,
+  'repository-operation-lease-recovery': repositoryOperationLeaseRecovery,
+  'worktree-endpoint-release': worktreeEndpointRelease,
+  'operation-lease-retirement': operationLeaseRetirement,
 };
 
 const scenarioName = process.argv[2];

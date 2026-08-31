@@ -20,6 +20,11 @@ import type {
   ManagedProcessUpdate,
   ReconcileResult,
   RepositoryInput,
+  RepositoryOperation,
+  RepositoryOperationLeaseHolder,
+  RepositoryOperationLeaseKey,
+  RepositoryOperationLeaseRequest,
+  RepositoryOperationLeaseResult,
   RepositoryRecord,
   ResourceGcEvidenceRecord,
   ResourceGcJournalInput,
@@ -110,6 +115,33 @@ interface ManagedProcessRow {
   stderr_path: string;
   cleanup_required: 0 | 1;
   cleanup_owner_token: string | null;
+}
+
+interface RepositoryOperationLeaseRow {
+  repository_id: string;
+  operation: RepositoryOperation;
+  token: string;
+  pid: number;
+  process_start_time: string;
+  subject_worktree_id: string | null;
+  stage: string | null;
+  acquired_at: string;
+  renewed_at: string;
+  expires_at: string;
+}
+
+function repositoryOperationLeaseHolderFromRow(row: RepositoryOperationLeaseRow): RepositoryOperationLeaseHolder {
+  return {
+    repositoryId: row.repository_id,
+    operation: row.operation,
+    pid: row.pid,
+    processStartTime: row.process_start_time,
+    subjectWorktreeId: row.subject_worktree_id,
+    stage: row.stage,
+    acquiredAt: row.acquired_at,
+    renewedAt: row.renewed_at,
+    expiresAt: row.expires_at,
+  };
 }
 
 function workspaceFromRow(row: WorkspaceRow): WorkspaceRecord {
@@ -420,6 +452,12 @@ export class SQLiteStateStore implements StateStore {
       const repositoryIds = this.#database
         .prepare('SELECT id FROM repositories WHERE workspace_id = ?')
         .all(workspaceId) as Array<{ id: string }>;
+      // The cascade reaches operation leases, and the explicit delete is what the tests
+      // assert: a lease naming a repository that no longer exists would refuse an operation
+      // nobody could ever release.
+      const forgetOperationLeases = this.#database
+        .prepare('DELETE FROM repository_operation_leases WHERE repository_id = ?');
+      for (const { id } of repositoryIds) forgetOperationLeases.run(id);
       // Announcement records carry no foreign key, so that forgetting a subject cannot be
       // undone by a cascade resurrecting it. They are cleared here instead.
       const forgetEvents = this.#database
@@ -472,6 +510,9 @@ export class SQLiteStateStore implements StateStore {
       for (const { id } of worktreeIds) {
         this.#database.prepare('DELETE FROM managed_process_start_reservations WHERE worktree_id = ?').run(id);
       }
+      this.#database
+        .prepare('DELETE FROM repository_operation_leases WHERE repository_id = ?')
+        .run(repositoryId);
       const forgetEvents = this.#database
         .prepare('DELETE FROM lifecycle_event_dispatches WHERE subject_type = ? AND subject_id = ?');
       forgetEvents.run('repository', repositoryId);
@@ -1022,6 +1063,22 @@ export class SQLiteStateStore implements StateStore {
     return rows.map(endpointFromRow);
   }
 
+  /**
+   * Gives back every port one worktree holds, and says how many it gave back.
+   *
+   * Reconciliation already releases the ports of a worktree Git no longer reports, but that
+   * is one pass too late for a removal: the release has to be verifiable *before* Git deletes
+   * the directory, or a removal that failed afterwards would leave ports leased to a path
+   * that is gone. Releasing twice is not an error, it is zero rows.
+   */
+  releaseEndpointLeasesForWorktree(worktreeId: string, releasedAt: string): number {
+    this.#assertOpen();
+    return this.transaction(() => this.#database.prepare(`
+      UPDATE endpoint_leases SET state = 'RELEASED', last_verified_at = ?
+      WHERE worktree_id = ? AND state = 'ACTIVE'
+    `).run(releasedAt, worktreeId).changes);
+  }
+
   createManagedProcess(
     input: ManagedProcessInput,
     options: ManagedProcessCreateOptions = {},
@@ -1202,6 +1259,139 @@ export class SQLiteStateStore implements StateStore {
     `).get(worktreeId, taskName) !== undefined;
   }
 
+  /**
+   * Claims a repository for one destructive operation, or reports who is already doing it.
+   *
+   * The primary key is the repository and the operation, so the insert conflict *is* the
+   * refusal — the same shape as a managed process start reservation, and for the same reason:
+   * two processes asking at once cannot both be told yes.
+   */
+  acquireRepositoryOperationLease(
+    input: RepositoryOperationLeaseRequest,
+    now: string,
+  ): RepositoryOperationLeaseResult {
+    this.#assertOpen();
+    if (input.token.length === 0) throw new TypeError('Repository operation lease token must not be empty');
+    if (!Number.isSafeInteger(input.pid) || input.pid < 1) {
+      throw new RangeError('Repository operation lease PID must be positive');
+    }
+    if (input.processStartTime.length === 0) {
+      throw new TypeError('Repository operation lease owner identity must be complete');
+    }
+    const expiresAt = repositoryOperationLeaseExpiry(now, input.ttlMs);
+    return this.transaction(() => {
+      const existing = this.#repositoryOperationLease(input);
+      if (existing !== null) {
+        // A lapsed TTL is not evidence that the holder is gone — a `git worktree remove` on a
+        // cold filesystem outlives a TTL and is still the safest thing in the room. Stealing
+        // the lease from it would put two processes inside the same destruction.
+        if (!isRepositoryOperationLeaseExpired(existing, now)) {
+          return { outcome: 'conflict', holder: existing };
+        }
+        // Liveness is the caller's verdict and costs a `ps`, so it is asked for exactly one
+        // row and only once that row has expired. No callback means no evidence of life.
+        if ((input.ownerLiveness?.(existing) ?? 'gone') === 'alive') {
+          return { outcome: 'conflict', holder: existing };
+        }
+        // An abandoned lease is reported, not taken: its stage names a half-finished cleanup,
+        // and continuing one is only safe for a caller that asked to resume it.
+        if (input.adopt !== true) return { outcome: 'abandoned', holder: existing };
+        this.#database.prepare(`
+          DELETE FROM repository_operation_leases WHERE repository_id = ? AND operation = ?
+        `).run(input.repositoryId, input.operation);
+      }
+      // The stage survives adoption. If the resuming process dies too, the next one still
+      // learns how far the first one got.
+      const stage = existing?.stage ?? null;
+      const subjectWorktreeId = input.subjectWorktreeId ?? existing?.subjectWorktreeId ?? null;
+      this.#database.prepare(`
+        INSERT INTO repository_operation_leases (
+          repository_id, operation, token, pid, process_start_time, subject_worktree_id,
+          stage, acquired_at, renewed_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        input.repositoryId, input.operation, input.token, input.pid, input.processStartTime,
+        subjectWorktreeId, stage, now, now, expiresAt,
+      );
+      return {
+        outcome: 'acquired',
+        lease: {
+          repositoryId: input.repositoryId,
+          operation: input.operation,
+          token: input.token,
+          pid: input.pid,
+          processStartTime: input.processStartTime,
+          subjectWorktreeId,
+          stage,
+          acquiredAt: now,
+          renewedAt: now,
+          expiresAt,
+        },
+        adoptedStage: existing === null ? null : stage,
+      };
+    });
+  }
+
+  /**
+   * Extends a lease its holder still owns.
+   *
+   * An expired lease is not renewable, only re-acquirable: renewing one would let a process
+   * that stopped reporting for longer than its TTL reappear and carry on as though nothing
+   * had happened, past a liveness check it never had to pass.
+   */
+  renewRepositoryOperationLease(
+    key: RepositoryOperationLeaseKey,
+    token: string,
+    now: string,
+    ttlMs: number,
+  ): boolean {
+    this.#assertOpen();
+    const expiresAt = repositoryOperationLeaseExpiry(now, ttlMs);
+    return this.transaction(() => this.#database.prepare(`
+      UPDATE repository_operation_leases SET renewed_at = ?, expires_at = ?
+      WHERE repository_id = ? AND operation = ? AND token = ? AND expires_at > ?
+    `).run(now, expiresAt, key.repositoryId, key.operation, token, now).changes === 1);
+  }
+
+  /**
+   * Records the last stage the operation completed, for the holding token only.
+   *
+   * The row is the journal, so the stage is written where the lock is and cannot disagree
+   * with it. Expiry does not gate this: an adopted lease carries a different token, so the
+   * token check already keeps a displaced owner from writing over its successor's progress,
+   * and a holder that is still working should never lose its journal to a lapsed TTL.
+   */
+  advanceRepositoryOperationLease(
+    key: RepositoryOperationLeaseKey,
+    token: string,
+    stage: string,
+    now: string,
+  ): boolean {
+    this.#assertOpen();
+    if (stage.length === 0) throw new TypeError('Repository operation lease stage must not be empty');
+    return this.transaction(() => this.#database.prepare(`
+      UPDATE repository_operation_leases SET stage = ?, renewed_at = ?
+      WHERE repository_id = ? AND operation = ? AND token = ?
+    `).run(stage, now, key.repositoryId, key.operation, token).changes === 1);
+  }
+
+  releaseRepositoryOperationLease(key: RepositoryOperationLeaseKey, token: string): boolean {
+    this.#assertOpen();
+    return this.transaction(() => this.#database.prepare(`
+      DELETE FROM repository_operation_leases
+      WHERE repository_id = ? AND operation = ? AND token = ?
+    `).run(key.repositoryId, key.operation, token).changes === 1);
+  }
+
+  /**
+   * Who holds this operation, for a diagnostic that has to name them. The token stays in the
+   * database: a read is not a capability to release.
+   */
+  readRepositoryOperationLease(key: RepositoryOperationLeaseKey): RepositoryOperationLeaseHolder | null {
+    this.#assertOpen();
+    return this.#repositoryOperationLease(key);
+  }
+
   listManagedProcesses(query: ManagedProcessQuery = {}): ManagedProcessRecord[] {
     this.#assertOpen();
     const clauses: string[] = [];
@@ -1289,6 +1479,13 @@ export class SQLiteStateStore implements StateStore {
     return managedProcessFromRow(row);
   }
 
+  #repositoryOperationLease(key: RepositoryOperationLeaseKey): RepositoryOperationLeaseHolder | null {
+    const row = this.#database.prepare(`
+      SELECT * FROM repository_operation_leases WHERE repository_id = ? AND operation = ?
+    `).get(key.repositoryId, key.operation) as RepositoryOperationLeaseRow | undefined;
+    return row === undefined ? null : repositoryOperationLeaseHolderFromRow(row);
+  }
+
   #releaseResourceCleanupLease(storageObjectId: string, token: string, preserveReservation = false): boolean {
     if (!preserveReservation) this.#database.prepare(`
       UPDATE resource_storage_objects SET state = (
@@ -1326,6 +1523,24 @@ export class SQLiteStateStore implements StateStore {
       }
     }).immediate();
   }
+}
+
+function repositoryOperationLeaseExpiry(now: string, ttlMs: number): string {
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
+    throw new RangeError('Repository operation lease TTL must be a positive number of milliseconds');
+  }
+  const acquiredAt = Date.parse(now);
+  if (Number.isNaN(acquiredAt)) throw new TypeError(`Repository operation lease timestamp must be a date: ${now}`);
+  return new Date(acquiredAt + ttlMs).toISOString();
+}
+
+/**
+ * Expiry is caller-supplied ISO-8601 TEXT compared with a plain `<=`, exactly as the managed
+ * process reservations compare theirs, so that a test can state a timeline instead of racing
+ * a wall clock — and so that the two subsystems cannot disagree about what expired means.
+ */
+function isRepositoryOperationLeaseExpired(holder: RepositoryOperationLeaseHolder, now: string): boolean {
+  return holder.expiresAt <= now;
 }
 
 function isActiveProcessState(state: ManagedProcessState): boolean {

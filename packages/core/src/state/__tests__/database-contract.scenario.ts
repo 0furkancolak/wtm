@@ -165,6 +165,55 @@ async function run(driver: DriverName): Promise<Record<string, unknown>> {
       resourceFinalizationError = error instanceof Error ? error.message : String(error);
     }
 
+    // The operation lease and the explicit endpoint release must read the same on both
+    // drivers: a lease that refused on one and granted on the other would be a lock in name
+    // only. `endpoint` above is the record allocation returned, so releasing here does not
+    // move it — the persisted state is asserted separately.
+    const operationLeaseKey = { repositoryId: repository.id, operation: 'remove' } as const;
+    const operationLease = store.acquireRepositoryOperationLease({
+      repositoryId: repository.id,
+      operation: 'remove',
+      token: 'operation-token',
+      pid: 7331,
+      processStartTime: 'Fri Aug 28 08:00:00 2026',
+      subjectWorktreeId: registeredWorktree.id,
+      ttlMs: 60_000,
+    }, '2026-08-28T08:00:10.000Z');
+    const operationLeaseConflict = store.acquireRepositoryOperationLease({
+      repositoryId: repository.id,
+      operation: 'remove',
+      token: 'other-token',
+      pid: 7332,
+      processStartTime: 'Fri Aug 28 08:00:01 2026',
+      ttlMs: 60_000,
+      ownerLiveness: () => 'gone',
+    }, '2026-08-28T08:00:11.000Z');
+    const operationLeaseAdvanced = store.advanceRepositoryOperationLease(
+      operationLeaseKey, 'operation-token', 'release-endpoints', '2026-08-28T08:00:12.000Z',
+    );
+    const operationLeaseRenewed = store.renewRepositoryOperationLease(
+      operationLeaseKey, 'operation-token', '2026-08-28T08:00:13.000Z', 30_000,
+    );
+    const operationLeaseHolder = store.readRepositoryOperationLease(operationLeaseKey);
+    const operationLeaseWrongTokenReleased = store.releaseRepositoryOperationLease(operationLeaseKey, 'other-token');
+    const operationLeaseReleased = store.releaseRepositoryOperationLease(operationLeaseKey, 'operation-token');
+    const operationLeaseAfterRelease = store.readRepositoryOperationLease(operationLeaseKey);
+
+    store.allocateEndpoint({
+      worktreeId: registeredWorktree.id,
+      name: 'api',
+      protocol: 'tcp',
+      host: '127.0.0.1',
+      portRange: { min: 45120, max: 45130 },
+      preferredPort: 45124,
+    });
+    const releasedEndpoints = store.releaseEndpointLeasesForWorktree(
+      registeredWorktree.id, '2026-08-28T08:00:14.000Z',
+    );
+    const releasedEndpointsAgain = store.releaseEndpointLeasesForWorktree(
+      registeredWorktree.id, '2026-08-28T08:00:15.000Z',
+    );
+
     let rollbackError: string | null = null;
     try {
       const transactionStore = store;
@@ -259,6 +308,25 @@ async function run(driver: DriverName): Promise<Record<string, unknown>> {
         persistedResource.referenceCount,
         persistedResource.logicalBytes,
         persistedResource.allocatedBytes,
+      ],
+      operationLease: [
+        operationLease.outcome,
+        operationLease.outcome === 'acquired' ? operationLease.lease.token : null,
+        operationLeaseConflict.outcome,
+        operationLeaseConflict.outcome === 'acquired' ? null : operationLeaseConflict.holder.pid,
+        operationLeaseAdvanced,
+        operationLeaseRenewed,
+        operationLeaseHolder?.stage ?? null,
+        operationLeaseHolder?.expiresAt ?? null,
+        'token' in (operationLeaseHolder ?? {}),
+        operationLeaseWrongTokenReleased,
+        operationLeaseReleased,
+        operationLeaseAfterRelease,
+      ],
+      endpointRelease: [
+        releasedEndpoints,
+        releasedEndpointsAgain,
+        store.listEndpointLeases().map(({ name, state, lastVerifiedAt }) => [name, state, lastVerifiedAt]),
       ],
       resourceFinalization: [
         cleanupLeaseAcquired,

@@ -16,6 +16,13 @@ export interface WorktreeContext {
   worktreePath: string;
   baseRef?: string;
   allowedRemoteRefs?: readonly string[];
+  /**
+   * What the caller already did about remote freshness, not an instruction to do anything.
+   * {@link analyzeWorktree} never fetches; a caller that wants fresh remote-tracking refs runs
+   * {@link refreshRemoteTrackingRefs} itself and passes its result forward here, which is what
+   * keeps every network-affecting Git command an explicit choice made outside analysis.
+   */
+  remoteRefresh?: RemoteRefreshRecord | undefined;
   workspaceId?: string;
   repositoryId?: string;
   worktreeId?: string;
@@ -76,11 +83,31 @@ export interface WorktreeSafety {
   warnings: WtmError[];
 }
 
+/** The completion timestamp of a refresh the caller performed before asking for this analysis. */
+export interface RemoteRefreshRecord {
+  refreshedAt: string;
+}
+
+/**
+ * How old the remote-tracking evidence behind {@link RemotePersistenceAnalysis} is.
+ *
+ * A branch deleted on the remote leaves its remote-tracking ref behind, so local refs alone can
+ * report HEAD as remote-persisted long after the remote stopped holding it. A caller that must
+ * not delete work on stale evidence checks `confidence` rather than assuming.
+ */
+export interface RemoteKnowledge {
+  source: 'local-refs' | 'fetched-refs';
+  refreshed: boolean;
+  refreshedAt: string | null;
+  confidence: 'LOCAL_ONLY' | 'REFRESHED';
+}
+
 export interface WorktreeAnalysis {
   identity: WorktreeIdentityAnalysis;
   workingTree: WorkingTreeAnalysis;
   upstream: UpstreamAnalysis;
   remotePersistence: RemotePersistenceAnalysis;
+  remoteKnowledge: RemoteKnowledge;
   base: BaseAnalysis;
   safety: WorktreeSafety;
 }
@@ -142,7 +169,32 @@ export async function analyzeWorktree(ctx: WorktreeContext): Promise<WorktreeAna
   };
   const safety = buildSafety(identity, workingTree, upstream, remotePersistence, base, selected.head);
 
-  return { identity, workingTree, upstream, remotePersistence, base, safety };
+  return {
+    identity,
+    workingTree,
+    upstream,
+    remotePersistence,
+    remoteKnowledge: describeRemoteKnowledge(ctx.remoteRefresh),
+    base,
+    safety,
+  };
+}
+
+/**
+ * Reports what the caller did, and nothing else. Analysis reads local refs only — the decision to
+ * spend a network round trip belongs to whoever invoked it, so there is deliberately no branch
+ * here that could reach `git fetch`.
+ */
+function describeRemoteKnowledge(refresh: RemoteRefreshRecord | undefined): RemoteKnowledge {
+  if (refresh === undefined) {
+    return { source: 'local-refs', refreshed: false, refreshedAt: null, confidence: 'LOCAL_ONLY' };
+  }
+  return {
+    source: 'fetched-refs',
+    refreshed: true,
+    refreshedAt: refresh.refreshedAt,
+    confidence: 'REFRESHED',
+  };
 }
 
 async function readWorkingTree(worktreePath: string): Promise<WorkingTreeAnalysis> {

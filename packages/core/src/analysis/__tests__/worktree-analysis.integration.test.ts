@@ -3,6 +3,7 @@ import { realpath, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { GitSafetyFixture } from '../../../../testkit/src/git-fixture';
 import { createGitSafetyFixture } from '../../../../testkit/src/git-fixture';
+import { refreshRemoteTrackingRefs } from '../remote-persistence';
 import { analyzeWorktree, type WorktreeAnalysis } from '../worktree-analysis';
 
 const fixtures: GitSafetyFixture[] = [];
@@ -375,6 +376,68 @@ describe('analyzeWorktree', () => {
       merged: true,
     });
     expect(analysis.safety.readiness).toBe('SAFE');
+  });
+
+  test('reports remote knowledge as local-only when the caller refreshed nothing', async () => {
+    const fixture = await createFixture();
+
+    const analysis = await analyze(fixture);
+
+    expect(analysis.remoteKnowledge).toEqual({
+      source: 'local-refs',
+      refreshed: false,
+      refreshedAt: null,
+      confidence: 'LOCAL_ONLY',
+    });
+  });
+
+  test('reports the refresh the caller performed, with the timestamp it reported', async () => {
+    const fixture = await createFixture();
+    const refreshedAt = '2026-08-31T12:00:00.000Z';
+
+    const analysis = await analyzeWorktree({
+      repoPath: fixture.repoPath,
+      worktreePath: fixture.linkedWorktreePath,
+      baseRef: 'refs/heads/main',
+      remoteRefresh: { refreshedAt },
+    });
+
+    expect(analysis.remoteKnowledge).toEqual({
+      source: 'fetched-refs',
+      refreshed: true,
+      refreshedAt,
+      confidence: 'REFRESHED',
+    });
+  });
+
+  /**
+   * The whole point of the freshness surface: a branch deleted on the remote leaves its
+   * remote-tracking ref behind, so local-only analysis still calls HEAD remote-persisted and
+   * would let the removal proceed. Only the refresh turns that into a blocker, so both halves
+   * are asserted together.
+   */
+  test('sees a branch deleted on the remote only once the tracking refs are refreshed', async () => {
+    const fixture = await createFixture();
+    await fixture.git(fixture.remotePath, ['branch', '-D', 'feature/safe']);
+
+    const stale = await analyze(fixture);
+    const refresh = await refreshRemoteTrackingRefs(fixture.repoPath);
+    const fresh = await analyzeWorktree({
+      repoPath: fixture.repoPath,
+      worktreePath: fixture.linkedWorktreePath,
+      baseRef: 'refs/heads/main',
+      remoteRefresh: { refreshedAt: refresh.refreshedAt },
+    });
+
+    expect(refresh.remotes).toEqual(['origin']);
+    expect(stale.remotePersistence.containingRefs).toEqual(['refs/remotes/origin/feature/safe']);
+    expect(stale.remotePersistence.persisted).toBe(true);
+    expect(blockerCodes(stale)).toEqual([]);
+    expect(stale.remoteKnowledge.confidence).toBe('LOCAL_ONLY');
+    expect(fresh.remotePersistence.containingRefs).toEqual([]);
+    expect(fresh.remotePersistence.persisted).toBe(false);
+    expect(blockerCodes(fresh)).toEqual(['GIT_HEAD_NOT_REMOTE_PERSISTED']);
+    expect(fresh.remoteKnowledge.confidence).toBe('REFRESHED');
   });
 });
 

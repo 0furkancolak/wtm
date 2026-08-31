@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { migrationFileNames } from '../../packages/core/src/state/assets';
 import { buildSea, pinnedNodeVersion, seaAssetKeys, type SeaBuildHost } from '../build-sea';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -57,21 +58,24 @@ describe('SEA configuration', () => {
     expect(configuration.output).toMatch(/\.blob$/);
   });
 
-  test('embeds the nine ordered migrations and the canonical skill from their repository sources', async () => {
+  test('embeds every canonical migration in order, and the canonical skill, from their repository sources', async () => {
     const { host, recording } = createHost();
 
     await buildSea(host);
 
     const assets = configurationOf(recording).assets as Record<string, string>;
     expect(Object.keys(assets)).toEqual([...seaAssetKeys]);
+    // Deriving the expectation from the canonical list is what makes adding a migration a
+    // one-line change here instead of a build failure three lists later.
     expect(seaAssetKeys).toEqual([
-      'migration/001', 'migration/002', 'migration/003', 'migration/004',
-      'migration/005', 'migration/006', 'migration/007', 'migration/008',
-      'migration/009',
+      ...migrationFileNames.map((file) => `migration/${file.slice(0, 3)}`),
       'skill/wtm/SKILL.md',
     ]);
     for (const path of Object.values(assets)) expect(existsSync(path)).toBe(true);
-    expect(assets['migration/001']).toBe(join(root, 'packages/core/src/state/migrations/001-initial.sql'));
+    for (const file of migrationFileNames) {
+      expect(assets[`migration/${file.slice(0, 3)}`])
+        .toBe(join(root, 'packages/core/src/state/migrations', file));
+    }
     expect(assets['skill/wtm/SKILL.md']).toBe(join(root, 'skills/wtm/SKILL.md'));
   });
 

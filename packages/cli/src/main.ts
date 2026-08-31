@@ -9,6 +9,7 @@ import type { AdapterTrustStore } from '@wtm/core';
 import {
   containsPath,
   listGitWorktrees,
+  refreshRemoteTrackingRefs,
   resolveWorkspaceConfig,
   SQLiteStateStore,
   type TaskResolutionInput,
@@ -56,7 +57,8 @@ import { runProductionDiskCommand, runProductionGcCommand } from './commands/res
 import { runForgetCommand, type ForgetCommandEnvelope } from './commands/forget';
 import { runAdapterCommand } from './commands/adapter';
 import { runAnalyzeCommand } from './commands/analyze';
-import { runRemoveCommand } from './commands/remove';
+import { runRemoveCommand, type RemovalRuntimeBinding } from './commands/remove';
+import { createProductionRemovalCoordinator } from './removal-coordinator';
 import { toGitSafetyError } from './commands/git-error';
 import { runResolveCommand, toRuntimeCommandError } from './commands/resolve';
 import { runRunCommand } from './commands/run';
@@ -100,10 +102,12 @@ export interface CliDependencies {
   initDatabasePath?: string;
   initUserDataDir?: string;
   analysisDatabasePath?: string;
+  /** The global configuration layer a removal's ephemeral resource cleanup resolves against. */
+  removalGlobalConfigPath?: string;
   diagnosticsDatabasePath?: string;
   resolveRunner?: (input: { cwd: string; taskName: string }) => Promise<JsonEnvelope<unknown>>;
-  analyzeRunner?: (input: { repoPath: string; selector?: string }) => Promise<JsonEnvelope<unknown>>;
-  removeRunner?: (input: { repoPath: string; selector: string }) => Promise<JsonEnvelope<unknown>>;
+  analyzeRunner?: (input: { repoPath: string; selector?: string; refreshRemotes?: boolean }) => Promise<JsonEnvelope<unknown>>;
+  removeRunner?: (input: { repoPath: string; selector: string; refreshRemotes?: boolean; resume?: boolean }) => Promise<JsonEnvelope<unknown>>;
   forgetRunner?: (input: { cwd: string; selector?: string; force: boolean }) => Promise<JsonEnvelope<unknown>>;
 }
 
@@ -189,8 +193,15 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   addScopeOptions(analyze);
   analyze.option('--all', 'analyze every worktree in the current repository');
   analyze.option('--cleanup-candidates', 'analyze linked worktrees that may be cleanup candidates');
-  analyze.action(async (selector: string | undefined, options: ScopeOptions & { all?: boolean; cleanupCandidates?: boolean }) => {
-    const input = { repoPath: cwd, ...(selector === undefined ? {} : { selector }) };
+  analyze.option('--refresh-remotes', refreshRemotesDescription);
+  analyze.action(async (selector: string | undefined, options: ScopeOptions & { all?: boolean; cleanupCandidates?: boolean; refreshRemotes?: boolean }) => {
+    const json = runtimeJson(program, options);
+    const refreshRemotes = options.refreshRemotes === true;
+    const input = {
+      repoPath: cwd,
+      ...(selector === undefined ? {} : { selector }),
+      ...(refreshRemotes ? { refreshRemotes } : {}),
+    };
     const envelope = dependencies.analyzeRunner === undefined
       ? await runProductionAnalyze({
         cwd,
@@ -198,30 +209,55 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
         global: options.global === true || program.opts<ScopeOptions>().global === true,
         all: options.all === true,
         cleanupCandidates: options.cleanupCandidates === true,
+        refreshRemotes,
+        ...(json ? {} : { notify: humanNotice }),
         databasePath: dependencies.analysisDatabasePath ?? defaultProductionRuntimePaths().databasePath,
       })
       : await dependencies.analyzeRunner(input);
-    renderRuntime(envelope, runtimeJson(program, options));
+    renderRuntime(envelope, json);
   });
 
   const remove = program.command('remove <selector>').description('Safely remove one linked worktree.');
   addJsonOption(remove);
-  remove.action(async (selector: string, options: ScopeOptions) => {
-    const input = { repoPath: cwd, selector };
+  remove.option('--refresh-remotes', refreshRemotesDescription);
+  remove.option('--resume', resumeDescription);
+  remove.action(async (selector: string, options: ScopeOptions & { refreshRemotes?: boolean; resume?: boolean }) => {
+    const json = runtimeJson(program, options);
+    const refreshRemotes = options.refreshRemotes === true;
+    const resume = options.resume === true;
+    const input = {
+      repoPath: cwd,
+      selector,
+      ...(refreshRemotes ? { refreshRemotes } : {}),
+      ...(resume ? { resume } : {}),
+    };
     const envelope = dependencies.removeRunner === undefined
       ? await runProductionRemove({
         cwd,
         selector,
+        refreshRemotes,
+        resume,
+        ...(json ? {} : { notify: humanNotice }),
         databasePath: dependencies.analysisDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+        globalConfigPath: dependencies.removalGlobalConfigPath ?? defaultProductionRuntimePaths().globalConfigPath,
+        ...(dependencies.runtimeClient === undefined ? {} : { client: dependencies.runtimeClient }),
       })
       : await dependencies.removeRunner(input);
-    renderRuntime(envelope, runtimeJson(program, options));
+    renderRuntime(envelope, json);
   });
 
   const renderRuntime = (envelope: JsonEnvelope<unknown>, json: boolean) => {
     stdout(`${renderEnvelope(envelope, { json })}\n`);
     hooks.setExitCode?.(exitCodeForEnvelope(envelope));
   };
+
+  /**
+   * Prose that stands beside the envelope rather than inside it. The refreshed remote names are
+   * something the person who typed the flag is owed; the envelope is a compatibility contract, so
+   * a new key there would be the wrong place to put them — and it is suppressed under `--json`,
+   * where stdout must parse as exactly one envelope.
+   */
+  const humanNotice: CommandNotifier = (message) => stdout(`${message}\n`);
 
   const start = program.command('start <task>').description('Start a managed background task.');
   addJsonOption(start);
@@ -497,12 +533,57 @@ function defaultPortableSkillInstaller(fallbackWorkspaceRoot: string): SkillInst
   };
 }
 
+/**
+ * How the refreshed remote names reach a human without entering the JSON envelope, which is a
+ * compatibility contract and additive only.
+ */
+type CommandNotifier = (message: string) => void;
+
+const refreshRemotesDescription = 'refresh remote-tracking refs first (network access)';
+
+const resumeDescription = 'continue a removal whose process died, adopting its abandoned lease';
+
+/**
+ * Refreshes each distinct repository exactly once, before any analysis runs.
+ *
+ * The aggregate modes analyze many worktrees that share one repository, and a refresh hung off the
+ * per-worktree analysis would multiply one honest fetch round by the number of worktrees — ten
+ * repositories of ten worktrees would send a hundred. Keying the work by repository path is what
+ * keeps the cost proportional to what is actually being refreshed.
+ */
+async function refreshRepositories(
+  repoPaths: readonly string[],
+  command: 'analyze' | 'remove',
+  notify: CommandNotifier | undefined,
+): Promise<{ refreshedAt: Map<string, string> } | { error: WtmError }> {
+  const refreshedAt = new Map<string, string>();
+  const remotes = new Set<string>();
+  for (const repoPath of new Set(repoPaths)) {
+    try {
+      const result = await refreshRemoteTrackingRefs(repoPath);
+      refreshedAt.set(repoPath, result.refreshedAt);
+      for (const remote of result.remotes) remotes.add(remote);
+    } catch (error) {
+      // The user asked for fresh remote knowledge. Continuing on stale refs is the dangerous
+      // outcome — it is what deletes work that only exists on a branch this repository last saw
+      // a week ago — so a failed fetch fails the command instead of quietly downgrading it.
+      return { error: toGitSafetyError(error, command) };
+    }
+  }
+  notify?.(remotes.size === 0
+    ? 'Refreshed remote-tracking refs: no configured remote matched the allowed remote-ref patterns.'
+    : `Refreshed remote-tracking refs from ${[...remotes].sort().join(', ')}.`);
+  return { refreshedAt };
+}
+
 async function runProductionAnalyze(input: {
   cwd: string;
   selector?: string;
   global: boolean;
   all: boolean;
   cleanupCandidates: boolean;
+  refreshRemotes: boolean;
+  notify?: CommandNotifier;
   databasePath: string;
 }): Promise<JsonEnvelope<unknown>> {
   if (input.selector !== undefined && (input.global || input.all || input.cleanupCandidates)) {
@@ -572,10 +653,20 @@ async function runProductionAnalyze(input: {
       'WTM_WORKSPACE_NOT_FOUND', 'The worktree selector did not resolve to one worktree.', input.global,
     );
   }
-  const envelopes = await Promise.all(selected.map(({ repoPath, record }) => runAnalyzeCommand({
-    repoPath,
-    worktreePath: record.path,
-  })));
+  let refreshedAt = new Map<string, string>();
+  if (input.refreshRemotes) {
+    const refresh = await refreshRepositories(selected.map(({ repoPath }) => repoPath), 'analyze', input.notify);
+    if ('error' in refresh) return operationFailure('analyze', input.global, refresh.error);
+    refreshedAt = refresh.refreshedAt;
+  }
+  const envelopes = await Promise.all(selected.map(({ repoPath, record }) => {
+    const refreshed = refreshedAt.get(repoPath);
+    return runAnalyzeCommand({
+      repoPath,
+      worktreePath: record.path,
+      ...(refreshed === undefined ? {} : { remoteRefresh: { refreshedAt: refreshed } }),
+    });
+  }));
   if (!input.global && !input.all && !input.cleanupCandidates) return envelopes[0] as JsonEnvelope<unknown>;
   const analyses = envelopes.flatMap(({ data }) => data === null ? [] : [data]);
   const errors = envelopes.flatMap(({ errors }) => errors);
@@ -618,7 +709,12 @@ function resolveAnalysisSelector(
 async function runProductionRemove(input: {
   cwd: string;
   selector: string;
+  refreshRemotes: boolean;
+  resume: boolean;
+  notify?: CommandNotifier;
   databasePath: string;
+  globalConfigPath: string;
+  client?: RuntimeDaemonClient;
 }): Promise<JsonEnvelope<unknown>> {
   let topology: GitWorktreeRecord[];
   try {
@@ -634,30 +730,120 @@ async function runProductionRemove(input: {
       severity: 'error',
     });
   }
-  if (!/^\d+$/.test(input.selector)) {
-    return runRemoveCommand({ repoPath: repositoryRoot, selector: input.selector });
-  }
+  // One refresh for the one repository, before any selector is resolved and before analysis, so
+  // that both selector spellings below reach `runRemoveCommand` with the same remote knowledge.
+  const refresh = input.refreshRemotes
+    ? await refreshRepositories([repositoryRoot], 'remove', input.notify)
+    : { refreshedAt: new Map<string, string>() };
+  if ('error' in refresh) return operationFailure('remove', false, refresh.error);
+  const refreshed = refresh.refreshedAt.get(repositoryRoot);
+  const remoteRefresh = refreshed === undefined ? {} : { remoteRefresh: { refreshedAt: refreshed } };
+  // Read-write, because removal stops processes, releases endpoint leases and reconciles — all
+  // of them writes. An absent file means nothing is registered on this machine, and a removal
+  // must no more bring a state directory into being by asking than a read does.
   let store: SQLiteStateStore | null = null;
   try {
-    store = new SQLiteStateStore(input.databasePath, { readonly: true });
-    const repository = store.listRepositories().find(({ id }) =>
-      store!.listWorktrees(id).some(({ path }) => containsPath(path, input.cwd)));
-    const selected = repository === undefined
-      ? undefined
-      : store.listWorktrees(repository.id).find(({ numericId }) => numericId === Number(input.selector));
-    if (selected === undefined) {
-      return operationFailure('remove', false, {
-        code: 'WTM_WORKSPACE_NOT_FOUND',
-        message: 'The worktree selector did not resolve to one worktree.',
-        severity: 'error',
-      });
+    if (existsSync(input.databasePath)) {
+      try {
+        store = new SQLiteStateStore(input.databasePath);
+      } catch {
+        return stateFailure('remove', false);
+      }
     }
-    return runRemoveCommand({ repoPath: repositoryRoot, selector: selected.path });
-  } catch {
-    return stateFailure('remove', false);
+    let selector = input.selector;
+    if (/^\d+$/.test(selector)) {
+      // A number is a WTM identifier and nothing else, so with no state there is no question to
+      // answer — "state is unavailable" is the honest reply, not "that worktree does not exist".
+      if (store === null) return stateFailure('remove', false);
+      let resolved: string | undefined;
+      try {
+        resolved = numericSelectorPath(store, input.cwd, selector);
+      } catch {
+        return stateFailure('remove', false);
+      }
+      if (resolved === undefined) {
+        return operationFailure('remove', false, {
+          code: 'WTM_WORKSPACE_NOT_FOUND',
+          message: 'The worktree selector did not resolve to one worktree.',
+          severity: 'error',
+        });
+      }
+      selector = resolved;
+    }
+    const runtimeWarnings: WtmError[] = [];
+    const envelope = await runRemoveCommand({
+      repoPath: repositoryRoot,
+      selector,
+      ...remoteRefresh,
+      bindRuntime: (worktreePath) => bindRemovalRuntime({
+        store,
+        worktreePath,
+        globalConfigPath: input.globalConfigPath,
+        adopt: input.resume,
+        ...(input.client === undefined ? {} : { client: input.client }),
+        warn: (warning) => runtimeWarnings.push(warning),
+      }),
+    });
+    // The coordinator's own notes reach the caller through the envelope it never sees.
+    return runtimeWarnings.length === 0
+      ? envelope
+      : { ...envelope, warnings: [...envelope.warnings, ...runtimeWarnings] };
   } finally {
     store?.close();
   }
+}
+
+function numericSelectorPath(
+  store: SQLiteStateStore,
+  cwd: string,
+  selector: string,
+): string | undefined {
+  const repository = store.listRepositories().find(({ id }) =>
+    store.listWorktrees(id).some(({ path }) => containsPath(path, cwd)));
+  if (repository === undefined) return undefined;
+  return store.listWorktrees(repository.id).find(({ numericId }) => numericId === Number(selector))?.path;
+}
+
+/**
+ * The registration the runtime side of a removal acts through, or null when there is none.
+ *
+ * A worktree WTM has no record of has no managed processes, no endpoint leases and no resources
+ * WTM materialized, so Git removal really is the whole job — but silence about that is
+ * indistinguishable from cleanup having run and found nothing, so it says so instead.
+ */
+function bindRemovalRuntime(options: {
+  store: SQLiteStateStore | null;
+  worktreePath: string;
+  globalConfigPath: string;
+  adopt: boolean;
+  client?: RuntimeDaemonClient;
+  warn: (warning: WtmError) => void;
+}): RemovalRuntimeBinding | null {
+  const store = options.store;
+  const worktree = store?.listWorktrees()
+    .find(({ path }) => resolve(path) === resolve(options.worktreePath));
+  if (store === null || worktree === undefined) {
+    options.warn({
+      code: 'WTM_WORKSPACE_NOT_FOUND',
+      message: 'Runtime cleanup was skipped: this worktree is not registered with WTM, so it has '
+        + 'no managed processes, endpoint leases or resources on record. Only Git removal ran.',
+      severity: 'warning',
+      context: { worktreePath: options.worktreePath },
+    });
+    return null;
+  }
+  return {
+    repositoryId: worktree.repositoryId,
+    worktreeId: worktree.id,
+    coordinator: createProductionRemovalCoordinator({
+      store,
+      globalConfigPath: options.globalConfigPath,
+      warn: options.warn,
+      ...(options.client === undefined ? {} : { client: options.client }),
+    }),
+    leaseStore: store,
+    adopt: options.adopt,
+  };
 }
 
 function containingWorktreeRoot(topology: readonly GitWorktreeRecord[], cwd: string): string | undefined {
@@ -1012,7 +1198,10 @@ export function defaultDaemonSocketPath(home = homedir()): string {
  */
 function isRuntimeInvocation(argv: readonly string[]): boolean {
   const command = argv.find((argument) => !argument.startsWith('-'));
-  return command !== undefined && ['start', 'stop', 'restart', 'ps', 'logs', 'exec', 'init'].includes(command);
+  // `remove` is here because stopping this worktree's managed processes is the daemon's job and
+  // no other process may do it: the supervisor holds the child handle, the start reservation and
+  // the identity quadruple its escalation ladder depends on.
+  return command !== undefined && ['start', 'stop', 'restart', 'ps', 'logs', 'exec', 'init', 'remove'].includes(command);
 }
 
 function exitCodeForError(code: WtmErrorCode): number {
@@ -1027,6 +1216,9 @@ function exitCodeForError(code: WtmErrorCode): number {
     || code === 'GIT_UNTRACKED'
     || code === 'GIT_UNMERGED'
     || code === 'GIT_HEAD_NOT_REMOTE_PERSISTED'
+    // A second process already destroying this repository is a safety refusal, in the same
+    // class as a Git blocker: nothing was done, and the caller has somewhere to look.
+    || code === 'WTM_OPERATION_CONFLICT'
     || code === 'RESOURCE_PATH_DENIED'
     || code === 'GC_ACTIVE_WORKTREE_PROTECTED'
   ) return 3;

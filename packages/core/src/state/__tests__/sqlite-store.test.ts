@@ -147,7 +147,7 @@ describe('SQLiteStateStore', () => {
       activeAfterStop: null,
       orderedStates: ['STOPPED', 'FAILED'],
       rejectedSecondActiveSingleton: true,
-      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     });
   });
 
@@ -194,7 +194,7 @@ describe('SQLiteStateStore', () => {
       tieWinner: 'tie-z',
       tieLoserCleanupRequired: false,
       leaseSurvivedExpiry: true,
-      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     });
   });
 
@@ -235,6 +235,99 @@ describe('SQLiteStateStore', () => {
       leakedPort: 4100,
       activeWhileStillAbsent: 1,
       activeAfterLaterPass: 0,
+    });
+  });
+  test('serializes one destructive operation per repository across independent SQLite connections', () => {
+    expect(runScenario('repository-operation-leases')).toEqual({
+      acquiredOutcome: 'acquired',
+      acquiredToken: 'token-1',
+      acquiredStage: null,
+      acquiredAdoptedStage: null,
+      acquiredExpiresAt: '2026-08-31T10:16:02.118Z',
+      conflictOutcome: 'conflict',
+      conflictHolderPid: 51422,
+      conflictHolderAcquiredAt: '2026-08-31T10:14:02.118Z',
+      conflictHolderSubjectMatches: true,
+      holderViewKeys: [
+        'acquiredAt', 'expiresAt', 'operation', 'pid', 'processStartTime',
+        'renewedAt', 'repositoryId', 'stage', 'subjectWorktreeId',
+      ],
+      otherOperationOutcome: 'acquired',
+      emptyTokenRejected: true,
+      wrongTokenReleased: false,
+      survivedWrongTokenPid: 51422,
+      releasedByHolder: true,
+      releasedTwice: false,
+      readAfterRelease: null,
+      reacquiredOutcome: 'acquired',
+    });
+  });
+
+  test('never evicts a live holder, and adopts an abandoned lease only when asked to', () => {
+    expect(runScenario('repository-operation-lease-recovery')).toEqual({
+      acquiredOutcome: 'acquired',
+      freshLivenessCalls: 0,
+      advanceWrongToken: false,
+      advanceHolder: true,
+      stageAfterAdvance: 'release-endpoints',
+      renewedAtAfterAdvance: '2026-08-31T10:00:00.100Z',
+      expiresAtAfterAdvance: '2026-08-31T10:00:01.000Z',
+      renewWrongToken: false,
+      renewHolder: true,
+      renewedAtAfterRenew: '2026-08-31T10:00:00.200Z',
+      expiresAtAfterRenew: '2026-08-31T10:00:01.200Z',
+      unexpiredConflictOutcome: 'conflict',
+      unexpiredLivenessCalls: 0,
+      expiredButLiveOutcome: 'conflict',
+      livenessArgument: {
+        repositoryId: '<repository>',
+        operation: 'remove',
+        pid: 900,
+        processStartTime: 'start-a',
+        subjectWorktreeId: null,
+        stage: 'release-endpoints',
+        acquiredAt: '2026-08-31T10:00:00.000Z',
+        renewedAt: '2026-08-31T10:00:00.200Z',
+        expiresAt: '2026-08-31T10:00:01.200Z',
+      },
+      reusedPidOutcome: 'abandoned',
+      abandonedOutcome: 'abandoned',
+      abandonedStage: 'release-endpoints',
+      notTakenOverPid: 900,
+      renewExpired: false,
+      adoptedOutcome: 'acquired',
+      adoptedStage: 'release-endpoints',
+      adoptedLeaseStage: 'release-endpoints',
+      adoptedLeasePid: 901,
+      adoptedAcquiredAt: '2026-08-31T10:00:02.000Z',
+      displacedTokenCannotRelease: false,
+      adoptOnLiveHolderOutcome: 'conflict',
+      finalRelease: true,
+    });
+  });
+
+  test('releases exactly one worktree\'s active endpoint leases and frees their ports', () => {
+    expect(runScenario('worktree-endpoint-release')).toEqual({
+      released: 2,
+      releasedAgain: 0,
+      leaseStates: [
+        ['api', 4100, 'RELEASED'],
+        ['api', 4102, 'ACTIVE'],
+        ['web', 4101, 'RELEASED'],
+      ],
+      releaseTimestamps: ['2026-08-31T10:00:00.000Z', '2026-08-31T10:00:00.000Z'],
+      reallocatedPort: 4100,
+      activeAfterReallocation: 2,
+    });
+  });
+
+  test('retires a repository with its operation leases and leaves the other repository holding its own', () => {
+    expect(runScenario('operation-lease-retirement')).toEqual({
+      forgotRepository: true,
+      leaseAfterForget: null,
+      survivingLeasePid: 8802,
+      forgotWorkspace: true,
+      leaseAfterWorkspaceForget: null,
     });
   });
 });

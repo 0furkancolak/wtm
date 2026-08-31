@@ -17,6 +17,10 @@ import type {
   ManagedProcessReservationOptions,
   ReconcileResult,
   RepositoryInput,
+  RepositoryOperationLeaseHolder,
+  RepositoryOperationLeaseKey,
+  RepositoryOperationLeaseRequest,
+  RepositoryOperationLeaseResult,
   RepositoryRecord,
   StateStore,
   WorkspaceInput,
@@ -108,6 +112,43 @@ class FailingReconciliationStore implements StateStore {
 
   findActiveManagedProcess(worktreeId: string, taskName: string): ManagedProcessRecord | null {
     return this.inner.findActiveManagedProcess(worktreeId, taskName);
+  }
+
+  acquireRepositoryOperationLease(
+    input: RepositoryOperationLeaseRequest,
+    now: string,
+  ): RepositoryOperationLeaseResult {
+    return this.inner.acquireRepositoryOperationLease(input, now);
+  }
+
+  renewRepositoryOperationLease(
+    key: RepositoryOperationLeaseKey,
+    token: string,
+    now: string,
+    ttlMs: number,
+  ): boolean {
+    return this.inner.renewRepositoryOperationLease(key, token, now, ttlMs);
+  }
+
+  advanceRepositoryOperationLease(
+    key: RepositoryOperationLeaseKey,
+    token: string,
+    stage: string,
+    now: string,
+  ): boolean {
+    return this.inner.advanceRepositoryOperationLease(key, token, stage, now);
+  }
+
+  releaseRepositoryOperationLease(key: RepositoryOperationLeaseKey, token: string): boolean {
+    return this.inner.releaseRepositoryOperationLease(key, token);
+  }
+
+  readRepositoryOperationLease(key: RepositoryOperationLeaseKey): RepositoryOperationLeaseHolder | null {
+    return this.inner.readRepositoryOperationLease(key);
+  }
+
+  releaseEndpointLeasesForWorktree(worktreeId: string, releasedAt: string): number {
+    return this.inner.releaseEndpointLeasesForWorktree(worktreeId, releasedAt);
   }
 
   transaction<T>(fn: () => T): T {

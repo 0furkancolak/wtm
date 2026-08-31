@@ -199,14 +199,62 @@ wtm analyze
 wtm analyze --all
 wtm analyze --cleanup-candidates
 wtm analyze --global --json
+wtm analyze --refresh-remotes
 ```
+
+Options:
+
+```text
+--all                  every worktree in the current repository
+--cleanup-candidates   linked worktrees that may be cleanup candidates
+--refresh-remotes      refresh remote-tracking refs first (network access)
+--global               aggregate registered workspaces only
+--json                 emit the stable JSON envelope
+```
+
+`--refresh-remotes` runs `git fetch --prune` for every remote an allowed remote-ref pattern
+selects, before any analysis, and names the remotes it refreshed in the human output — not in the
+envelope, which is a compatibility contract, so `--json` stdout still parses as exactly one
+envelope. It fetches **once per
+distinct repository**, not once per worktree: the aggregate modes analyze many worktrees that
+share one repository, and a refresh hung off each analysis would send ten fetch rounds where one
+is honest. `--prune` is the load-bearing half — see
+[Remote freshness](10-git-safety-worktree-analysis.md#remote-freshness).
+
+The refresh **fails closed**: a fetch that fails fails the command with `GIT_COMMAND_FAILED` and
+reports no analysis at all. Continuing on stale refs is the outcome the flag exists to prevent, so
+neither downgrading the confidence nor reporting `REFRESHED` over unchanged refs is offered.
+
+Without the flag, analysis performs no network access. Every analysis carries a
+`remoteKnowledge` block saying which of the two it was.
 
 ## Safe removal
 
 ### `wtm remove <selector>`
 
-Runs analysis and only removes when all safety blockers pass.
+Runs the removal lifecycle of [Safe remove flow](10-git-safety-worktree-analysis.md#safe-remove-flow):
+analysis, then the runtime work — stopping this worktree's managed tasks, deleting the resources
+WTM materialized in it, releasing its ports — then a second analysis, and only then Git.
 The required selector accepts a registered numeric worktree ID, branch name, absolute path, or path relative to the current repository. Use `--json` for the stable V1 envelope.
+
+Options:
+
+```text
+--refresh-remotes  refresh remote-tracking refs first (network access)
+--resume           continue a removal whose process died, adopting its abandoned lease
+--json             emit the stable JSON envelope
+```
+
+`--refresh-remotes` behaves exactly as it does on `analyze`, for the one repository the selector
+resolves in.
+
+`--resume` is for the second half of a removal whose process died. WTM holds one destructive-operation
+lease per repository and journals the stage it reached on that lease, so a killed `wtm remove` leaves
+a row naming both. A plain re-run refuses with `WTM_OPERATION_CONFLICT` rather than continuing
+someone else's half-finished cleanup by accident; `--resume` adopts the lease and runs the lifecycle
+again from the top. Every stage is idempotent, so re-running one that had already completed is
+harmless — which is why resumption re-runs rather than skipping ahead: the journal says where the
+dead process stopped writing, not what it finished doing.
 
 V1 intentionally does **not** provide a loss-bypassing `--force` option.
 
@@ -221,6 +269,57 @@ BLOCKED: 2 commits are not present on an allowed remote ref
 ```
 
 WTM never runs the suggested commit/push/reset/clean action automatically.
+
+A successful removal reports what the runtime gave back before Git ran:
+
+```json
+{
+  "removed": { "path": "…", "branchRef": "refs/heads/feat/auth", "headOid": "…" },
+  "cleanup": {
+    "stoppedProcesses": 2,
+    "releasedEndpoints": 2,
+    "collectedResources": 1,
+    "retainedResources": [{ "name": "node_modules", "reason": "shared" }]
+  },
+  "analysis": { "…": "…" }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `stoppedProcesses` | Managed processes the daemon stopped for this worktree |
+| `releasedEndpoints` | Endpoint leases moved from `ACTIVE` to `RELEASED` |
+| `collectedResources` | `[resources]` paths WTM created inside the worktree and deleted; a target already absent is not one |
+| `retainedResources` | What WTM declined to delete, and why — `shared`, `native-cache`, `external`, `ignore`, or the reason its path could not be resolved |
+
+The block is always present and zeroed rather than omitted, including on the Git-only path a
+worktree WTM has no registration for takes, so the shape never varies.
+
+`remove` needs the daemon when — and only when — the worktree has managed process records that are
+still live or still owe durable cleanup. WTM never signals a process the daemon supervises from a
+second process, so an unreachable daemon there is `WTM_DAEMON_UNAVAILABLE` and a refusal, not a
+best-effort kill. A worktree with no such records is removed with no daemon at all.
+
+## Exit codes
+
+| Code | Meaning | Raised by |
+| --- | --- | --- |
+| `0` | Success | — |
+| `1` | Generic operational failure | Every code not listed below |
+| `2` | Usage or configuration error | `WTM_CONFIG_INVALID`, `WTM_WORKSPACE_NOT_FOUND`, `WTM_NOT_INITIALIZED` |
+| `3` | A safety policy blocked the requested action | `GIT_MAIN_WORKTREE`, `GIT_WORKTREE_LOCKED`, `GIT_DIRTY_STAGED`, `GIT_DIRTY_UNSTAGED`, `GIT_UNTRACKED`, `GIT_UNMERGED`, `GIT_HEAD_NOT_REMOTE_PERSISTED`, `WTM_OPERATION_CONFLICT`, `RESOURCE_PATH_DENIED`, `GC_ACTIVE_WORKTREE_PROTECTED` |
+| `4` | The daemon is unavailable for an operation that requires it | `WTM_DAEMON_UNAVAILABLE` |
+| `5` | Protocol or adapter incompatibility | `ADAPTER_PROTOCOL_INCOMPATIBLE`, `ADAPTER_INVALID_RESPONSE` |
+
+An envelope carrying several errors exits with the highest of their codes.
+
+`WTM_OPERATION_CONFLICT` is in the safety class rather than the generic one because it means the
+same thing a Git blocker does: nothing was changed, and there is somewhere concrete to look — the
+error names the holding PID, when it took the lease, and, when that holder is provably gone, the
+stage it died in.
+
+`wtm exec` is the one command whose exit code is not this table: it passes the child's own status
+through, and reports a signalled child as `128 + signal`.
 
 ## Storage
 

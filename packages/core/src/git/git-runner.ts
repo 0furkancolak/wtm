@@ -35,6 +35,15 @@ const terminationGraceMs = 2_000;
  */
 export const worktreeListTimeoutMs = 5_000;
 
+/**
+ * The one bound in this module that covers a command which talks to a network. `git fetch` on a
+ * cold or large remote legitimately outlasts every local plumbing call by an order of magnitude,
+ * so the general default would abort honest work; it is still bounded, because a fetch waiting on
+ * an unreachable host or a credential prompt no background agent can answer must not hold the
+ * caller open forever.
+ */
+export const remoteFetchTimeoutMs = 120_000;
+
 export interface GitCommandOptions {
   acceptedExitCodes?: readonly number[];
   /** Overrides {@link defaultGitTimeoutMs} for a call known to need longer. */

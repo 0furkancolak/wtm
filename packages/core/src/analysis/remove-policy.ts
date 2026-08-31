@@ -2,7 +2,7 @@ import type { WtmError } from '@wtm/protocol';
 import type { WorktreeAnalysis } from './worktree-analysis';
 
 export class WorktreeRemovalBlockedError extends Error {
-  readonly code = 'WTM_REMOVE_BLOCKED' as const;
+  readonly reason = 'worktree-removal-blocked' as const;
   readonly blockers: readonly WtmError[];
 
   constructor(blockers: readonly WtmError[]) {

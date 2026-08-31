@@ -29,11 +29,18 @@ describe('assertRemovable', () => {
     } catch (error) {
       expect(error).toMatchObject({
         name: 'WorktreeRemovalBlockedError',
-        code: 'WTM_REMOVE_BLOCKED',
+        reason: 'worktree-removal-blocked',
         blockers,
       });
     }
     expect(assertRemovable.length).toBe(1);
+  });
+
+  test('carries no protocol error code, only a non-code reason discriminator', () => {
+    const error = new WorktreeRemovalBlockedError([]);
+
+    expect('code' in error).toBe(false);
+    expect(error.reason).toBe('worktree-removal-blocked');
   });
 });
 
@@ -64,6 +71,12 @@ function analysisWithBlockers(
       matchingRefs: [],
       containingRefs: [],
       persisted: blockers.length === 0,
+    },
+    remoteKnowledge: {
+      source: 'local-refs',
+      refreshed: false,
+      refreshedAt: null,
+      confidence: 'LOCAL_ONLY',
     },
     base: {
       ref: 'refs/heads/main',

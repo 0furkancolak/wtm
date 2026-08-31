@@ -98,19 +98,50 @@ wtm analyze --json
 
 Treat every `safety.blockers` item as authoritative for the WTM deletion path.
 
+Every analysis carries `remoteKnowledge`. `confidence: "LOCAL_ONLY"` means the remote-persistence
+verdict came from local refs that may be days old — a branch deleted on the remote still looks
+persisted. Before deleting on that evidence, re-check with a fetch:
+
+```bash
+wtm analyze <selector> --refresh-remotes --json
+```
+
+That uses the network. Do not run it on every analysis; run it before a removal whose safety turns
+on `remotePersistence`.
+
 ## Removal safety
 
 Use:
 
 ```bash
 wtm remove <selector>
+wtm remove <selector> --refresh-remotes   # fetch --prune first, then decide
+wtm remove <selector> --resume            # only after WTM asks for it, see below
 ```
+
+`remove` stops this worktree's managed tasks, deletes the resources WTM materialized in it, and
+releases its ports before Git deletes anything. Do not stop tasks or delete resource directories by
+hand first.
 
 Never replace a blocked WTM removal with:
 
 ```bash
 git worktree remove -f ...
 ```
+
+Read `errors[].code` and handle the refusal, do not work around it:
+
+| `errors[].code` | Exit | What it means, and what to do |
+| --- | --- | --- |
+| `GIT_DIRTY_*`, `GIT_UNTRACKED`, `GIT_UNMERGED`, `GIT_HEAD_NOT_REMOTE_PERSISTED`, `GIT_WORKTREE_LOCKED`, `GIT_MAIN_WORKTREE` | 3 | Real work would be lost. Report the blocker and its remediation. |
+| `WTM_OPERATION_CONFLICT` | 3 | Another process is removing in this repository. `context` names `holderPid` and `acquiredAt`. Do not retry in a loop; report the holder. |
+| `WTM_OPERATION_CONFLICT` with `context.abandoned: true` | 3 | The previous removal's process died at `context.stage`. This is the only case for `--resume`; the error's remediation carries the exact command. |
+| `WTM_DAEMON_UNAVAILABLE` | 4 | The daemon owns running processes here and cannot be reached. Start it with `wtm daemon install` — never `kill`/`pkill` them yourself. |
+| `RUNTIME_STOP_FAILED` | 1 | Managed process records outlived their stop. The worktree is intact. Check `wtm ps --json` and `wtm doctor --json`. |
+
+A success reports what the runtime gave back in `data.cleanup`: `stoppedProcesses`,
+`releasedEndpoints`, `collectedResources`, and `retainedResources` with the reason each survived.
+A `shared` resource surviving one worktree is correct, not a failure.
 
 If WTM reports uncommitted/untracked work or local-only commits, report the blocker and the suggested remediation. Do not automatically commit, push, reset, clean, or discard changes unless the user explicitly requested that separate Git action.
 

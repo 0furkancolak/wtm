@@ -2,7 +2,7 @@ import {
   GitCommandError,
   WorktreeAnalysisError,
 } from '@wtm/core';
-import type { WtmError, WtmErrorCode } from '@wtm/protocol';
+import type { Remediation, WtmError, WtmErrorCode } from '@wtm/protocol';
 
 export function toGitSafetyError(error: unknown, command: string): WtmError {
   if (error instanceof GitCommandError) {
@@ -33,6 +33,9 @@ export function toGitSafetyError(error: unknown, command: string): WtmError {
       message: error instanceof Error ? error.message : 'Git safety operation failed.',
       severity: 'error',
       context: { ...readContext(error), command },
+      // A refusal that knows what to do next carries it. Dropping the remediation here is how
+      // `--resume` stopped being discoverable from the message that exists to suggest it.
+      ...readRemediation(error),
     };
   }
   return {
@@ -46,6 +49,19 @@ export function toGitSafetyError(error: unknown, command: string): WtmError {
 function hasErrorCode(error: unknown): error is { code: WtmErrorCode } {
   if (typeof error !== 'object' || error === null || !('code' in error)) return false;
   return typeof error.code === 'string' && knownCodes.has(error.code as WtmErrorCode);
+}
+
+/** Only well-formed suggestions survive; a malformed one must not fail envelope validation. */
+function readRemediation(error: object): { remediation?: Remediation[] } {
+  if (!('remediation' in error) || !Array.isArray(error.remediation)) return {};
+  const remediation = error.remediation.filter(isCommandSuggestion);
+  return remediation.length === 0 ? {} : { remediation };
+}
+
+function isCommandSuggestion(value: unknown): value is Remediation {
+  if (!isRecord(value) || value['kind'] !== 'command-suggestion') return false;
+  const argv = value['argv'];
+  return Array.isArray(argv) && argv.length > 0 && argv.every((word) => typeof word === 'string');
 }
 
 function readContext(error: object): Record<string, unknown> {
@@ -62,6 +78,10 @@ const knownCodes: ReadonlySet<WtmErrorCode> = new Set([
   'WTM_CONFIG_INVALID',
   'WTM_TEMPLATE_UNRESOLVED',
   'WTM_DAEMON_UNAVAILABLE',
+  'WTM_DAEMON_INVALID_REQUEST',
+  'WTM_DAEMON_PROTOCOL_INCOMPATIBLE',
+  'WTM_DAEMON_REQUEST_FAILED',
+  'WTM_OPERATION_CONFLICT',
   'GIT_COMMAND_FAILED',
   'GIT_REPOSITORY_DEGRADED',
   'GIT_MAIN_WORKTREE',

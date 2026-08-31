@@ -176,6 +176,62 @@ export interface ManagedProcessQuery {
   states?: readonly ManagedProcessState[];
 }
 
+/** The destructive operations that take a repository-wide lease before they start. */
+export type RepositoryOperation = 'remove' | 'gc' | 'repair';
+
+export interface RepositoryOperationLeaseKey {
+  repositoryId: string;
+  operation: RepositoryOperation;
+}
+
+/**
+ * What a colliding lease says about the process holding it. This is the diagnostic view, and
+ * it deliberately carries no token: reading a lease must not hand out the capability to
+ * release it.
+ */
+export interface RepositoryOperationLeaseHolder {
+  repositoryId: string;
+  operation: RepositoryOperation;
+  pid: number;
+  /** The verbatim `ps -o lstart=` string, so a recycled PID cannot pass for the holder. */
+  processStartTime: string;
+  subjectWorktreeId: string | null;
+  /** The last stage the holder recorded, which is where a resumed operation continues from. */
+  stage: string | null;
+  acquiredAt: string;
+  renewedAt: string;
+  expiresAt: string;
+}
+
+export interface RepositoryOperationLease extends RepositoryOperationLeaseHolder {
+  token: string;
+}
+
+export type RepositoryOperationLeaseResult =
+  /** `adoptedStage` is the stage an adopted lease had reached, and null for a fresh one. */
+  | { outcome: 'acquired'; lease: RepositoryOperationLease; adoptedStage: string | null }
+  | { outcome: 'conflict'; holder: RepositoryOperationLeaseHolder }
+  | { outcome: 'abandoned'; holder: RepositoryOperationLeaseHolder };
+
+export interface RepositoryOperationLeaseRequest {
+  repositoryId: string;
+  operation: RepositoryOperation;
+  token: string;
+  pid: number;
+  processStartTime: string;
+  subjectWorktreeId?: string | undefined;
+  ttlMs: number;
+  /** Takes over an abandoned lease instead of reporting it. This is the `--resume` path. */
+  adopt?: boolean | undefined;
+  /**
+   * Whether the process holding a colliding, expired lease is still alive. The store cannot
+   * run `ps`, and core must not spawn one per row, so the verdict is the caller's — computed
+   * inside the transaction for the single row the acquisition collides with, and only when
+   * that row has already expired.
+   */
+  ownerLiveness?: ((holder: RepositoryOperationLeaseHolder) => 'alive' | 'gone') | undefined;
+}
+
 export interface StateStore extends AdapterTrustStateStore {
   upsertWorkspace(input: WorkspaceInput): WorkspaceRecord;
   upsertRepository(input: RepositoryInput): RepositoryRecord;
@@ -198,6 +254,42 @@ export interface StateStore extends AdapterTrustStateStore {
   releaseExpiredManagedProcessStart(worktreeId: string, taskName: string, now: string): boolean;
   releaseExpiredManagedProcessReplacement(record: ManagedProcessRecord, now: string): boolean;
   hasManagedProcessStartReservation(worktreeId: string, taskName: string): boolean;
+  /**
+   * Claims the repository for one destructive operation, or reports who holds it.
+   *
+   * A lapsed TTL is not evidence that the holder is gone: an expired lease whose owner
+   * `ownerLiveness` reports `alive` is still a conflict. An expired lease whose owner is gone
+   * is reported `abandoned` rather than taken, because continuing a half-done cleanup is only
+   * safe for a caller that asked to resume one — `adopt` is what takes it over.
+   */
+  acquireRepositoryOperationLease(
+    input: RepositoryOperationLeaseRequest,
+    now: string,
+  ): RepositoryOperationLeaseResult;
+  /** Extends a lease the caller still holds. An expired lease is re-acquired, never renewed. */
+  renewRepositoryOperationLease(
+    key: RepositoryOperationLeaseKey,
+    token: string,
+    now: string,
+    ttlMs: number,
+  ): boolean;
+  /** Records how far the operation has got, so an interrupted one can be resumed from there. */
+  advanceRepositoryOperationLease(
+    key: RepositoryOperationLeaseKey,
+    token: string,
+    stage: string,
+    now: string,
+  ): boolean;
+  releaseRepositoryOperationLease(key: RepositoryOperationLeaseKey, token: string): boolean;
+  readRepositoryOperationLease(key: RepositoryOperationLeaseKey): RepositoryOperationLeaseHolder | null;
+  /**
+   * Releases every active endpoint lease of one worktree, and reports how many it released.
+   *
+   * Reconciliation releases the ports of a worktree Git no longer reports, which is too late
+   * for a removal: the ports have to be verifiably given back *before* Git deletes the
+   * directory. The two paths are idempotent with respect to each other.
+   */
+  releaseEndpointLeasesForWorktree(worktreeId: string, releasedAt: string): number;
   transaction<T>(fn: () => T): T;
 }
 

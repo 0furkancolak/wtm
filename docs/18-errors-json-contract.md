@@ -53,7 +53,17 @@ WTM_WORKSPACE_NOT_FOUND
 WTM_CONFIG_INVALID
 WTM_TEMPLATE_UNRESOLVED
 WTM_DAEMON_UNAVAILABLE
+WTM_DAEMON_INVALID_REQUEST
+WTM_DAEMON_PROTOCOL_INCOMPATIBLE
+WTM_DAEMON_REQUEST_FAILED
+WTM_OPERATION_CONFLICT
 ```
+
+`WTM_OPERATION_CONFLICT` means another process already holds a destructive-operation lease on the
+repository, so the requested operation would race it. `context` carries `repositoryId`, `operation`,
+`holderPid`, `acquiredAt`, `stage` (`null` while the holder is still live, otherwise the last stage
+the abandoned holder recorded), and `abandoned`. It is a safety policy block, so it exits with code
+3.
 
 ### Git
 

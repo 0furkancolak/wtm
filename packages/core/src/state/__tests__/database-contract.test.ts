@@ -27,6 +27,14 @@ describe('SQLite database drivers', () => {
       process: ['dev', 4242, 'RUNNING', false],
       adapterTrust: ['contract-adapter', '/adapters/contract', 'a'.repeat(64)],
       resource: ['/resources/contract/cache', 'directory', 'READY', 1, 100, 128],
+      operationLease: [
+        'acquired', 'operation-token', 'conflict', 7331, true, true,
+        'release-endpoints', '2026-08-28T08:00:43.000Z', false, false, true, null,
+      ],
+      endpointRelease: [2, 0, [
+        ['api', 'RELEASED', '2026-08-28T08:00:14.000Z'],
+        ['web', 'RELEASED', '2026-08-28T08:00:14.000Z'],
+      ]],
       resourceFinalization: [true, true, null, 'REMOVED', null],
       nested: ['nested rollback', true, true, false],
       rollback: ['contract rollback', true],

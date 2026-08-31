@@ -1,24 +1,51 @@
 import { basename, isAbsolute, resolve } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import {
+  analyzeWorktree,
   listGitWorktrees,
-  removeWorktreeSafely,
+  removeWorktreeGuarded,
+  RepositoryOperationConflictError,
   WorktreeRemovalBlockedError,
   type GitWorktreeRecord,
+  type GuardedRemovalResult,
+  type RemoteRefreshRecord,
+  type RemovalRuntimeCoordinator,
+  type RepositoryOperationLeaseStore,
   type WorktreeAnalysis,
+  type WorktreeContext,
 } from '@wtm/core';
 import type { JsonEnvelope, WtmError } from '@wtm/protocol';
 import { toGitSafetyError } from './git-error';
+
+/**
+ * The runtime half of one removal, resolved only once the selector has named a worktree.
+ *
+ * It is a callback rather than four more input fields because the ids and the coordinator all
+ * depend on *which* worktree was selected, and the selector is resolved in here. Returning null
+ * runs the Git-only path — a worktree WTM has no registration for has no processes, leases or
+ * resources for a coordinator to act on.
+ */
+export interface RemovalRuntimeBinding {
+  repositoryId: string;
+  worktreeId: string;
+  coordinator: RemovalRuntimeCoordinator;
+  leaseStore: RepositoryOperationLeaseStore;
+  /** Takes over a lease abandoned by a dead holder. This is `--resume`. */
+  adopt: boolean;
+}
 
 export interface RemoveCommandInput {
   repoPath: string;
   selector: string;
   baseRef?: string;
   allowedRemoteRefs?: readonly string[];
+  /** A refresh the caller already performed, passed through to analysis unchanged. */
+  remoteRefresh?: RemoteRefreshRecord;
   workspaceId?: string;
   repositoryId?: string;
   worktreeId?: string;
   worktreeNumericId?: number;
+  bindRuntime?: (worktreePath: string) => RemovalRuntimeBinding | null;
 }
 
 export interface RemoveCommandResult {
@@ -27,6 +54,8 @@ export interface RemoveCommandResult {
     branchRef: string | null;
     headOid: string;
   };
+  /** What the runtime gave back before Git ran. Zeroed on the Git-only path. */
+  cleanup: GuardedRemovalResult['cleanup'];
   analysis: WorktreeAnalysis;
 }
 
@@ -53,8 +82,22 @@ export async function runRemoveCommand(
   let warnings: WtmError[] = [];
   try {
     const selected = await resolveExplicitSelector(input);
-    const finalAnalysis = await removeWorktreeSafely(analysisContext(input, selected));
-    warnings = [...finalAnalysis.safety.warnings];
+    const binding = input.bindRuntime?.(selected.path) ?? null;
+    const context = analysisContext(input, selected, binding);
+    let result: GuardedRemovalResult;
+    try {
+      result = await removeWorktreeGuarded({
+        context,
+        ...(binding === null ? {} : {
+          coordinator: binding.coordinator,
+          lease: { store: binding.leaseStore, repositoryId: binding.repositoryId, adopt: binding.adopt },
+        }),
+      });
+    } catch (error) {
+      if (error instanceof WorktreeRemovalBlockedError) warnings = await analysisWarnings(context);
+      throw error;
+    }
+    warnings = [...result.analysis.safety.warnings];
     return {
       schemaVersion: 1,
       ok: true,
@@ -62,11 +105,12 @@ export async function runRemoveCommand(
       scope: commandScope(input),
       data: {
         removed: {
-          path: finalAnalysis.identity.path,
-          branchRef: finalAnalysis.identity.branchRef,
-          headOid: finalAnalysis.identity.headOid,
+          path: result.analysis.identity.path,
+          branchRef: result.analysis.identity.branchRef,
+          headOid: result.analysis.identity.headOid,
         },
-        analysis: finalAnalysis,
+        cleanup: result.cleanup,
+        analysis: result.analysis,
       },
       warnings,
       errors: [],
@@ -74,7 +118,7 @@ export async function runRemoveCommand(
   } catch (error) {
     const errors = error instanceof WorktreeRemovalBlockedError
       ? [...error.blockers]
-      : [toGitSafetyError(error, 'remove')];
+      : [removalError(error, input)];
     return {
       schemaVersion: 1,
       ok: false,
@@ -87,18 +131,56 @@ export async function runRemoveCommand(
   }
 }
 
+/**
+ * The warnings of the analysis that refused this removal.
+ *
+ * `WorktreeRemovalBlockedError` carries the blockers alone, and the analysis they came from
+ * never leaves the lifecycle, so recovering them means asking again — one read-only analysis, on
+ * a path that has already failed. It is worth the second look: the warnings are what say the
+ * base ref is missing or the upstream is gone, and dropping them silently on exactly the runs
+ * where the reader is trying to work out why removal was refused is the worst time to lose them.
+ * If the second analysis cannot run at all, the blockers still stand on their own.
+ */
+async function analysisWarnings(context: WorktreeContext): Promise<WtmError[]> {
+  try {
+    return [...(await analyzeWorktree(context)).safety.warnings];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Core cannot know which worktree the caller named, so the `--resume` it suggests is the bare
+ * command. The person reading this typed a selector; handing it back is the difference between a
+ * hint and something they can run.
+ */
+function removalError(error: unknown, input: RemoveCommandInput): WtmError {
+  const reported = toGitSafetyError(error, 'remove');
+  if (!(error instanceof RepositoryOperationConflictError) || !error.abandoned) return reported;
+  return {
+    ...reported,
+    remediation: [{ kind: 'command-suggestion', argv: ['wtm', 'remove', input.selector, '--resume'] }],
+  };
+}
+
 function analysisContext(
   input: RemoveCommandInput,
   selected: GitWorktreeRecord,
-): Parameters<typeof removeWorktreeSafely>[0] {
+  binding: RemovalRuntimeBinding | null,
+): WorktreeContext {
+  // A coordinator acts on recorded ids, so the binding's are authoritative when there is one:
+  // they and the coordinator were resolved from the same registration.
+  const repositoryId = binding?.repositoryId ?? input.repositoryId;
+  const worktreeId = binding?.worktreeId ?? input.worktreeId;
   return {
     repoPath: input.repoPath,
     worktreePath: selected.path,
     ...(input.baseRef === undefined ? {} : { baseRef: input.baseRef }),
     ...(input.allowedRemoteRefs === undefined ? {} : { allowedRemoteRefs: input.allowedRemoteRefs }),
+    ...(input.remoteRefresh === undefined ? {} : { remoteRefresh: input.remoteRefresh }),
     ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
-    ...(input.repositoryId === undefined ? {} : { repositoryId: input.repositoryId }),
-    ...(input.worktreeId === undefined ? {} : { worktreeId: input.worktreeId }),
+    ...(repositoryId === undefined ? {} : { repositoryId }),
+    ...(worktreeId === undefined ? {} : { worktreeId }),
     ...(input.worktreeNumericId === undefined ? {} : { worktreeNumericId: input.worktreeNumericId }),
   };
 }

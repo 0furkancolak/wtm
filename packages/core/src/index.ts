@@ -4,6 +4,7 @@ export {
   listGitWorktrees,
   readGitRemoteOrigin,
   readGitRepositoryIdentity,
+  remoteFetchTimeoutMs,
   retriedWorktreeListTimeoutMs,
   worktreeListTimeoutMs,
 } from './git/git-runner';
@@ -21,6 +22,8 @@ export type {
   UpstreamAnalysis,
   WorkingTreeAnalysis,
   WorkingTreeClassification,
+  RemoteKnowledge,
+  RemoteRefreshRecord,
   WorktreeAnalysis,
   WorktreeContext,
   WorktreeIdentityAnalysis,
@@ -30,10 +33,38 @@ export {
   analyzeRemotePersistence,
   defaultAllowedRemoteRefs,
   parseNulFormattedRefs,
+  refreshRemoteTrackingRefs,
 } from './analysis/remote-persistence';
-export type { RemotePersistenceAnalysis } from './analysis/remote-persistence';
+export type { RemotePersistenceAnalysis, RemoteRefreshResult } from './analysis/remote-persistence';
 export { assertRemovable, WorktreeRemovalBlockedError } from './analysis/remove-policy';
-export { removeWorktreeSafely } from './analysis/remove-worktree';
+export {
+  ManagedProcessResidueError,
+  removalStages,
+  removeWorktreeGuarded,
+  removeWorktreeSafely,
+} from './analysis/remove-worktree';
+export type {
+  EndpointReleaseReport,
+  EphemeralCleanupReport,
+  GuardedRemovalInput,
+  GuardedRemovalResult,
+  ManagedProcessResidue,
+  RemovalRuntimeCoordinator,
+  RemovalStage,
+  RemovalSubject,
+  StoppedProcessesReport,
+} from './analysis/remove-worktree';
+export {
+  defaultOperationLeaseTtlMs,
+  RepositoryOperationConflictError,
+  withRepositoryOperationLease,
+} from './analysis/operation-lease';
+export type {
+  RepositoryOperationConflictDetail,
+  RepositoryOperationLeaseInput,
+  RepositoryOperationLeaseStore,
+  RepositoryOperationSession,
+} from './analysis/operation-lease';
 export { resolveWorkspaceConfig, builtInConfig } from './config/load';
 export { mergeConfigLayers } from './config/merge';
 export { parseWtmConfig, wtmConfigSchema, WtmConfigError } from './config/schema';
@@ -43,6 +74,11 @@ export type { RepoScopeInput, ResolvedRepoScope } from './config/repos';
 export type { ResolvedConfig, Provenance } from './config/provenance';
 export { resolveTemplate, WtmTemplateError } from './templates/resolve';
 export type { TemplateContext } from './templates/resolve';
+export {
+  installProcessStartIdentityReader,
+  readProcessStartIdentity,
+} from './runtime/process-identity';
+export type { ProcessStartIdentity, ProcessStartTimeReader } from './runtime/process-identity';
 export { resolveEnvironment, WtmEnvironmentError } from './runtime/environment';
 export type { EnvironmentResolutionInput } from './runtime/environment';
 export { resolveTask, WtmTaskResolutionError } from './runtime/task-resolver';
@@ -103,6 +139,12 @@ export type {
   PortRange,
   ReconcileResult,
   RepositoryInput,
+  RepositoryOperation,
+  RepositoryOperationLease,
+  RepositoryOperationLeaseHolder,
+  RepositoryOperationLeaseKey,
+  RepositoryOperationLeaseRequest,
+  RepositoryOperationLeaseResult,
   RepositoryRecord,
   StateStore,
   LifecycleEventStore,
@@ -152,6 +194,16 @@ export type {
 } from './resources/materializer';
 export { inspectResources, prepareResources } from './resources/preparation';
 export type { PreparedResource, ResourcePreparationInput, ResourceState } from './resources/preparation';
+export {
+  cleanupWorktreeEphemeralResources,
+  reclaimableWorktreeResourcePaths,
+} from './resources/removal';
+export type {
+  WorktreeResourceCleanupInput,
+  WorktreeResourceCleanupResult,
+  WorktreeResourceDisposition,
+  WorktreeResourceOutcome,
+} from './resources/removal';
 export { applyGcPlan, buildGcPlan, executeGcPlan, planResourceGc, recoverGcJournalEntry } from './resources/gc';
 export type {
   ApplyGcOptions,
