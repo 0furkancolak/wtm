@@ -211,6 +211,10 @@ Developer ID signing tek başına stable macOS dağıtımı için yeterli değil
 - [ ] `spctl --assess` doğrulaması ekle.
 - [ ] Gatekeeper verification testleri ekle.
 - [ ] Release dokümantasyonunu güncelle.
+- [ ] Quarantine workaround'unu kaldır: `README.md` ve `CHANGELOG.md` içinde
+      `<!-- gatekeeper-quarantine:start -->` / `<!-- gatekeeper-quarantine:end -->` ile
+      işaretli bölümler. `scripts/__tests__/gatekeeper-workaround.test.ts` yarım kaldırmayı
+      kırmızıya düşürür; her iki bölüm de gidince o test dosyası da aynı değişiklikte silinir.
 
 #### Kabul kriterleri
 
@@ -252,20 +256,27 @@ hiç anmıyor.
 
 #### Yapılacaklar
 
-- [ ] README install bölümüne tarayıcıyla indirme uyarısı ekle.
-- [ ] Geçici çözümü belgele: `xattr -d com.apple.quarantine wtm`.
-- [ ] Prerelease notlarına aynı uyarıyı koy.
-- [ ] Sessiz SIGKILL yerine anlaşılır bir hata üretmenin mümkün olup olmadığını araştır.
-- [ ] Kalıcı çözüm için 5. maddeye (Developer ID + notarization) bağla.
+- [x] README install bölümüne tarayıcıyla indirme uyarısı ekle.
+- [x] Geçici çözümü belgele: `xattr -d com.apple.quarantine wtm`.
+- [x] Prerelease notlarına aynı uyarıyı koy. `release.yml:184` release gövdesini
+      `--notes-file CHANGELOG.md` ile yayınlıyor, yani README ile changelog tek kaynağın iki
+      görünümü; ikisi de `gatekeeper-quarantine` işaretleri arasında.
+- [x] Sessiz SIGKILL yerine anlaşılır bir hata üretmenin mümkün olup olmadığını araştır.
+      **Cevap: mümkün değil.** Kill `exec` anında, WTM'nin hiçbir kodu çalışmadan önce oluyor;
+      süreç içinden basılabilecek bir hata yok. Bu, dokümantasyona da yazıldı — üçüncü kez
+      araştırılmasın.
+- [x] Kalıcı çözüm için 5. maddeye (Developer ID + notarization) bağla.
 
 #### Kabul kriterleri
 
-- [ ] Tarayıcıyla indiren kullanıcı README'de ne yapacağını buluyor.
-- [ ] Notarization tamamlandığında bu geçici çözüm dokümandan kaldırılıyor.
+- [x] Tarayıcıyla indiren kullanıcı README'de ne yapacağını buluyor.
+- [ ] Notarization tamamlandığında bu geçici çözüm dokümandan kaldırılıyor. Kalan tek kriter
+      bu; 5. maddede kaldırma adımı ve yarım kaldırmayı yakalayan test yazılı, madde o zaman
+      kapanır.
 
 ---
 
-### [ ] 37. README quick start ilk denemede çalışmıyor
+### [x] 37. README quick start ilk denemede çalışmıyor
 
 Quick start (`README.md:126-135`) birebir uygulandığında hata veriyor:
 
@@ -281,17 +292,22 @@ görev tanımlama adımı dosyada çok daha aşağıda anlatılıyor. WTM'yi ilk
 
 #### Yapılacaklar
 
-- [ ] Quick start'ı gerçekten çalışan bir görev adıyla düzelt (`make:dev`) veya görev tanımlama
-      adımını quick start'ın içine al.
-- [ ] `wtm resolve` ve `wtm start` hata mesajı bilinen görevleri listelesin.
-- [ ] Hiç görev bulunmayan workspace'te mesaj görevin nasıl tanımlanacağını söylesin.
-- [ ] README'deki her komutun temiz bir workspace'te çalıştığını doğrulayan test ekle (34. madde ile
-      aynı parity testine bağlanabilir).
+- [x] Görev tanımlama adımı quick start'ın içine alındı. `make:dev` yeniden adlandırması
+      **çözüm değil**: `make:` görevleri yalnızca workspace'te o hedefi taşıyan bir `Makefile`
+      varken oluşuyor (`packages/adapters/src/make.ts:54`), temiz bir workspace'te yeni ad da
+      eskisi gibi başarısız oluyor.
+- [x] `wtm resolve` ve `wtm start` hata mesajı bilinen görevleri listelesin. İkisi de aynı
+      `resolveTask` çağrısına düşüyor; mesaj yazılana en yakın 10 adı sıralıyor ve kalanı
+      "and N more" ile sayıyor.
+- [x] Hiç görev bulunmayan workspace'te mesaj görevin nasıl tanımlanacağını söylesin.
+- [x] README'deki her komutun temiz bir workspace'te çalıştığını doğrulayan test ekle
+      (`packages/cli/src/__tests__/quick-start.test.ts`; komutları README'nin kendisinden
+      okuyor, kendi kopyasını taşımıyor).
 
 #### Kabul kriterleri
 
-- [ ] README'yi baştan sona uygulayan kullanıcı hiçbir adımda hata almıyor.
-- [ ] `Unknown task` hatası kullanıcıya mevcut görevleri gösteriyor.
+- [x] README'yi baştan sona uygulayan kullanıcı hiçbir adımda hata almıyor.
+- [x] `Unknown task` hatası kullanıcıya mevcut görevleri gösteriyor.
 
 ---
 
@@ -323,7 +339,7 @@ başarısızlığa toleranslı. Yine de ilk gerçek publish denenmedi.
 
 ---
 
-### [ ] 39. Daemon socket hatası ham stack trace basıyor ve CI yollarını sızdırıyor
+### [x] 39. Daemon socket hatası ham stack trace basıyor ve CI yollarını sızdırıyor
 
 Derin bir `HOME` altında daemon başlatılamıyor:
 
@@ -341,20 +357,23 @@ yollarını içeriyor:
 
 #### Yapılacaklar
 
-- [ ] Soket yolu uzunluğunu bind etmeden önce kontrol et.
-- [ ] Sınır aşıldığında `WTM_` kodlu, ölçülen uzunluğu ve sınırı söyleyen bir hata üret.
-- [ ] Çözüm önerisini mesaja koy (daha kısa bir `HOME` veya yapılandırılabilir runtime dizini).
-- [ ] Kullanıcıya giden hiçbir hatanın build-time yol sızdırmadığını doğrulayan test ekle.
-- [ ] `doctor`'a soket yolu uzunluğu kontrolü ekle.
+- [x] Soket yolu uzunluğunu bind etmeden önce kontrol et (`packages/core/src/paths/daemon-socket.ts`;
+      yayınlanan ve bind edilen adresin uzunu ölçülüyor, bayt olarak).
+- [x] Sınır aşıldığında `WTM_` kodlu, ölçülen uzunluğu ve sınırı söyleyen bir hata üret
+      (`WTM_SOCKET_PATH_TOO_LONG`, exit 2, hem `serve` hem `install` yolunda).
+- [x] Çözüm önerisini mesaja koy (daha kısa bir `HOME` veya yapılandırılabilir runtime dizini).
+- [x] Kullanıcıya giden hiçbir hatanın build-time yol sızdırmadığını doğrulayan test ekle
+      (`packages/cli/src/commands/__tests__/daemon-serve-failure.scenario.ts`).
+- [x] `doctor`'a soket yolu uzunluğu kontrolü ekle (`socket-path`, ilk host-scoped check).
 
 #### Kabul kriterleri
 
-- [ ] Uzun yolda çıkan hata tek satırlık, anlaşılır ve eyleme dönük.
-- [ ] Hiçbir kullanıcı çıktısında `/Users/runner/...` görünmüyor.
+- [x] Uzun yolda çıkan hata tek satırlık, anlaşılır ve eyleme dönük.
+- [x] Hiçbir kullanıcı çıktısında `/Users/runner/...` görünmüyor.
 
 ---
 
-### [ ] 40. `daemon status` sabit launchd label yüzünden başka `HOME`'un agent'ını raporluyor
+### [x] 40. `daemon status` sabit launchd label yüzünden başka `HOME`'un agent'ını raporluyor
 
 `dev.wtm.daemon` sabit bir label. Farklı bir `HOME` ile çalıştırıldığında `wtm daemon status`
 başka bir oturumun LaunchAgent'ını kendi agent'ıymış gibi gösteriyor:
@@ -371,20 +390,28 @@ Yani launchd durumu bir agent'tan, erişilebilirlik başka bir agent'tan geliyor
 
 #### Yapılacaklar
 
-- [ ] launchd label'ını `HOME`/workspace kökünden türetilen bir ayrımla üret.
-- [ ] Ya da `daemon status` yüklü agent'ın program yolunu kendi yoluyla karşılaştırıp eşleşmiyorsa
-      açıkça söylesin.
-- [ ] `plistPath`'in raporlanan `state` ile aynı agent'a ait olduğunu doğrula.
-- [ ] Migration: eski sabit label'lı agent'ları tanı ve devral.
+- [x] launchd label'ını `HOME`/workspace kökünden türetilen bir ayrımla üret
+      (`dev.wtm.daemon.<HOME digest'i>`).
+- [ ] ~~Ya da `daemon status` yüklü agent'ın program yolunu kendi yoluyla karşılaştırıp
+      eşleşmiyorsa açıkça söylesin.~~ Bu alternatif kasıtlı olarak seçilmedi ve çalışmazdı:
+      launchd servis adı `gui/<uid>/<label>` olduğu için sabit label'la iki `HOME` aynı anda
+      bootstrap *edilemiyor* — tespit, ikinci `HOME`'u doğru teşhis edip yine kurulumsuz
+      bırakırdı. Ayrıca karşılaştırılacak `program` bloğu 4 KiB'lik komut çıktısı saklama
+      sınırının ötesine düşebiliyor.
+- [x] `plistPath`'in raporlanan `state` ile aynı agent'a ait olduğunu doğrula; `status`
+      artık label'ı da yayınlıyor.
+- [x] Migration: eski sabit label'lı agent'ları tanı ve devral. Yalnızca plist'i *bu* `HOME`'a
+      ait olan legacy servis bootout ediliyor; başka bir `HOME`'unkine dokunulmuyor. Label'dan
+      türeyen journal/lock kardeş dosyaları da süpürülüyor.
 
 #### Kabul kriterleri
 
-- [ ] İki farklı `HOME`'daki daemon birbirinin durumunu raporlamıyor.
-- [ ] `state`, `runState` ve `reachable` her zaman aynı agent'ı anlatıyor.
+- [x] İki farklı `HOME`'daki daemon birbirinin durumunu raporlamıyor.
+- [x] `state`, `runState` ve `reachable` her zaman aynı agent'ı anlatıyor.
 
 ---
 
-### [ ] 41. `init` sonrası oluşturulan worktree reconcile olana kadar görünmez
+### [x] 41. `init` sonrası oluşturulan worktree reconcile olana kadar görünmez
 
 Daemon erişilebilir değilken `git worktree add` ile açılan bir worktree WTM tarafından
 tanınmıyor:
@@ -400,17 +427,23 @@ reconciliation tetiklemesi ve kullanıcıya ne yapacağını söyleyen mesaj.
 
 #### Yapılacaklar
 
-- [ ] Daemon erişilemezken kayıtsız bir worktree'de çalışan komutlar bunu ayrı bir tanı olarak
-      raporlasın.
-- [ ] Hata mesajı `wtm init` veya daemon başlatmayı önersin.
-- [ ] Daemon yokken CLI'ın tek seferlik reconciliation yapıp yapamayacağını değerlendir.
-- [ ] Daemon ayağa kalktığında bekleyen worktree'leri otomatik reconcile et.
-- [ ] `doctor` "daemon erişilemez" ile "worktree kayıtlı değil" durumlarını ayırsın.
+- [x] Daemon erişilemezken kayıtsız bir worktree'de çalışan komutlar bunu ayrı bir tanı olarak
+      raporlasın. `wtm env` artık `GIT_REPOSITORY_DEGRADED` değil `WTM_WORKSPACE_NOT_FOUND`
+      (exit 2) veriyor.
+- [x] Hata mesajı `wtm init` veya daemon başlatmayı önersin.
+- [x] Daemon yokken CLI'ın tek seferlik reconciliation yapıp yapamayacağını değerlendir.
+      Yapabiliyor: okuma komutları daemon erişilemezken *içinde bulunulan repository*'yi yerel
+      olarak reconcile edip `WTM_DAEMON_UNAVAILABLE` uyarısıyla cevap veriyor.
+- [x] Daemon ayağa kalktığında bekleyen worktree'leri otomatik reconcile et. Daemon zaten
+      açılışta her kayıtlı repository'yi reconcile ediyordu; bu, kod yazılmadan önce
+      characterization testiyle kanıtlandı (`reconcile-fallback` senaryosu, `daemon-returns`).
+- [x] `doctor` "daemon erişilemez" ile "worktree kayıtlı değil" durumlarını ayırsın
+      (yeni `registration` check'i; eskiden `adapters` altında `unknown` olarak yanlış yerdeydi).
 
 #### Kabul kriterleri
 
-- [ ] Kullanıcı yeni worktree'sinin neden görünmediğini çıktıdan anlıyor.
-- [ ] Daemon geri geldiğinde manuel `init` gerekmiyor.
+- [x] Kullanıcı yeni worktree'sinin neden görünmediğini çıktıdan anlıyor.
+- [x] Daemon geri geldiğinde manuel `init` gerekmiyor.
 
 ---
 
@@ -438,6 +471,40 @@ tutmuyor.
 
 - [ ] Yayınlanan hedef ile ölçülen değer aynı hikâyeyi anlatıyor.
 - [ ] Stable release'te RSS `pass` veriyor.
+
+---
+
+### [ ] 43. Çok depolu workspace kökünde `resolve` ham `git` hatası basıyor
+
+Increment B sırasında quick start testi yazılırken bulundu. README'nin açıkça desteklediği layout —
+kendisi Git deposu olmayan, altında birden çok repo tutan bir workspace kökü — o kökte çalıştırılınca
+`resolve` şu hatayı veriyor:
+
+```text
+[WTM_CONFIG_INVALID] Git worktree list in ... failed (exit 128): onulmaz: bir git deposu ... değil: .git
+```
+
+Üç ayrı kusur var: hata ham `git` stderr'i sızdırıyor; mesaj kullanıcının locale'ine göre değişiyor,
+yani programatik olarak da okunamıyor, İngilizce de değil; ve `WTM_CONFIG_INVALID` yanlış kodu —
+yapılandırmada bir sorun yok, kullanıcı yalnızca yanlış dizinde duruyor. `WTM_WORKSPACE_NOT_FOUND`
+zaten var ve eyleme dönük bir mesaj taşıyor.
+
+Bu 39. maddenin aynı sınıfı: kullanıcıya giden bir hata, alt katmanın ham çıktısını taşıyor.
+39 daemon soketi için çözüldü, bu yol için çözülmedi.
+
+#### Yapılacaklar
+
+- [ ] Workspace kökünün kendisi bir depo olmadığı durumu, `git` çağrılmadan önce tanı.
+- [ ] `WTM_WORKSPACE_NOT_FOUND` ile, hangi depoya `cd` edileceğini söyleyen bir mesaj üret.
+- [ ] Kullanıcıya giden hiçbir mesajın locale'e bağlı `git` metni taşımadığını doğrulayan test ekle.
+- [ ] Aynı yolu `run`, `start` ve `env` için de kontrol et.
+
+#### Kabul kriterleri
+
+- [ ] Çok depolu kökte `resolve` ne yapılacağını söylüyor.
+- [ ] Hiçbir kullanıcı çıktısında çevrilmiş `git` hata metni görünmüyor.
+
+**Geçici çözüm:** README quick start'ı bir depoya `cd` etmeyi söylüyor.
 
 ---
 
@@ -1584,10 +1651,10 @@ dokümanda anlatıldığı gibi çalışıyor mu test edilmeli.
 - [ ] tarayıcıyla indirilmiş (quarantine damgalı) macOS binary
 - [ ] `curl` + `tar` ile kurulum
 - [ ] npm `@next` global kurulum
-- [ ] README quick start'ın temiz bir workspace'te baştan sona çalışması
-- [ ] `sun_path` sınırını aşan uzun `HOME`
+- [x] README quick start'ın temiz bir workspace'te baştan sona çalışması
+- [x] `sun_path` sınırını aşan uzun `HOME`
 - [ ] farklı `HOME`'larda aynı anda iki daemon
-- [ ] `init` sonrası oluşturulan worktree
+- [x] `init` sonrası oluşturulan worktree
 
 ---
 

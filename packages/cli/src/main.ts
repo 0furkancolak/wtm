@@ -5,10 +5,14 @@ import { access } from 'node:fs/promises';
 import { constants, homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
+import { exitCodeForError } from './exit-codes';
 import type { AdapterTrustStore } from '@wtm/core';
 import {
+  DaemonSocketPathTooLongError,
   containsPath,
   listGitWorktrees,
+  measureDaemonSocketPath,
+  publishedDaemonSocketPath,
   refreshRemoteTrackingRefs,
   resolveWorkspaceConfig,
   SQLiteStateStore,
@@ -21,6 +25,7 @@ import {
   createLaunchdLifecycle,
   createProductionDaemon,
   defaultProductionRuntimePaths,
+  findRegistration,
   prepareRuntimeResources,
   resolveWorktreeRuntime,
   taskResolutionInput,
@@ -105,6 +110,8 @@ export interface CliDependencies {
   /** The global configuration layer a removal's ephemeral resource cleanup resolves against. */
   removalGlobalConfigPath?: string;
   diagnosticsDatabasePath?: string;
+  /** The daemon socket to reach, for tests that need a path this host does not have. */
+  daemonSocketPath?: string;
   resolveRunner?: (input: { cwd: string; taskName: string }) => Promise<JsonEnvelope<unknown>>;
   analyzeRunner?: (input: { repoPath: string; selector?: string; refreshRemotes?: boolean }) => Promise<JsonEnvelope<unknown>>;
   removeRunner?: (input: { repoPath: string; selector: string; refreshRemotes?: boolean; resume?: boolean }) => Promise<JsonEnvelope<unknown>>;
@@ -1058,12 +1065,43 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
   let exitCode = 0;
   const jsonRequested = hasOptionIntent(argv, '--json');
   const stdout = dependencies.stdout ?? ((value: string) => process.stdout.write(value));
-  const defaultClient = dependencies.runtimeClient === undefined && isRuntimeInvocation(argv)
-    ? new DaemonClient({ socketPath: defaultDaemonSocketPath() })
+  const socketPath = dependencies.daemonSocketPath ?? defaultDaemonSocketPath();
+  // The connect side gets the same preflight the daemon's bind side gets. Without it a home
+  // too deep for a socket address answered `WTM_DAEMON_UNAVAILABLE`, which sends the reader
+  // to look for a daemon that is missing for a reason no amount of restarting will change.
+  const socketPathMeasurement = measureDaemonSocketPath(socketPath);
+  const socketPathRefusal = socketPathMeasurement.fits
+    ? null
+    : new DaemonSocketPathTooLongError(socketPathMeasurement);
+  const wantsRuntimeClient = dependencies.runtimeClient === undefined && isRuntimeInvocation(argv);
+  const defaultClient = wantsRuntimeClient && socketPathRefusal === null
+    ? new DaemonClient({ socketPath })
     : null;
+  const refusingClient: RuntimeDaemonClient | null = wantsRuntimeClient && socketPathRefusal !== null
+    ? { request: (command) => Promise.resolve(socketPathRefusalEnvelope(command, socketPathRefusal)) }
+    : null;
+  const runtimeClient = defaultClient ?? refusingClient;
   const diagnosticStore = dependencies.dataSource === undefined && isDiagnosticInvocation(argv)
     ? openStateStore(dependencies.diagnosticsDatabasePath ?? defaultProductionRuntimePaths().databasePath)
     : null;
+  if (diagnosticStore !== null) {
+    // The fallback saves the reader a manual `wtm init`; it is never a precondition for
+    // answering. Whatever it cannot do, the command still reports what the registry holds.
+    await reconcileContainingRepository({
+      store: diagnosticStore,
+      cwd: dependencies.cwd ?? process.cwd(),
+      // A path too long for an address cannot hold a daemon at all, so there is nothing to
+      // probe: `socket-path` is the check that explains that one.
+      socketPath: socketPathRefusal === null ? socketPath : null,
+      // The warning stands beside the envelope, not inside it: a read command's stdout is one
+      // envelope under `--json`, and the diagnostic envelope carries no warning channel.
+      warn: (item) => {
+        (dependencies.stderr ?? ((value: string) => { process.stderr.write(value); }))(
+          `[${item.code}] ${item.message}\n`,
+        );
+      },
+    }).catch(() => {});
+  }
   const cancellation = dependencies.signal === undefined && isFollowInvocation(argv)
     ? new AbortController()
     : null;
@@ -1072,7 +1110,7 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
   if (defaultClient !== null) await defaultClient.start().catch(() => {});
   const program = createCli({
     ...dependencies,
-    ...(defaultClient === null ? {} : { runtimeClient: defaultClient }),
+    ...(runtimeClient === null ? {} : { runtimeClient }),
     ...(diagnosticStore === null ? {} : {
       dataSource: createStateDiagnosticDataSource(diagnosticStore, {
         cwd: dependencies.cwd ?? process.cwd(),
@@ -1097,6 +1135,26 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
     diagnosticStore?.close();
     await defaultClient?.close();
   }
+}
+
+function socketPathRefusalEnvelope(
+  command: string,
+  error: DaemonSocketPathTooLongError,
+): JsonEnvelope<null> {
+  return {
+    schemaVersion: 1,
+    ok: false,
+    command,
+    data: null,
+    warnings: [],
+    errors: [{
+      code: error.code,
+      message: error.message,
+      severity: error.severity,
+      context: { command, ...error.context },
+      remediation: [...error.remediation],
+    }],
+  };
 }
 
 function isDiagnosticInvocation(argv: readonly string[]): boolean {
@@ -1124,6 +1182,94 @@ async function announceRegistration(client: RuntimeDaemonClient | undefined): Pr
   if (client === undefined) return;
   try { await client.request('reconcile'); }
   catch { /* The registration is on disk; the next pass will find it. */ }
+}
+
+/**
+ * Makes a worktree the registry has not heard of visible to a read command, without a second
+ * `wtm init`.
+ *
+ * `git worktree add` writes nothing WTM owns, so a worktree created after `wtm init` exists in
+ * Git and nowhere else until something reconciles its repository. The daemon does that — on
+ * every start, and on every structural change it watches — and while it is running it is the
+ * only writer the registry should have. With the daemon down there is nobody, and the read
+ * commands answered about a directory they could not identify: `wtm status` reported the
+ * workspace root as though the reader were standing in it, and `wtm env` failed outright. Both
+ * then told the reader to run `wtm init` for a worktree WTM could have found itself, from one
+ * `git worktree list`.
+ *
+ * The pass is the containing repository's, not the workspace's. `wtm init` walks five levels of
+ * directory tree looking for repositories, which is the right price for registering a workspace
+ * and far too much for reporting on one; listing the current repository's worktrees is a single
+ * `git` call that names the whole topology at once.
+ */
+async function reconcileContainingRepository(input: {
+  store: SQLiteStateStore;
+  cwd: string;
+  socketPath: string | null;
+  warn: (item: WtmError) => void;
+}): Promise<void> {
+  if (isRegisteredDirectory(input.store, input.cwd)) return;
+  // A daemon that is answering owns this: it reconciles the repository itself, and a second
+  // writer working behind it is how two processes come to disagree about one registry.
+  if (input.socketPath !== null && await daemonReachable(input.socketPath)) return;
+
+  let topology: GitWorktreeRecord[];
+  try {
+    topology = await listGitWorktrees(input.cwd);
+  } catch {
+    // Not a repository, or one Git cannot read. There is nothing to reconcile, and a read
+    // command run in an ordinary directory must not be made to talk about it.
+    return;
+  }
+  const mainRoot = topology[0]?.path;
+  const repository = mainRoot === undefined
+    ? undefined
+    : input.store.listRepositories().find((candidate) => candidate.mainRoot === mainRoot);
+  // A repository nobody registered stays unregistered: discovering one is what `wtm init` is
+  // for, and a read command must not enrol a clone the reader is only visiting.
+  if (repository === undefined) return;
+
+  try {
+    input.store.reconcileWorktrees(repository.id, topology);
+  } catch (error) {
+    input.warn({
+      code: 'GIT_REPOSITORY_DEGRADED',
+      message: 'The daemon is unreachable and the repository could not be reconciled either, '
+        + `so this answer may be out of date: ${errorMessage(error)}`,
+      severity: 'warning',
+      context: { repositoryId: repository.id, cwd: input.cwd },
+    });
+    return;
+  }
+  // Silent when the pass changed nothing about this directory — `wtm status` in the workspace
+  // root beside a repository is an ordinary thing to do, and has nothing to be told.
+  if (!isRegisteredDirectory(input.store, input.cwd)) return;
+  input.warn({
+    code: 'WTM_DAEMON_UNAVAILABLE',
+    message: 'The daemon is unreachable, so this repository was reconciled locally; the '
+      + 'worktree you are in is registered now, and the daemon adopts it when it returns.',
+    severity: 'warning',
+    context: { repositoryId: repository.id, cwd: input.cwd },
+  });
+}
+
+/**
+ * Whether this directory is inside a worktree the registry holds.
+ *
+ * Deliberately the same lookup `doctor`'s `registration` check makes, so the fallback cannot
+ * decide a directory is unregistered that the check then reports as registered, or the reverse.
+ */
+function isRegisteredDirectory(store: SQLiteStateStore, cwd: string): boolean {
+  try {
+    findRegistration(store, cwd);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function daemonReachable(socketPath: string): Promise<boolean> {
@@ -1185,7 +1331,7 @@ function exitCodeForEnvelope(envelope: JsonEnvelope<unknown>): number {
 }
 
 export function defaultDaemonSocketPath(home = homedir()): string {
-  return join(home, 'Library', 'Application Support', 'WTM', 'wtmd.sock');
+  return publishedDaemonSocketPath(home);
 }
 
 /**
@@ -1204,26 +1350,6 @@ function isRuntimeInvocation(argv: readonly string[]): boolean {
   return command !== undefined && ['start', 'stop', 'restart', 'ps', 'logs', 'exec', 'init', 'remove'].includes(command);
 }
 
-function exitCodeForError(code: WtmErrorCode): number {
-  if (code === 'WTM_DAEMON_UNAVAILABLE') return 4;
-  if (code === 'ADAPTER_PROTOCOL_INCOMPATIBLE' || code === 'ADAPTER_INVALID_RESPONSE') return 5;
-  if (code === 'WTM_CONFIG_INVALID' || code === 'WTM_WORKSPACE_NOT_FOUND' || code === 'WTM_NOT_INITIALIZED') return 2;
-  if (
-    code === 'GIT_MAIN_WORKTREE'
-    || code === 'GIT_WORKTREE_LOCKED'
-    || code === 'GIT_DIRTY_STAGED'
-    || code === 'GIT_DIRTY_UNSTAGED'
-    || code === 'GIT_UNTRACKED'
-    || code === 'GIT_UNMERGED'
-    || code === 'GIT_HEAD_NOT_REMOTE_PERSISTED'
-    // A second process already destroying this repository is a safety refusal, in the same
-    // class as a Git blocker: nothing was done, and the caller has somewhere to look.
-    || code === 'WTM_OPERATION_CONFLICT'
-    || code === 'RESOURCE_PATH_DENIED'
-    || code === 'GC_ACTIVE_WORKTREE_PROTECTED'
-  ) return 3;
-  return 1;
-}
 
 export function defaultRuntimeInvocation(): RuntimeInvocation {
   // A standalone executable re-invokes itself; there is no separate entry script.

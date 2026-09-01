@@ -11,6 +11,18 @@ export {
 export type { GitCommandOptions, GitCommandResult, GitRepositoryIdentity } from './git/git-runner';
 export { parseGitWorktreePorcelain } from './git/worktree-parser';
 export { containsPath } from './paths/contains';
+export {
+  DaemonSocketPathTooLongError,
+  assertDaemonSocketPathFits,
+  boundDaemonSocketPath,
+  daemonDataDirectorySegments,
+  daemonDataRoot,
+  daemonSocketFileName,
+  daemonSocketPathLimitBytes,
+  measureDaemonSocketPath,
+  publishedDaemonSocketPath,
+} from './paths/daemon-socket';
+export type { DaemonSocketPathMeasurement } from './paths/daemon-socket';
 export type { GitWorktreeRecord } from './git/worktree-parser';
 export {
   analyzeWorktree,

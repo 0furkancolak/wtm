@@ -113,6 +113,28 @@ shasum -a 256 -c --ignore-missing SHA256SUMS
 tar -xzf "$archive"
 ```
 
+<!-- gatekeeper-quarantine:start -->
+#### If you downloaded the archive through a browser
+
+A browser stamps `com.apple.quarantine` on what it saves. WTM's executables are only ad-hoc signed,
+so macOS refuses the stamped copy — `spctl -a -t execute wtm` reports
+`rejected (source=no usable signature)` — and the kernel sends `SIGKILL` at `exec`. The process
+dies before any WTM code runs: it exits 137 with nothing on stdout and nothing on stderr, and there
+is no error WTM can print about this, because none of it is WTM running. Clear the attribute from
+the file you downloaded:
+
+```bash
+xattr -d com.apple.quarantine wtm
+```
+
+The `curl` commands above are unaffected. Neither `curl` nor `tar` writes the quarantine attribute,
+so an archive fetched and extracted that way runs as-is.
+
+This is a workaround for a defect, not a standing instruction: stripping a security attribute is
+not something you should have to do. It disappears when the stable macOS binaries are Developer ID
+signed and notarized.
+<!-- gatekeeper-quarantine:end -->
+
 ### npm (Node.js 24+)
 
 ```bash
@@ -126,15 +148,28 @@ standalone executable embeds one, which is why it is roughly 97 MB on disk.
 
 ## Quick start
 
+Five commands, from nothing to a resolved task. They work in a clean workspace with no `Makefile`
+and no adapters, because the third one defines the task the last one resolves.
+
 ```bash
-cd /path/to/your/workspace
+cd /path/to/your/project
 wtm init --yes
+printf '\n[tasks.dev]\nrun = ["npm", "run", "dev"]\n' >> wtm.toml
 wtm status
 wtm resolve dev
-wtm start dev
-wtm logs dev --follow
-wtm stop dev
 ```
+
+`init` records the repositories under this directory and writes a `wtm.toml`; `status` says which
+worktree you are standing in and what is running there; `resolve` prints the exact argv, working
+directory and environment that `dev` would run with, and runs nothing.
+
+Nothing is derived from `package.json` scripts, so `dev` exists only because the third command
+defined it — replace `npm run dev` with whatever your project actually starts. Once it is yours,
+`wtm run dev` runs it in the foreground, and [the daemon](#the-daemon) supervises it in the
+background as `wtm start dev` / `wtm logs dev --follow` / `wtm stop dev`.
+
+`resolve` answers for the worktree you are standing in, so run it from inside a repository. In a
+workspace root that holds several repositories rather than being one, `cd` into one of them first.
 
 ## How to use WTM
 
@@ -445,8 +480,6 @@ in an example file never reach a report, a log, or your `wtm.toml`.
 
 `wtm init` never edits a `wtm.toml` it did not write, and `wtm detect --write` only appends
 tables the file does not already define. Anything already decided is reported and left alone.
-
-## Configuration
 
 ## Configuration
 

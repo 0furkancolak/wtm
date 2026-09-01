@@ -59,10 +59,29 @@ const statusSchema = z.object({
   }).strict()),
 }).strict();
 
+/**
+ * Every check `doctor` declares, in reading order.
+ *
+ * The order is also the order the checks depend on each other in. `registration` comes first
+ * because every workspace-scoped check below it presumes an answer to it: an unregistered
+ * directory is why adapters, resources and ports have nothing to say, and reporting that as six
+ * separate silences instead of one cause is what sent readers looking in the wrong place.
+ * `socket-path` comes last because it is the only host-scoped check — it describes this
+ * machine, not this workspace, and it is the same answer in every workspace on it.
+ *
+ * This list, `doctorOrder` and `unknownDoctorFindings` are edited together. Deriving the schema
+ * enum and the sort order from it leaves one place a check can be forgotten — the back-fill
+ * list — and a data source that answers a check it never declared cannot validate at all.
+ */
+export const doctorChecks = [
+  'registration', 'git', 'config', 'adapters', 'resources', 'ports', 'process-records',
+  'socket-path',
+] as const;
+
 const doctorSchema = z.object({
   workspace: registeredWorkspaceSchema,
   findings: z.array(z.object({
-    check: z.enum(['git', 'config', 'adapters', 'resources', 'ports', 'process-records']),
+    check: z.enum(doctorChecks),
     status: z.enum(['pass', 'warning', 'error', 'unknown']),
     message: z.string().min(1),
     details: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
@@ -149,16 +168,16 @@ interface RegisteredWorkspaceLookup {
   depth: number;
 }
 
-const doctorOrder = new Map([
-  ['git', 0], ['config', 1], ['adapters', 2], ['resources', 3], ['ports', 4], ['process-records', 5],
-]);
+const doctorOrder = new Map<string, number>(doctorChecks.map((check, index) => [check, index]));
 const unknownDoctorFindings: DoctorDiagnostic['findings'] = [
+  { check: 'registration', status: 'unknown', message: 'Registration diagnostics are unavailable.' },
   { check: 'git', status: 'unknown', message: 'Git diagnostics are unavailable.' },
   { check: 'config', status: 'unknown', message: 'Config diagnostics are unavailable.' },
   { check: 'adapters', status: 'unknown', message: 'Adapter diagnostics are unavailable.' },
   { check: 'resources', status: 'unknown', message: 'Resource diagnostics are unavailable.' },
   { check: 'ports', status: 'unknown', message: 'Port diagnostics are unavailable.' },
   { check: 'process-records', status: 'unknown', message: 'Process record diagnostics are unavailable.' },
+  { check: 'socket-path', status: 'unknown', message: 'Socket path diagnostics are unavailable.' },
 ];
 
 export async function runStatusCommand(
@@ -434,14 +453,48 @@ function diagnosticErrorItem(code: WtmErrorCode, message: string): WtmError {
   return { code, message, severity: 'error' };
 }
 
+/**
+ * Whether a thrown value is *declaring itself* a WTM error, rather than merely happening to
+ * have a `code`.
+ *
+ * `code` on its own is not the declaration: Node puts one on every `ErrnoException`, adapters
+ * put one on whatever they like, and an arbitrary exception admitted on that evidence turns
+ * its message — an internal detail nobody promised — into contract text. That is the leak item
+ * 39 records, so the bar here is the whole required shape of a `WtmError`: a `code` that
+ * *validates against `wtmErrorCodeSchema`* rather than one that merely looks like a code, a
+ * non-empty `message`, and an explicit `severity`. `DaemonRegistrationError` and
+ * `DaemonSocketPathTooLongError` both carry that shape on purpose; `Object.assign(new Error(),
+ * { code })` does not.
+ *
+ * The value returned is normalized, so a self-described error is held to exactly the same
+ * redaction, depth and length bounds as one raised through `DiagnosticSourceError`.
+ */
+function selfDescribedError(error: unknown): WtmError | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const candidate = error as Partial<Record<keyof WtmError, unknown>>;
+  const code = wtmErrorCodeSchema.safeParse(candidate.code);
+  if (!code.success) return undefined;
+  const severity = candidate.severity;
+  if (severity !== 'info' && severity !== 'warning' && severity !== 'error') return undefined;
+  if (typeof candidate.message !== 'string' || candidate.message.length === 0) return undefined;
+  return normalizeExplicitError({
+    code: code.data,
+    message: candidate.message,
+    severity,
+    context: candidate.context,
+    remediation: candidate.remediation,
+  } as WtmError);
+}
+
 function toDiagnosticError(
   error: unknown,
   command: string,
   workspaceId?: string,
 ): WtmError {
-  const stored = typeof error === 'object' && error !== null
+  const registered = typeof error === 'object' && error !== null
     ? diagnosticSourceItems.get(error)
     : undefined;
+  const stored = registered ?? selfDescribedError(error);
   if (stored === undefined) {
     return {
       code: 'GIT_REPOSITORY_DEGRADED',

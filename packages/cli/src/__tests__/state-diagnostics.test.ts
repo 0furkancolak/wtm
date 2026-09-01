@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -10,6 +11,7 @@ import type {
   WorkspaceRecord,
   WorktreeRecord,
 } from '@wtm/core';
+import { doctorChecks } from '../diagnostics';
 import { createStateDiagnosticDataSource } from '../state-diagnostics';
 
 const workspace: WorkspaceRecord = {
@@ -73,6 +75,12 @@ const sourceAt = (cwd: string) => createStateDiagnosticDataSource(store, {
 
 const registered = { id: workspace.id, name: workspace.name, root: workspace.root, scope: workspace.scope } as const;
 
+const cleanups: Array<() => void> = [];
+
+afterEach(() => {
+  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+});
+
 describe('registry-backed diagnostics', () => {
   it('answers for the worktree the command was run in', async () => {
     // Reporting the first registered worktree meant standing in one repository and reading
@@ -132,10 +140,11 @@ describe('doctor', () => {
   });
 
   it('answers every check it declares', async () => {
+    // Against `doctorChecks` itself, so a check added to the contract and never answered here
+    // fails rather than being back-filled as `unknown` by the envelope and read as healthy.
     const findings = (await sourceAt('/workspace/web-feature').readDoctor(registered)).findings;
 
-    expect(findings.map(({ check }) => check))
-      .toEqual(['git', 'config', 'adapters', 'resources', 'ports', 'process-records']);
+    expect([...findings.map(({ check }) => check)].sort()).toEqual([...doctorChecks].sort());
   });
 
   it('says no adapter recognizes a worktree rather than saying nothing at all', async () => {
@@ -190,4 +199,123 @@ async function doctorIn(root: string) {
   return (await source.readDoctor({
     id: local.id, name: local.name, root: local.root, scope: local.scope,
   })).findings;
+}
+
+describe('registration', () => {
+  it('tells an unreachable daemon apart from an unregistered worktree', async () => {
+    // The two states have distinct codes and distinct exit codes everywhere else in WTM. A
+    // doctor that collapsed them would send the reader to start a daemon that is already
+    // running, or to re-run `wtm init` on a worktree that is already registered.
+    const listening = await socketServer();
+    const down = join(await tempDir(), 'wtmd.sock');
+
+    const daemonDown = await registrationFinding('/workspace/web-feature', down);
+    const notRegistered = await registrationFinding('/elsewhere', listening);
+
+    expect(daemonDown).toEqual({
+      check: 'registration',
+      status: 'warning',
+      message: 'This worktree is registered, but the daemon is not answering on its socket. '
+        + 'Start it with `wtm daemon start`.',
+      details: { code: 'WTM_DAEMON_UNAVAILABLE', registered: true, daemonReachable: false },
+    });
+    expect(notRegistered).toEqual({
+      check: 'registration',
+      status: 'error',
+      message: 'This directory is not inside a worktree WTM has registered. '
+        + 'Run `wtm init` in the workspace root.',
+      details: { code: 'WTM_WORKSPACE_NOT_FOUND', registered: false, daemonReachable: true },
+    });
+    expect(daemonDown).not.toEqual(notRegistered);
+  });
+
+  it('passes when the worktree is registered and the daemon answers', async () => {
+    expect(await registrationFinding('/workspace/web-feature', await socketServer())).toEqual({
+      check: 'registration',
+      status: 'pass',
+      message: 'This worktree is registered, and the daemon is answering.',
+      details: { code: null, registered: true, daemonReachable: true },
+    });
+  });
+
+  it('does not file the unregistered-worktree message under adapters', async () => {
+    // It used to arrive as an `adapters` finding of status `unknown`, which is the one place a
+    // reader looking for "why does WTM not know about this directory" would never look.
+    const findings = await findingsAt('/elsewhere', await socketServer());
+    const adapters = findings.find(({ check }) => check === 'adapters');
+
+    expect(adapters?.message).not.toContain('wtm init');
+    expect(adapters).toEqual({
+      check: 'adapters',
+      status: 'unknown',
+      message: 'Adapter detection needs a registered worktree; see the registration check.',
+    });
+  });
+});
+
+describe('socket-path', () => {
+  it('reports the headroom left before the path becomes unbindable', async () => {
+    const finding = await socketPathFinding(join('/tmp', 'wtmd.sock'));
+
+    expect(finding?.status).toBe('pass');
+    expect(finding?.message).toContain('bytes to spare');
+    expect(finding?.details).toMatchObject({ byteLength: 14, limitBytes: 104, headroom: 90 });
+  });
+
+  it('warns while the path still binds, not only once it has stopped', async () => {
+    const finding = await socketPathFinding(`/${'d'.repeat(84)}/wtmd.sock`);
+
+    expect(finding?.status).toBe('warning');
+    expect(finding?.details).toMatchObject({ byteLength: 95, limitBytes: 104, headroom: 9 });
+    expect(finding?.message).toContain('headroom');
+  });
+
+  it('reports a path over the limit as an error naming the measured length', async () => {
+    const finding = await socketPathFinding(`/${'d'.repeat(120)}/wtmd.sock`);
+
+    expect(finding?.status).toBe('error');
+    expect(finding?.details).toMatchObject({ code: 'WTM_SOCKET_PATH_TOO_LONG', byteLength: 131 });
+    expect(finding?.message).toContain('131 bytes');
+    expect(finding?.message).toContain('104-byte limit');
+  });
+
+  it('measures bytes rather than code units', async () => {
+    // A home directory holding non-ASCII characters is longer than its character count, and
+    // the limit is a property of the address in bytes.
+    const finding = await socketPathFinding(`/${'ü'.repeat(50)}/wtmd.sock`);
+
+    expect(finding?.details).toMatchObject({ byteLength: 111 });
+  });
+});
+
+async function tempDir(): Promise<string> {
+  const root = mkdtempSync(join(tmpdir(), 'wtm-socket-'));
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
+/** A daemon socket that is actually listening, so reachability is observed, not stubbed. */
+async function socketServer(): Promise<string> {
+  const path = join(await tempDir(), 'wtmd.sock');
+  const server = createServer();
+  await new Promise<void>((done) => server.listen(path, done));
+  cleanups.push(() => server.close());
+  return path;
+}
+
+async function findingsAt(cwd: string, daemonSocketPath: string) {
+  return (await createStateDiagnosticDataSource(store, {
+    cwd,
+    globalConfigPath: '/workspace/config.toml',
+    daemonSocketPath,
+  }).readDoctor(registered)).findings;
+}
+
+async function registrationFinding(cwd: string, daemonSocketPath: string) {
+  return (await findingsAt(cwd, daemonSocketPath)).find(({ check }) => check === 'registration');
+}
+
+async function socketPathFinding(daemonSocketPath: string) {
+  return (await findingsAt('/workspace/web-feature', daemonSocketPath))
+    .find(({ check }) => check === 'socket-path');
 }

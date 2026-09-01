@@ -2,6 +2,7 @@ import {
   GitCommandError,
   WorktreeAnalysisError,
 } from '@wtm/core';
+import { wtmErrorCodeSchema } from '@wtm/protocol';
 import type { Remediation, WtmError, WtmErrorCode } from '@wtm/protocol';
 
 export function toGitSafetyError(error: unknown, command: string): WtmError {
@@ -72,41 +73,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-const knownCodes: ReadonlySet<WtmErrorCode> = new Set([
-  'WTM_NOT_INITIALIZED',
-  'WTM_WORKSPACE_NOT_FOUND',
-  'WTM_CONFIG_INVALID',
-  'WTM_TEMPLATE_UNRESOLVED',
-  'WTM_DAEMON_UNAVAILABLE',
-  'WTM_DAEMON_INVALID_REQUEST',
-  'WTM_DAEMON_PROTOCOL_INCOMPATIBLE',
-  'WTM_DAEMON_REQUEST_FAILED',
-  'WTM_OPERATION_CONFLICT',
-  'GIT_COMMAND_FAILED',
-  'GIT_REPOSITORY_DEGRADED',
-  'GIT_MAIN_WORKTREE',
-  'GIT_WORKTREE_LOCKED',
-  'GIT_DIRTY_STAGED',
-  'GIT_DIRTY_UNSTAGED',
-  'GIT_UNTRACKED',
-  'GIT_UNMERGED',
-  'GIT_HEAD_NOT_REMOTE_PERSISTED',
-  'GIT_UPSTREAM_MISSING',
-  'RUNTIME_PORT_UNAVAILABLE',
-  'RUNTIME_TASK_ALREADY_RUNNING',
-  'RUNTIME_TASK_NOT_RUNNING',
-  'RUNTIME_PROCESS_IDENTITY_STALE',
-  'RUNTIME_START_FAILED',
-  'RUNTIME_STOP_FAILED',
-  'ADAPTER_NOT_TRUSTED',
-  'ADAPTER_PROTOCOL_INCOMPATIBLE',
-  'ADAPTER_TIMEOUT',
-  'ADAPTER_INVALID_RESPONSE',
-  'ADAPTER_DETECTION_AMBIGUOUS',
-  'ADAPTER_PLAN_CONFLICT',
-  'RESOURCE_PATH_DENIED',
-  'RESOURCE_TRACKED_FILE_PROTECTED',
-  'RESOURCE_CLEANUP_FAILED',
-  'RESOURCE_CLONE_UNAVAILABLE',
-  'GC_ACTIVE_WORKTREE_PROTECTED',
-]);
+/**
+ * The catalogue is `wtmErrorCodeSchema`, so this reads it rather than restating it. The literal list
+ * that used to stand here was a third copy of the codes, held to the schema by nothing: a code the
+ * schema gained and this file did not fell through `hasErrorCode` and was reported as
+ * `GIT_REPOSITORY_DEGRADED`, discarding the exit code the caller was owed. Four codes had already
+ * drifted that way before anyone noticed.
+ */
+const knownCodes: ReadonlySet<WtmErrorCode> = new Set(wtmErrorCodeSchema.options);

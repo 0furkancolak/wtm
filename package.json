@@ -68,7 +68,7 @@
   ],
   "scripts": {
     "lint": "bun scripts/lint.ts",
-    "test": "bun test --max-concurrency=1 --parallel=1",
+    "test": "bun test --max-concurrency=1 --parallel=1 --timeout 30000",
     "test:e2e": "bun test packages/cli/src/__tests__/full-workflow.test.ts --timeout 30000",
     "test:perf": "WTM_PERFORMANCE_SUITE=1 bun test packages/core/src/state/__tests__/workspace-scale.test.ts packages/daemon/src/__tests__/idle-daemon.test.ts packages/daemon/src/__tests__/source-edit-storm.test.ts packages/daemon/src/__tests__/watcher.test.ts scripts/__tests__/performance-report.test.ts --timeout 45000 && node --import tsx scripts/performance-report.ts",
     "package:verify": "bun run build && npm pack --dry-run --json --ignore-scripts",

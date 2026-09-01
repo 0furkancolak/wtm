@@ -2,9 +2,11 @@ import { describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DaemonRegistrationError } from '@wtm/daemon';
 import { jsonEnvelopeSchema } from '@wtm/protocol';
 import {
   DiagnosticSourceError,
+  doctorChecks,
   runDoctorCommand,
   runEnvCommand,
   runExplainCommand,
@@ -14,6 +16,7 @@ import {
   type DiagnosticDataSource,
   type RegisteredWorkspace,
 } from '../../diagnostics';
+import { runCli } from '../../main';
 import { renderEnvelope } from '../../output';
 
 const workspace: RegisteredWorkspace = {
@@ -293,12 +296,14 @@ describe('diagnostic command envelopes', () => {
     expect(envelopes[0]?.data.workspaces[0]).toEqual({
       workspace,
       findings: [
+        { check: 'registration', status: 'unknown', message: 'Registration diagnostics are unavailable.' },
         { check: 'git', status: 'pass', message: 'Git repository is readable.' },
         { check: 'config', status: 'pass', message: 'Configuration is valid.' },
         { check: 'adapters', status: 'unknown', message: 'No adapter diagnostics are available.' },
         { check: 'resources', status: 'unknown', message: 'No resource diagnostics are available.' },
         { check: 'ports', status: 'pass', message: 'Endpoint lease is active.' },
         { check: 'process-records', status: 'unknown', message: 'No process records are available.' },
+        { check: 'socket-path', status: 'unknown', message: 'Socket path diagnostics are unavailable.' },
       ],
     });
     expect(envelopes[4]?.data.workspaces[0]).toEqual({
@@ -333,13 +338,18 @@ describe('diagnostic command envelopes', () => {
       readDoctor: async () => ({ workspace, findings: [] }),
     }));
 
+    // A check declared but left out of the back-fill list vanishes from the report rather than
+    // saying it is unknown, which reads exactly like a check that passed.
+    expect(envelope.data.workspaces[0]?.findings.map(({ check }) => check)).toEqual([...doctorChecks]);
     expect(envelope.data.workspaces[0]?.findings).toEqual([
+      { check: 'registration', status: 'unknown', message: 'Registration diagnostics are unavailable.' },
       { check: 'git', status: 'unknown', message: 'Git diagnostics are unavailable.' },
       { check: 'config', status: 'unknown', message: 'Config diagnostics are unavailable.' },
       { check: 'adapters', status: 'unknown', message: 'Adapter diagnostics are unavailable.' },
       { check: 'resources', status: 'unknown', message: 'Resource diagnostics are unavailable.' },
       { check: 'ports', status: 'unknown', message: 'Port diagnostics are unavailable.' },
       { check: 'process-records', status: 'unknown', message: 'Process record diagnostics are unavailable.' },
+      { check: 'socket-path', status: 'unknown', message: 'Socket path diagnostics are unavailable.' },
     ]);
   });
 
@@ -585,5 +595,109 @@ describe('diagnostic command envelopes', () => {
     } finally {
       await rm(sentinel, { recursive: true, force: true });
     }
+  });
+});
+
+describe('coded errors keep their identity through the envelope', () => {
+  test('a DaemonRegistrationError reaches env as WTM_WORKSPACE_NOT_FOUND, with its own message', async () => {
+    // The daemon already decides that this directory is in no registered worktree, and already
+    // says what to do about it. Flattening that to `GIT_REPOSITORY_DEGRADED` / "Diagnostic data
+    // source failed." threw away the code, the sentence, and the exit code all at once.
+    const envelope = await runEnvCommand({ cwd: '/registered/demo' }, source({
+      readEnv: async () => {
+        throw new DaemonRegistrationError(
+          'This directory is not inside a worktree WTM has registered. Run `wtm init` in the workspace root.',
+        );
+      },
+    }));
+
+    expect(jsonEnvelopeSchema.parse(envelope)).toEqual(envelope);
+    expect(envelope.errors[0]).toEqual({
+      code: 'WTM_WORKSPACE_NOT_FOUND',
+      message: 'This directory is not inside a worktree WTM has registered. Run `wtm init` in the workspace root.',
+      severity: 'error',
+      context: { command: 'env', workspaceId: 'workspace-1' },
+    });
+  });
+
+  test('`wtm env` in an unregistered worktree exits 2', async () => {
+    let stdout = '';
+    const exitCode = await runCli(['env', '--json'], {
+      cwd: '/registered/demo',
+      stdout: (value) => { stdout += value; },
+      stderr: () => {},
+      dataSource: source({
+        readEnv: async () => {
+          throw new DaemonRegistrationError(
+            'This directory is not inside a worktree WTM has registered. Run `wtm init` in the workspace root.',
+          );
+        },
+      }),
+    });
+
+    expect(exitCode).toBe(2);
+    expect(JSON.parse(stdout).errors[0].code).toBe('WTM_WORKSPACE_NOT_FOUND');
+    expect(JSON.parse(stdout).errors[0].message).toContain('wtm init');
+  });
+
+  test('keeps a coded error\'s remediation and sanitizes its context', async () => {
+    const secret = 'CODED-CONTEXT-SECRET-4412';
+    const envelope = await runStatusCommand({ cwd: '/registered/demo' }, source({
+      readStatus: async () => {
+        throw Object.assign(new Error('The WTM daemon socket path is too long.'), {
+          code: 'WTM_SOCKET_PATH_TOO_LONG',
+          severity: 'error',
+          context: { byteLength: 118, apiKey: secret },
+          remediation: [{ kind: 'command-suggestion', argv: ['wtm', 'doctor'] }],
+        });
+      },
+    }));
+
+    expect(JSON.stringify(envelope)).not.toContain(secret);
+    expect(envelope.errors[0]).toEqual({
+      code: 'WTM_SOCKET_PATH_TOO_LONG',
+      message: 'The WTM daemon socket path is too long.',
+      severity: 'error',
+      context: {
+        apiKey: '[REDACTED]',
+        byteLength: 118,
+        command: 'status',
+        workspaceId: 'workspace-1',
+      },
+      remediation: [{ kind: 'command-suggestion', argv: ['wtm', 'doctor'] }],
+    });
+  });
+
+  test('an error carrying a code but no severity is not self-describing', async () => {
+    // `code` alone is what Node puts on every `ErrnoException`; it is not a claim to be a WTM
+    // error. Letting it through is how an arbitrary exception's message becomes contract text.
+    const envelope = await runStatusCommand({ cwd: '/registered/demo' }, source({
+      readStatus: async () => {
+        throw Object.assign(new Error('internal detail nobody promised'), {
+          code: 'WTM_WORKSPACE_NOT_FOUND',
+        });
+      },
+    }));
+
+    expect(envelope.errors[0]).toEqual({
+      code: 'GIT_REPOSITORY_DEGRADED',
+      message: 'Diagnostic data source failed.',
+      severity: 'error',
+      context: { command: 'status', workspaceId: 'workspace-1' },
+    });
+  });
+
+  test('a code that is not in the schema is not trusted to be one', async () => {
+    const envelope = await runStatusCommand({ cwd: '/registered/demo' }, source({
+      readStatus: async () => {
+        throw Object.assign(new Error('internal detail nobody promised'), {
+          code: 'ENOENT',
+          severity: 'error',
+        });
+      },
+    }));
+
+    expect(envelope.errors[0]?.code).toBe('GIT_REPOSITORY_DEGRADED');
+    expect(envelope.errors[0]?.message).toBe('Diagnostic data source failed.');
   });
 });

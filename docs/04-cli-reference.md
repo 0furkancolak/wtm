@@ -74,12 +74,14 @@ Runs deterministic checks for Git, config, adapters, resources, ports and proces
 
 | Check | What it answers |
 | --- | --- |
+| `registration` | Whether this directory is inside a worktree WTM has registered, and — separately — whether the daemon is reachable. These are different problems with different fixes, so they are never reported as one another |
 | `git` | Whether every registered repository is still on disk |
 | `config` | Whether the configuration resolves, and whether `[ports].range` can offer the ports it prefers |
 | `adapters` | Which built-in adapters are in force, and why a detected one was left out |
 | `resources` | How many declared resources are in place, and why one is not |
 | `ports` | How many endpoints the workspace holds, and whether two worktrees hold the same one |
 | `process-records` | How many supervised tasks are running, and which records name a process that is gone |
+| `socket-path` | How much room is left under the platform's Unix socket path limit, reported as a warning while there is still headroom rather than only once the daemon cannot bind |
 
 ### `wtm explain [selector]`
 
@@ -400,6 +402,21 @@ wtm daemon serve
 `restarted` is the ordinary result of installing a new build over an old one. The plist names
 the executable by path, so a new build leaves the definition identical — without the restart,
 launchd goes on running the previous binary and the install changes nothing you can observe.
+
+`status` reports these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `state` | `loaded` when launchd knows the job, `installed-not-loaded` when the plist is on disk but launchd does not know it, `absent` when there is neither. |
+| `runState` | launchd's own word for the job: `running` while a process is alive, `not running` while the job is loaded but idle, `null` when launchd does not know the job. |
+| `label` | The launchd label this `HOME` publishes under, `dev.wtm.daemon.<digest>`. |
+| `plistPath` | The LaunchAgent definition named by that label, always inside this `HOME`. |
+| `reachable` | Whether the daemon answered on its socket. launchd reports a service as running the moment it forks, which says nothing about whether a command would work. |
+
+Every one of them describes the same agent: the label is derived from the resolved `HOME`, and
+`state`, `runState` and `plistPath` are all read for that label. A constant label made them
+describe different agents — under a second `HOME`, `state` and `runState` came from the first
+`HOME`'s LaunchAgent while `plistPath` named a file that had never been loaded.
 
 ## Skill
 

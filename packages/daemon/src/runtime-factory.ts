@@ -2,6 +2,9 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
   SQLiteStateStore,
+  assertDaemonSocketPathFits,
+  daemonDataRoot,
+  daemonSocketFileName,
   ensurePrivateDirectory,
   verifyPrivateDirectory,
   resolveTask,
@@ -54,11 +57,11 @@ export interface ProductionDaemonRuntime {
 }
 
 export function defaultProductionRuntimePaths(home = homedir()): ProductionRuntimePaths {
-  const dataRoot = join(home, 'Library', 'Application Support', 'WTM');
+  const dataRoot = daemonDataRoot(home);
   return {
     dataRoot,
     databasePath: join(dataRoot, 'state.db'),
-    socketPath: join(dataRoot, 'wtmd.sock'),
+    socketPath: join(dataRoot, daemonSocketFileName),
     logRoot: join(home, 'Library', 'Logs', 'WTM'),
     globalConfigPath: join(dataRoot, 'config.toml'),
   };
@@ -70,10 +73,14 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
   const requestedPaths: ProductionRuntimePaths = {
     dataRoot,
     databasePath: resolve(options.databasePath ?? join(dataRoot, 'state.db')),
-    socketPath: resolve(options.socketPath ?? join(dataRoot, 'wtmd.sock')),
+    socketPath: resolve(options.socketPath ?? join(dataRoot, daemonSocketFileName)),
     logRoot: resolve(options.logRoot ?? defaults.logRoot),
     globalConfigPath: resolve(options.globalConfigPath ?? join(dataRoot, 'config.toml')),
   };
+  // Before the data directory exists. A socket path that cannot fit in a socket address is
+  // not a reason to bring a state directory, a database and a log root into being first, and
+  // failing here means the report names the path rather than whatever the next step tripped on.
+  assertDaemonSocketPathFits(requestedPaths.socketPath);
   await ensurePrivateDirectory(dataRoot);
   const ownedStore = options.stateStore === undefined;
   const databaseParent = ownedStore

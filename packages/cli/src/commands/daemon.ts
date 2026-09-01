@@ -1,4 +1,11 @@
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname } from 'node:path';
+import { assertDaemonSocketPathFits, publishedDaemonSocketPath } from '@wtm/core';
+import { errorSeveritySchema, remediationSchema, wtmErrorCodeSchema } from '@wtm/protocol';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
+import { exitCodeForError } from '../exit-codes';
+import { launchdPaths } from '@wtm/daemon/launchd';
 import type { LaunchdLifecycle } from '@wtm/daemon/launchd';
 
 export type DaemonLifecycleAction = 'install' | 'uninstall' | 'status';
@@ -42,8 +49,18 @@ export async function runDaemonLifecycleCommand(
    * `wtm start` failed as unavailable — and `status` claimed it was running throughout.
    */
   reachable?: () => Promise<boolean>,
+  /**
+   * The address the installed agent will publish. Measured before `install` publishes anything,
+   * because an agent whose socket path cannot fit in a socket address will never answer: the
+   * readiness poll below would spend its entire deadline on it and then report `reachable: false`
+   * with nothing to explain it, which is the state this preflight replaces with the reason.
+   */
+  socketPath: string = publishedDaemonSocketPath(homedir()),
 ): Promise<JsonEnvelope<unknown>> {
   try {
+    // Before anything is published: the refusal names the length, the limit and the path, and
+    // it is the same preflight the daemon's own bind side runs, so the two cannot disagree.
+    if (action === 'install') assertDaemonSocketPathFits(socketPath);
     const data = await lifecycle[action]();
     if (action === 'uninstall' || reachable === undefined) return successEnvelope(`daemon ${action}`, data);
     const ready = action === 'install' ? await waitUntilReachable(reachable) : await reachable();
@@ -55,7 +72,7 @@ export async function runDaemonLifecycleCommand(
       command: `daemon ${action}`,
       data: null,
       warnings: [],
-      errors: [launchdError(action, error)],
+      errors: [codedError(error, action) ?? launchdError(action, error)],
     };
   }
 }
@@ -102,14 +119,14 @@ export async function serveDaemon(dependencies: DaemonServeDependencies): Promis
     } catch (error) {
       reportError(error);
       await closeOnce().catch(() => {});
-      return serveFailure('WTM daemon could not start.');
+      return serveFailure('WTM daemon could not start.', error);
     }
     const signal = await termination;
     try {
       await closeOnce();
     } catch (error) {
       reportError(error);
-      return serveFailure('WTM daemon could not close cleanly.');
+      return serveFailure('WTM daemon could not close cleanly.', error);
     }
     return {
       exitCode: 0,
@@ -149,14 +166,22 @@ const maxTrackedConditions = 256;
  * asking of it: whether a condition is happening now or happened once at startup. Without the
  * stamps, a burst of timeouts while an external volume was still cold was indistinguishable
  * from a daemon that had been unable to read anything for hours -- and was read as the latter.
+ *
+ * Stderr gets the condition and nothing else. It is the daemon's log under launchd, but it is
+ * a person's terminal whenever `wtm daemon serve` is run by hand, and that second audience is
+ * why frames used to reach a user as a wall of `/Users/runner/.../sea-bin.cjs` -- paths from
+ * the machine that built the release, which say nothing about the machine that ran it. The
+ * frames are still kept; `retain` puts them in the daemon's own error log, which no one reads
+ * by accident.
  */
 export function createDaemonErrorReporter(
   write: (line: string) => void = (line) => { process.stderr.write(line); },
   clock: () => number = () => Date.now(),
+  retain: (entry: string) => void = appendToDaemonErrorLog,
 ): (error: unknown) => void {
   const seen = new Map<string, { since: number; suppressed: number }>();
   return (error: unknown) => {
-    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    const detail = reportableCondition(error);
     const at = clock();
     const previous = seen.get(detail);
     if (previous !== undefined && at - previous.since < repeatWindowMs) {
@@ -171,8 +196,44 @@ export function createDaemonErrorReporter(
       if (oldest.done !== true) seen.delete(oldest.value);
     }
     seen.set(detail, { since: at, suppressed: 0 });
-    write(`${new Date(at).toISOString()} ${detail}${recurrence(previous)}\n`);
+    const stamp = new Date(at).toISOString();
+    write(`${stamp} ${detail}${recurrence(previous)}\n`);
+    const frames = error instanceof Error ? error.stack : undefined;
+    if (frames !== undefined && frames !== '') retain(`${stamp} ${frames}\n`);
   };
+}
+
+/**
+ * One line, whatever was thrown. A multi-line message is a stack in all but name -- child
+ * process output and nested causes both arrive that way -- so only the first line is reported
+ * and the truncation is marked rather than hidden. The whole value is in the retained entry.
+ */
+function reportableCondition(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const trimmed = raw.trim();
+  if (trimmed === '') return error instanceof Error && error.name !== '' ? error.name : 'An unnamed error was reported.';
+  const firstBreak = trimmed.search(/[\r\n]/);
+  return firstBreak === -1 ? trimmed : `${trimmed.slice(0, firstBreak).trimEnd()} [...]`;
+}
+
+/**
+ * Where the frames go. Under launchd this is the same file stderr already lands in, so the
+ * condition and its frames sit together; run in the foreground it is the only durable record
+ * there is, which is a gain -- those frames used to exist only until the terminal scrolled.
+ *
+ * Best effort by design: a log that cannot be written is not a reason to fail, or to obscure,
+ * the failure it was trying to describe.
+ */
+function appendToDaemonErrorLog(entry: string): void {
+  try {
+    const path = launchdPaths().stderrPath;
+    // The same modes the daemon's managed logs are held at: a failure report names paths
+    // inside the user's home and is no more public than the processes it describes.
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    appendFileSync(path, entry, { mode: 0o600 });
+  } catch {
+    // Deliberately silent: see above.
+  }
 }
 
 function recurrence(previous: { since: number; suppressed: number } | undefined): string {
@@ -184,25 +245,81 @@ function recurrence(previous: { since: number; suppressed: number } | undefined)
 const defaultErrorReport = createDaemonErrorReporter();
 
 /**
- * The envelope stays deliberately free of the cause: it is rendered to whoever ran the
- * command, while the full error goes to stderr through the reporter above.
+ * For an *uncoded* failure the envelope stays deliberately free of the cause: it is rendered to
+ * whoever ran the command, while the full error goes to stderr through the reporter above. That
+ * reasoning is unchanged — an arbitrary exception has no business in a stable contract, and this
+ * file exists in its current shape because internal detail leaked out of one once.
+ *
+ * A failure that already carries a `WtmErrorCode` is a different kind of thing. It was written to
+ * be read: `DaemonSocketPathTooLongError` names the measured length, the limit and the offending
+ * path, and carries the remediation that fixes it. Flattening that to `WTM_DAEMON_REQUEST_FAILED`
+ * and exit 1 discarded the only part of the report the user could act on, and left `daemon serve`
+ * the one command whose envelope disagreed with every other command's for the same condition.
  */
-function serveFailure(message: string): DaemonServeResult {
+function serveFailure(message: string, cause: unknown): DaemonServeResult {
+  const coded = codedError(cause, 'serve');
+  if (coded !== null) return { exitCode: startupFailureExitCode(coded.code), envelope: serveEnvelope(coded) };
   return {
     exitCode: 1,
-    envelope: {
-      schemaVersion: 1,
-      ok: false,
-      command: 'daemon serve',
-      data: null,
-      warnings: [],
-      errors: [{
-        code: 'WTM_DAEMON_REQUEST_FAILED',
-        message,
-        severity: 'error',
-        context: { action: 'serve' },
-      }],
-    },
+    envelope: serveEnvelope({
+      code: 'WTM_DAEMON_REQUEST_FAILED',
+      message,
+      severity: 'error',
+      context: { action: 'serve' },
+    }),
+  };
+}
+
+function serveEnvelope(error: WtmError): DaemonServeResult['envelope'] {
+  return {
+    schemaVersion: 1,
+    ok: false,
+    command: 'daemon serve',
+    data: null,
+    warnings: [],
+    errors: [error],
+  };
+}
+
+/**
+ * The exit status a failed `daemon serve` startup reports.
+ *
+ * `serve.action` in `main.ts` overrides the envelope-derived status with `result.exitCode`, so the
+ * status has to be decided here. It is decided by the SAME table every other command uses
+ * (`./exit-codes`), not a local copy: an error code's exit status is a property of the code, and
+ * `daemon serve` answering differently from every other command for one condition is exactly the
+ * defect this function exists to fix.
+ */
+function startupFailureExitCode(code: WtmErrorCode): number {
+  return exitCodeForError(code);
+}
+
+/**
+ * The envelope form of a thrown value that already describes itself in the error contract.
+ *
+ * Structural rather than `instanceof`: the property that matters is carrying a valid
+ * `WtmErrorCode`, and a check on the code admits the next error written that way without this
+ * function being edited again — while a value that merely happens to have a `code` (an `EINVAL`
+ * from libuv, a `LAUNCHD_DOMAIN_UNAVAILABLE` from the lifecycle) does not parse and keeps its
+ * existing handling. The context is filtered through `safeContext`, so an error carrying a rich
+ * object does not push anything unserialisable into the envelope.
+ */
+function codedError(error: unknown, action: DaemonLifecycleAction | 'serve'): WtmError | null {
+  const code = wtmErrorCodeSchema.safeParse(stringProperty(error, 'code'));
+  if (!code.success) return null;
+  const raw = stringProperty(error, 'message');
+  const message = raw === null ? '' : raw.trim();
+  if (message === '') return null;
+  const severity = errorSeveritySchema.safeParse(stringProperty(error, 'severity'));
+  const remediation = remediationSchema.array().safeParse(
+    isRecord(error) ? error.remediation : undefined,
+  );
+  return {
+    code: code.data,
+    message,
+    severity: severity.success ? severity.data : 'error',
+    context: { action, ...safeContext(error) },
+    ...(remediation.success && remediation.data.length > 0 ? { remediation: remediation.data } : {}),
   };
 }
 

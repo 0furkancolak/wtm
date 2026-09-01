@@ -46,21 +46,85 @@ describe('runDaemonLifecycleCommand', () => {
 
 describe('createDaemonErrorReporter', () => {
   const at = (iso: string) => Date.parse(iso);
+  const framed = (message: string): Error => {
+    const error = new Error(message);
+    error.stack = [
+      `Error: ${message}`,
+      '    at start (/Users/runner/work/wtm/wtm/dist/sea/.build/sea-bin.cjs:41337:19)',
+    ].join('\n');
+    return error;
+  };
 
   test('stamps every condition with the time it was recorded', () => {
     const lines: string[] = [];
-    const report = createDaemonErrorReporter((line) => lines.push(line), () => at('2026-08-30T16:35:52.000Z'));
+    const report = createDaemonErrorReporter(
+      (line) => lines.push(line),
+      () => at('2026-08-30T16:35:52.000Z'),
+      () => {},
+    );
 
     report(new Error('first'));
 
     expect(lines).toHaveLength(1);
-    expect(lines[0]?.startsWith('2026-08-30T16:35:52.000Z Error: first')).toBe(true);
+    expect(lines[0]).toBe('2026-08-30T16:35:52.000Z first\n');
+  });
+
+  test('reports the condition without the frames, and keeps the frames for the log', () => {
+    const lines: string[] = [];
+    const retained: string[] = [];
+    const report = createDaemonErrorReporter(
+      (line) => lines.push(line),
+      () => at('2026-08-30T16:35:52.000Z'),
+      (entry) => retained.push(entry),
+    );
+
+    report(framed('The runtime could not be created.'));
+
+    expect(lines).toEqual(['2026-08-30T16:35:52.000Z The runtime could not be created.\n']);
+    expect(lines[0]).not.toContain('/Users/runner');
+    expect(lines[0]).not.toContain('    at ');
+    // Dropping the frames from the stream must not drop them from the record.
+    expect(retained).toHaveLength(1);
+    expect(retained[0]).toContain('2026-08-30T16:35:52.000Z Error: The runtime could not be created.');
+    expect(retained[0]).toContain('at start (/Users/runner/work/wtm/wtm/dist/sea/.build/sea-bin.cjs:41337:19)');
+  });
+
+  test('a multi-line message is a stack in all but name, so only its first line is reported', () => {
+    const lines: string[] = [];
+    const report = createDaemonErrorReporter(
+      (line) => lines.push(line),
+      () => at('2026-08-30T16:35:52.000Z'),
+      () => {},
+    );
+
+    report(new Error('git failed\n    at nowhere in particular\nfatal: not a repository'));
+
+    expect(lines).toEqual(['2026-08-30T16:35:52.000Z git failed [...]\n']);
+  });
+
+  test('a thrown value that is not an error still names something, and retains nothing', () => {
+    const lines: string[] = [];
+    const retained: string[] = [];
+    const report = createDaemonErrorReporter(
+      (line) => lines.push(line),
+      () => at('2026-08-30T16:35:52.000Z'),
+      (entry) => retained.push(entry),
+    );
+
+    report('a bare string');
+    report(new Error(''));
+
+    expect(lines).toEqual([
+      '2026-08-30T16:35:52.000Z a bare string\n',
+      '2026-08-30T16:35:52.000Z Error\n',
+    ]);
+    expect(retained).toHaveLength(1);
   });
 
   test('counts a condition that keeps recurring instead of writing it out again', () => {
     const lines: string[] = [];
     let now = at('2026-08-30T16:00:00.000Z');
-    const report = createDaemonErrorReporter((line) => lines.push(line), () => now);
+    const report = createDaemonErrorReporter((line) => lines.push(line), () => now, () => {});
     // The same condition, reported from the same place on every pass: one object stands in
     // for the identically constructed error a repeated pass produces.
     const unreadable = new Error('Registered repository root is unavailable: /gone');
@@ -86,7 +150,7 @@ describe('createDaemonErrorReporter', () => {
   test('reports a condition again once its window has passed, without a count it did not earn', () => {
     const lines: string[] = [];
     let now = at('2026-08-30T16:00:00.000Z');
-    const report = createDaemonErrorReporter((line) => lines.push(line), () => now);
+    const report = createDaemonErrorReporter((line) => lines.push(line), () => now, () => {});
 
     report(new Error('cold volume'));
     now += 11 * 60_000;
@@ -94,5 +158,16 @@ describe('createDaemonErrorReporter', () => {
 
     expect(lines).toHaveLength(2);
     expect(lines[1]).not.toContain('[also');
+  });
+
+  test('a suppressed repeat is not written to the log either', () => {
+    const retained: string[] = [];
+    const now = at('2026-08-30T16:00:00.000Z');
+    const report = createDaemonErrorReporter(() => {}, () => now, (entry) => retained.push(entry));
+
+    report(framed('the same condition'));
+    report(framed('the same condition'));
+
+    expect(retained).toHaveLength(1);
   });
 });

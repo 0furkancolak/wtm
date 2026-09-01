@@ -9,7 +9,7 @@ import {
   createLaunchdLifecycle,
   generateLaunchdPlist,
   launchdCommands,
-  launchdLabel,
+  launchdLabelFor,
   launchdPaths,
   type LaunchdCommandResult,
   type LaunchdProcessInspector,
@@ -84,7 +84,7 @@ describe('launchd plist', () => {
 
   test('requires an absolute executable and absolute production paths', () => {
     expect(() => generateLaunchdPlist({
-      label: launchdLabel,
+      label: launchdLabelFor('/Users/test'),
       programArguments: ['node', '/opt/wtm/cli.js', 'daemon', 'serve'],
       home: '/Users/test',
       stdoutPath: '/tmp/out',
@@ -96,7 +96,7 @@ describe('launchd plist', () => {
     const home = await fakeHome();
     const path = join(home, 'agent.plist');
     await writeFile(path, generateLaunchdPlist({
-      label: launchdLabel,
+      label: launchdLabelFor('/Users/test'),
       programArguments: ['/opt/wtm/bin/wtm', 'daemon', 'serve'],
       home,
       stdoutPath: join(home, 'daemon.log'),
@@ -109,6 +109,25 @@ describe('launchd plist', () => {
 });
 
 describe('launchd commands', () => {
+  test('derives a stable, launchd-safe, per-HOME label', () => {
+    const first = launchdLabelFor('/Users/first');
+    expect(first).toBe(launchdLabelFor('/Users/first/'));
+    expect(first).not.toBe(launchdLabelFor('/Users/second'));
+    expect(first.startsWith('dev.wtm.daemon.')).toBe(true);
+    expect(first).toMatch(/^dev\.wtm\.daemon\.[0-9a-f]{32}$/);
+    expect(() => launchdLabelFor('relative/home')).toThrow('must be absolute');
+  });
+
+  test('names the service after the plist it is given, not a fixed label', () => {
+    const derived = launchdPaths('/Users/test');
+    expect(launchdCommands({ uid: 501, plistPath: derived.plistPath }).print)
+      .toEqual(['/bin/launchctl', 'print', `gui/501/${derived.label}`]);
+    expect(launchdCommands({ uid: 501, plistPath: derived.legacyPlistPath }).bootout)
+      .toEqual(['/bin/launchctl', 'bootout', 'gui/501/dev.wtm.daemon']);
+    expect(() => launchdCommands({ uid: 501, plistPath: '/Users/test/Library/LaunchAgents/agent.txt' }))
+      .toThrow('must name a launchd label');
+  });
+
   test('uses modern per-user launchctl domain and service targets', () => {
     const commands = launchdCommands({ uid: 501, plistPath: '/Users/test/Library/LaunchAgents/dev.wtm.daemon.plist' });
     expect(commands).toEqual({
@@ -139,11 +158,11 @@ describe('launchd lifecycle', () => {
     const result = await lifecycle.install();
     const paths = launchdPaths(home);
 
-    expect(result).toEqual({ action: 'install', state: 'installed', label: launchdLabel, plistPath: paths.plistPath });
+    expect(result).toEqual({ action: 'install', state: 'installed', label: paths.label, plistPath: paths.plistPath });
     expect(calls).toEqual([
-      ['/bin/launchctl', 'print', 'gui/501/dev.wtm.daemon'],
+      ['/bin/launchctl', 'print', `gui/501/${paths.label}`],
       ['/bin/launchctl', 'print', 'gui/501'],
-      ['/bin/launchctl', 'enable', 'gui/501/dev.wtm.daemon'],
+      ['/bin/launchctl', 'enable', `gui/501/${paths.label}`],
       ['/bin/launchctl', 'bootstrap', 'gui/501', paths.plistPath],
     ]);
     expect((await readFile(paths.plistPath, 'utf8')).includes('<string>/opt/wtm/cli.js</string>')).toBe(true);
@@ -201,7 +220,7 @@ describe('launchd lifecycle', () => {
       dev: before.dev, ino: before.ino, mtimeMs: before.mtimeMs,
     });
     expect(calls.map((argv) => argv[1])).toEqual(['print', 'enable', 'kickstart']);
-    expect(calls.at(-1)).toEqual(['/bin/launchctl', 'kickstart', '-k', 'gui/506/dev.wtm.daemon']);
+    expect(calls.at(-1)).toEqual(['/bin/launchctl', 'kickstart', '-k', `gui/506/${launchdPaths(home).label}`]);
   });
 
   test('does not report an unrestarted service as installed', async () => {
@@ -510,7 +529,7 @@ describe('launchd lifecycle', () => {
     });
 
     await expect(lifecycle.uninstall()).rejects.toMatchObject({ code: 'UNSAFE_LAUNCHD_PATH' });
-    expect(await readFile(join(movedParent, `${launchdLabel}.plist`), 'utf8')).toBe('original');
+    expect(await readFile(join(movedParent, `${paths.label}.plist`), 'utf8')).toBe('original');
     expect(await readFile(paths.plistPath, 'utf8')).toBe('new-parent-winner');
   });
 
@@ -578,7 +597,7 @@ describe('launchd lifecycle', () => {
     });
     await expect(parentSwap.install()).rejects.toMatchObject({ code: 'UNSAFE_LAUNCHD_PATH' });
     expect(await readdir(parentPaths.agentsDirectory)).toEqual([]);
-    expect((await readdir(movedParent)).some((name) => name === `${launchdLabel}.plist`)).toBe(false);
+    expect((await readdir(movedParent)).some((name) => name === `${parentPaths.label}.plist`)).toBe(false);
 
     const concurrentHome = await fakeHome();
     const concurrentPaths = launchdPaths(concurrentHome);
@@ -719,7 +738,7 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => phase === 'lock-linked' ? 'interrupt' : 'continue',
     });
     await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-    const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+    const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
     const owner = JSON.parse(await readFile(lockPath, 'utf8')) as { transactionId: string };
     const candidate = `${lockPath}.owner-${owner.transactionId}`;
     expect((await lstat(lockPath)).nlink).toBe(2);
@@ -738,7 +757,7 @@ describe('launchd lifecycle', () => {
     });
     expect((await recovered.install()).state).toBe('installed');
     expect((await recovered.install()).state).toBe('installed');
-    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
+    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${paths.label}.plist`)).toEqual([]);
   });
 
   test('fails closed when the owner hard-link candidate is missing or renamed', async () => {
@@ -750,7 +769,7 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => phase === 'lock-linked' ? 'interrupt' : 'continue',
     });
     await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-    const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+    const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
     const owner = JSON.parse(await readFile(lockPath, 'utf8')) as { transactionId: string };
     const candidate = `${lockPath}.owner-${owner.transactionId}`;
     const forged = `${lockPath}.owner-forged`;
@@ -775,7 +794,7 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => phase === 'new-linked' ? 'interrupt' : 'continue',
     });
     await expect(first.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-    const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+    const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
     const firstOwner = JSON.parse(await readFile(lockPath, 'utf8')) as { transactionId: string };
     const takeover = createLaunchdLifecycle({
       home, platform: 'darwin', programArguments: ['/bin/echo', 'desired'], commandRunner: absentRunner,
@@ -788,7 +807,7 @@ describe('launchd lifecycle', () => {
       predecessorTransactionIds: string[];
     };
     expect(successorOwner.predecessorTransactionIds).toEqual([firstOwner.transactionId]);
-    expect((await readdir(paths.agentsDirectory)).some((name) => name === `.${launchdLabel}.takeover`)).toBe(false);
+    expect((await readdir(paths.agentsDirectory)).some((name) => name === `.${paths.label}.takeover`)).toBe(false);
     const recovered = createLaunchdLifecycle({
       home, platform: 'darwin', programArguments: ['/bin/echo', 'desired'], commandRunner: absentRunner,
       processInspector: inspector('third-start', 'dead', null), lockPollAttempts: 1,
@@ -797,7 +816,7 @@ describe('launchd lifecycle', () => {
     await recovered.install();
     expect(await readFile(paths.plistPath, 'utf8')).toContain('<string>desired</string>');
     expect((await lstat(paths.plistPath)).nlink).toBe(1);
-    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
+    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${paths.label}.plist`)).toEqual([]);
   });
 
   test('recovers the stale journal when an obsolete takeover record was linked before its owner move', async () => {
@@ -811,7 +830,7 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => phase === 'new-linked' ? 'interrupt' : 'continue',
     });
     await expect(first.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-    const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+    const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
     const owner = JSON.parse(await readFile(lockPath, 'utf8')) as {
       version: 1;
       pid: number;
@@ -820,11 +839,11 @@ describe('launchd lifecycle', () => {
     };
     const lockStat = await lstat(lockPath);
     const successorTransactionId = crypto.randomUUID();
-    const takeoverPath = join(paths.agentsDirectory, `.${launchdLabel}.takeover`);
+    const takeoverPath = join(paths.agentsDirectory, `.${paths.label}.takeover`);
     const obsoleteRecord = `${JSON.stringify({
       version: 1,
       successorTransactionId,
-      staleBasename: `.${launchdLabel}.operation-lock.stale-${successorTransactionId}`,
+      staleBasename: `.${paths.label}.operation-lock.stale-${successorTransactionId}`,
       owner,
       identity: {
         dev: Number(lockStat.dev), ino: Number(lockStat.ino), uid: lockStat.uid,
@@ -881,7 +900,7 @@ describe('launchd lifecycle', () => {
     const loserInstall = loser.install();
     await loserReached;
     const separateTakeoverRecordPublished = (await readdir(paths.agentsDirectory))
-      .includes(`.${launchdLabel}.takeover`);
+      .includes(`.${paths.label}.takeover`);
     expect((await winner.install()).state).toBe('installed');
     releaseLoser();
     await expect(loserInstall).rejects.toMatchObject({ code: 'UNSAFE_LAUNCHD_PATH' });
@@ -982,7 +1001,7 @@ describe('launchd lifecycle', () => {
       });
       expect((await recovered.install()).state).toBe('installed');
       expect(await readFile(paths.plistPath, 'utf8')).toContain('<string>desired</string>');
-      expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
+      expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${paths.label}.plist`)).toEqual([]);
     });
   }
 
@@ -995,7 +1014,7 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => phase === 'lock-owned' ? 'interrupt' : 'continue',
     });
     await expect(first.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-    const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+    const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
     const predecessorContent = await readFile(lockPath, 'utf8');
     let swappedCandidate = '';
     const contender = createLaunchdLifecycle({
@@ -1026,7 +1045,7 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => phase === 'lock-owned' ? 'interrupt' : 'continue',
     });
     await expect(first.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-    const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+    const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
     const predecessorContent = await readFile(lockPath, 'utf8');
     let armed = false;
     let swappedCandidate = '';
@@ -1062,7 +1081,7 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => phase === 'lock-owned' ? 'interrupt' : 'continue',
     });
     await expect(first.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-    const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+    const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
     const predecessorContent = await readFile(lockPath, 'utf8');
     let swappedCandidate = '';
     const contender = createLaunchdLifecycle({
@@ -1094,7 +1113,7 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => phase === 'lock-owned' ? 'interrupt' : 'continue',
     });
     await expect(first.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-    const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+    const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
     const predecessorContent = await readFile(lockPath, 'utf8');
     const claimCrash = createLaunchdLifecycle({
       home, platform: 'darwin', programArguments: ['/bin/echo', 'desired'], commandRunner: absentRunner,
@@ -1131,7 +1150,7 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => phase === 'lock-owned' ? 'interrupt' : 'continue',
     });
     await expect(first.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-    const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+    const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
     const predecessorContent = await readFile(lockPath, 'utf8');
     const claimCrash = createLaunchdLifecycle({
       home, platform: 'darwin', programArguments: ['/bin/echo'], commandRunner: absentRunner,
@@ -1175,7 +1194,7 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => phase === 'new-linked' ? 'interrupt' : 'continue',
     });
     await expect(first.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-    const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+    const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
     const firstOwner = JSON.parse(await readFile(lockPath, 'utf8')) as { transactionId: string };
 
     const second = createLaunchdLifecycle({
@@ -1214,7 +1233,7 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => phase === 'new-linked' ? 'interrupt' : 'continue',
     });
     await expect(first.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-    const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+    const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
     const journalOwner = (JSON.parse(await readFile(lockPath, 'utf8')) as { transactionId: string }).transactionId;
 
     for (let index = 1; index <= 9; index += 1) {
@@ -1253,7 +1272,7 @@ describe('launchd lifecycle', () => {
         transactionHook: async (phase) => phase === 'lock-owned' ? 'interrupt' : 'continue',
       });
       await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-      const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+      const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
       const owner = JSON.parse(await readFile(lockPath, 'utf8')) as Record<string, unknown> & { transactionId: string };
       owner.predecessorTransactionIds = invalidPredecessors(owner.transactionId);
       await writeFile(lockPath, `${JSON.stringify(owner)}\n`, { mode: 0o600 });
@@ -1292,7 +1311,7 @@ describe('launchd lifecycle', () => {
     await third.install();
     expect(await readFile(paths.plistPath, 'utf8')).toContain('<string>desired</string>');
     expect((await lstat(paths.plistPath)).nlink).toBe(1);
-    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
+    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${paths.label}.plist`)).toEqual([]);
   });
 
   for (const rollbackPhase of ['temporary-created', 'old-quarantined', 'new-linked', 'temporary-unlinked'] as const) {
@@ -1315,7 +1334,7 @@ describe('launchd lifecycle', () => {
         },
       });
       await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-      const journal = JSON.parse(await readFile(join(paths.agentsDirectory, `.${launchdLabel}.transaction`), 'utf8')) as {
+      const journal = JSON.parse(await readFile(join(paths.agentsDirectory, `.${paths.label}.transaction`), 'utf8')) as {
         failure: { operation: string; exitCode: number };
       };
       expect(journal.failure).toMatchObject({ operation: 'enable', exitCode: 5 });
@@ -1326,7 +1345,7 @@ describe('launchd lifecycle', () => {
       await recovered.install();
       expect(await readFile(paths.plistPath, 'utf8')).toContain('<string>desired</string>');
       expect((await lstat(paths.plistPath)).nlink).toBe(1);
-      expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
+      expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${paths.label}.plist`)).toEqual([]);
     });
   }
 
@@ -1349,7 +1368,7 @@ describe('launchd lifecycle', () => {
       },
     });
     await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-    const journalPath = join(paths.agentsDirectory, `.${launchdLabel}.transaction`);
+    const journalPath = join(paths.agentsDirectory, `.${paths.label}.transaction`);
     const journal = JSON.parse(await readFile(journalPath, 'utf8')) as {
       phase: string;
       temporary: string;
@@ -1395,7 +1414,7 @@ describe('launchd lifecycle', () => {
     });
     await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
     const journal = JSON.parse(await readFile(
-      join(paths.agentsDirectory, `.${launchdLabel}.transaction`),
+      join(paths.agentsDirectory, `.${paths.label}.transaction`),
       'utf8',
     )) as { phase: string; temporary: string };
     expect(journal.phase).toBe('preparing');
@@ -1419,7 +1438,7 @@ describe('launchd lifecycle', () => {
     });
     await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
     const journal = JSON.parse(await readFile(
-      join(paths.agentsDirectory, `.${launchdLabel}.transaction`),
+      join(paths.agentsDirectory, `.${paths.label}.transaction`),
       'utf8',
     )) as { temporary: string };
     const temporaryPath = join(paths.agentsDirectory, journal.temporary);
@@ -1444,7 +1463,7 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => {
         if (phase !== 'publish-prepared') return 'continue' as const;
         const journal = JSON.parse(await readFile(
-          join(paths.agentsDirectory, `.${launchdLabel}.transaction`),
+          join(paths.agentsDirectory, `.${paths.label}.transaction`),
           'utf8',
         )) as { temporary: string };
         foreignTemporary = join(paths.agentsDirectory, journal.temporary);
@@ -1469,7 +1488,7 @@ describe('launchd lifecycle', () => {
     });
     expect((await recovered.install()).state).toBe('installed');
     expect(await readFile(paths.plistPath, 'utf8')).toContain('<string>desired</string>');
-    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
+    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${paths.label}.plist`)).toEqual([]);
   });
 
   test('recovers every durable journal temp in a bounded predecessor lineage', async () => {
@@ -1485,14 +1504,14 @@ describe('launchd lifecycle', () => {
       });
       await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
       transactionIds.push((JSON.parse(await readFile(
-        join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`),
+        join(paths.agentsDirectory, `.${paths.label}.operation-lock`),
         'utf8',
       )) as { transactionId: string }).transactionId);
     }
     for (const transactionId of transactionIds) {
       await writeFile(
-        join(paths.agentsDirectory, `.${launchdLabel}.transaction.tmp-${transactionId}`),
-        preparingJournalContent(transactionId),
+        join(paths.agentsDirectory, `.${paths.label}.transaction.tmp-${transactionId}`),
+        preparingJournalContent(transactionId, paths.label),
         { mode: 0o600 },
       );
     }
@@ -1502,7 +1521,7 @@ describe('launchd lifecycle', () => {
       processInspector: inspector('owner-final', 'dead', null), lockPollAttempts: 1,
     });
     expect((await recovered.install()).state).toBe('installed');
-    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
+    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${paths.label}.plist`)).toEqual([]);
   });
 
   test('fails closed before takeover when eight pending temps also require the immediate predecessor', async () => {
@@ -1521,8 +1540,8 @@ describe('launchd lifecycle', () => {
     }
     for (const transactionId of transactionIds.slice(0, -1)) {
       await writeFile(
-        join(paths.agentsDirectory, `.${launchdLabel}.transaction.tmp-${transactionId}`),
-        preparingJournalContent(transactionId),
+        join(paths.agentsDirectory, `.${paths.label}.transaction.tmp-${transactionId}`),
+        preparingJournalContent(transactionId, paths.label),
         { mode: 0o600 },
       );
     }
@@ -1538,7 +1557,7 @@ describe('launchd lifecycle', () => {
     await expect(contender.install()).rejects.toMatchObject({ code: 'UNSAFE_LAUNCHD_PATH' });
     expect(publishedSuccessor).toBe(false);
     expect((JSON.parse(await readFile(
-      join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`),
+      join(paths.agentsDirectory, `.${paths.label}.operation-lock`),
       'utf8',
     )) as { transactionId: string }).transactionId).toBe(transactionIds.at(-1) as string);
     expect((await readdir(paths.agentsDirectory)).filter((name) => name.includes('.transaction.tmp-')).length).toBe(8);
@@ -1548,10 +1567,10 @@ describe('launchd lifecycle', () => {
     const home = await fakeHome();
     const paths = launchdPaths(home);
     const owner = await leaveInterruptedLockOwner(home, 'first-start', 'live', 'first-start', 'lock-owned');
-    const content = preparingJournalContent(owner.transactionId);
-    await writeFile(join(paths.agentsDirectory, `.${launchdLabel}.transaction`), content, { mode: 0o600 });
+    const content = preparingJournalContent(owner.transactionId, paths.label);
+    await writeFile(join(paths.agentsDirectory, `.${paths.label}.transaction`), content, { mode: 0o600 });
     await writeFile(
-      join(paths.agentsDirectory, `.${launchdLabel}.transaction.tmp-${owner.transactionId}`),
+      join(paths.agentsDirectory, `.${paths.label}.transaction.tmp-${owner.transactionId}`),
       content,
       { mode: 0o600 },
     );
@@ -1561,7 +1580,7 @@ describe('launchd lifecycle', () => {
       processInspector: inspector('second-start', 'dead', null), lockPollAttempts: 1,
     });
     expect((await recovered.install()).state).toBe('installed');
-    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
+    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${paths.label}.plist`)).toEqual([]);
   });
 
   test('recovers an authorized fixed journal before adopting another predecessor temp', async () => {
@@ -1570,13 +1589,13 @@ describe('launchd lifecycle', () => {
     const firstOwner = await leaveInterruptedLockOwner(home, 'owner-a', 'live', 'owner-a', 'lock-owned');
     const secondOwner = await leaveInterruptedLockOwner(home, 'owner-b', 'dead', null, 'stale-lock-moved');
     await writeFile(
-      join(paths.agentsDirectory, `.${launchdLabel}.transaction.tmp-${firstOwner.transactionId}`),
-      preparingJournalContent(firstOwner.transactionId),
+      join(paths.agentsDirectory, `.${paths.label}.transaction.tmp-${firstOwner.transactionId}`),
+      preparingJournalContent(firstOwner.transactionId, paths.label),
       { mode: 0o600 },
     );
     await writeFile(
-      join(paths.agentsDirectory, `.${launchdLabel}.transaction`),
-      preparingJournalContent(secondOwner.transactionId),
+      join(paths.agentsDirectory, `.${paths.label}.transaction`),
+      preparingJournalContent(secondOwner.transactionId, paths.label),
       { mode: 0o600 },
     );
 
@@ -1585,15 +1604,15 @@ describe('launchd lifecycle', () => {
       processInspector: inspector('owner-c', 'dead', null), lockPollAttempts: 1,
     });
     expect((await recovered.install()).state).toBe('installed');
-    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
+    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${paths.label}.plist`)).toEqual([]);
   });
 
   test('fails closed and preserves a swapped predecessor journal temp before runner calls', async () => {
     const home = await fakeHome();
     const paths = launchdPaths(home);
     const owner = await leaveInterruptedLockOwner(home, 'first-start', 'live', 'first-start', 'lock-owned');
-    const temporary = join(paths.agentsDirectory, `.${launchdLabel}.transaction.tmp-${owner.transactionId}`);
-    await writeFile(temporary, preparingJournalContent(owner.transactionId), { mode: 0o600 });
+    const temporary = join(paths.agentsDirectory, `.${paths.label}.transaction.tmp-${owner.transactionId}`);
+    await writeFile(temporary, preparingJournalContent(owner.transactionId, paths.label), { mode: 0o600 });
     await rm(temporary);
     await writeFile(temporary, 'foreign-journal-temporary', { mode: 0o600 });
     let runnerCalled = false;
@@ -1613,8 +1632,8 @@ describe('launchd lifecycle', () => {
     const paths = launchdPaths(home);
     const owner = await leaveInterruptedLockOwner(home, 'first-start', 'live', 'first-start', 'lock-owned');
     await writeFile(
-      join(paths.agentsDirectory, `.${launchdLabel}.transaction.tmp-${owner.transactionId}`),
-      preparingJournalContent(owner.transactionId),
+      join(paths.agentsDirectory, `.${paths.label}.transaction.tmp-${owner.transactionId}`),
+      preparingJournalContent(owner.transactionId, paths.label),
       { mode: 0o600 },
     );
     const adoptionCrash = createLaunchdLifecycle({
@@ -1629,7 +1648,7 @@ describe('launchd lifecycle', () => {
       processInspector: inspector('third-start', 'dead', null), lockPollAttempts: 1,
     });
     expect((await recovered.install()).state).toBe('installed');
-    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
+    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${paths.label}.plist`)).toEqual([]);
   });
 
   test('recovers a predecessor journal after a successor crashes while publishing its recovery snapshot', async () => {
@@ -1642,7 +1661,7 @@ describe('launchd lifecycle', () => {
     });
     await expect(first.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
 
-    const journalPath = join(paths.agentsDirectory, `.${launchdLabel}.transaction`);
+    const journalPath = join(paths.agentsDirectory, `.${paths.label}.transaction`);
     let interruptedRecoveryTemporary = '';
     const second = createLaunchdLifecycle({
       home, platform: 'darwin', programArguments: ['/bin/echo', 'desired'], commandRunner: absentRunner,
@@ -1662,17 +1681,17 @@ describe('launchd lifecycle', () => {
     });
     expect((await third.install()).state).toBe('installed');
     expect(await readFile(paths.plistPath, 'utf8')).toContain('<string>desired</string>');
-    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
+    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${paths.label}.plist`)).toEqual([]);
   });
 
   test('retries a crash after removing a duplicate predecessor journal temp', async () => {
     const home = await fakeHome();
     const paths = launchdPaths(home);
     const owner = await leaveInterruptedLockOwner(home, 'first-start', 'live', 'first-start', 'lock-owned');
-    const content = preparingJournalContent(owner.transactionId);
-    await writeFile(join(paths.agentsDirectory, `.${launchdLabel}.transaction`), content, { mode: 0o600 });
+    const content = preparingJournalContent(owner.transactionId, paths.label);
+    await writeFile(join(paths.agentsDirectory, `.${paths.label}.transaction`), content, { mode: 0o600 });
     await writeFile(
-      join(paths.agentsDirectory, `.${launchdLabel}.transaction.tmp-${owner.transactionId}`),
+      join(paths.agentsDirectory, `.${paths.label}.transaction.tmp-${owner.transactionId}`),
       content,
       { mode: 0o600 },
     );
@@ -1688,7 +1707,7 @@ describe('launchd lifecycle', () => {
       processInspector: inspector('third-start', 'dead', null), lockPollAttempts: 1,
     });
     expect((await recovered.install()).state).toBe('installed');
-    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
+    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${paths.label}.plist`)).toEqual([]);
   });
 
   test('does not link a prepared temporary swapped at the final publication boundary', async () => {
@@ -1700,7 +1719,7 @@ describe('launchd lifecycle', () => {
       publicationHook: async (phase) => {
         if (phase !== 'before-link') return;
         const journal = JSON.parse(await readFile(
-          join(paths.agentsDirectory, `.${launchdLabel}.transaction`),
+          join(paths.agentsDirectory, `.${paths.label}.transaction`),
           'utf8',
         )) as { temporary: string };
         foreignTemporary = join(paths.agentsDirectory, journal.temporary);
@@ -1723,12 +1742,12 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => {
         if (phase !== 'lock-owned') return 'continue' as const;
         const owner = JSON.parse(await readFile(
-          join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`),
+          join(paths.agentsDirectory, `.${paths.label}.operation-lock`),
           'utf8',
         )) as { transactionId: string };
         foreignJournalTemporary = join(
           paths.agentsDirectory,
-          `.${launchdLabel}.transaction.tmp-${owner.transactionId}`,
+          `.${paths.label}.transaction.tmp-${owner.transactionId}`,
         );
         await writeFile(foreignJournalTemporary, 'foreign-journal-temp', { mode: 0o600 });
         return 'continue' as const;
@@ -1743,8 +1762,8 @@ describe('launchd lifecycle', () => {
     test(`does not publish a ${journalSwap} journal inode introduced during owner verification`, async () => {
       const home = await fakeHome();
       const paths = launchdPaths(home);
-      const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
-      const journalPath = join(paths.agentsDirectory, `.${launchdLabel}.transaction`);
+      const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
+      const journalPath = join(paths.agentsDirectory, `.${paths.label}.transaction`);
       let swappedPath = '';
       let swapped = false;
       const lifecycle = createLaunchdLifecycle({
@@ -1783,7 +1802,7 @@ describe('launchd lifecycle', () => {
     });
     await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
     const journal = JSON.parse(await readFile(
-      join(paths.agentsDirectory, `.${launchdLabel}.transaction`),
+      join(paths.agentsDirectory, `.${paths.label}.transaction`),
       'utf8',
     )) as { temporary: string };
     const temporaryPath = join(paths.agentsDirectory, journal.temporary);
@@ -1813,7 +1832,7 @@ describe('launchd lifecycle', () => {
     });
     await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
     const journal = JSON.parse(await readFile(
-      join(paths.agentsDirectory, `.${launchdLabel}.transaction`),
+      join(paths.agentsDirectory, `.${paths.label}.transaction`),
       'utf8',
     )) as { quarantine: string };
     const quarantinePath = join(paths.agentsDirectory, journal.quarantine);
@@ -1842,7 +1861,7 @@ describe('launchd lifecycle', () => {
     });
     await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
     const journal = JSON.parse(await readFile(
-      join(paths.agentsDirectory, `.${launchdLabel}.transaction`),
+      join(paths.agentsDirectory, `.${paths.label}.transaction`),
       'utf8',
     )) as { quarantine: string };
     const quarantinePath = join(paths.agentsDirectory, journal.quarantine);
@@ -1884,14 +1903,14 @@ describe('launchd lifecycle', () => {
     await recovered.install();
     expect(await readFile(paths.plistPath, 'utf8')).toContain('<string>desired</string>');
     expect((await lstat(paths.plistPath)).nlink).toBe(1);
-    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
+    expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${paths.label}.plist`)).toEqual([]);
   });
 
   test('never steals a metadata-less directory lock because its liveness is unknowable', async () => {
     const home = await fakeHome();
     const paths = launchdPaths(home);
     await mkdir(paths.agentsDirectory, { recursive: true, mode: 0o700 });
-    await mkdir(join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`), { mode: 0o700 });
+    await mkdir(join(paths.agentsDirectory, `.${paths.label}.operation-lock`), { mode: 0o700 });
     let runnerCalled = false;
     const lifecycle = createLaunchdLifecycle({
       home, platform: 'darwin', programArguments: ['/bin/echo'], commandRunner: async (argv) => {
@@ -1905,7 +1924,7 @@ describe('launchd lifecycle', () => {
       code: 'LAUNCHD_OPERATION_BUSY', context: { operation: 'lock', owner: 'unknown-metadata' },
     });
     expect(runnerCalled).toBe(false);
-    expect((await lstat(join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`))).isDirectory()).toBe(true);
+    expect((await lstat(join(paths.agentsDirectory, `.${paths.label}.operation-lock`))).isDirectory()).toBe(true);
   });
 
   for (const crashPhase of [
@@ -1943,7 +1962,7 @@ describe('launchd lifecycle', () => {
       expect((await lstat(paths.plistPath)).nlink).toBe(1);
       await recovered.install();
       expect(await readFile(paths.plistPath, 'utf8')).toBe(firstBytes);
-      expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${launchdLabel}.plist`)).toEqual([]);
+      expect((await readdir(paths.agentsDirectory)).filter((name) => name !== `${paths.label}.plist`)).toEqual([]);
     });
   }
 
@@ -2002,7 +2021,7 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => phase === 'lock-owned' ? 'interrupt' : 'continue',
     });
     await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-    const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+    const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
     const handle = await open(lockPath, 'r+');
     await handle.truncate(128 * 1024);
     await handle.close();
@@ -2030,7 +2049,7 @@ describe('launchd lifecycle', () => {
     await mkdir(ownerPaths.agentsDirectory, { recursive: true, mode: 0o700 });
     const ownerSentinel = join(ownerPaths.agentsDirectory, '.owner-sentinel');
     await writeFile(ownerSentinel, 'preserve', { mode: 0o600 });
-    await symlink(ownerSentinel, join(ownerPaths.agentsDirectory, `.${launchdLabel}.operation-lock`));
+    await symlink(ownerSentinel, join(ownerPaths.agentsDirectory, `.${ownerPaths.label}.operation-lock`));
     const ownerContender = createLaunchdLifecycle({
       home: ownerHome, platform: 'darwin', programArguments: ['/bin/echo'], lockPollAttempts: 1,
       processInspector: inspector('new-start', 'dead', null),
@@ -2049,7 +2068,7 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => phase === 'new-linked' ? 'interrupt' : 'continue',
     });
     await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-    const journalPath = join(journalPaths.agentsDirectory, `.${launchdLabel}.transaction`);
+    const journalPath = join(journalPaths.agentsDirectory, `.${journalPaths.label}.transaction`);
     const journalSentinel = join(journalPaths.agentsDirectory, '.journal-sentinel');
     await rm(journalPath);
     await writeFile(journalSentinel, 'preserve', { mode: 0o600 });
@@ -2067,7 +2086,7 @@ describe('launchd lifecycle', () => {
     const home = await fakeHome();
     const paths = launchdPaths(home);
     await mkdir(paths.agentsDirectory, { recursive: true, mode: 0o700 });
-    const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+    const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
     const created = spawnSync('/usr/bin/mkfifo', [lockPath], { encoding: 'utf8' });
     expect(created.status).toBe(0);
     const lifecycle = createLaunchdLifecycle({
@@ -2108,7 +2127,7 @@ describe('launchd lifecycle', () => {
       await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
       const artifactPath = join(
         paths.agentsDirectory,
-        artifact === 'owner' ? `.${launchdLabel}.operation-lock` : `.${launchdLabel}.transaction`,
+        artifact === 'owner' ? `.${paths.label}.operation-lock` : `.${paths.label}.transaction`,
       );
       await chmod(artifactPath, 0o400);
       let runnerCalled = false;
@@ -2132,7 +2151,7 @@ describe('launchd lifecycle', () => {
         transactionHook: async (phase) => phase === 'lock-owned' ? 'interrupt' : 'continue',
       });
       await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-      const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+      const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
       const extraLink = join(paths.agentsDirectory, '.metadata-extra-link');
       let mutated = false;
       const contender = createLaunchdLifecycle({
@@ -2165,7 +2184,7 @@ describe('launchd lifecycle', () => {
     });
     await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
     let runnerCalled = false;
-    const journalPath = join(paths.agentsDirectory, `.${launchdLabel}.transaction`);
+    const journalPath = join(paths.agentsDirectory, `.${paths.label}.transaction`);
     const contender = createLaunchdLifecycle({
       home, platform: 'darwin', programArguments: ['/bin/echo', 'desired'], lockPollAttempts: 1,
       processInspector: inspector('new-start', 'dead', null),
@@ -2192,7 +2211,7 @@ describe('launchd lifecycle', () => {
       transactionHook: async (phase) => phase === 'new-linked' ? 'interrupt' : 'continue',
     });
     await expect(crashed.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
-    await writeFile(join(paths.agentsDirectory, `.${launchdLabel}.transaction`), '{malformed\n', { mode: 0o600 });
+    await writeFile(join(paths.agentsDirectory, `.${paths.label}.transaction`), '{malformed\n', { mode: 0o600 });
     let runnerCalled = false;
     const contender = createLaunchdLifecycle({
       home, platform: 'darwin', programArguments: ['/bin/echo', 'desired'], lockPollAttempts: 1,
@@ -2212,6 +2231,279 @@ describe('launchd lifecycle', () => {
     await expect(lifecycle.status()).rejects.toMatchObject({ code: 'LAUNCHD_DOMAIN_UNAVAILABLE' });
   });
 });
+
+describe('launchd label isolation and legacy migration', () => {
+  test('two HOMEs under one uid never report each other’s launchd agent', async () => {
+    const domain = fakeLaunchdDomain();
+    const first = await fakeHome();
+    const second = await fakeHome();
+
+    const installed = await domainLifecycle(first, domain).install();
+    expect(installed.state).toBe('installed');
+
+    const foreign = await domainLifecycle(second, domain).status();
+    const own = await domainLifecycle(first, domain).status();
+
+    // Neither HOME may answer with the other HOME's agent.
+    expect(foreign.state).toBe('absent');
+    expect(foreign.runState).toBeNull();
+    expect(own.state).toBe('loaded');
+    expect(own.runState).toBe('running');
+    expect(own.label).not.toBe(foreign.label);
+    // The reported plistPath belongs to the agent whose state was reported.
+    expect(own.plistPath).toBe(launchdPaths(first).plistPath);
+    expect(foreign.plistPath).toBe(launchdPaths(second).plistPath);
+    expect(domain.services.get(own.label)).toBe(own.plistPath);
+    expect(domain.services.has(foreign.label)).toBe(false);
+  });
+
+  test('takes over a legacy-label agent whose plist is this HOME’s', async () => {
+    const domain = fakeLaunchdDomain();
+    const home = await fakeHome();
+    const paths = launchdPaths(home);
+    const legacyPlistPath = await writeLegacyPlist(home, home);
+    domain.services.set('dev.wtm.daemon', legacyPlistPath);
+
+    const result = await domainLifecycle(home, domain).install();
+
+    expect(result.label.startsWith('dev.wtm.daemon.')).toBe(true);
+    expect(result.label).not.toBe('dev.wtm.daemon');
+    // No orphaned service: the legacy one was booted out, not left running beside the new one.
+    expect([...domain.services.keys()]).toEqual([result.label]);
+    expect(domain.services.get(result.label)).toBe(result.plistPath);
+    expect(domain.calls).toContainEqual(['/bin/launchctl', 'bootout', 'gui/501/dev.wtm.daemon']);
+    // No orphaned plist.
+    expect(await readdir(paths.agentsDirectory)).toEqual([`${result.label}.plist`]);
+  });
+
+  test('leaves a legacy-label service alone when its plist belongs to another HOME', async () => {
+    const domain = fakeLaunchdDomain();
+    const other = await fakeHome();
+    const home = await fakeHome();
+    const otherPlistPath = await writeLegacyPlist(other, other);
+    domain.services.set('dev.wtm.daemon', otherPlistPath);
+
+    const result = await domainLifecycle(home, domain).install();
+
+    expect(domain.services.get('dev.wtm.daemon')).toBe(otherPlistPath);
+    expect(domain.calls.some((call) => call[1] === 'bootout')).toBe(false);
+    expect(await lstat(otherPlistPath).then(() => true, () => false)).toBe(true);
+    expect(domain.services.get(result.label)).toBe(launchdPaths(home).plistPath);
+  });
+
+  test('refuses a legacy plist in this HOME that declares another HOME', async () => {
+    const domain = fakeLaunchdDomain();
+    const other = await fakeHome();
+    const home = await fakeHome();
+    const planted = await writeLegacyPlist(home, other);
+    domain.services.set('dev.wtm.daemon', planted);
+
+    const result = await domainLifecycle(home, domain).install();
+
+    expect(domain.services.get('dev.wtm.daemon')).toBe(planted);
+    expect(await readFile(planted, 'utf8')).toContain(`<string>${other}</string>`);
+    expect(domain.services.get(result.label)).toBe(launchdPaths(home).plistPath);
+  });
+
+  test('sweeps a stranded old-label journal the derived label can no longer reach', async () => {
+    const domain = fakeLaunchdDomain();
+    const home = await fakeHome();
+    const paths = launchdPaths(home);
+    await mkdir(paths.agentsDirectory, { recursive: true, mode: 0o700 });
+    const transactionId = '11111111-1111-4111-8111-111111111111';
+    await writeFile(
+      join(paths.agentsDirectory, '.dev.wtm.daemon.transaction'),
+      preparingJournalContent(transactionId, 'dev.wtm.daemon'),
+      { mode: 0o600 },
+    );
+    await writeFile(
+      join(paths.agentsDirectory, `dev.wtm.daemon.plist.tmp-${transactionId}`),
+      'stranded',
+      { mode: 0o600 },
+    );
+    await writeFile(
+      join(paths.agentsDirectory, '.dev.wtm.daemon.operation-lock'),
+      `${JSON.stringify({
+        version: 1,
+        pid: 999_999,
+        startIdentity: 'dead-start',
+        transactionId,
+        predecessorTransactionIds: [],
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const result = await domainLifecycle(home, domain).install();
+
+    expect(result.state).toBe('installed');
+    expect(await readdir(paths.agentsDirectory)).toEqual([`${result.label}.plist`]);
+  });
+
+  test('status leaves the legacy agent alone while it is the only daemon this HOME has', async () => {
+    const domain = fakeLaunchdDomain();
+    const home = await fakeHome();
+    const legacyPlistPath = await writeLegacyPlist(home, home);
+    domain.services.set('dev.wtm.daemon', legacyPlistPath);
+
+    const result = await domainLifecycle(home, domain).status();
+
+    // Nothing to publish in its place, so nothing is taken away: a command that reads state
+    // must not stop the daemon the user is running.
+    expect(domain.services.get('dev.wtm.daemon')).toBe(legacyPlistPath);
+    expect(await lstat(legacyPlistPath).then(() => true, () => false)).toBe(true);
+    expect(domain.calls.some((call) => call[1] === 'bootout')).toBe(false);
+    // And it answers about its own agent only.
+    expect(result.state).toBe('absent');
+    expect(result.runState).toBeNull();
+    expect(result.label).not.toBe('dev.wtm.daemon');
+  });
+
+  test('status finishes a takeover the install published but did not clean up', async () => {
+    const domain = fakeLaunchdDomain();
+    const home = await fakeHome();
+    const paths = launchdPaths(home);
+    await domainLifecycle(home, domain).install();
+    // The state an install interrupted after bootstrap would leave: both definitions on disk,
+    // both services loaded.
+    const legacyPlistPath = await writeLegacyPlist(home, home);
+    domain.services.set('dev.wtm.daemon', legacyPlistPath);
+    await writeFile(join(paths.agentsDirectory, '.dev.wtm.daemon.transaction'),
+      preparingJournalContent('33333333-3333-4333-8333-333333333333', 'dev.wtm.daemon'), { mode: 0o600 });
+
+    const result = await domainLifecycle(home, domain).status();
+
+    expect(result.state).toBe('loaded');
+    expect([...domain.services.keys()]).toEqual([paths.label]);
+    expect(await readdir(paths.agentsDirectory)).toEqual([`${paths.label}.plist`]);
+  });
+
+  test('uninstall removes a legacy-label agent this HOME still owns', async () => {
+    const domain = fakeLaunchdDomain();
+    const home = await fakeHome();
+    const paths = launchdPaths(home);
+    const legacyPlistPath = await writeLegacyPlist(home, home);
+    domain.services.set('dev.wtm.daemon', legacyPlistPath);
+
+    const result = await domainLifecycle(home, domain).uninstall();
+
+    // Before the label was derived this agent was the one `uninstall` addressed; it must not
+    // survive an uninstall now just because it is named differently.
+    expect(result.state).toBe('uninstalled');
+    expect([...domain.services.keys()]).toEqual([]);
+    expect(await readdir(paths.agentsDirectory)).toEqual([]);
+  });
+
+  test('refuses to sweep a legacy transaction whose owner is still running', async () => {
+    const domain = fakeLaunchdDomain();
+    const home = await fakeHome();
+    const paths = launchdPaths(home);
+    await mkdir(paths.agentsDirectory, { recursive: true, mode: 0o700 });
+    const transactionId = '22222222-2222-4222-8222-222222222222';
+    await writeFile(
+      join(paths.agentsDirectory, '.dev.wtm.daemon.operation-lock'),
+      `${JSON.stringify({
+        version: 1,
+        pid: 4321,
+        startIdentity: 'live-start',
+        transactionId,
+        predecessorTransactionIds: [],
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const lifecycle = createLaunchdLifecycle({
+      home,
+      uid: 501,
+      platform: 'darwin',
+      programArguments: ['/bin/echo', 'desired'],
+      commandRunner: domain.runner,
+      processInspector: {
+        current: async () => ({ pid: process.pid, startIdentity: 'this-start' }),
+        inspect: async () => ({ state: 'live', startIdentity: 'live-start' }),
+      },
+      lockPollAttempts: 1,
+    });
+
+    await expect(lifecycle.install()).rejects.toMatchObject({ code: 'LAUNCHD_OPERATION_BUSY' });
+    expect(await lstat(join(paths.agentsDirectory, '.dev.wtm.daemon.operation-lock'))
+      .then(() => true, () => false)).toBe(true);
+  });
+});
+
+function domainLifecycle(home: string, domain: FakeLaunchdDomain) {
+  return createLaunchdLifecycle({
+    home,
+    uid: 501,
+    platform: 'darwin',
+    programArguments: ['/bin/echo', home],
+    commandRunner: domain.runner,
+    processInspector: inspector('this-start', 'dead', null),
+    lockPollAttempts: 1,
+  });
+}
+
+async function writeLegacyPlist(home: string, declaredHome: string): Promise<string> {
+  const paths = launchdPaths(home);
+  const declared = launchdPaths(declaredHome);
+  await mkdir(paths.agentsDirectory, { recursive: true, mode: 0o700 });
+  const path = join(paths.agentsDirectory, 'dev.wtm.daemon.plist');
+  await writeFile(path, generateLaunchdPlist({
+    label: 'dev.wtm.daemon',
+    programArguments: ['/bin/echo', 'legacy'],
+    home: declared.home,
+    stdoutPath: declared.stdoutPath,
+    stderrPath: declared.stderrPath,
+    environment: { HOME: declared.home, PATH: '/usr/bin' },
+  }), { mode: 0o600 });
+  return path;
+}
+
+interface FakeLaunchdDomain {
+  services: Map<string, string>;
+  calls: string[][];
+  runner: (argv: readonly string[]) => Promise<LaunchdCommandResult>;
+}
+
+/**
+ * A launchd GUI domain that behaves like the real one in the single respect this bug is about:
+ * a service is keyed by its label, so two HOMEs sharing a label share one service slot.
+ */
+function fakeLaunchdDomain(): FakeLaunchdDomain {
+  const services = new Map<string, string>();
+  const calls: string[][] = [];
+  const runner = async (argv: readonly string[]): Promise<LaunchdCommandResult> => {
+    calls.push([...argv]);
+    const verb = argv[1];
+    const target = argv[2] ?? '';
+    const label = target.split('/').slice(2).join('/');
+    if (verb === 'print') {
+      if (label === '') return success();
+      const plistPath = services.get(label);
+      return plistPath === undefined ? missingService() : {
+        outcome: 'success',
+        exitCode: 0,
+        stdout: `\tstate = running\n\tpath = ${plistPath}\n`,
+        stderr: '',
+      } as LaunchdCommandResult;
+    }
+    if (verb === 'bootstrap') {
+      const plistPath = argv[3] as string;
+      const declared = /<key>Label<\/key>\s*<string>([^<]*)<\/string>/.exec(
+        await readFile(plistPath, 'utf8'),
+      )?.[1];
+      if (declared === undefined) return failure(5, 'plist declares no label');
+      if (services.has(declared)) return failure(5, 'service already bootstrapped');
+      services.set(declared, plistPath);
+      return success();
+    }
+    if (verb === 'bootout') {
+      if (!services.delete(label)) return missingService();
+      return success();
+    }
+    return success();
+  };
+  return { services, calls, runner };
+}
 
 function success(): LaunchdCommandResult {
   return { outcome: 'success', exitCode: 0, stdout: '', stderr: '' } as LaunchdCommandResult;
@@ -2247,7 +2539,7 @@ async function leaveDurableJournalTemporary(
   observedStartIdentity: string | null,
 ): Promise<{ basename: string; transactionId: string }> {
   const paths = launchdPaths(home);
-  const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
+  const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
   let interrupted: { basename: string; transactionId: string } | undefined;
   const lifecycle = createLaunchdLifecycle({
     home, platform: 'darwin', programArguments: ['/bin/echo', 'desired'], commandRunner: absentRunner,
@@ -2255,7 +2547,7 @@ async function leaveDurableJournalTemporary(
     metadataReadHook: async (path) => {
       if (path !== lockPath || interrupted !== undefined) return;
       const owner = JSON.parse(await readFile(lockPath, 'utf8')) as { transactionId: string };
-      const basename = `.${launchdLabel}.transaction.tmp-${owner.transactionId}`;
+      const basename = `.${paths.label}.transaction.tmp-${owner.transactionId}`;
       try { await lstat(join(paths.agentsDirectory, basename)); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
       interrupted = { basename, transactionId: owner.transactionId };
@@ -2285,19 +2577,19 @@ async function leaveInterruptedLockOwner(
   });
   await expect(lifecycle.install()).rejects.toMatchObject({ code: 'LAUNCHD_TRANSACTION_INTERRUPTED' });
   return JSON.parse(await readFile(
-    join(launchdPaths(home).agentsDirectory, `.${launchdLabel}.operation-lock`),
+    join(launchdPaths(home).agentsDirectory, `.${launchdPaths(home).label}.operation-lock`),
     'utf8',
   )) as { transactionId: string };
 }
 
-function preparingJournalContent(transactionId: string): string {
+function preparingJournalContent(transactionId: string, label: string): string {
   return `${JSON.stringify({
     version: 1,
     transactionId,
     operation: 'publish',
     phase: 'preparing',
-    temporary: `${launchdLabel}.plist.tmp-${transactionId}`,
-    quarantine: `${launchdLabel}.plist.replaced-${transactionId}`,
+    temporary: `${label}.plist.tmp-${transactionId}`,
+    quarantine: `${label}.plist.replaced-${transactionId}`,
     original: null,
     replacement: null,
     expected: {

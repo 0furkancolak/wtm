@@ -57,6 +57,7 @@ WTM_DAEMON_INVALID_REQUEST
 WTM_DAEMON_PROTOCOL_INCOMPATIBLE
 WTM_DAEMON_REQUEST_FAILED
 WTM_OPERATION_CONFLICT
+WTM_SOCKET_PATH_TOO_LONG
 ```
 
 `WTM_OPERATION_CONFLICT` means another process already holds a destructive-operation lease on the
@@ -64,6 +65,14 @@ repository, so the requested operation would race it. `context` carries `reposit
 `holderPid`, `acquiredAt`, `stage` (`null` while the holder is still live, otherwise the last stage
 the abandoned holder recorded), and `abandoned`. It is a safety policy block, so it exits with code
 3.
+
+`WTM_SOCKET_PATH_TOO_LONG` means the daemon's Unix socket path does not fit in the platform's
+socket address. macOS declares `sun_path[104]`, so a path of 104 bytes binds and one of 105 fails
+with `EINVAL`; the limit counts bytes, not characters. `context` carries `path` (the address that
+was measured), `byteLength`, `limitBytes`, `exceededBy`, and both `publishedPath` and `boundPath` —
+the daemon binds a private sibling and links the published name onto it, and the check measures
+whichever of the two is longer. Nothing was bound or connected: the check runs before either. It is
+a configuration the user has to change — a shorter home directory — so it exits with code 2.
 
 ### Git
 

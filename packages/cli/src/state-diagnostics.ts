@@ -1,7 +1,12 @@
 import { lstat } from 'node:fs/promises';
+import { createConnection } from 'node:net';
+import { homedir } from 'node:os';
 import {
+  DaemonSocketPathTooLongError,
   containsPath,
+  measureDaemonSocketPath,
   parsePortRange,
+  publishedDaemonSocketPath,
   resolveWorkspaceConfig,
   type DaemonStateStore,
   type WorkspaceRecord,
@@ -32,7 +37,32 @@ export interface StateDiagnosticOptions {
   /** The directory the command was run in, which is what decides *which* worktree it is about. */
   cwd: string;
   globalConfigPath: string;
+  /**
+   * The daemon socket this host publishes. Defaults to this user's published path, because
+   * `doctor` is answering about the machine it is running on; tests point it elsewhere.
+   */
+  daemonSocketPath?: string;
 }
+
+/**
+ * How long the reachability probe waits before calling the daemon absent.
+ *
+ * `doctor` is a read command a person is watching, so the probe is bounded rather than left to
+ * the operating system's connect timeout. A daemon that has accepted the connection answers in
+ * microseconds — a Unix socket has no network in it — so this budget is for a machine under
+ * load, not for a slow answer.
+ */
+const daemonProbeTimeoutMs = 500;
+
+/**
+ * How little headroom is worth warning about, in bytes.
+ *
+ * The one thing that moves this measurement is the depth of the user's home directory, and it
+ * moves in whole path segments. Under 16 bytes is less than one ordinary directory name, so a
+ * home that is moved or re-created one level deeper stops the daemon binding at all — which is
+ * the failure this warning exists to arrive before.
+ */
+const socketPathWarningHeadroomBytes = 16;
 
 export function createStateDiagnosticDataSource(
   store: DaemonStateStore,
@@ -41,6 +71,9 @@ export function createStateDiagnosticDataSource(
   const registered = (workspace: WorkspaceRecord): RegisteredWorkspace => ({
     id: workspace.id, name: workspace.name, root: workspace.root, scope: workspace.scope,
   });
+
+  const socketPath = options.daemonSocketPath ?? publishedDaemonSocketPath(homedir());
+  let reachabilityProbe: Promise<boolean> | null = null;
 
   /**
    * The worktree the question is about — only ever one that actually contains the directory
@@ -143,8 +176,137 @@ export function createStateDiagnosticDataSource(
     findings.push(await resourceFinding());
     findings.push(portFinding(workspace, worktrees));
     findings.push(processFinding(worktrees));
+    findings.push(await registrationFinding());
+    findings.push(socketPathFinding());
     return findings;
   };
+
+  /**
+   * Whether WTM can answer about this directory at all, and if not, which of the two reasons
+   * it is.
+   *
+   * "The daemon is not running" and "this directory is in no registered worktree" are separate
+   * states with separate codes and separate exit codes — `WTM_DAEMON_UNAVAILABLE` exits 4,
+   * `WTM_WORKSPACE_NOT_FOUND` exits 2 — and the remedy for one does nothing for the other.
+   * They used to reach the reader as the same shrug, so the person whose daemon was down was
+   * told to run `wtm init`, and the person in an unregistered worktree was told nothing at all.
+   *
+   * This is the only check that touches the daemon. Every other one answers from the store,
+   * and reachability is not answerable from the store: a registry written by a daemon that has
+   * since exited reads exactly like one written by a daemon that is still serving.
+   */
+  const registrationFinding = async (): Promise<DoctorDiagnostic['findings'][number]> => {
+    const reachable = await daemonReachable();
+    try {
+      findRegistration(store, options.cwd);
+    } catch (error) {
+      return {
+        check: 'registration',
+        status: 'error',
+        message: messageOf(error),
+        details: { code: 'WTM_WORKSPACE_NOT_FOUND', registered: false, daemonReachable: reachable },
+      };
+    }
+    return reachable
+      ? {
+        check: 'registration',
+        status: 'pass',
+        message: 'This worktree is registered, and the daemon is answering.',
+        details: { code: null, registered: true, daemonReachable: true },
+      }
+      : {
+        check: 'registration',
+        status: 'warning',
+        message: 'This worktree is registered, but the daemon is not answering on its socket. '
+          + 'Start it with `wtm daemon start`.',
+        details: { code: 'WTM_DAEMON_UNAVAILABLE', registered: true, daemonReachable: false },
+      };
+  };
+
+  /**
+   * Whether the daemon's socket address still fits, and how much room is left before it stops.
+   *
+   * The first check that is about the host rather than the workspace: the answer is the same
+   * in every workspace on this machine, because what it measures is the length of the user's
+   * home directory. It is reported while it is still a number and not yet a failure — once the
+   * limit is breached the daemon cannot bind at all, and a diagnostic that only speaks then is
+   * speaking to someone who has already lost the daemon that would have run it.
+   */
+  const socketPathFinding = (): DoctorDiagnostic['findings'][number] => {
+    const measurement = measureDaemonSocketPath(socketPath);
+    const headroom = measurement.limitBytes - measurement.byteLength;
+    const details = {
+      byteLength: measurement.byteLength,
+      limitBytes: measurement.limitBytes,
+      headroom,
+      path: measurement.measuredPath,
+    };
+    if (!measurement.fits) {
+      return {
+        check: 'socket-path',
+        status: 'error',
+        message: new DaemonSocketPathTooLongError(measurement).message,
+        details: { ...details, code: 'WTM_SOCKET_PATH_TOO_LONG' },
+      };
+    }
+    return headroom < socketPathWarningHeadroomBytes
+      ? {
+        check: 'socket-path',
+        status: 'warning',
+        message: `The daemon socket path has ${headroom} `
+          + `${plural(headroom, 'byte', 'bytes')} of headroom (${measurement.byteLength} of `
+          + `${measurement.limitBytes}). One more directory level in your home path and the `
+          + 'daemon cannot bind it.',
+        details: { ...details, code: null },
+      }
+      : {
+        check: 'socket-path',
+        status: 'pass',
+        message: `The daemon socket path fits with ${headroom} `
+          + `${plural(headroom, 'byte', 'bytes')} to spare (${measurement.byteLength} of `
+          + `${measurement.limitBytes}).`,
+        details: { ...details, code: null },
+      };
+  };
+
+  /**
+   * Whether something is listening on the daemon's socket, without asking it anything.
+   *
+   * A connect is the whole question: the socket file outliving the process it belonged to is
+   * exactly the case a stat cannot tell apart, and a running daemon accepts. Nothing is sent,
+   * so this cannot disturb a daemon that is mid-request.
+   */
+  const daemonReachable = async (): Promise<boolean> => {
+    // One answer per command, not one per workspace: the socket is a property of the host, so
+    // `doctor --global` across five workspaces would otherwise open five connections and wait
+    // up to five timeouts to learn the same fact five times.
+    reachabilityProbe ??= probeDaemon();
+    return await reachabilityProbe;
+  };
+
+  const probeDaemon = async (): Promise<boolean> => new Promise<boolean>((settle) => {
+    let socket: ReturnType<typeof createConnection>;
+    try {
+      socket = createConnection({ path: socketPath });
+    } catch {
+      // A path too long for an address raises synchronously; `socket-path` explains that one.
+      settle(false);
+      return;
+    }
+    socket.unref();
+    let settled = false;
+    const answer = (reachable: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      settle(reachable);
+    };
+    // `on`, not `once`: the listener has to outlive the answer, or the `destroy` below can
+    // raise an `error` event with nothing listening, which Node turns into a thrown exception.
+    socket.on('error', () => answer(false));
+    socket.setTimeout(daemonProbeTimeoutMs, () => answer(false));
+    socket.once('connect', () => answer(true));
+  });
 
   const configFinding = async (
     workspace: RegisteredWorkspace,
@@ -194,9 +356,23 @@ export function createStateDiagnosticDataSource(
    * `dev` command ran with nowhere to look.
    */
   const adapterFinding = async (): Promise<DoctorDiagnostic['findings'][number]> => {
+    let registration;
+    try {
+      registration = findRegistration(store, options.cwd);
+    } catch {
+      // "This directory is not inside a worktree WTM has registered" used to arrive here, as an
+      // `adapters` finding of status `unknown` — the one heading a reader asking why WTM does
+      // not know about this directory would never open. It is the `registration` check's answer
+      // now, and this check says only why it has nothing of its own to report.
+      return {
+        check: 'adapters',
+        status: 'unknown',
+        message: 'Adapter detection needs a registered worktree; see the registration check.',
+      };
+    }
     let inspection;
     try {
-      inspection = await inspectAdapters(adapterContext(findRegistration(store, options.cwd)));
+      inspection = await inspectAdapters(adapterContext(registration));
     } catch (error) {
       return { check: 'adapters', status: 'unknown', message: messageOf(error) };
     }

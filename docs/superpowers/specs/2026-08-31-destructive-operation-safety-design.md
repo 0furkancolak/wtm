@@ -7,8 +7,9 @@ which is `todo.md` items 1 (runtime-aware `wtm remove`), 2 (cross-process operat
 3 (remote freshness).
 
 This document has been reconciled with what was built. Where implementation and design disagreed,
-the code won and the paragraph was rewritten; the rulings behind each change are recorded in
-`.superpowers/sdd/2026-08-31-v1-stable/progress.md` and the per-task reports beside it. The user-facing
+the code won and the paragraph was rewritten; the rulings behind each change are recorded in the
+increment's SDD ledger, which is a local working record and not tracked in this repository
+(`.superpowers/` is ignored), so anything a reader needs is restated here. The user-facing
 account now lives in `docs/04-cli-reference.md`, `docs/10-git-safety-worktree-analysis.md` and
 `docs/13-data-model-and-state-machines.md`; this remains the design record.
 

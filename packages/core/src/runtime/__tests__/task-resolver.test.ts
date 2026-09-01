@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import type { WtmConfig } from '../../config/schema';
 import { resolveTask, WtmTaskResolutionError } from '../task-resolver';
 
 const baseContext = {
@@ -125,5 +126,106 @@ describe('resolveTask', () => {
       isMain: false,
       context: baseContext,
     })).toThrow('does not define a linked-worktree command');
+  });
+});
+
+/**
+ * There is no `wtm tasks` command — the CLI registers 20 commands and none enumerates them —
+ * so this error is the only surface where a user can learn which task names exist.
+ */
+describe('resolveTask unknown-task reporting', () => {
+  const taskNames = (count: number): string[] => Array.from(
+    { length: count },
+    (_, index) => `make:target-${String(index + 1).padStart(2, '0')}`,
+  );
+  const configWithTasks = (count: number): WtmConfig => ({
+    tasks: Object.fromEntries(taskNames(count).map((name) => [name, { run: ['make', name] }])),
+  });
+  const resolveMissing = (config: WtmConfig, taskName = 'dev'): WtmTaskResolutionError => {
+    try {
+      resolveTask({ config, taskName, isMain: true, context: baseContext });
+    } catch (error) {
+      if (error instanceof WtmTaskResolutionError) return error;
+      throw error;
+    }
+    throw new Error(`resolveTask(${taskName}) resolved a task that does not exist`);
+  };
+
+  test('names the tasks that do exist, closest to what was typed first', () => {
+    const error = resolveMissing({
+      tasks: {
+        make: { run: ['make'] },
+        'make:dev': { run: ['make', 'dev'] },
+        test: { run: ['bun', 'test'] },
+      },
+    });
+
+    expect(error.code).toBe('WTM_CONFIG_INVALID');
+    expect(error.message).toBe('Unknown task: dev. Known tasks: make:dev, test, make.');
+  });
+
+  test('says how to define a task when the workspace has none, and prints no empty list', () => {
+    const error = resolveMissing({ tasks: {} });
+
+    expect(error.message).toBe(
+      'Unknown task: dev. This workspace defines no tasks. '
+      + 'Add a [tasks.dev] block with a run command to wtm.toml.',
+    );
+    expect(error.message).not.toContain('Known tasks');
+    expect(error.context).toMatchObject({ taskName: 'dev', knownTasks: [] });
+    expect(resolveMissing({}).message).toBe(error.message);
+  });
+
+  test('quotes a suggested key that is not a bare TOML key, rather than advising invalid TOML', () => {
+    expect(resolveMissing({}, 'make:dev').message).toBe(
+      'Unknown task: make:dev. This workspace defines no tasks. '
+      + 'Add a [tasks."make:dev"] block with a run command to wtm.toml.',
+    );
+  });
+
+  test('leads with the closest name, so a hand-written task outranks a wall of adapter tasks', () => {
+    const error = resolveMissing({
+      tasks: {
+        ...configWithTasks(64).tasks,
+        'dev-server': { run: ['bun', 'run', 'dev'] },
+      },
+    });
+
+    expect(error.message).toContain('Known tasks: dev-server, ');
+    expect(error.message).toEndWith(' and 55 more.');
+  });
+
+  test('ranks the same way whatever order the tasks arrived in, on every call', () => {
+    const names = ['make:devtools', 'make:dev', 'dev-server', 'test', 'make'];
+    const build = (order: string[]): WtmConfig => ({
+      tasks: Object.fromEntries(order.map((name) => [name, { run: ['make', name] }])),
+    });
+
+    const first = resolveMissing(build(names));
+
+    expect(first.message)
+      .toBe('Unknown task: dev. Known tasks: dev-server, make:dev, make:devtools, test, make.');
+    expect(resolveMissing(build(names)).message).toBe(first.message);
+    expect(resolveMissing(build([...names].reverse())).message).toBe(first.message);
+  });
+
+  test('carries the whole list in context so --json consumers never parse the prose', () => {
+    const error = resolveMissing({
+      tasks: { zebra: { run: ['zebra'] }, ...configWithTasks(12).tasks, alpha: { run: ['alpha'] } },
+    });
+
+    // Alphabetical, not ranked: ranking is a rendering decision and does not belong in a contract.
+    expect(error.context.knownTasks).toEqual(['alpha', ...taskNames(12), 'zebra']);
+  });
+
+  test('lists at most ten names and counts the remainder', () => {
+    expect(resolveMissing(configWithTasks(10)).message)
+      .toBe(`Unknown task: dev. Known tasks: ${taskNames(10).join(', ')}.`);
+
+    const over = resolveMissing(configWithTasks(11));
+
+    expect(over.message)
+      .toBe(`Unknown task: dev. Known tasks: ${taskNames(10).join(', ')} and 1 more.`);
+    expect(over.context.knownTasks).toEqual(taskNames(11));
   });
 });

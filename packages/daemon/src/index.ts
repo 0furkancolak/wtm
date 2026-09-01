@@ -85,8 +85,9 @@ export {
   createLaunchdLifecycle,
   generateLaunchdPlist,
   launchdCommands,
-  launchdLabel,
+  launchdLabelFor,
   launchdPaths,
+  legacyLaunchdLabel,
   sanitizeLaunchdPathEnvironment,
 } from './launchd';
 export type {

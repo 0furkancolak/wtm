@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, link, lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { assertDaemonSocketPathFits, boundDaemonSocketPath } from '@wtm/core';
 import {
   FrameDecoder,
   FrameSizeError,
@@ -176,12 +177,17 @@ export class UnixIpcServer {
   }
 
   async #start(): Promise<void> {
+    // Before anything is created, quarantined or bound. A path that cannot fit in a socket
+    // address fails at `listen` with a bare `EINVAL` that names neither the limit nor the
+    // path, and by then the parent directory has already been secured and a stale socket may
+    // already have been displaced -- work undone for a failure that was knowable up front.
+    assertDaemonSocketPathFits(this.#socketPath);
     const parent = await secureSocketParent(dirname(this.#socketPath));
     await prepareSocketPath(this.#socketPath, parent, {
       probe: this.#probeExistingSocket,
       beforeQuarantine: this.#beforeStaleSocketQuarantine,
     });
-    const boundPath = privateSocketPath(this.#socketPath);
+    const boundPath = boundDaemonSocketPath(this.#socketPath);
     await prepareSocketPath(boundPath, parent, {
       probe: socketAcceptsConnections,
       beforeQuarantine: () => {},
@@ -760,15 +766,6 @@ function matchesSocketIdentity(
 
 function uniqueSiblingPath(path: string, marker: string): string {
   return join(dirname(path), `.${marker}${randomUUID().replaceAll('-', '')}`);
-}
-
-function privateSocketPath(path: string): string {
-  const original = basename(path);
-  const marker = original.startsWith('.') ? '_' : '.';
-  const candidate = `${marker}${original.slice(1)}`;
-  if (candidate !== '.' && candidate !== '..') return join(dirname(path), candidate);
-  const fallback = original.startsWith('_') ? '-' : '_';
-  return join(dirname(path), `${fallback}${original.slice(1)}`);
 }
 
 async function installClosePlaceholder(

@@ -6,14 +6,34 @@ import {
   lstat,
   mkdir,
   open,
+  readdir,
   rename,
   rm,
   type FileHandle,
 } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { daemonDataRoot } from '@wtm/core';
 
-export const launchdLabel = 'dev.wtm.daemon';
+/**
+ * The bare label every WTM installation published under before the label was derived. A launchd
+ * service name is `gui/<uid>/<label>`, so under one uid this one name is one service: two HOMEs
+ * could not both bootstrap it, and `daemon status` answered from whichever agent got there first
+ * while naming this HOME's plist. It survives only so an installation that used it can be taken
+ * over, and so the artifacts it named can be swept.
+ */
+export const legacyLaunchdLabel = 'dev.wtm.daemon';
+
+/**
+ * The label this HOME's agent is published under. The digest is SHA-256 over the resolved
+ * absolute HOME, truncated to 128 bits: derived from the path alone so it is identical on every
+ * run, hex so it is legal in a launchd label and in every filename built from that label, and
+ * wide enough that two distinct HOMEs colliding is not a case this design has to answer for.
+ */
+export function launchdLabelFor(home: string): string {
+  assertAbsolute(home, 'launchd home');
+  return `${legacyLaunchdLabel}.${createHash('sha256').update(resolve(home), 'utf8').digest('hex').slice(0, 32)}`;
+}
 const launchctlPath = '/bin/launchctl';
 const maxCommandOutputBytes = 4 * 1024;
 /**
@@ -30,9 +50,13 @@ const defaultPathEnvironment = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
 
 export interface LaunchdPaths {
   home: string;
+  /** The launchd label this HOME publishes under; every managed filename is built from it. */
+  label: string;
   libraryDirectory: string;
   agentsDirectory: string;
   plistPath: string;
+  /** Where an installation made before the label was derived left its definition. */
+  legacyPlistPath: string;
   dataRoot: string;
   logRoot: string;
   stdoutPath: string;
@@ -118,7 +142,7 @@ export interface LaunchdStatusResult extends LaunchdLifecycleResult<LaunchdStatu
 export interface LaunchdLifecycleResult<State extends string> {
   action: 'install' | 'uninstall' | 'status';
   state: State;
-  label: typeof launchdLabel;
+  label: string;
   plistPath: string;
 }
 
@@ -176,13 +200,19 @@ export function launchdPaths(home = homedir()): LaunchdPaths {
   const resolvedHome = resolve(home);
   const libraryDirectory = join(resolvedHome, 'Library');
   const agentsDirectory = join(libraryDirectory, 'LaunchAgents');
-  const dataRoot = join(libraryDirectory, 'Application Support', 'WTM');
+  // Not spelled out here: the socket, the database and the global config all live under this
+  // root, and a copy in this file is the copy most likely to drift -- nothing in launchd's paths
+  // would notice if it did. @wtm/core owns it.
+  const dataRoot = daemonDataRoot(resolvedHome);
   const logRoot = join(libraryDirectory, 'Logs', 'WTM');
+  const label = launchdLabelFor(resolvedHome);
   return {
     home: resolvedHome,
+    label,
     libraryDirectory,
     agentsDirectory,
-    plistPath: join(agentsDirectory, `${launchdLabel}.plist`),
+    plistPath: join(agentsDirectory, `${label}.plist`),
+    legacyPlistPath: join(agentsDirectory, `${legacyLaunchdLabel}.plist`),
     dataRoot,
     logRoot,
     stdoutPath: join(logRoot, 'daemon.log'),
@@ -194,7 +224,9 @@ export function launchdCommands(options: { uid: number; plistPath: string }): La
   const uid = nonNegativeInteger(options.uid, 'launchd uid');
   assertAbsolute(options.plistPath, 'launchd plist path');
   const domain = `gui/${uid}`;
-  const service = `${domain}/${launchdLabel}`;
+  // The service name is read out of the plist path rather than fixed, so the commands always
+  // address the definition they are given -- the derived label, or the legacy one being retired.
+  const service = `${domain}/${labelFromPlistPath(options.plistPath)}`;
   return {
     print: [launchctlPath, 'print', service],
     printDomain: [launchctlPath, 'print', domain],
@@ -203,6 +235,19 @@ export function launchdCommands(options: { uid: number; plistPath: string }): La
     bootout: [launchctlPath, 'bootout', service],
     kickstart: [launchctlPath, 'kickstart', '-k', service],
   };
+}
+
+/**
+ * A launchd label is the plist's own basename. Deriving the service name from the path keeps
+ * `launchdCommands` honest: it cannot address one agent while bootstrapping another.
+ */
+function labelFromPlistPath(plistPath: string): string {
+  const name = resolve(plistPath).split(sep).at(-1) as string;
+  const label = name.endsWith('.plist') ? name.slice(0, -'.plist'.length) : '';
+  if (label.length === 0 || !/^[A-Za-z0-9._-]+$/.test(label)) {
+    throw configurationError('launchd plist path must name a launchd label');
+  }
+  return label;
 }
 
 export function sanitizeLaunchdPathEnvironment(value = defaultPathEnvironment): string {
@@ -283,6 +328,7 @@ export function createLaunchdLifecycle(options: LaunchdLifecycleOptions): Launch
   const uid = nonNegativeInteger(options.uid ?? process.getuid?.() ?? -1, 'launchd uid');
   const ownerUid = nonNegativeInteger(options.fileOwnerUid ?? process.getuid?.() ?? uid, 'launchd file owner uid');
   const commands = launchdCommands({ uid, plistPath: paths.plistPath });
+  const legacyCommands = launchdCommands({ uid, plistPath: paths.legacyPlistPath });
   const runner = options.commandRunner ?? runLaunchctl;
   const pollAttempts = positiveInteger(options.absencePollAttempts ?? 20, 'launchd absence poll attempts');
   const lockPollAttempts = positiveInteger(options.lockPollAttempts ?? 100, 'launchd lock poll attempts');
@@ -291,7 +337,7 @@ export function createLaunchdLifecycle(options: LaunchdLifecycleOptions): Launch
     options.pathEnvironment ?? process.env.PATH ?? defaultPathEnvironment,
   );
   const plist = generateLaunchdPlist({
-    label: launchdLabel,
+    label: paths.label,
     programArguments: options.programArguments,
     home: paths.home,
     stdoutPath: paths.stdoutPath,
@@ -322,9 +368,9 @@ export function createLaunchdLifecycle(options: LaunchdLifecycleOptions): Launch
 
   const loaded = async (): Promise<boolean> => (await describe()).loaded;
 
-  const waitUntilAbsent = async (): Promise<void> => {
+  const waitUntilAbsent = async (print: readonly string[] = commands.print): Promise<void> => {
     for (let attempt = 0; attempt < pollAttempts; attempt += 1) {
-      const result = await runner(commands.print);
+      const result = await runner(print);
       if (isAbsentResult(result)) return;
       if (result.outcome !== 'success') throw commandError('print', result);
       await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, Math.min(10 * (attempt + 1), 50)));
@@ -334,105 +380,190 @@ export function createLaunchdLifecycle(options: LaunchdLifecycleOptions): Launch
     });
   };
 
+  const legacyServiceLoaded = async (): Promise<boolean> => {
+    const printed = await runner(legacyCommands.print);
+    if (printed.outcome === 'success') return true;
+    if (!isAbsentResult(printed)) throw commandError('legacy-print', printed);
+    return false;
+  };
+
+  const bootOutLegacyService = async (transaction: LaunchdTransaction): Promise<void> => {
+    if (!await legacyServiceLoaded()) return;
+    await transaction.assertOwned();
+    const bootout = await runner(legacyCommands.bootout);
+    if (bootout.outcome !== 'success' && !isAbsentResult(bootout)) throw commandError('legacy-bootout', bootout);
+    await waitUntilAbsent(legacyCommands.print);
+  };
+
+  /**
+   * The only legacy service this HOME may touch is the one its own plist defines. A legacy
+   * service loaded from another HOME's plist is that HOME's daemon: booting it out would turn a
+   * reporting bug into a destructive one, so nothing here is done unless this HOME's own legacy
+   * plist is present and names this HOME.
+   *
+   * The sweep is unconditional. The derived label is what makes an old-label journal, lock or
+   * quarantine unreachable -- `validateJournal` rebuilds those names from the label and rejects
+   * anything else as an unsafe path -- so this is the last code that can still recognise them.
+   */
+  const takeOverLegacyLabel = async (transaction: LaunchdTransaction): Promise<FileSnapshot | null> => {
+    const legacy = await readAdoptableLegacyPlist(paths, ownerUid);
+    if (legacy !== null) await bootOutLegacyService(transaction);
+    await sweepLegacyLabelArtifacts(paths, ownerUid, processInspector, transaction);
+    return legacy;
+  };
+
+  const removeLegacyPlist = async (legacy: FileSnapshot, transaction: LaunchdTransaction): Promise<void> => {
+    const current = await readAdoptableLegacyPlist(paths, ownerUid);
+    // Anything but the exact file the takeover examined is left alone: it is no longer the
+    // definition this migration reasoned about.
+    if (current === null || !sameFileIdentity(legacy.identity, current.identity)) return;
+    await transaction.assertOwned();
+    await removeSafeManagedFile(paths.home, paths.legacyPlistPath, ownerUid, current.identity);
+  };
+
+  /** Deletes the old definition only once this HOME's own is published in its place. */
+  const retireLegacyPlist = async (legacy: FileSnapshot, transaction: LaunchdTransaction): Promise<void> => {
+    if (await readSafeManagedFile(paths.home, paths.plistPath, ownerUid) === null) return;
+    await removeLegacyPlist(legacy, transaction);
+  };
+
+  /**
+   * `status` finishes a takeover; it never starts one it cannot finish. It has no definition to
+   * publish, so it removes the legacy plist only when this HOME's own is already published, and
+   * boots the legacy service out only when this HOME's own service is loaded to answer in its
+   * place. Where those do not hold it reports the derived label's own truth and touches nothing:
+   * a command that reads state must not stop the only daemon the user has.
+   */
+  const finishLegacyLabelMigration = async (): Promise<void> => {
+    const legacy = await readAdoptableLegacyPlist(paths, ownerUid);
+    if (legacy === null && (await legacyLabelArtifactNames(paths.agentsDirectory)).length === 0) return;
+    const published = await readSafeManagedFile(paths.home, paths.plistPath, ownerUid);
+    const handOver = legacy !== null && published !== null
+      && (!await legacyServiceLoaded() || await loaded());
+    await withLaunchdOperationLock(
+      paths, ownerUid, processInspector, lockPollAttempts, options.transactionHook, options.metadataReadHook,
+      async (transaction) => {
+        if (handOver) await bootOutLegacyService(transaction);
+        await sweepLegacyLabelArtifacts(paths, ownerUid, processInspector, transaction);
+        if (handOver) await retireLegacyPlist(legacy as FileSnapshot, transaction);
+      },
+    );
+  };
+
+  /**
+   * The install proper, under this HOME's derived label. It is a named step so the legacy
+   * takeover can bracket it: the old service is booted out before this publishes, and the old
+   * definition is only deleted once this has succeeded -- a failure here rolls back to the
+   * previous derived definition and leaves the legacy one exactly where it was found.
+   */
+  const publishDerivedInstall = async (
+    transaction: LaunchdTransaction,
+  ): Promise<LaunchdLifecycleResult<LaunchdInstallState>> => {
+    const existing = await readSafeManagedFile(paths.home, paths.plistPath, ownerUid);
+    const wasLoaded = await loaded();
+    if (wasLoaded && existing?.content === plist) {
+      await transaction.assertOwned();
+      const enable = await runner(commands.enable);
+      if (enable.outcome !== 'success') throw commandError('enable', enable);
+      // The definition names the executable by path, so installing a new build over the
+      // old one leaves this plist byte-identical while launchd goes on running the
+      // previous binary. Returning here was what let `make install` report success and
+      // change nothing: every command afterwards was answered by the daemon installed
+      // before it, and verifying the new build was impossible. Restarting the service in
+      // place is both the fix and the cheapest guarantee that the daemon now running is
+      // the one just installed.
+      await transaction.assertOwned();
+      const kickstart = await runner(commands.kickstart);
+      if (kickstart.outcome !== 'success') throw commandError('kickstart', kickstart);
+      return lifecycleResult('install', 'restarted', paths);
+    }
+
+    const changed = existing?.content !== plist;
+    let publishedIdentity: FileIdentity | undefined;
+    let bootoutAccepted = false;
+    try {
+      if (wasLoaded) {
+        await transaction.assertOwned();
+        const bootout = await runner(commands.bootout);
+        if (bootout.outcome !== 'success' && !isAbsentResult(bootout)) throw commandError('bootout', bootout);
+        bootoutAccepted = true;
+        await waitUntilAbsent();
+      }
+      if (changed) {
+        publishedIdentity = await publishSafeManagedFile(
+          paths.home,
+          paths.plistPath,
+          plist,
+          ownerUid,
+          options.publicationHook,
+          transaction,
+        );
+      }
+      await runTransactionHook(transaction, 'before-enable');
+      await transaction.assertOwned();
+      const enable = await runner(commands.enable);
+      if (enable.outcome !== 'success') throw commandError('enable', enable);
+      await runTransactionHook(transaction, 'after-enable');
+      await transaction.assertOwned();
+      const bootstrap = await runner(commands.bootstrap);
+      if (bootstrap.outcome === 'success') {
+        await runTransactionHook(transaction, 'after-bootstrap');
+        await runTransactionHook(transaction, 'final-cleanup');
+        return lifecycleResult('install', wasLoaded ? 'reinstalled' : 'installed', paths);
+      }
+      const concurrentWinner = await loaded().catch(() => false);
+      if (concurrentWinner) return lifecycleResult('install', 'already-installed', paths);
+      throw commandError('bootstrap', bootstrap);
+    } catch (installError) {
+      if (isTransactionInterruption(installError)) throw installError;
+      if (!bootoutAccepted && publishedIdentity === undefined) throw installError;
+      transaction.failureContext = installError instanceof LaunchdLifecycleError ? installError.context : {};
+      try {
+        await restorePreviousDefinition(paths, ownerUid, existing, publishedIdentity, transaction);
+        if (bootoutAccepted) {
+          if (existing === null) throw new Error('Previous loaded definition has no recoverable plist');
+          await transaction.assertOwned();
+          const rollbackEnable = await runner(commands.enable);
+          let rollbackBootstrap = rollbackEnable;
+          if (rollbackEnable.outcome === 'success') {
+            await transaction.assertOwned();
+            rollbackBootstrap = await runner(commands.bootstrap);
+          }
+          if (rollbackBootstrap.outcome !== 'success') throw commandError('rollback-bootstrap', rollbackBootstrap);
+        }
+      } catch (rollbackError) {
+        if (isTransactionInterruption(rollbackError)) throw rollbackError;
+        if (rollbackError instanceof LaunchdLifecycleError && rollbackError.code === 'LAUNCHD_ROLLBACK_CONFLICT') {
+          throw new LaunchdLifecycleError(
+            'LAUNCHD_ROLLBACK_CONFLICT',
+            'launchd installation failed and a concurrent definition prevented rollback.',
+            {
+              ...(installError instanceof LaunchdLifecycleError ? installError.context : {}),
+              rollback: 'conflict',
+            },
+            { cause: rollbackError },
+          );
+        }
+        throw new LaunchdLifecycleError(
+          'LAUNCHD_ROLLBACK_FAILED',
+          'launchd installation failed and the previous definition could not be restored.',
+          installError instanceof LaunchdLifecycleError ? installError.context : {},
+          { cause: rollbackError },
+        );
+      }
+      throw installError;
+    }
+  };
+
   return {
     install: async () => {
       assertPlatform();
       await ensureInstallDirectories(paths, ownerUid);
       return await withLaunchdOperationLock(paths, ownerUid, processInspector, lockPollAttempts, options.transactionHook, options.metadataReadHook, async (transaction) => {
-        const existing = await readSafeManagedFile(paths.home, paths.plistPath, ownerUid);
-        const wasLoaded = await loaded();
-        if (wasLoaded && existing?.content === plist) {
-          await transaction.assertOwned();
-          const enable = await runner(commands.enable);
-          if (enable.outcome !== 'success') throw commandError('enable', enable);
-          // The definition names the executable by path, so installing a new build over the
-          // old one leaves this plist byte-identical while launchd goes on running the
-          // previous binary. Returning here was what let `make install` report success and
-          // change nothing: every command afterwards was answered by the daemon installed
-          // before it, and verifying the new build was impossible. Restarting the service in
-          // place is both the fix and the cheapest guarantee that the daemon now running is
-          // the one just installed.
-          await transaction.assertOwned();
-          const kickstart = await runner(commands.kickstart);
-          if (kickstart.outcome !== 'success') throw commandError('kickstart', kickstart);
-          return lifecycleResult('install', 'restarted', paths.plistPath);
-        }
-
-        const changed = existing?.content !== plist;
-        let publishedIdentity: FileIdentity | undefined;
-        let bootoutAccepted = false;
-        try {
-          if (wasLoaded) {
-            await transaction.assertOwned();
-            const bootout = await runner(commands.bootout);
-            if (bootout.outcome !== 'success' && !isAbsentResult(bootout)) throw commandError('bootout', bootout);
-            bootoutAccepted = true;
-            await waitUntilAbsent();
-          }
-          if (changed) {
-            publishedIdentity = await publishSafeManagedFile(
-              paths.home,
-              paths.plistPath,
-              plist,
-              ownerUid,
-              options.publicationHook,
-              transaction,
-            );
-          }
-          await runTransactionHook(transaction, 'before-enable');
-          await transaction.assertOwned();
-          const enable = await runner(commands.enable);
-          if (enable.outcome !== 'success') throw commandError('enable', enable);
-          await runTransactionHook(transaction, 'after-enable');
-          await transaction.assertOwned();
-          const bootstrap = await runner(commands.bootstrap);
-          if (bootstrap.outcome === 'success') {
-            await runTransactionHook(transaction, 'after-bootstrap');
-            await runTransactionHook(transaction, 'final-cleanup');
-            return lifecycleResult('install', wasLoaded ? 'reinstalled' : 'installed', paths.plistPath);
-          }
-          const concurrentWinner = await loaded().catch(() => false);
-          if (concurrentWinner) return lifecycleResult('install', 'already-installed', paths.plistPath);
-          throw commandError('bootstrap', bootstrap);
-        } catch (installError) {
-          if (isTransactionInterruption(installError)) throw installError;
-          if (!bootoutAccepted && publishedIdentity === undefined) throw installError;
-          transaction.failureContext = installError instanceof LaunchdLifecycleError ? installError.context : {};
-          try {
-            await restorePreviousDefinition(paths, ownerUid, existing, publishedIdentity, transaction);
-            if (bootoutAccepted) {
-              if (existing === null) throw new Error('Previous loaded definition has no recoverable plist');
-              await transaction.assertOwned();
-              const rollbackEnable = await runner(commands.enable);
-              let rollbackBootstrap = rollbackEnable;
-              if (rollbackEnable.outcome === 'success') {
-                await transaction.assertOwned();
-                rollbackBootstrap = await runner(commands.bootstrap);
-              }
-              if (rollbackBootstrap.outcome !== 'success') throw commandError('rollback-bootstrap', rollbackBootstrap);
-            }
-          } catch (rollbackError) {
-            if (isTransactionInterruption(rollbackError)) throw rollbackError;
-            if (rollbackError instanceof LaunchdLifecycleError && rollbackError.code === 'LAUNCHD_ROLLBACK_CONFLICT') {
-              throw new LaunchdLifecycleError(
-                'LAUNCHD_ROLLBACK_CONFLICT',
-                'launchd installation failed and a concurrent definition prevented rollback.',
-                {
-                  ...(installError instanceof LaunchdLifecycleError ? installError.context : {}),
-                  rollback: 'conflict',
-                },
-                { cause: rollbackError },
-              );
-            }
-            throw new LaunchdLifecycleError(
-              'LAUNCHD_ROLLBACK_FAILED',
-              'launchd installation failed and the previous definition could not be restored.',
-              installError instanceof LaunchdLifecycleError ? installError.context : {},
-              { cause: rollbackError },
-            );
-          }
-          throw installError;
-        }
+        const legacy = await takeOverLegacyLabel(transaction);
+        const result = await publishDerivedInstall(transaction);
+        if (legacy !== null) await retireLegacyPlist(legacy, transaction);
+        return result;
       });
     },
 
@@ -440,6 +571,12 @@ export function createLaunchdLifecycle(options: LaunchdLifecycleOptions): Launch
       assertPlatform();
       await ensureLaunchAgentsDirectory(paths, ownerUid);
       return await withLaunchdOperationLock(paths, ownerUid, processInspector, lockPollAttempts, options.transactionHook, options.metadataReadHook, async (transaction) => {
+        // An agent published under the previous label is this HOME's agent under an older name.
+        // Uninstall is exactly the request to remove it, so it is booted out and deleted rather
+        // than left running under a name nothing addresses any more.
+        const legacy = await readAdoptableLegacyPlist(paths, ownerUid);
+        if (legacy !== null) await bootOutLegacyService(transaction);
+        await sweepLegacyLabelArtifacts(paths, ownerUid, processInspector, transaction);
         const wasLoaded = await loaded();
         const existing = await readSafeManagedFile(paths.home, paths.plistPath, ownerUid);
         if (wasLoaded) {
@@ -458,31 +595,147 @@ export function createLaunchdLifecycle(options: LaunchdLifecycleOptions): Launch
             transaction,
           );
         }
+        if (legacy !== null) await removeLegacyPlist(legacy, transaction);
         await runTransactionHook(transaction, 'final-cleanup');
         return lifecycleResult(
           'uninstall',
-          wasLoaded || existing !== null ? 'uninstalled' : 'already-absent',
-          paths.plistPath,
+          wasLoaded || existing !== null || legacy !== null ? 'uninstalled' : 'already-absent',
+          paths,
         );
       });
     },
 
     status: async () => {
       assertPlatform();
+      await finishLegacyLabelMigration();
       const service = await describe();
       const existing = await readSafeManagedFile(paths.home, paths.plistPath, ownerUid);
       const state = service.loaded ? 'loaded' : existing === null ? 'absent' : 'installed-not-loaded';
       // `loaded` only says launchd knows the job. Reporting whether a process is actually
       // alive is what separates "the daemon is down" from "the request itself failed", and
       // without it every failed command looks like a dead daemon.
-      return { ...lifecycleResult('status', state, paths.plistPath), runState: service.runState };
+      return { ...lifecycleResult('status', state, paths), runState: service.runState };
     },
   };
 }
 
+/**
+ * Every filename an interrupted old-label operation could have left behind. The list is exact
+ * rather than a prefix over the whole label, so the derived label -- which begins with the legacy
+ * one -- can never be swept by the code that retires it.
+ */
+const legacyLabelArtifactPrefixes = [
+  `${legacyLaunchdLabel}.plist.tmp-`,
+  `${legacyLaunchdLabel}.plist.replaced-`,
+  `${legacyLaunchdLabel}.plist.removed-`,
+  `.${legacyLaunchdLabel}.transaction`,
+  `.${legacyLaunchdLabel}.operation-lock`,
+];
+
+async function legacyLabelArtifactNames(agentsDirectory: string): Promise<string[]> {
+  let names: string[];
+  try { names = await readdir(agentsDirectory); }
+  catch (error) {
+    if (isNodeError(error, 'ENOENT')) return [];
+    throw pathError('Could not read the launchd agents directory', error);
+  }
+  return names
+    .filter((name) => legacyLabelArtifactPrefixes.some((prefix) => name.startsWith(prefix)))
+    .sort();
+}
+
+/**
+ * This HOME's own legacy definition, or null. `readSafeManagedFile` checks containment,
+ * ownership, mode and link count but never authorship, so the plist has to say for itself which
+ * HOME it belongs to: a definition naming another HOME is another HOME's, wherever it is sitting,
+ * and is neither adopted nor touched.
+ */
+async function readAdoptableLegacyPlist(paths: LaunchdPaths, uid: number): Promise<FileSnapshot | null> {
+  let snapshot: FileSnapshot | null;
+  try { snapshot = await readSafeManagedFile(paths.home, paths.legacyPlistPath, uid); }
+  catch (error) {
+    // A legacy plist this process cannot vouch for is left exactly where it is; the derived
+    // label's own install is unaffected by it and reports any real problem on its own path.
+    if (error instanceof LaunchdLifecycleError) return null;
+    throw error;
+  }
+  if (snapshot === null) return null;
+  return legacyPlistDeclaresHome(snapshot.content, paths) ? snapshot : null;
+}
+
+function legacyPlistDeclaresHome(content: string, paths: LaunchdPaths): boolean {
+  if (plistStringValue(content, 'Label') !== legacyLaunchdLabel) return false;
+  const workingDirectory = plistStringValue(content, 'WorkingDirectory');
+  if (workingDirectory !== null) return workingDirectory === paths.home;
+  return plistStringValue(content, 'StandardOutPath') === paths.stdoutPath;
+}
+
+function plistStringValue(content: string, key: 'Label' | 'WorkingDirectory' | 'StandardOutPath'): string | null {
+  const match = new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`).exec(content);
+  return match === null ? null : unescapeXml(match[1] as string);
+}
+
+/**
+ * Removes what the label change stranded. The operation lock and the transaction journal are
+ * named after the label, and `validateJournal` rebuilds the `.tmp-`/`.replaced-`/`.removed-`
+ * siblings from it too, so after the label is derived nothing else will ever read these again --
+ * an old-label journal is not recoverable, only removable.
+ *
+ * Anything that is not a plain file this uid owns at an owner-only mode is left where it is: the
+ * old directory-shaped lock this file has always refused to adopt is refused here too.
+ */
+async function sweepLegacyLabelArtifacts(
+  paths: LaunchdPaths,
+  uid: number,
+  inspector: LaunchdProcessInspector,
+  transaction: LaunchdTransaction,
+): Promise<void> {
+  const names = await legacyLabelArtifactNames(paths.agentsDirectory);
+  if (names.length === 0) return;
+  const parent = await assertSafeDirectory(paths.agentsDirectory, uid, true);
+  await assertLegacyLockAbandoned(paths, uid, inspector);
+  for (const name of names) {
+    const path = join(paths.agentsDirectory, name);
+    assertContained(paths.agentsDirectory, path);
+    await transaction.assertOwned();
+    const identity = await readOwnedIdentity(path, uid, [1, 2]).catch(() => null);
+    if (identity === null) continue;
+    await removeExactFile(path, identity, uid, [1, 2]);
+  }
+  await assertDirectoryIdentity(paths.agentsDirectory, parent, uid, true);
+}
+
+/**
+ * An old binary still using the constant label cannot know about the derived one, so its lock is
+ * the only signal that it is mid-operation. Refuse rather than race it: sweeping a live owner's
+ * lock would remove the only mutual exclusion the two processes still share.
+ */
+async function assertLegacyLockAbandoned(
+  paths: LaunchdPaths,
+  uid: number,
+  inspector: LaunchdProcessInspector,
+): Promise<void> {
+  const lockPath = join(paths.agentsDirectory, `.${legacyLaunchdLabel}.operation-lock`);
+  let snapshot: { content: string; identity: FileIdentity } | null;
+  try { snapshot = await readOwnedFile(lockPath, uid, [1, 2]); }
+  catch { return; }
+  if (snapshot === null) return;
+  let owner: LockOwnerMetadata;
+  try { owner = parseOwnerMetadata(snapshot.content); }
+  catch { return; }
+  const observed = await inspector.inspect(owner.pid);
+  if (observed.state === 'live' && observed.startIdentity === owner.startIdentity) {
+    throw new LaunchdLifecycleError(
+      'LAUNCHD_OPERATION_BUSY',
+      'A launchd lifecycle operation under the previous label is still in progress.',
+      { operation: 'legacy-migration', owner: 'live' },
+    );
+  }
+}
+
 async function ensureInstallDirectories(paths: LaunchdPaths, uid: number): Promise<void> {
   await ensureLaunchAgentsDirectory(paths, uid);
-  const applicationSupport = join(paths.libraryDirectory, 'Application Support');
+  const applicationSupport = dirname(paths.dataRoot);
   await ensureSafeChildDirectory(paths.libraryDirectory, applicationSupport, uid, false);
   await ensureSafeChildDirectory(applicationSupport, paths.dataRoot, uid, true);
   const logs = join(paths.libraryDirectory, 'Logs');
@@ -505,8 +758,8 @@ async function withLaunchdOperationLock<T>(
   metadataReadHook: LaunchdLifecycleOptions['metadataReadHook'],
   operation: (transaction: LaunchdTransaction) => Promise<T>,
 ): Promise<T> {
-  const lockPath = join(paths.agentsDirectory, `.${launchdLabel}.operation-lock`);
-  const journalPath = join(paths.agentsDirectory, `.${launchdLabel}.transaction`);
+  const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
+  const journalPath = join(paths.agentsDirectory, `.${paths.label}.transaction`);
   const parent = await assertSafeDirectory(paths.agentsDirectory, uid, true);
   const currentOwner = await inspector.current();
   const baseOwner: LockOwnerMetadata = {
@@ -1831,7 +2084,7 @@ function validateJournal(transaction: LaunchdTransaction, journal: TransactionJo
     ? ['preparing', 'prepared', 'old-quarantined', 'new-linked', 'temporary-unlinked'].includes(journal.phase)
     : ['prepared', 'removal-quarantined', 'removal-cleaned'].includes(journal.phase);
   if (!phaseAllowed) throw transactionPathError('transaction journal phase is invalid');
-  const targetName = `${launchdLabel}.plist`;
+  const targetName = `${transaction.paths.label}.plist`;
   const expectedTemporary = `${targetName}.tmp-${transaction.id}`;
   const expectedQuarantine = `${targetName}.${journal.operation === 'publish' ? 'replaced' : 'removed'}-${transaction.id}`;
   if ((journal.temporary !== null && journal.temporary !== expectedTemporary)
@@ -2227,9 +2480,11 @@ async function runLaunchctl(argv: readonly string[]): Promise<LaunchdCommandResu
 function lifecycleResult<Action extends 'install' | 'uninstall' | 'status', State extends string>(
   action: Action,
   state: State,
-  plistPath: string,
+  paths: LaunchdPaths,
 ): LaunchdLifecycleResult<State> & { action: Action } {
-  return { action, state, label: launchdLabel, plistPath };
+  // The label and the plist path are read off the same resolved HOME the state was read for, so
+  // the answer cannot name one agent and report another's state.
+  return { action, state, label: paths.label, plistPath: paths.plistPath };
 }
 
 /** Reads the `state = <word>` line that `launchctl print` puts near the top of its report. */
@@ -2263,6 +2518,15 @@ function sanitizeCommandOutput(value: string): string {
 
 function isAbsentResult(result: LaunchdCommandResult): boolean {
   return result.outcome === 'not-found';
+}
+
+function unescapeXml(value: string): string {
+  return value
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&amp;', '&');
 }
 
 function escapeXml(value: string): string {

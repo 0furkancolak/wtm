@@ -7,6 +7,23 @@ All notable changes are documented here. This project follows Semantic Versionin
 Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract
 are unstable, and a breaking change may land in a minor release without a deprecation window.
 
+<!-- gatekeeper-quarantine:start -->
+### Before you run a macOS binary downloaded through a browser
+
+A browser stamps `com.apple.quarantine` on what it saves, and these executables are only ad-hoc
+signed, so macOS sends `SIGKILL` at `exec`. The process dies before any WTM code runs: exit 137,
+nothing on stdout, nothing on stderr, and no error WTM is able to report about itself. Clear the
+attribute from the downloaded file first:
+
+```bash
+xattr -d com.apple.quarantine wtm
+```
+
+Installing with `curl` and `tar` as the README describes is unaffected — neither writes the
+quarantine attribute. This note is a workaround for a defect and is removed once the stable macOS
+binaries are Developer ID signed and notarized.
+<!-- gatekeeper-quarantine:end -->
+
 ### Added
 
 - `wtm remove` is runtime-aware. It now stops the worktree's WTM-managed processes, verifies from
@@ -28,6 +45,20 @@ are unstable, and a breaking change may land in a minor release without a deprec
   is what makes it worth having: without it a branch deleted on the remote leaves its tracking ref
   behind and HEAD still looks remote-persisted. A failing fetch fails the command rather than
   quietly continuing on stale refs.
+- A preflight on the daemon socket path. macOS caps a Unix socket address at 104 bytes, and a
+  `HOME` deep enough to breach it used to surface as `listen EINVAL`. Both `wtm daemon serve` and
+  `wtm daemon install` — and the CLI's connect side, so `wtm ps` explains itself too — now measure
+  the address in bytes before binding and refuse with the new `WTM_SOCKET_PATH_TOO_LONG` code
+  (exit 2) naming the measured length, the limit, and how much shorter the home directory has to
+  be. The published path and the private path actually bound are both measured, so the check
+  cannot be one byte optimistic.
+- Two `doctor` checks. `socket-path` reports the headroom left under that limit while there is
+  still headroom, rather than only once the daemon cannot start; it is the first check that
+  describes the host rather than a workspace. `registration` answers whether this directory is
+  inside a registered worktree and, separately, whether the daemon is reachable — two problems
+  with different fixes that `doctor` used to be unable to tell apart.
+- `wtm daemon status` reports the launchd `label` it is describing, and `docs/04-cli-reference.md`
+  gains the output-field table the command never had.
 - `remoteKnowledge` on every worktree analysis — `source`, `refreshed`, `refreshedAt`, `confidence` —
   so a caller can tell a `LOCAL_ONLY` remote-persistence verdict from a `REFRESHED` one. Analysis
   itself still has no path that can reach the network.
@@ -48,6 +79,40 @@ are unstable, and a breaking change may land in a minor release without a deprec
   missing base ref or a gone upstream is worth reading.
 - `WorktreeRemovalBlockedError` no longer carries `WTM_REMOVE_BLOCKED`, which was never a member of
   the protocol enum and would have failed envelope validation had it reached one.
+- `Unknown task: <name>` now lists the tasks that do exist, ranked by closeness to what was typed
+  and capped at ten with an `and N more` tail; the full list is in the error's `context` for
+  `--json` consumers. In a workspace with no tasks at all the message says how to define one
+  instead of printing an empty list. No command enumerates tasks, so this error was the only place
+  the information could reach anyone.
+- The README quick start defines a task before resolving one, so following it top to bottom in a
+  clean workspace with no `Makefile` and no adapters produces no error. It used to run
+  `wtm resolve dev` fifty lines before the README explained that tasks have to be defined. A test
+  now executes the quick start's own commands against a temporary workspace, reading them out of
+  `README.md` rather than carrying a copy.
+- No user-facing failure prints a stack trace or a path from the machine that built the release.
+  `wtm daemon serve` wrote `error.stack` to stderr beside the clean envelope it already printed,
+  and anything escaping the CLI entry point became an unhandled rejection Node rendered in full.
+  Stacks still reach the daemon's log file, which is where they are worth having.
+- Two `HOME`s on one machine no longer report each other's daemon. The launchd label is derived
+  from the resolved `HOME` (`dev.wtm.daemon.<digest>`) instead of being a constant, which is what
+  makes `state`, `runState`, `plistPath` and `reachable` describe one agent — and what lets a
+  second `HOME` install at all, since a launchd service name is `gui/<uid>/<label>`. An
+  installation made under the earlier bare label is taken over on the next `install` or `status`
+  when its plist is this `HOME`'s: the old service is booted out, the old plist removed, and the
+  operation locks and transaction journals named after the old label swept, because the label
+  change is what would otherwise strand them. A bare-label agent belonging to another `HOME` is
+  left strictly alone.
+- A worktree created with `git worktree add` while the daemon was down is no longer invisible
+  until someone re-runs `wtm init`. A read command that lands in an unregistered directory
+  reconciles the containing repository in process — the repository, not the whole workspace, which
+  is `init`'s job and too expensive for a read path — then answers, warning `WTM_DAEMON_UNAVAILABLE`
+  that it did so. The read never fails because the fallback failed. Once the daemon is back it
+  reconciles at startup as it always did, so no manual `init` is needed either way.
+- `wtm env` in a directory WTM has not registered reports `WTM_WORKSPACE_NOT_FOUND` (exit 2) and
+  the message naming `wtm init`, instead of flattening both into `GIT_REPOSITORY_DEGRADED` and
+  "Diagnostic data source failed." The diagnostics envelope now preserves an error that carries a
+  schema-valid code, an explicit severity and a message — and still redacts and bounds it, so it
+  gains its identity back without gaining an exemption.
 - The CLI's error mapping had drifted four codes behind the protocol enum, so
   `WTM_OPERATION_CONFLICT` and the three daemon codes were flattened to `GIT_REPOSITORY_DEGRADED`
   and lost their exit codes. `docs/18-errors-json-contract.md` and the enum are now held together by

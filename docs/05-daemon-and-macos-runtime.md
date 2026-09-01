@@ -25,10 +25,25 @@ External adapters are not resident processes.
 `wtm daemon install` installs a per-user LaunchAgent under:
 
 ```text
-~/Library/LaunchAgents/dev.wtm.daemon.plist
+~/Library/LaunchAgents/dev.wtm.daemon.<digest>.plist
 ```
 
-The exact label can change before public release if the final reverse-DNS project identifier changes.
+`<digest>` is a SHA-256 over the resolved absolute `HOME`, truncated to 128 bits of hex. A launchd
+service name is `gui/<uid>/<label>`, so a constant label made every `HOME` under one uid the same
+service: a second `HOME` could not bootstrap its own agent at all, and `wtm daemon status` answered
+from whichever agent had got there first while naming this `HOME`'s plist. Deriving the label is
+what makes `state`, `runState`, `plistPath` and `reachable` describe one and the same agent.
+
+`install` and `status` take over an installation made under the earlier bare `dev.wtm.daemon`
+label when its plist is this `HOME`'s: the old service is booted out, the definition is republished
+under the derived label, and the old plist -- along with any operation lock or transaction journal
+named after the old label -- is removed. `uninstall` boots out and deletes that same
+definition, since an agent under the older name is this `HOME`'s agent under an older name. A
+bare-label service whose plist belongs to another `HOME` is left strictly alone; it is that
+`HOME`'s daemon.
+
+The reverse-DNS prefix can still change before public release if the final project identifier
+changes.
 
 The LaunchAgent invokes the resolved `wtmd` binary/script and restarts it on unexpected failure. Installation never requires root.
 
