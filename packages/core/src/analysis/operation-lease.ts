@@ -5,9 +5,17 @@
  * a colliding holder is still alive, and what a caller is told when it is refused. The split
  * exists because the two questions have incompatible shapes: the store's `ownerLiveness` verdict
  * is consulted synchronously inside `BEGIN IMMEDIATE`, while learning a PID's start time means
- * running `ps`, which is asynchronous. So liveness is measured *before* the transaction and handed
- * in as a precomputed verdict, with a guard that refuses to apply that verdict to any row other
- * than the one it was measured from.
+ * asking the operating system, which is asynchronous. So liveness is measured *before* the
+ * transaction and handed in as a precomputed verdict, with a guard that refuses to apply that
+ * verdict to any row other than the one it was measured from.
+ *
+ * How the start time is read is the caller's business, not this module's. Core states the question
+ * as {@link ProcessStartTimeReader} and every caller supplies an implementation, which is what
+ * keeps `@wtm/core` free of any operating system: the CLI and the daemon are the composition roots
+ * that choose one. This replaced a module-global `installProcessStartIdentityReader` seam in the
+ * increment that made platforms explicit — a global any test may install is a global a test may
+ * forget to restore, and the reader that decides whether somebody else's lease may be reclaimed is
+ * the last thing that should be ambient.
  *
  * There is deliberately no renewal heartbeat. A lapsed TTL never evicts a live holder — the store
  * asks for a liveness verdict before it reclaims anything — so an operation that outruns its TTL
@@ -16,7 +24,6 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { Remediation } from '@wtm/protocol';
-import { readProcessStartIdentity, type ProcessStartIdentity } from '../runtime/process-identity';
 import type {
   RepositoryOperation,
   RepositoryOperationLeaseHolder,
@@ -24,6 +31,31 @@ import type {
   RepositoryOperationLeaseResult,
   StateStore,
 } from '../state/store';
+
+/**
+ * Answers "when did the process at this PID start?", and `null` only when there is no such
+ * process.
+ *
+ * A reader that cannot answer for any *other* reason must reject rather than resolve `null`,
+ * because a wrong `null` releases somebody else's lease — which is the one failure this whole
+ * mechanism exists to prevent. `@wtm/platform` supplies the implementations; core deliberately
+ * knows nothing about how the question is asked, only that it is asked.
+ */
+export type ProcessStartTimeReader = (pid: number) => Promise<string | null>;
+
+/**
+ * A PID alone does not identify a process: the kernel reuses PIDs, so a lease left behind by a
+ * dead `wtm` can look alive the moment an unrelated process inherits its number. Pairing the PID
+ * with the start time the kernel recorded for it makes the pair unique in practice, which is what
+ * the comparisons below rely on.
+ *
+ * This is deliberately narrower than the daemon's four-field process identity: a lease owner is a
+ * `wtm` process, not a supervised task, so no pgid and no command fingerprint are needed.
+ */
+export interface ProcessStartIdentity {
+  pid: number;
+  processStartTime: string;
+}
 
 /**
  * Two minutes. Long enough that no honest stage of a removal reaches it, short enough that the
@@ -62,6 +94,12 @@ export interface RepositoryOperationSession {
 
 export interface RepositoryOperationLeaseInput {
   store: RepositoryOperationLeaseStore;
+  /**
+   * How this caller learns a PID's start time. Required, and deliberately not defaulted: a lease
+   * is the mechanism that keeps two destructive operations out of one repository, and a default
+   * reader would be a platform assumption made silently, in core, by whichever caller forgot.
+   */
+  readProcessStartTime: ProcessStartTimeReader;
   repositoryId: string;
   operation: RepositoryOperation;
   subjectWorktreeId?: string | undefined;
@@ -106,7 +144,7 @@ export async function withRepositoryOperationLease<T>(
 ): Promise<T> {
   const now = input.now ?? (() => new Date().toISOString());
   const key: RepositoryOperationLeaseKey = { repositoryId: input.repositoryId, operation: input.operation };
-  const owner = await readProcessStartIdentity(process.pid);
+  const owner = await readProcessStartIdentity(input.readProcessStartTime, process.pid);
   if (owner === null) {
     // Our own live process must have a readable start time. If it does not, nothing here can
     // distinguish this process from a recycled PID, and no lease taken in this environment could
@@ -153,9 +191,10 @@ async function acquireLease(
     const timestamp = now();
     const observed = input.store.readRepositoryOperationLease(key);
     // Liveness is only ever the deciding question for a row that has already expired, and it
-    // costs a `ps`, so an unexpired holder is left unmeasured — it is a conflict either way.
+    // costs a trip to the operating system, so an unexpired holder is left unmeasured — it is a
+    // conflict either way.
     const measured = observed !== null && observed.expiresAt <= timestamp
-      ? { holder: observed, verdict: await livenessOf(observed) }
+      ? { holder: observed, verdict: await livenessOf(input.readProcessStartTime, observed) }
       : null;
     let raced = false;
     const result = input.store.acquireRepositoryOperationLease({
@@ -191,10 +230,34 @@ async function acquireLease(
  * A holder is gone when its PID has no process, and equally when the process at that PID started
  * at a different time — that second case is a recycled PID wearing a dead holder's number.
  */
-async function livenessOf(holder: RepositoryOperationLeaseHolder): Promise<'alive' | 'gone'> {
-  const identity = await readProcessStartIdentity(holder.pid);
+async function livenessOf(
+  read: ProcessStartTimeReader,
+  holder: RepositoryOperationLeaseHolder,
+): Promise<'alive' | 'gone'> {
+  const identity = await readProcessStartIdentity(read, holder.pid);
   if (identity === null) return 'gone';
   return identity.processStartTime === holder.processStartTime ? 'alive' : 'gone';
+}
+
+/**
+ * Resolves `null` when the process is absent, and only then. The PID is validated before the
+ * reader ever sees it: a nonsense PID is a caller's bug, and letting it through would turn into an
+ * absence — which reads as "the holder is gone, reclaim the lease".
+ *
+ * An empty start time is treated as absence for the same reason it always was: a reader that
+ * answers with nothing has not identified a process, and the identity would compare equal to the
+ * next empty one.
+ */
+async function readProcessStartIdentity(
+  read: ProcessStartTimeReader,
+  pid: number,
+): Promise<ProcessStartIdentity | null> {
+  if (!Number.isSafeInteger(pid) || pid < 1) {
+    throw new TypeError(`A process identity needs a positive integer PID, received ${String(pid)}`);
+  }
+  const processStartTime = await read(pid);
+  if (processStartTime === null || processStartTime.length === 0) return null;
+  return { pid, processStartTime };
 }
 
 /** The fields that make a holder the same holder: who it is, and when it took the lease. */

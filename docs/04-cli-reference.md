@@ -70,7 +70,13 @@ Shows resolved worktree identity, state, endpoints, processes and runtime resour
 
 ### `wtm doctor [selector]`
 
-Runs deterministic checks for Git, config, adapters, resources, ports and process records.
+Runs deterministic checks for Git, config, adapters, resources, ports, process records and the
+host platform.
+
+The last two rows are host-scoped: they describe this machine rather than this workspace, and
+they are the same answer in every workspace on it. `platform` comes before `socket-path` because
+it is the cause — the limit `socket-path` measures against is that platform's `sizeof(sun_path)`,
+104 bytes on macOS and 108 on Linux.
 
 | Check | What it answers |
 | --- | --- |
@@ -81,6 +87,7 @@ Runs deterministic checks for Git, config, adapters, resources, ports and proces
 | `resources` | How many declared resources are in place, and why one is not |
 | `ports` | How many endpoints the workspace holds, and whether two worktrees hold the same one |
 | `process-records` | How many supervised tasks are running, and which records name a process that is gone |
+| `platform` | Which operating system WTM decided it is on, the service manager it will use, the data, log and socket roots that follow from it, and the socket address limit in force. `error` only when WTM has no backend for this host |
 | `socket-path` | How much room is left under the platform's Unix socket path limit, reported as a warning while there is still headroom rather than only once the daemon cannot bind |
 
 ### `wtm explain [selector]`
@@ -388,35 +395,55 @@ wtm daemon status
 wtm daemon serve
 ```
 
-`serve` is the internal foreground command used by launchd and development tests.
+`serve` is the internal foreground command the platform's service manager runs, and the one
+development tests drive.
+
+`install`, `uninstall` and `status` are driven by the service manager of the platform WTM
+selected — launchd on macOS, systemd on Linux. `wtm doctor`'s `platform` check names which.
 
 `install` reports one of four states:
 
 | State | Meaning |
 | --- | --- |
-| `installed` | No LaunchAgent was registered; one is now. |
+| `installed` | No service was registered with the platform's service manager; one is now. |
 | `reinstalled` | The definition changed and the service was replaced. |
 | `restarted` | The definition was already correct, and the service was restarted so that the executable now running is the one just installed. |
 | `already-installed` | Another `install` won the race and its service is loaded. |
 
-`restarted` is the ordinary result of installing a new build over an old one. The plist names
-the executable by path, so a new build leaves the definition identical — without the restart,
-launchd goes on running the previous binary and the install changes nothing you can observe.
+`restarted` is the ordinary result of installing a new build over an old one. The definition
+names the executable by path, so a new build leaves it byte-identical — without the restart, the
+service manager goes on running the previous binary and the install changes nothing you can
+observe.
 
 `status` reports these fields:
 
 | Field | Meaning |
 | --- | --- |
-| `state` | `loaded` when launchd knows the job, `installed-not-loaded` when the plist is on disk but launchd does not know it, `absent` when there is neither. |
-| `runState` | launchd's own word for the job: `running` while a process is alive, `not running` while the job is loaded but idle, `null` when launchd does not know the job. |
-| `label` | The launchd label this `HOME` publishes under, `dev.wtm.daemon.<digest>`. |
-| `plistPath` | The LaunchAgent definition named by that label, always inside this `HOME`. |
-| `reachable` | Whether the daemon answered on its socket. launchd reports a service as running the moment it forks, which says nothing about whether a command would work. |
+| `state` | `loaded` when the service manager knows the job, `installed-not-loaded` when the definition is on disk but the manager does not know it, `absent` when there is neither. |
+| `runState` | The service manager's own word for the job, passed through verbatim rather than normalised — `running` / `not running` from launchd, and drawn from `LoadState`, `ActiveState` and `SubState` on systemd. `null` when the manager does not know the job. |
+| `label` | The name this `HOME` publishes under: `dev.wtm.daemon.<digest>` on macOS, `wtm-daemon-<digest>.service` on Linux. The digest is the same derivation on both. |
+| `definitionPath` | The service definition named by that label, always inside this `HOME`. |
+| `plistPath` | **Deprecated.** The same value as `definitionPath`, present on macOS only. |
+| `reachable` | Whether the daemon answered on its socket. A service manager reports a service as running the moment it forks, which says nothing about whether a command would work. |
 
 Every one of them describes the same agent: the label is derived from the resolved `HOME`, and
-`state`, `runState` and `plistPath` are all read for that label. A constant label made them
+`state`, `runState` and `definitionPath` are all read for that label. A constant label made them
 describe different agents — under a second `HOME`, `state` and `runState` came from the first
-`HOME`'s LaunchAgent while `plistPath` named a file that had never been loaded.
+`HOME`'s service while `definitionPath` named a file that had never been loaded.
+
+`runState` is deliberately not normalised across platforms. It is the manager's own vocabulary, and
+translating it would mean inventing a third vocabulary that matches neither of the two a user sees
+when they run `launchctl print` or `systemctl --user show` themselves.
+
+`definitionPath` is the field to read. WTM's service definition is a LaunchAgent plist on macOS
+and a systemd user unit on Linux, so `plistPath` is only ever true on one of them; naming a
+`.service` file `plistPath` would be a lie told for the sake of a schema. It is dropped from the
+Linux envelope for that reason.
+
+`plistPath` is retained on macOS purely for compatibility — JSON output is a contract that may
+only grow, and a rename is not a growth: a script reading `plistPath` would simply stop finding
+it. Both fields are present there and always carry the same value. A later increment removes
+`plistPath` once the deprecation has been carried in a release.
 
 ## Skill
 

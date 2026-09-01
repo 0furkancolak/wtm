@@ -1,12 +1,12 @@
-import { afterEach, expect, test } from 'bun:test';
+import { expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
-import { installProcessStartIdentityReader } from '../../runtime/process-identity';
 import {
   defaultOperationLeaseTtlMs,
   RepositoryOperationConflictError,
   withRepositoryOperationLease,
+  type ProcessStartTimeReader,
   type RepositoryOperationLeaseStore,
 } from '../operation-lease';
 import type {
@@ -22,12 +22,6 @@ const key: RepositoryOperationLeaseKey = { repositoryId, operation: 'remove' };
 const selfStartTime = 'Mon Aug 31 09:59:00 2026';
 const holderPid = 4_242;
 const holderStartTime = 'Mon Aug 31 10:00:00 2026';
-
-const restorers: Array<() => void> = [];
-
-afterEach(() => {
-  while (restorers.length > 0) restorers.pop()?.();
-});
 
 /**
  * A faithful re-implementation of the four store semantics this module depends on, so a unit
@@ -142,27 +136,40 @@ function seedHolder(store: FakeLeaseStore, overrides: Partial<RepositoryOperatio
   };
 }
 
+interface ScriptedReader {
+  read: ProcessStartTimeReader;
+  /** Every PID whose start time was measured, in order. */
+  seen: number[];
+}
+
 /**
- * Records every PID whose start time is measured, and answers for our own process so the
- * module's own-identity check can pass. Everything else is scripted by `answers`.
+ * The start-time reader a test hands to the lease. It answers for our own process so the module's
+ * own-identity check can pass, and scripts everything else from `answers`.
+ *
+ * It is passed in rather than installed. The module-global seam this replaced had to be restored
+ * in an `afterEach`, which is a restoration that can be forgotten — and forgetting it left the
+ * *next* test measuring whatever the previous one scripted. A reader that only exists as an
+ * argument cannot leak into a test that did not ask for it.
  */
-function installIdentityReader(answers: ReadonlyMap<number, string | null>): number[] {
+function scriptedReader(answers: ReadonlyMap<number, string | null>): ScriptedReader {
   const seen: number[] = [];
-  restorers.push(installProcessStartIdentityReader(async (pid) => {
-    seen.push(pid);
-    if (pid === process.pid) return selfStartTime;
-    return answers.get(pid) ?? null;
-  }));
-  return seen;
+  return {
+    seen,
+    read: async (pid) => {
+      seen.push(pid);
+      if (pid === process.pid) return selfStartTime;
+      return answers.get(pid) ?? null;
+    },
+  };
 }
 
 test('runs the body, returns its value, and releases the lease afterwards', async () => {
   const store = new FakeLeaseStore();
-  const seen = installIdentityReader(new Map());
+  const reader = scriptedReader(new Map());
   const observedTokens: string[] = [];
 
   const result = await withRepositoryOperationLease(
-    { store, repositoryId, operation: 'remove', subjectWorktreeId: 'worktree-7', now: clockAt('2026-08-31T10:00:00.000Z') },
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', subjectWorktreeId: 'worktree-7', now: clockAt('2026-08-31T10:00:00.000Z') },
     async (session) => {
       observedTokens.push(session.token);
       expect(session.adoptedStage).toBeNull();
@@ -175,16 +182,16 @@ test('runs the body, returns its value, and releases the lease afterwards', asyn
   expect(observedTokens).toHaveLength(1);
   expect(observedTokens[0]).not.toBe('');
   expect(store.readRepositoryOperationLease(key)).toBeNull();
-  expect(seen).toEqual([process.pid]);
+  expect(reader.seen).toEqual([process.pid]);
 });
 
 test('gives the lease a default two-minute time to live', async () => {
   const store = new FakeLeaseStore();
-  installIdentityReader(new Map());
+  const reader = scriptedReader(new Map());
   let expiresAt = '';
 
   await withRepositoryOperationLease(
-    { store, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
     async () => {
       expiresAt = store.readRepositoryOperationLease(key)?.expiresAt ?? '';
     },
@@ -196,11 +203,11 @@ test('gives the lease a default two-minute time to live', async () => {
 
 test('releases the lease when the body throws and rethrows that very error', async () => {
   const store = new FakeLeaseStore();
-  installIdentityReader(new Map());
+  const reader = scriptedReader(new Map());
   const failure = new Error('cleanup could not finish');
 
   const thrown = await withRepositoryOperationLease(
-    { store, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
     async () => {
       throw failure;
     },
@@ -213,11 +220,11 @@ test('releases the lease when the body throws and rethrows that very error', asy
 test('refuses to start behind a live holder, without measuring anything about it', async () => {
   const store = new FakeLeaseStore();
   seedHolder(store);
-  const seen = installIdentityReader(new Map([[holderPid, holderStartTime]]));
+  const reader = scriptedReader(new Map([[holderPid, holderStartTime]]));
   let bodyRuns = 0;
 
   const thrown = await withRepositoryOperationLease(
-    { store, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:15:00.000Z') },
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:15:00.000Z') },
     async () => {
       bodyRuns += 1;
     },
@@ -239,7 +246,7 @@ test('refuses to start behind a live holder, without measuring anything about it
   expect(conflict.remediation).toEqual([]);
   expect(bodyRuns).toBe(0);
   expect(store.livenessArguments).toEqual([]);
-  expect(seen).toEqual([process.pid]);
+  expect(reader.seen).toEqual([process.pid]);
   // The holder view carries no token, so the untouched row is checked directly.
   expect(store.row?.token).toBe('holder-token');
 });
@@ -247,11 +254,11 @@ test('refuses to start behind a live holder, without measuring anything about it
 test('reports an abandoned lease with the stage it stopped at and a --resume remediation', async () => {
   const store = new FakeLeaseStore();
   seedHolder(store, { stage: 'release-endpoints' });
-  installIdentityReader(new Map([[holderPid, null]]));
+  const reader = scriptedReader(new Map([[holderPid, null]]));
   let bodyRuns = 0;
 
   const thrown = await withRepositoryOperationLease(
-    { store, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:17:00.000Z') },
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:17:00.000Z') },
     async () => {
       bodyRuns += 1;
     },
@@ -279,10 +286,10 @@ test('reports an abandoned lease with the stage it stopped at and a --resume rem
 test('adopts an abandoned lease and reports the stage it resumed from', async () => {
   const store = new FakeLeaseStore();
   seedHolder(store, { stage: 'release-endpoints' });
-  installIdentityReader(new Map([[holderPid, null]]));
+  const reader = scriptedReader(new Map([[holderPid, null]]));
 
   const resumedFrom = await withRepositoryOperationLease(
-    { store, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
     async (session) => session.adoptedStage,
   );
 
@@ -293,11 +300,11 @@ test('adopts an abandoned lease and reports the stage it resumed from', async ()
 test('refuses to adopt a lease whose holder is still alive, even past its expiry', async () => {
   const store = new FakeLeaseStore();
   seedHolder(store, { stage: 'stop-processes' });
-  installIdentityReader(new Map([[holderPid, holderStartTime]]));
+  const reader = scriptedReader(new Map([[holderPid, holderStartTime]]));
   let bodyRuns = 0;
 
   const thrown = await withRepositoryOperationLease(
-    { store, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
     async () => {
       bodyRuns += 1;
     },
@@ -318,10 +325,10 @@ test('treats a holder whose start time no longer matches as gone, so a reused PI
   const store = new FakeLeaseStore();
   seedHolder(store, { stage: 'stop-processes' });
   // The PID answers, but it is a different process wearing the dead holder's number.
-  installIdentityReader(new Map([[holderPid, 'Mon Aug 31 11:30:00 2026']]));
+  const reader = scriptedReader(new Map([[holderPid, 'Mon Aug 31 11:30:00 2026']]));
 
   const thrown = await withRepositoryOperationLease(
-    { store, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:17:00.000Z') },
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:17:00.000Z') },
     async () => 'unreachable',
   ).then(() => null, (error: unknown) => error);
 
@@ -329,7 +336,7 @@ test('treats a holder whose start time no longer matches as gone, so a reused PI
   expect((thrown as RepositoryOperationConflictError).abandoned).toBe(true);
 
   const adopted = await withRepositoryOperationLease(
-    { store, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
     async (session) => session.adoptedStage,
   );
   expect(adopted).toBe('stop-processes');
@@ -337,12 +344,12 @@ test('treats a holder whose start time no longer matches as gone, so a reused PI
 
 test('records a stage on the lease row while the session is open', async () => {
   const store = new FakeLeaseStore();
-  installIdentityReader(new Map());
+  const reader = scriptedReader(new Map());
   const stagesSeenInside: Array<string | null> = [];
   const failure = new Error('verification found residue');
 
   const thrown = await withRepositoryOperationLease(
-    { store, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
     async (session) => {
       session.advance('stop-processes');
       stagesSeenInside.push(store.readRepositoryOperationLease(key)?.stage ?? null);
@@ -361,11 +368,11 @@ test('records a stage on the lease row while the session is open', async () => {
 
 test('refuses to record a stage once the lease is no longer held', async () => {
   const store = new FakeLeaseStore();
-  installIdentityReader(new Map());
+  const reader = scriptedReader(new Map());
   let advanceFailure: unknown = null;
 
   await withRepositoryOperationLease(
-    { store, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
     async (session) => {
       store.releaseRepositoryOperationLease(key, session.token);
       try {
@@ -382,22 +389,22 @@ test('refuses to record a stage once the lease is no longer held', async () => {
 
 test('never measures a holder when nothing collides', async () => {
   const store = new FakeLeaseStore();
-  const seen = installIdentityReader(new Map());
+  const reader = scriptedReader(new Map());
 
   await withRepositoryOperationLease(
-    { store, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
     async () => undefined,
   );
 
   expect(store.livenessArguments).toEqual([]);
   expect(store.acquireCalls).toBe(1);
-  expect(seen).toEqual([process.pid]);
+  expect(reader.seen).toEqual([process.pid]);
 });
 
 test('never evicts a holder it has not measured, and retries the whole measurement once', async () => {
   const store = new FakeLeaseStore();
   seedHolder(store, { stage: 'stop-processes' });
-  const seen = installIdentityReader(new Map([[holderPid, null], [4_243, null]]));
+  const reader = scriptedReader(new Map([[holderPid, null], [4_243, null]]));
   // The row is replaced by a different dead holder exactly once, after the first measurement.
   store.beforeAcquire = () => {
     store.beforeAcquire = null;
@@ -405,7 +412,7 @@ test('never evicts a holder it has not measured, and retries the whole measureme
   };
 
   const resumedFrom = await withRepositoryOperationLease(
-    { store, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
     async (session) => session.adoptedStage,
   );
 
@@ -413,13 +420,13 @@ test('never evicts a holder it has not measured, and retries the whole measureme
   expect(store.acquireCalls).toBe(2);
   // Both attempts collided with the successor row; only the second one had measured it.
   expect(store.livenessArguments.map((holder) => holder.pid)).toEqual([4_243, 4_243]);
-  expect(seen).toEqual([process.pid, holderPid, 4_243]);
+  expect(reader.seen).toEqual([process.pid, holderPid, 4_243]);
 });
 
 test('reports a conflict rather than looping when the holder keeps changing under the measurement', async () => {
   const store = new FakeLeaseStore();
   seedHolder(store, { stage: 'stop-processes' });
-  installIdentityReader(new Map());
+  const reader = scriptedReader(new Map());
   let generation = 0;
   store.beforeAcquire = () => {
     generation += 1;
@@ -428,7 +435,7 @@ test('reports a conflict rather than looping when the holder keeps changing unde
   let bodyRuns = 0;
 
   const thrown = await withRepositoryOperationLease(
-    { store, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
     async () => {
       bodyRuns += 1;
     },
@@ -442,16 +449,57 @@ test('reports a conflict rather than looping when the holder keeps changing unde
 
 test('refuses to take a lease when this process has no readable start identity', async () => {
   const store = new FakeLeaseStore();
-  restorers.push(installProcessStartIdentityReader(async () => null));
+  // A reader that answers "no such process" for every PID, this process included.
+  const reader: ScriptedReader = { read: async () => null, seen: [] };
 
   const thrown = await withRepositoryOperationLease(
-    { store, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
     async () => 'unreachable',
   ).then(() => null, (error: unknown) => error);
 
   expect(thrown).toBeInstanceOf(Error);
   expect((thrown as Error).message).toContain(String(process.pid));
   expect(store.acquireCalls).toBe(0);
+});
+
+test('treats an empty start time as no identity, rather than as an identity that is empty', async () => {
+  const store = new FakeLeaseStore();
+  // A reader is allowed to answer with an empty string; two of them would compare equal, so an
+  // empty answer has to mean "not identified" and not "identified as nothing".
+  const reader: ScriptedReader = { read: async () => '', seen: [] };
+
+  const thrown = await withRepositoryOperationLease(
+    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
+    async () => 'unreachable',
+  ).then(() => null, (error: unknown) => error);
+
+  expect(thrown).toBeInstanceOf(Error);
+  expect((thrown as Error).message).toContain('no readable start identity');
+  expect(store.acquireCalls).toBe(0);
+});
+
+test('refuses a lease row whose PID is not a positive integer instead of measuring it', async () => {
+  const store = new FakeLeaseStore();
+  const reader = scriptedReader(new Map());
+
+  // A stored PID is only as trustworthy as the row it came from. Handing a nonsense one to the
+  // reader would get an absence back — and an absence reads as "the holder is gone, take the
+  // lease", which is the one conclusion this module may never reach by accident.
+  for (const pid of [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 2]) {
+    seedHolder(store, { pid, expiresAt: '2026-08-31T10:16:02.118Z' });
+    const measured = reader.seen.length;
+
+    const thrown = await withRepositoryOperationLease(
+      { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
+      async () => 'unreachable',
+    ).then(() => null, (error: unknown) => error);
+
+    expect(`pid ${String(pid)}: ${String(thrown instanceof TypeError)}`).toBe(`pid ${String(pid)}: true`);
+    expect((thrown as TypeError).message).toContain(String(pid));
+    // Only our own PID was ever put to the reader; the bad one was rejected in front of it.
+    expect(reader.seen.slice(measured)).toEqual([process.pid]);
+    expect(store.row?.token).toBe('holder-token');
+  }
 });
 
 const scenarioPath = fileURLToPath(new URL('./operation-lease.scenario.ts', import.meta.url));

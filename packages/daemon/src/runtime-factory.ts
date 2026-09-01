@@ -1,10 +1,14 @@
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+import { selectPlatformRuntime } from '@wtm/platform';
+import type { PlatformRuntime } from '@wtm/platform/ports';
+import {
+  assertDaemonSocketPathFits,
+  daemonSocketFileName,
+  publishedDaemonSocketPath,
+} from '@wtm/platform/socket';
 import {
   SQLiteStateStore,
-  assertDaemonSocketPathFits,
-  daemonDataRoot,
-  daemonSocketFileName,
   ensurePrivateDirectory,
   verifyPrivateDirectory,
   resolveTask,
@@ -33,6 +37,11 @@ export interface ProductionRuntimePaths {
 }
 
 export interface ProductionDaemonOptions {
+  /**
+   * The machine this daemon is running on. Injected so a test can run the Linux policy on a macOS
+   * host; production selects it here, which is what makes this function the composition root.
+   */
+  platformRuntime?: PlatformRuntime;
   dataRoot?: string;
   databasePath?: string;
   socketPath?: string;
@@ -56,31 +65,72 @@ export interface ProductionDaemonRuntime {
   close(): Promise<void>;
 }
 
-export function defaultProductionRuntimePaths(home = homedir()): ProductionRuntimePaths {
-  const dataRoot = daemonDataRoot(home);
+/** The state database's file name. Only its directory is a platform question. */
+const databaseFileName = 'state.db';
+
+export interface ProductionRuntimePathsOptions {
+  platform?: NodeJS.Platform | string;
+  env?: Readonly<Partial<Record<string, string>>>;
+}
+
+/**
+ * The daemon's five paths, read off a platform runtime.
+ *
+ * Every root used to be spelled here: `~/Library/Application Support/WTM`, `~/Library/Logs/WTM`,
+ * and a socket path derived from the data root. Two of those are macOS facts and the third is a
+ * macOS coincidence — the socket sits beside the database on macOS because macOS offers nowhere
+ * shorter to put it, whereas on Linux `$XDG_RUNTIME_DIR` is a different filesystem chosen by a
+ * different variable. So `socketPath` comes from `paths.socketRoot`, which is why `PlatformPaths`
+ * states that as a field rather than leaving it to be derived: a derivation from `dataRoot` would
+ * be silently wrong on Linux and there would be nothing in the type to say so.
+ */
+export function runtimePathsFor(runtime: PlatformRuntime): ProductionRuntimePaths {
+  const { paths } = runtime;
   return {
-    dataRoot,
-    databasePath: join(dataRoot, 'state.db'),
-    socketPath: join(dataRoot, daemonSocketFileName),
-    logRoot: join(home, 'Library', 'Logs', 'WTM'),
-    globalConfigPath: join(dataRoot, 'config.toml'),
+    dataRoot: paths.dataRoot,
+    databasePath: join(paths.dataRoot, databaseFileName),
+    socketPath: publishedDaemonSocketPath(paths.socketRoot),
+    logRoot: paths.logRoot,
+    globalConfigPath: paths.configPath,
   };
 }
 
+/**
+ * `home` stays a positional argument with a default because the CLI calls this a dozen times with
+ * no arguments at all; `platform` and `env` are injectable for the same reason every port in
+ * `@wtm/platform` takes them, which is that the Linux layout has to be assertable from this macOS
+ * machine. `selectPlatformRuntime` is also where `home` is validated, once, for every port.
+ */
+export function defaultProductionRuntimePaths(
+  home = homedir(),
+  options: ProductionRuntimePathsOptions = {},
+): ProductionRuntimePaths {
+  return runtimePathsFor(selectPlatformRuntime({ home, ...options }));
+}
+
 export async function createProductionDaemon(options: ProductionDaemonOptions = {}): Promise<ProductionDaemonRuntime> {
-  const defaults = defaultProductionRuntimePaths();
+  const platformRuntime = options.platformRuntime ?? selectPlatformRuntime();
+  const defaults = runtimePathsFor(platformRuntime);
   const dataRoot = resolve(options.dataRoot ?? defaults.dataRoot);
   const requestedPaths: ProductionRuntimePaths = {
     dataRoot,
-    databasePath: resolve(options.databasePath ?? join(dataRoot, 'state.db')),
-    socketPath: resolve(options.socketPath ?? join(dataRoot, daemonSocketFileName)),
+    databasePath: resolve(options.databasePath ?? join(dataRoot, databaseFileName)),
+    // A caller who moved the data root gets its socket moved with it, even on a platform whose
+    // default socket root is elsewhere: an isolated instance that kept the shared
+    // `$XDG_RUNTIME_DIR` address would collide with the installed daemon, which is the one
+    // failure a caller passing `dataRoot` is trying to avoid. Only the untouched default reads
+    // the platform's socket root.
+    socketPath: resolve(options.socketPath
+      ?? (options.dataRoot === undefined ? defaults.socketPath : join(dataRoot, daemonSocketFileName))),
     logRoot: resolve(options.logRoot ?? defaults.logRoot),
     globalConfigPath: resolve(options.globalConfigPath ?? join(dataRoot, 'config.toml')),
   };
   // Before the data directory exists. A socket path that cannot fit in a socket address is
   // not a reason to bring a state directory, a database and a log root into being first, and
   // failing here means the report names the path rather than whatever the next step tripped on.
-  assertDaemonSocketPathFits(requestedPaths.socketPath);
+  // The limit is the selected platform's — 104 bytes on macOS, 108 on Linux — rather than a
+  // constant: measuring a Linux path against macOS's number refuses addresses that would bind.
+  assertDaemonSocketPathFits(requestedPaths.socketPath, platformRuntime.socket.limitBytes);
   await ensurePrivateDirectory(dataRoot);
   const ownedStore = options.stateStore === undefined;
   const databaseParent = ownedStore
@@ -107,6 +157,12 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
   const supervisor = new ManagedProcessSupervisor({
     stateStore,
     logs,
+    // The supervisor's own defaults read the host, which is right for a daemon nobody handed a
+    // runtime to and wrong for this one: the composition root has already chosen a platform, and
+    // a supervisor inspecting processes through a different one than the daemon was built for is
+    // the exact class of drift the seam exists to remove.
+    inspectProcess: async (pid) => await platformRuntime.process.inspectProcess(pid),
+    inspectProcessGroup: async (pgid) => await platformRuntime.process.inspectProcessGroup(pgid),
     ...(options.gracePeriodMs === undefined ? {} : { gracePeriodMs: options.gracePeriodMs }),
     ...(options.pollIntervalMs === undefined ? {} : { pollIntervalMs: options.pollIntervalMs }),
     ...(options.onError === undefined ? {} : { onError: options.onError }),

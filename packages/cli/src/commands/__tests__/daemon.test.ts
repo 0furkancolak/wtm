@@ -5,26 +5,66 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   DaemonSocketPathTooLongError,
-  daemonSocketPathLimitBytes,
+  darwinSocketPathLimitBytes,
+  linuxSocketPathLimitBytes,
   measureDaemonSocketPath,
   publishedDaemonSocketPath,
-} from '@wtm/core';
+} from '@wtm/platform/socket';
+import { selectPlatformRuntime } from '@wtm/platform';
+import type { PlatformRuntime } from '@wtm/platform/ports';
 import { jsonEnvelopeSchema } from '@wtm/protocol';
 import { launchdPaths } from '@wtm/daemon/launchd';
-import type { LaunchdLifecycle } from '@wtm/daemon/launchd';
+import type { ServiceLifecycle } from '@wtm/daemon/service-lifecycle';
 import {
   runDaemonLifecycleCommand,
   serveDaemon,
   type DaemonSignalSource,
 } from '../daemon';
+import { exitCodeForError } from '../../exit-codes';
 import { createCli, runCli } from '../../main';
 import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
 
 const serveScenarioPath = fileURLToPath(new URL('./daemon-serve.scenario.ts', import.meta.url));
 const serveFailureScenarioPath = fileURLToPath(new URL('./daemon-serve-failure.scenario.ts', import.meta.url));
 
+/**
+ * The macOS socket root, spelled out rather than read from `PlatformRuntime.paths.socketRoot`.
+ *
+ * That is the point of it. Deriving it from the same resolver the code under test uses would make
+ * this suite agree with any answer that resolver gave; spelling it literally is what pins macOS to
+ * the exact path every installed daemon is already listening on across the move onto the platform
+ * seam.
+ */
+function darwinSocketRoot(home: string): string {
+  return join(home, 'Library', 'Application Support', 'WTM');
+}
+
+/** This macOS host, and a linux one constructed on it — the seam is what makes the second possible. */
+const darwinHost = selectPlatformRuntime({ platform: 'darwin', home: '/Users/x', env: {} });
+const linuxHost = selectPlatformRuntime({
+  platform: 'linux',
+  home: '/home/x',
+  env: { XDG_RUNTIME_DIR: '/run/user/501' },
+});
+
+/** A lifecycle that fails with one of the internal `LAUNCHD_*` codes. */
+function failingWith(code: string): ServiceLifecycle {
+  const manager = fakeManager();
+  manager.status = async () => {
+    const error = new Error('raw internal detail');
+    Object.assign(error, { code });
+    throw error;
+  };
+  return manager;
+}
+
+async function messageFor(code: string, platform: PlatformRuntime): Promise<string | undefined> {
+  const envelope = await runDaemonLifecycleCommand('status', failingWith(code), undefined, undefined, platform);
+  return envelope.errors[0]?.message;
+}
+
 /** A published socket path one byte past what a Unix socket address can hold. */
-const overLimitSocketPath = publishedDaemonSocketPath(`/${'h'.repeat(62)}`);
+const overLimitSocketPath = publishedDaemonSocketPath(darwinSocketRoot(`/${'h'.repeat(62)}`));
 
 describe('daemon lifecycle command', () => {
   test.each(['install', 'uninstall', 'status'] as const)('returns a schema-valid %s envelope', async (action) => {
@@ -79,13 +119,13 @@ describe('daemon lifecycle command', () => {
     expect(jsonEnvelopeSchema.parse(envelope)).toEqual(envelope);
     expect(envelope.ok).toBe(false);
     expect(envelope.errors[0]?.code).toBe('WTM_SOCKET_PATH_TOO_LONG');
-    expect(envelope.errors[0]?.message).toContain(String(daemonSocketPathLimitBytes));
-    expect(envelope.errors[0]?.message).toContain(String(daemonSocketPathLimitBytes + 1));
+    expect(envelope.errors[0]?.message).toContain(String(darwinSocketPathLimitBytes));
+    expect(envelope.errors[0]?.message).toContain(String(darwinSocketPathLimitBytes + 1));
     expect(envelope.errors[0]?.message).toContain(overLimitSocketPath);
     expect(envelope.errors[0]?.context).toMatchObject({
       action: 'install',
-      byteLength: daemonSocketPathLimitBytes + 1,
-      limitBytes: daemonSocketPathLimitBytes,
+      byteLength: darwinSocketPathLimitBytes + 1,
+      limitBytes: darwinSocketPathLimitBytes,
     });
     expect(envelope.errors[0]?.remediation).toEqual([{ kind: 'command-suggestion', argv: ['wtm', 'doctor'] }]);
   });
@@ -97,10 +137,191 @@ describe('daemon lifecycle command', () => {
       'install',
       manager,
       async () => true,
-      publishedDaemonSocketPath('/Users/x'),
+      publishedDaemonSocketPath(darwinSocketRoot('/Users/x')),
     );
 
     expect(envelope).toMatchObject({ ok: true, command: 'daemon install', data: { reachable: true } });
+  });
+
+  test('the install preflight measures against the limit of the host it is running on', async () => {
+    // 105 bytes: past macOS's `sun_path` and inside Linux's. The same address, the same code, two
+    // answers — which is the whole reason the limit stopped being a constant.
+    const between = `/${'d'.repeat(darwinSocketPathLimitBytes - 1)}`;
+    expect(Buffer.byteLength(between)).toBe(darwinSocketPathLimitBytes);
+    expect(Buffer.byteLength(between)).toBeLessThan(linuxSocketPathLimitBytes);
+    const overOnDarwin = `${between}xy`;
+
+    const onDarwin = await runDaemonLifecycleCommand('install', fakeManager(), async () => true, overOnDarwin, darwinHost);
+    const onLinux = await runDaemonLifecycleCommand('install', fakeManager(), async () => true, overOnDarwin, linuxHost);
+
+    expect(onDarwin.ok).toBe(false);
+    expect(onDarwin.errors[0]?.code).toBe('WTM_SOCKET_PATH_TOO_LONG');
+    expect(onDarwin.errors[0]?.context).toMatchObject({ limitBytes: darwinSocketPathLimitBytes });
+    expect(onLinux.ok).toBe(true);
+  });
+
+  test('the socket path defaults to the root the selected platform publishes on', async () => {
+    // No explicit address: `install` must preflight the path the installed service will actually
+    // bind, and on Linux that is `$XDG_RUNTIME_DIR/wtm`, not `~/Library/Application Support/WTM`.
+    const refusal = await runDaemonLifecycleCommand(
+      'install',
+      fakeManager(),
+      async () => true,
+      undefined,
+      selectPlatformRuntime({ platform: 'linux', home: '/home/x', env: { XDG_RUNTIME_DIR: `/${'r'.repeat(120)}` } }),
+    );
+
+    expect(refusal.ok).toBe(false);
+    expect(refusal.errors[0]?.code).toBe('WTM_SOCKET_PATH_TOO_LONG');
+    expect(refusal.errors[0]?.context).toMatchObject({ limitBytes: linuxSocketPathLimitBytes });
+    expect(String(refusal.errors[0]?.context?.path)).toContain('/wtm/wtmd.sock');
+  });
+});
+
+describe('the published definition path', () => {
+  test('macOS carries both names, with the same value', async () => {
+    // Additive, not a rename. `plistPath` is a documented field of `wtm daemon status`, and the
+    // program map makes JSON output a contract that may only grow — a script reading `plistPath`
+    // must keep finding it. `definitionPath` is the name that stays true on both platforms, so it
+    // is added beside it rather than in place of it.
+    for (const action of ['install', 'uninstall', 'status'] as const) {
+      const envelope = await runDaemonLifecycleCommand(action, fakeManager(), undefined, undefined, darwinHost);
+      const data = envelope.data as { definitionPath?: string; plistPath?: string };
+
+      expect(jsonEnvelopeSchema.parse(envelope)).toEqual(envelope);
+      expect(data.definitionPath).toBe('/tmp/agent.plist');
+      expect(data.plistPath).toBe('/tmp/agent.plist');
+      expect(data.plistPath).toBe(data.definitionPath);
+    }
+  });
+
+  test('linux carries only the neutral name, because there is no plist to point at', async () => {
+    for (const action of ['install', 'uninstall', 'status'] as const) {
+      const envelope = await runDaemonLifecycleCommand(action, fakeManager(), undefined, undefined, linuxHost);
+      const data = envelope.data as object;
+
+      expect(jsonEnvelopeSchema.parse(envelope)).toEqual(envelope);
+      expect(data).toMatchObject({ definitionPath: '/tmp/agent.plist' });
+      // Not merely undefined: the key must be absent, or a reader that checks `'plistPath' in data`
+      // is told a systemd unit is a plist.
+      expect(Object.hasOwn(data, 'plistPath')).toBe(false);
+      expect(JSON.stringify(envelope)).not.toContain('plistPath');
+    }
+  });
+
+  test('the CLI drives the selected backend rather than a hard-wired launchd one', async () => {
+    // No injected lifecycle: this is the only test that exercises the construction `main.ts`
+    // actually performs. It used to be `createLaunchdLifecycle`, which hardcodes
+    // `darwinServiceBackend` — so the Linux service backend was unreachable from the CLI no
+    // matter what platform the runtime selected, and `wtm daemon install` on Linux would have
+    // driven `launchctl` argument vectors at a host with no `launchctl`.
+    let stdout = '';
+    const exitCode = await runCli(['daemon', 'status', '--json'], {
+      daemonProgramArguments: ['/usr/bin/true'],
+      stdout: (value) => { stdout += value; },
+      stderr: () => {},
+    });
+    const envelope = jsonEnvelopeSchema.parse(JSON.parse(stdout));
+    const data = envelope.data as Record<string, unknown>;
+
+    expect(envelope.command).toBe('daemon status');
+    // Two outcomes are legitimate on a real macOS host: launchd answered about the label for this
+    // HOME, or the user domain was not reachable at all (no GUI session). Both are pinned, so the
+    // branch below cannot quietly stop running.
+    expect(envelope.ok || envelope.errors[0]?.code === 'WTM_DAEMON_UNAVAILABLE').toBe(true);
+    if (envelope.ok) {
+      expect(exitCode).toBe(0);
+      // The definition the selected backend names, in both spellings, with the same value.
+      expect(data.definitionPath).toBe(launchdPaths().plistPath);
+      expect(data.plistPath).toBe(launchdPaths().plistPath);
+    }
+  });
+
+  test('the readiness answer still rides beside both names', async () => {
+    const envelope = await runDaemonLifecycleCommand('install', fakeManager(), async () => true, undefined, darwinHost);
+
+    expect(envelope.data).toMatchObject({
+      action: 'install',
+      state: 'installed',
+      definitionPath: '/tmp/agent.plist',
+      plistPath: '/tmp/agent.plist',
+      reachable: true,
+    });
+  });
+});
+
+describe('service manager wording', () => {
+  test('macOS says exactly what it has always said', async () => {
+    // Every one of these strings is the pre-existing wording, byte for byte. Templating the
+    // manager's name into them is only allowed to be invisible on macOS.
+    expect(await messageFor('LAUNCHD_DOMAIN_UNAVAILABLE', darwinHost))
+      .toBe('The launchd user domain is unavailable.');
+    expect(await messageFor('UNSAFE_LAUNCHD_PATH', darwinHost))
+      .toBe('The launchd installation path is unsafe.');
+    expect(await messageFor('INVALID_LAUNCHD_CONFIGURATION', darwinHost))
+      .toBe('The launchd configuration is invalid.');
+    expect(await messageFor('LAUNCHD_COMMAND_FAILED', darwinHost))
+      .toBe('The launchd operation failed.');
+  });
+
+  test('a linux host is told about systemd, not about launchd', async () => {
+    for (const code of [
+      'LAUNCHD_DOMAIN_UNAVAILABLE',
+      'UNSAFE_LAUNCHD_PATH',
+      'INVALID_LAUNCHD_CONFIGURATION',
+      'LAUNCHD_COMMAND_FAILED',
+    ]) {
+      const message = await messageFor(code, linuxHost);
+      expect(message).toContain('systemd');
+      expect(message).not.toContain('launchd');
+    }
+    expect(await messageFor('LAUNCHD_DOMAIN_UNAVAILABLE', linuxHost))
+      .toBe('The systemd user domain is unavailable.');
+  });
+
+  test('the platform refusal stops claiming launchd is a macOS-only fact', async () => {
+    // `launchd is only available on macOS.` was wrong twice: WTM has a Linux backend now, and
+    // which host WTM is on is `UnsupportedPlatformError`'s statement to make, not this one's.
+    for (const host of [darwinHost, linuxHost]) {
+      const message = await messageFor('LAUNCHD_UNSUPPORTED_PLATFORM', host);
+      expect(message).toBe('WTM has no service manager for this host. `wtm doctor` reports the platform it detected.');
+      expect(message).not.toContain('macOS');
+    }
+  });
+
+  test('a backend that does not match the host is a platform refusal, and still exits 2', async () => {
+    // It used to report `WTM_CONFIG_INVALID`: nothing about the user's configuration is wrong.
+    // The only reason to leave it there was that `WTM_PLATFORM_UNSUPPORTED` had no row in
+    // `exitCodeForError` and the remap would have quietly dropped the condition to exit 1.
+    const envelope = await runDaemonLifecycleCommand(
+      'status',
+      failingWith('LAUNCHD_UNSUPPORTED_PLATFORM'),
+      undefined,
+      undefined,
+      darwinHost,
+    );
+
+    expect(envelope.errors[0]?.code).toBe('WTM_PLATFORM_UNSUPPORTED');
+    expect(exitCodeForError('WTM_PLATFORM_UNSUPPORTED')).toBe(2);
+  });
+
+  test('the internal codes keep their names and still map onto the same public codes', async () => {
+    // Spec D12: the `LAUNCHD_*` codes are internal, never reach an envelope, and are what
+    // `launchd.test.ts` names 99 times. Only the wording above them is platform-aware.
+    const mapped = await Promise.all(([
+      ['LAUNCHD_DOMAIN_UNAVAILABLE', 'WTM_DAEMON_UNAVAILABLE'],
+      ['UNSAFE_LAUNCHD_PATH', 'RESOURCE_PATH_DENIED'],
+      ['INVALID_LAUNCHD_CONFIGURATION', 'WTM_CONFIG_INVALID'],
+      ['LAUNCHD_UNSUPPORTED_PLATFORM', 'WTM_PLATFORM_UNSUPPORTED'],
+      ['LAUNCHD_COMMAND_FAILED', 'WTM_DAEMON_REQUEST_FAILED'],
+    ] as const).map(async ([internal, expected]) => {
+      const envelope = await runDaemonLifecycleCommand('status', failingWith(internal), undefined, undefined, linuxHost);
+      expect(JSON.stringify(envelope)).not.toContain(internal);
+      expect(JSON.stringify(envelope)).not.toContain('raw internal detail');
+      return [internal, envelope.errors[0]?.code, expected] as const;
+    }));
+
+    for (const [, actual, expected] of mapped) expect(actual).toBe(expected);
   });
 });
 
@@ -196,7 +417,7 @@ describe('daemon serve', () => {
   test('a coded startup failure keeps its code, its measurement, its remediation and its exit status', async () => {
     const signals = new FakeSignals();
     const reported: unknown[] = [];
-    const failure = new DaemonSocketPathTooLongError(measureDaemonSocketPath(overLimitSocketPath));
+    const failure = new DaemonSocketPathTooLongError(measureDaemonSocketPath(overLimitSocketPath, darwinSocketPathLimitBytes));
 
     const result = await serveDaemon({
       runtimeFactory: async () => { throw failure; },
@@ -215,11 +436,11 @@ describe('daemon serve', () => {
       context: {
         action: 'serve',
         path: overLimitSocketPath,
-        byteLength: daemonSocketPathLimitBytes + 1,
-        limitBytes: daemonSocketPathLimitBytes,
+        byteLength: darwinSocketPathLimitBytes + 1,
+        limitBytes: darwinSocketPathLimitBytes,
         exceededBy: 1,
         publishedPath: overLimitSocketPath,
-        boundPath: measureDaemonSocketPath(overLimitSocketPath).boundPath,
+        boundPath: measureDaemonSocketPath(overLimitSocketPath, darwinSocketPathLimitBytes).boundPath,
       },
       remediation: [{ kind: 'command-suggestion', argv: ['wtm', 'doctor'] }],
     }]);
@@ -265,7 +486,7 @@ describe('daemon failure output', () => {
 
   test('an over-long HOME refuses serve with one coded line naming the length and the limit', async () => {
     const fixture = await overLongHome();
-    const measurement = measureDaemonSocketPath(publishedDaemonSocketPath(fixture.home));
+    const measurement = measureDaemonSocketPath(publishedDaemonSocketPath(darwinSocketRoot(fixture.home)), darwinSocketPathLimitBytes);
     try {
       const result = spawnSync('node', ['--import', 'tsx', serveScenarioPath], {
         env: { ...process.env, HOME: fixture.home },
@@ -280,11 +501,11 @@ describe('daemon failure output', () => {
       expect(envelope).toMatchObject({ ok: false, command: 'daemon serve', data: null });
       expect(envelope.errors[0].code).toBe('WTM_SOCKET_PATH_TOO_LONG');
       expect(envelope.errors[0].message).toContain(String(measurement.byteLength));
-      expect(envelope.errors[0].message).toContain(String(daemonSocketPathLimitBytes));
+      expect(envelope.errors[0].message).toContain(String(darwinSocketPathLimitBytes));
       expect(envelope.errors[0].context).toMatchObject({
         action: 'serve',
         byteLength: measurement.byteLength,
-        limitBytes: daemonSocketPathLimitBytes,
+        limitBytes: darwinSocketPathLimitBytes,
       });
       expect(envelope.errors[0].remediation).toEqual([{ kind: 'command-suggestion', argv: ['wtm', 'doctor'] }]);
 
@@ -292,7 +513,7 @@ describe('daemon failure output', () => {
       const reported = result.stderr.trimEnd().split('\n');
       expect(reported).toHaveLength(1);
       expect(reported[0]).toContain(String(measurement.byteLength));
-      expect(reported[0]).toContain(String(daemonSocketPathLimitBytes));
+      expect(reported[0]).toContain(String(darwinSocketPathLimitBytes));
       for (const stream of [result.stdout, result.stderr]) {
         expect(stream).not.toContain('    at ');
         expect(stream).not.toContain('/Users/runner');
@@ -312,7 +533,8 @@ describe('daemon failure output', () => {
  */
 async function overLongHome(): Promise<{ root: string; home: string }> {
   const root = await mkdtemp('/tmp/wtm-daemon-long-home-');
-  const padding = daemonSocketPathLimitBytes + 1 - Buffer.byteLength(publishedDaemonSocketPath(root)) - 1;
+  const padding = darwinSocketPathLimitBytes + 1
+    - Buffer.byteLength(publishedDaemonSocketPath(darwinSocketRoot(root))) - 1;
   if (padding < 1) throw new Error('the temporary root is already past the socket path limit');
   const home = join(root, 'h'.repeat(padding));
   await mkdir(home, { recursive: true });
@@ -386,14 +608,22 @@ describe('daemon CLI surface', () => {
   }, 20_000);
 });
 
-function fakeManager(): LaunchdLifecycle {
+/**
+ * The lifecycle result now carries `definitionPath`, not `plistPath`.
+ *
+ * The CLI builds its lifecycle from the *selected* backend rather than from launchd, so what
+ * reaches `runDaemonLifecycleCommand` is a `ServiceLifecycle` and its field has the neutral name.
+ * `plistPath` did not disappear from the envelope — the command adds it back on macOS — which is
+ * the difference between an additive contract change and a rename, and is pinned below.
+ */
+function fakeManager(): ServiceLifecycle {
   // The label is derived per HOME, so a stub that pins the bare one would stop resembling
   // anything the lifecycle can return.
   const label = launchdPaths('/tmp/fake-home').label;
   return {
-    install: async () => ({ action: 'install', state: 'installed', label, plistPath: '/tmp/agent.plist' }),
-    uninstall: async () => ({ action: 'uninstall', state: 'uninstalled', label, plistPath: '/tmp/agent.plist' }),
-    status: async () => ({ action: 'status', state: 'loaded', label, plistPath: '/tmp/agent.plist', runState: 'running' }),
+    install: async () => ({ action: 'install', state: 'installed', label, definitionPath: '/tmp/agent.plist' }),
+    uninstall: async () => ({ action: 'uninstall', state: 'uninstalled', label, definitionPath: '/tmp/agent.plist' }),
+    status: async () => ({ action: 'status', state: 'loaded', label, definitionPath: '/tmp/agent.plist', runState: 'running' }),
   };
 }
 

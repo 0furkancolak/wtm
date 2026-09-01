@@ -2,8 +2,11 @@ import { afterEach, expect, test } from 'bun:test';
 import { access } from 'node:fs/promises';
 import type { GitSafetyFixture } from '../../../../testkit/src/git-fixture';
 import { createGitSafetyFixture } from '../../../../testkit/src/git-fixture';
-import { installProcessStartIdentityReader } from '../../runtime/process-identity';
-import { RepositoryOperationConflictError, type RepositoryOperationLeaseStore } from '../operation-lease';
+import {
+  RepositoryOperationConflictError,
+  type ProcessStartTimeReader,
+  type RepositoryOperationLeaseStore,
+} from '../operation-lease';
 import {
   removalStages,
   removeWorktreeGuarded,
@@ -28,10 +31,8 @@ const selfStartTime = 'Mon Aug 31 09:59:00 2026';
 const deadHolderPid = 4_242;
 
 const fixtures: GitSafetyFixture[] = [];
-const restorers: Array<() => void> = [];
 
 afterEach(async () => {
-  while (restorers.length > 0) restorers.pop()?.();
   await Promise.all(fixtures.splice(0).map((fixture) => fixture.cleanup()));
 });
 
@@ -328,12 +329,12 @@ test('refuses at the second gate when the cleanup stage retains what it deferred
 test('records every stage through the lease in the documented order', async () => {
   const fixture = await createFixture();
   const store = new FakeLeaseStore();
-  installIdentityReader(new Map());
+  const readProcessStartTime = scriptedReader(new Map());
 
   await removeWorktreeGuarded({
     context: context(fixture),
     coordinator: new RecordingCoordinator(),
-    lease: { store, repositoryId },
+    lease: { store, readProcessStartTime, repositoryId },
   });
 
   expect(store.stages).toEqual([...removalStages]);
@@ -419,13 +420,13 @@ test('resumes an abandoned lease from the stage it stopped at and completes the 
     stage: 'release-endpoints',
     expiresAt: '2026-08-31T10:16:02.118Z',
   });
-  installIdentityReader(new Map([[deadHolderPid, null]]));
+  const readProcessStartTime = scriptedReader(new Map([[deadHolderPid, null]]));
   const coordinator = new RecordingCoordinator();
 
   const result = await removeWorktreeGuarded({
     context: context(fixture),
     coordinator,
-    lease: { store, repositoryId, adopt: true },
+    lease: { store, readProcessStartTime, repositoryId, adopt: true },
   });
 
   expect(result.resumedFrom).toBe('release-endpoints');
@@ -445,13 +446,13 @@ test('refuses to remove behind a live holder of the repository lease', async () 
   const fixture = await createFixture();
   const store = new FakeLeaseStore();
   seedHolder(store, { expiresAt: '2099-01-01T00:00:00.000Z' });
-  installIdentityReader(new Map([[deadHolderPid, null]]));
+  const readProcessStartTime = scriptedReader(new Map([[deadHolderPid, null]]));
   const coordinator = new RecordingCoordinator();
 
   const thrown = await removeWorktreeGuarded({
     context: context(fixture),
     coordinator,
-    lease: { store, repositoryId },
+    lease: { store, readProcessStartTime, repositoryId },
   }).then(() => null, (error: unknown) => error);
 
   expect(thrown).toBeInstanceOf(RepositoryOperationConflictError);
@@ -464,12 +465,12 @@ test('refuses to remove behind a live holder of the repository lease', async () 
 test('releases the repository lease after a successful removal and after a failed one', async () => {
   const failed = await createFixture();
   const failingStore = new FakeLeaseStore();
-  installIdentityReader(new Map());
+  const readProcessStartTime = scriptedReader(new Map());
 
   await expect(removeWorktreeGuarded({
     context: context(failed),
     coordinator: new RecordingCoordinator({ stopError: new Error('daemon unreachable') }),
-    lease: { store: failingStore, repositoryId },
+    lease: { store: failingStore, readProcessStartTime, repositoryId },
   })).rejects.toThrow('daemon unreachable');
   expect(failingStore.row).toBeNull();
   expect(failingStore.releases).toBe(1);
@@ -479,7 +480,7 @@ test('releases the repository lease after a successful removal and after a faile
   await removeWorktreeGuarded({
     context: context(succeeded),
     coordinator: new RecordingCoordinator(),
-    lease: { store, repositoryId },
+    lease: { store, readProcessStartTime, repositoryId },
   });
   expect(store.row).toBeNull();
   expect(store.releases).toBe(1);
@@ -522,12 +523,17 @@ function seedHolder(store: FakeLeaseStore, overrides: Partial<RepositoryOperatio
   };
 }
 
-/** Answers for our own process so the lease's own-identity check passes; scripts everything else. */
-function installIdentityReader(answers: ReadonlyMap<number, string | null>): void {
-  restorers.push(installProcessStartIdentityReader(async (pid) => {
+/**
+ * Answers for our own process so the lease's own-identity check passes; scripts everything else.
+ *
+ * The lease takes this as an argument rather than reading an installed global, so a test that
+ * forgets to clean up cannot change what the next one measures.
+ */
+function scriptedReader(answers: ReadonlyMap<number, string | null>): ProcessStartTimeReader {
+  return async (pid) => {
     if (pid === process.pid) return selfStartTime;
     return answers.get(pid) ?? null;
-  }));
+  };
 }
 
 async function pathExists(path: string): Promise<boolean> {

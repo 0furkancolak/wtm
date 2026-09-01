@@ -1,4 +1,41 @@
-# Daemon and macOS Runtime
+# Daemon and Platform Runtime
+
+> **The filename is historical.** This document is still `05-daemon-and-macos-runtime.md` because
+> renaming it would break every link that already points at it, in this repository and outside it,
+> for a cosmetic gain. The content is not macOS-only: it describes the daemon on both platforms WTM
+> has a backend for.
+
+## Which platform, and what has been verified where
+
+WTM selects one `PlatformRuntime` at startup — `@wtm/platform`'s `selectPlatformRuntime` — and
+everything below asks it where files go, how long a socket address may be, how to recognise a
+process, and how to register a service. There are two backends today:
+
+| | macOS | Linux |
+| --- | --- | --- |
+| Service manager | launchd, `launchctl` | systemd user manager, `systemctl --user` |
+| Definition | LaunchAgent plist | systemd user unit |
+| Process identity | `ps -o lstart=` | `/proc/<pid>/stat` |
+| Socket | Unix domain socket | Unix domain socket |
+| Status | Shipped and tested on macOS | **Written and unit-tested; never run on a Linux kernel** |
+
+The Linux column is proven exactly the way the launchd column has always been proven in this
+repository: against captured fixtures and injected command runners. That establishes what the
+argument vectors are, what the unit file contains, and what the parsers do with real kernel output.
+It establishes nothing about whether `systemctl --user` bootstraps this daemon, because no Linux CI
+job exists, no Linux binary is built, and nothing here has ever run on a Linux kernel. That is the
+next increment's work, and until it is done `package.json` still declares `"os": ["darwin"]` — an
+npm package that installs on Linux and then does not start is a worse failure than one that refuses
+to install.
+
+Windows has no backend. `selectPlatformRuntime` refuses it with `WTM_PLATFORM_UNSUPPORTED` (exit
+2), and the daemon's refusal names the Windows increment — which decides process-group and
+service-manager semantics together rather than one call site at a time — instead of the older
+message, "WTM V1 daemon requires macOS", which had stopped being the reason.
+
+`wtm doctor`'s `platform` check reports the selected runtime, its service manager, its resolved
+data, log and socket roots, and the socket limit in force. It is the first thing to read when WTM
+and a reader disagree about where WTM's files are.
 
 ## Implementation choice
 
@@ -9,7 +46,7 @@ Node's native `fs.watch()` maps directory watches to FSEvents on macOS, so a sep
 ## Process model
 
 ```text
-launchd
+service manager  (launchd on macOS, the systemd user manager on Linux)
   └── wtmd
        ├── workspace watcher registry
        ├── reconciliation queue
@@ -20,7 +57,48 @@ launchd
 
 External adapters are not resident processes.
 
-## LaunchAgent
+## Where WTM keeps its files
+
+Each platform follows its own convention rather than one layout wearing two sets of names:
+
+| | macOS | Linux |
+| --- | --- | --- |
+| Data root (`state.db`) | `~/Library/Application Support/WTM` | `$XDG_STATE_HOME/wtm`, default `~/.local/state/wtm` |
+| Global config | `<data root>/config.toml` | `$XDG_CONFIG_HOME/wtm/config.toml`, default `~/.config/wtm/config.toml` |
+| Logs | `~/Library/Logs/WTM` | `<data root>/logs` |
+| Socket directory | `<data root>` | `$XDG_RUNTIME_DIR/wtm`, falling back to `<data root>` |
+| Service definition | `~/Library/LaunchAgents` | `$XDG_CONFIG_HOME/systemd/user`, default `~/.config/systemd/user` |
+
+Four rules hold this table together:
+
+- **The socket directory is its own field, not a derivation of the data root.** On Linux it
+  genuinely is one: `$XDG_RUNTIME_DIR` is normally `/run/user/<uid>`, which is both where the
+  platform says sockets belong — tmpfs, `0700`, cleared at logout — and far shorter than any home
+  directory, which is the address-length defect macOS had to be measured for. The fallback is
+  load-bearing rather than defensive: the variable is absent inside containers and across `su`, and
+  refusing to start there would be worse than a long path the preflight measures anyway.
+- **An XDG variable counts only when it holds an absolute path**, which is what the base directory
+  spec says to do with anything else. `XDG_RUNTIME_DIR=tmp` would otherwise place the socket
+  relative to whatever working directory the service manager started the daemon in, so a client and
+  a daemon reading the same variable could still disagree about the address. An empty value is
+  treated as unset, as the spec asks.
+- **macOS ignores the XDG variables entirely, including when they are set.** A macOS user with
+  `XDG_CONFIG_HOME` exported for some other tool must not find WTM's state relocated the next time
+  their shell profile changes; the daemon would come up with an empty workspace and no explanation.
+- **`XDG_CACHE_HOME` moves nothing, on either platform.** WTM writes no cache. Nothing it stores is
+  reconstructible from something else — the database is authoritative, the logs are a record that
+  must survive a cache clear, and the socket is a live address — so honouring the variable would
+  have meant inventing a directory nothing writes to in order to be able to say it is supported.
+
+## Service definition
+
+`wtm daemon install`, `uninstall` and `status` are driven by the selected platform's service
+manager. Both backends are descriptors over one transactional publisher — an operation lock, a
+journal, file-identity checks, atomic publish and removal, and interrupted-transaction recovery —
+because none of that is launchd knowledge and writing it twice would mean two implementations of
+the recovery path to keep true.
+
+### macOS: the LaunchAgent
 
 `wtm daemon install` installs a per-user LaunchAgent under:
 
@@ -49,11 +127,114 @@ The LaunchAgent invokes the resolved `wtmd` binary/script and restarts it on une
 
 `ProcessType` is `Adaptive`, not `Background`. launchd throttles a Background job's CPU and disk I/O, and everything it spawns inherits the throttle — the port prober is one short-lived process per candidate port, and under the throttle it outlived its own two-second timeout, so every port read as taken; the developer's own dev server ran throttled too. Nothing this daemon does is unattended work.
 
-`wtm daemon install` waits for the daemon to answer on its socket before it reports success, and both `install` and `status` report `reachable`. launchd reports a service as running the moment it forks, which said nothing about whether a command would work.
-
-`wtm daemon install` restarts a service that is already loaded. The plist names the executable by path, so installing a new build leaves the definition byte-identical and launchd goes on running the previous binary — an install that reported success and changed nothing, and made verifying a new build impossible. Restarting in place is the cheapest guarantee that the daemon now answering is the one just installed; the state it needs is all in SQLite, and startup recovery is designed for exactly this.
-
 macOS may withhold disk access from a background agent. The executable is signed under one stable identifier (`dev.wtm.cli`) so the grant is not invalidated by every rebuild — but WTM asks for nothing up front, and names the grant only on evidence: a registered directory that exists and refuses to open. A timeout is not that evidence. A `git` that overran its bound on a volume answering slowly is indistinguishable from a denied one until the directory is opened directly, and telling somebody to hand a background agent every file on their disk on the strength of a timeout is advice too large to give on a guess.
+
+### Linux: the systemd user unit
+
+**Written and unit-tested against an injected fake `systemctl`; never run on a systemd host.**
+Everything in this section describes what the code does. Nothing in it is a report of a working
+installation.
+
+`wtm daemon install` publishes a user unit under:
+
+```text
+~/.config/systemd/user/wtm-daemon-<digest>.service
+```
+
+`<digest>` is the same SHA-256 over the resolved absolute `HOME` that the launchd label uses.
+Linux does not have the constraint that forced the derivation on macOS — a launchd service name is
+`gui/<uid>/<label>`, so one uid with two `HOME`s had one service slot, while systemd's user manager
+is already per-session. `HOME` can still be overridden here, and a rule that holds by derivation on
+one platform and by coincidence on the other is two rules to keep true. The unit name is uglier
+than `wtm-daemon.service`; `wtm daemon status` reports it exactly, which is what a user needs in
+order to type `systemctl --user status <name>` themselves. There is no legacy name to migrate,
+because there has never been a released Linux installation.
+
+The lifecycle drives `systemctl --user` and nothing else:
+
+```text
+show --property=LoadState --property=ActiveState --property=SubState <unit>
+show --property=Version                 # the user manager itself
+daemon-reload
+enable / disable <unit>
+start / stop / restart <unit>
+```
+
+Five of those need a word of explanation, and each is a decision rather than a translation of the
+launchd command set:
+
+- **`daemon-reload` after publishing.** systemd caches unit files; a definition written without it
+  stays invisible until something else reloads. launchd has no equivalent, because it reads the
+  plist at bootstrap time.
+- **`disable` on uninstall.** Without it, removal leaves the `default.target.wants` symlink that
+  `enable` created, pointing at a unit file that is no longer there.
+- **`show` rather than `status`.** `show` prints exactly the properties it is asked for; parsing a
+  human-readable `status` report is the mistake the launchd backend already refuses to make.
+  `LoadState=not-found` is how systemd says it does not know the unit — through a command that
+  exits `0`, which is why the backend interprets the output rather than the exit code alone.
+- **`show --property=Version` against the manager.** It fails when there is no session bus to talk
+  to: inside a container, over `su`, on a host with lingering disabled. That is the same
+  distinction `launchctl print gui/<uid>` draws between "no service" and "no session", and the two
+  are reported differently because their remedies differ.
+- **Exit code `5`.** systemd's `EXIT_NOTINSTALLED`. `stop` and `disable` answer with it for a unit
+  that is already gone, which is an absence rather than a failure — the same classification
+  `launchctl`'s `113` gets, made in the same place.
+
+The unit itself, with the paths abbreviated:
+
+```ini
+[Unit]
+Description=WTM daemon for /home/you
+Documentation=https://github.com/0furkancolak/wtm
+
+[Service]
+Type=exec
+ExecStart="/home/you/.local/bin/wtm" "daemon" "serve"
+WorkingDirectory=/home/you
+Environment="HOME=/home/you" "PATH=<the installing shell's PATH, sanitized>"
+StandardOutput=append:/home/you/.local/state/wtm/logs/daemon.log
+StandardError=append:/home/you/.local/state/wtm/logs/daemon.error.log
+Restart=on-failure
+RestartSec=1
+TimeoutStopSec=5
+UMask=0077
+
+[Install]
+WantedBy=default.target
+```
+
+`Type=exec` rather than `simple` so that `systemctl start` fails when the executable cannot be run
+at all, instead of reporting success and leaving the failure to be discovered by the client that
+cannot reach the socket. `Restart=on-failure` is launchd's `KeepAlive{SuccessfulExit: false}`: a
+daemon that exited cleanly was asked to. `TimeoutStopSec` is `ExitTimeOut` and `UMask=0077` is
+`Umask 63` written the way systemd writes it. launchd's `ProcessType` has no counterpart, because
+systemd does not throttle a user unit's CPU or I/O by default — which is the state `Adaptive`
+exists to ask launchd for. `Type=exec` and `StandardOutput=append:` both require systemd 240
+(2018) or newer.
+
+Two escapes in the rendered unit are not optional. `%` introduces a specifier systemd expands
+everywhere in a unit file, so a `HOME` containing one would silently become a different path; `$`
+introduces variable expansion inside `ExecStart`, and a `"` or a `\` inside a quoted argument would
+end it early. A newline is refused outright rather than escaped: in a plist it is ordinary text,
+here it would start a new directive, and no value WTM passes legitimately contains one.
+
+One directory permission differs from macOS deliberately. Every directory WTM manages is checked
+for `(mode & 0o022) === 0` — no group or other *write* — which is what stops another user planting
+a definition this daemon would then execute. macOS additionally requires `(mode & 0o077) === 0` on
+the directories it creates, which costs nothing there because it creates `~/Library` subdirectories
+at `0700`. `~/.config` is `0755` on every machine with the standard umask, and `systemctl enable`
+creates `~/.config/systemd/user` the same way, so requiring `0700` would mean refusing to install
+on essentially every Linux host, or tightening a directory that belongs to systemd's own tooling.
+The unit *file* is still checked for `(mode & 0o077) === 0`, so its contents stay unreadable by
+other users inside a `0755` directory.
+
+### On both platforms
+
+`wtm daemon install` waits for the daemon to answer on its socket before it reports success, and both `install` and `status` report `reachable`. A service manager reports a service as running the moment it forks — launchd does, and so does systemd — which says nothing about whether a command would work.
+
+`wtm daemon install` restarts a service that is already loaded. The definition names the executable by path, so installing a new build leaves it byte-identical and the service manager goes on running the previous binary — an install that reported success and changed nothing, and made verifying a new build impossible. Restarting in place is the cheapest guarantee that the daemon now answering is the one just installed; the state it needs is all in SQLite, and startup recovery is designed for exactly this.
+
+Installation never requires root on either platform.
 
 ## Watching scope
 
@@ -81,6 +262,12 @@ watch(root, { recursive: true })
 ```
 
 for local macOS directories. The callback is only a scheduling signal. `filename` is treated as optional because Node does not guarantee it on every event.
+
+`fs.watch` is cross-platform and is not behind the platform seam. Whether its *semantics* match on
+Linux — recursive watching, what an inotify-backed watcher coalesces, what it reports for a
+directory replaced rather than modified — is a question only a real kernel answers, and it is not
+answered here. The reconciliation below is designed not to depend on any individual event arriving,
+which is what keeps a watcher difference from being a correctness difference.
 
 The watcher layer debounces/coalesces bursts and schedules a bounded reconciliation rather than acting directly on every filesystem event.
 
@@ -148,10 +335,11 @@ V1 does not add high-frequency polling merely to detect sleep/wake. If field tes
 
 ## Unix domain socket
 
-Suggested location:
+The socket is `wtmd.sock` inside the platform's socket directory:
 
 ```text
-~/Library/Application Support/WTM/wtmd.sock
+macOS   ~/Library/Application Support/WTM/wtmd.sock
+Linux   $XDG_RUNTIME_DIR/wtm/wtmd.sock, or <data root>/wtmd.sock when that variable is unset
 ```
 
 The socket is user-only (`0600`). Requests and responses use framed JSON with a protocol version.
@@ -159,6 +347,79 @@ The socket is user-only (`0600`). Requests and responses use framed JSON with a 
 V1 framing is deterministic: a four-byte unsigned big-endian payload length followed by exactly that many UTF-8 JSON bytes. The default payload ceiling is 1 MiB and is checked from the header before allocating the frame body or parsing JSON. Receivers accept fragmented headers/bodies and multiple coalesced frames.
 
 No HTTP server and no local TCP port are required.
+
+### How long the address may be
+
+A Unix socket address is a fixed-size buffer in the kernel, and the two platforms size it
+differently:
+
+| Platform | `sizeof(sun_path)` | How that number was established |
+| --- | --- | --- |
+| macOS | 104 bytes | **Measured.** Paths of every length from 96 to 112 bytes were bound on macOS 15 / Node 24: 104 listens, 105 raises `EINVAL`, and `connect()` draws the line in the same place. |
+| Linux | 108 bytes | **Not measured.** It is the value in `linux/un.h` and has been for the lifetime of the ABI, recorded here as a documented constant with its provenance. Nothing in this repository can bind a Linux socket, so there is no experiment behind it. C2 binds a 108-byte and a 109-byte address on a real kernel. |
+
+Both numbers flow through the same preflight. `wtm daemon serve`, `wtm daemon install` and the
+CLI's connect side measure the address in bytes before binding or dialling, and refuse with
+`WTM_SOCKET_PATH_TOO_LONG` naming the measured length, the limit *in force on this platform*, and
+how much shorter the home directory would have to be. `wtm doctor`'s `socket-path` check reports
+the headroom while there still is some.
+
+The measurement exists as a measurement, rather than as a rescued `EINVAL`, because the failure
+does not reproduce in the environment WTM is developed in: Bun's own limit is 118 bytes, so
+`bun test` and `bun run` happily bind a path the shipped Node executable cannot. The published path
+and the private path actually bound are both measured, and the longer of the two decides.
+
+On Linux the limit is much less likely to bite in practice, because `$XDG_RUNTIME_DIR` is normally
+`/run/user/<uid>` — around 15 bytes, against a home directory of any depth. That is a consequence
+of putting the socket where the platform says sockets go, not a separate mitigation.
+
+## Process identity
+
+WTM stores a `(pid, start time)` pair for every process it supervises and every holder of a
+destructive-operation lease, and compares it against the live process before acting. The pair is
+what makes a recycled PID detectable: the number alone would let a lease be reclaimed from a
+different process that happens to have inherited it.
+
+The start time is read differently on each platform, and the two questions it answers are not the
+same question:
+
+- **macOS** shells out to `ps -ww -p <pid> -o lstart=` and stores what it prints —
+  `Mon Sep  1 12:00:00 2026`.
+- **Linux** reads `/proc/<pid>/stat` and stores `<btime>:<starttime>`: the wall-clock second the
+  kernel booted, from `/proc/stat`'s `btime` line, and the process's start time in clock ticks
+  since that boot. Boot time alone is not enough — start ticks repeat after every reboot, so PID
+  412 started at tick 2778072 of this boot and PID 412 started at tick 2778072 of the last one
+  would be indistinguishable without it.
+
+**The two formats can never be equal**, because the Linux string is decimal digits and a colon
+while the macOS string contains letters and spaces. That is deliberate, and it is why the two
+coexist in one state column with no version tag and no migration.
+
+Two Linux details are worth stating because they are how naive `/proc` readers break:
+
+- `/proc/<pid>/stat`'s second field is the command name, wrapped in parentheses by the kernel and
+  escaped in no way at all — it may contain spaces and further parentheses. Every later field is
+  located relative to the **last** `)` in the line, never by splitting on whitespace. A parser that
+  splits reads a fault count as a process group and a page count as a start time, both silently
+  plausible numbers. The fixtures this is tested against are genuine kernel output, captured from a
+  Debian container by copying `/bin/sleep` to deliberately awful names, rather than hand-written by
+  the same understanding that wrote the parser.
+- **Absence means one thing and one thing only: the `/proc` entry is gone.** A read error, a
+  permission error, an unparseable line, a `/proc/stat` with no `btime` — every one of those is a
+  *failure*, reported as such, never as absence. A wrong absence releases a lease somebody else is
+  holding, and the operations behind those leases delete worktrees.
+
+A zombie is treated per question rather than per platform, and macOS's existing behaviour is the
+reason. The two supervision readers ask for a state column and drop zombies; the lease reader asks
+`ps` for `lstart` alone, has no state column, and therefore reports a zombie lease holder as
+present. Linux matches that exactly. Making Linux stricter would mean a lease macOS holds and Linux
+reclaims — a wrong absence — in exchange for releasing a lease a few milliseconds before the parent
+reaps the child. Whether a zombie lease holder *should* be reclaimable is a real question; it
+belongs with lease semantics, not with the platform seam.
+
+One gap is stated rather than half-closed: `process-anchor.ts` still parses BSD `ps` output. Its
+call lives inside a program serialised into a string and executed by a separate `node`, so it
+cannot import a platform port; it is rendered per platform in the next increment.
 
 ## Daemon unavailable
 
@@ -180,8 +441,12 @@ This prevents the failure mode where WTM cannot diagnose WTM because the daemon 
 WTM logs live under:
 
 ```text
-~/Library/Logs/WTM/
+macOS   ~/Library/Logs/WTM/
+Linux   <data root>/logs/, i.e. ~/.local/state/wtm/logs by default
 ```
+
+Logs follow the data root on Linux rather than `$XDG_CACHE_HOME`: they are the daemon's record of
+what it did, which a user expects to survive a cache clear.
 
 Managed task stdout/stderr is redirected directly to files, not accumulated in RAM.
 

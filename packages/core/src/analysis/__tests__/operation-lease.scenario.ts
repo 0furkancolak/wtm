@@ -2,10 +2,32 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readProcessStartIdentity } from '../../runtime/process-identity';
 import { SQLiteStateStore } from '../../state/sqlite-store';
 import type { RepositoryOperationLeaseKey } from '../../state/store';
-import { RepositoryOperationConflictError, withRepositoryOperationLease } from '../operation-lease';
+import {
+  RepositoryOperationConflictError,
+  withRepositoryOperationLease,
+  type ProcessStartTimeReader,
+} from '../operation-lease';
+
+const selfStartTime = 'Mon Aug 31 09:59:00 2026';
+
+/**
+ * The start-time reader this scenario hands the lease.
+ *
+ * It is scripted rather than real because `@wtm/core` has no reader of its own any more and must
+ * not acquire one: asking the operating system is `@wtm/platform`'s job, and a core test that
+ * imported it would be the very dependency the package boundary exists to forbid. What is under
+ * test here is the *store* — a real SQLite database, a real transaction, a real journal — and the
+ * lease policy sitting on it, both of which are indifferent to how a start time was obtained.
+ *
+ * That a genuinely reaped process really does read as absent is proven against a live `ps` in
+ * `packages/platform/src/process/__tests__/darwin-process.test.ts`, which is where the reader now
+ * lives. The PID below is still a real, really-dead one so the row holds something that is
+ * provably not this process rather than a number picked out of the air.
+ */
+const scriptedReader: ProcessStartTimeReader = async (pid) =>
+  pid === process.pid ? selfStartTime : null;
 
 /** A PID that has certainly been released: the child is run to completion before it is used. */
 function deadProcessId(): number {
@@ -40,7 +62,12 @@ async function sqliteOperationLease(): Promise<unknown> {
       remoteIdentity: null,
     });
     const key: RepositoryOperationLeaseKey = { repositoryId: repository.id, operation: 'remove' };
-    const input = { store, repositoryId: repository.id, operation: 'remove' as const };
+    const input = {
+      store,
+      readProcessStartTime: scriptedReader,
+      repositoryId: repository.id,
+      operation: 'remove' as const,
+    };
 
     let bodySawOwnLease = false;
     let stageDuringBody: string | null = null;
@@ -53,13 +80,11 @@ async function sqliteOperationLease(): Promise<unknown> {
     const leaseAfterSuccess = store.readRepositoryOperationLease(key);
 
     // A holder that is genuinely this live process, still inside its TTL.
-    const self = await readProcessStartIdentity(process.pid);
-    if (self === null) throw new Error('This process has no readable start identity');
     store.acquireRepositoryOperationLease({
       ...key,
       token: 'live-holder-token',
-      pid: self.pid,
-      processStartTime: self.processStartTime,
+      pid: process.pid,
+      processStartTime: selfStartTime,
       ttlMs: 120_000,
     }, new Date().toISOString());
     const liveHolder = await conflictOf(withRepositoryOperationLease(input, async () => 'unreachable'));

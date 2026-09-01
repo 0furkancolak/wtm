@@ -8,38 +8,25 @@ import type { Remediation } from '@wtm/protocol';
  * twice inside the daemon's runtime factory — and nothing measured any of them. Under a deep
  * `HOME` the bind failed with a bare `listen EINVAL`, which names neither the limit nor the
  * path that broke it. A check attached to one of the three copies is a check the other two do
- * not get, so the path and the limit are defined here and consumed everywhere.
+ * not get, so the path and the measurement are defined here and consumed everywhere.
+ *
+ * What moved when this file left `@wtm/core`: the *limit* is no longer part of the derivation.
+ * It is a platform fact — 104 bytes on macOS, 108 on Linux — supplied by `SocketAddressPolicy`,
+ * and every function here takes it as an argument. Nothing below knows which platform it is
+ * running on, which is what lets the Linux numbers be exercised from a macOS machine.
  */
 
 export const daemonSocketFileName = 'wtmd.sock';
-export const daemonDataDirectorySegments = ['Library', 'Application Support', 'WTM'] as const;
 
 /**
- * The longest Unix socket address that works, in bytes.
+ * The advertised socket path: the name every client connects to.
  *
- * macOS declares `sun_path[104]` and libuv refuses anything longer than that buffer, so 104
- * bytes bind and 105 fail. Measured on macOS 15 / Node 24 by binding paths of every length
- * from 96 to 112 bytes: 104 listens, 105 raises `EINVAL`, and `connect()` draws the line in
- * exactly the same place (105 gives `EINVAL` where 104 gives `ENOENT`).
- *
- * Bun is more permissive — its own limit sits at 118 bytes — so a `bun test` or a `bun run`
- * of the daemon will happily bind a path the shipped Node SEA cannot. That divergence is the
- * reason this preflight exists as a measurement rather than as a rescued `EINVAL`: the
- * failure does not reproduce in the environment the code is developed in.
- *
- * The limit is a property of the platform's socket address, not of any filesystem: it counts
- * bytes, so a `HOME` holding non-ASCII characters is longer than its character count.
+ * It takes the *socket root*, not a home and not a data root. On macOS the two coincide; on
+ * Linux the socket belongs in `$XDG_RUNTIME_DIR`, which is nowhere near the data root — which
+ * is precisely why `PlatformPaths` states `socketRoot` as its own field rather than deriving it.
  */
-export const daemonSocketPathLimitBytes = 104;
-
-/** The per-user data directory that holds the socket, the database and the global config. */
-export function daemonDataRoot(home: string): string {
-  return join(home, ...daemonDataDirectorySegments);
-}
-
-/** The advertised socket path: the name every client connects to. */
-export function publishedDaemonSocketPath(home: string): string {
-  return join(daemonDataRoot(home), daemonSocketFileName);
+export function publishedDaemonSocketPath(socketRoot: string): string {
+  return join(socketRoot, daemonSocketFileName);
 }
 
 /**
@@ -52,6 +39,9 @@ export function publishedDaemonSocketPath(home: string): string {
  * lengths where the advertised path fits and the bound path does not. `measureDaemonSocketPath`
  * takes the longer of the two anyway, so a future change to this derivation cannot quietly
  * reopen that gap.
+ *
+ * The derivation is shared by both platforms. Nothing in it is an operating-system fact: what
+ * differs between macOS and Linux is only how many bytes the result may be.
  */
 export function boundDaemonSocketPath(publishedPath: string): string {
   const original = basename(publishedPath);
@@ -76,9 +66,23 @@ export interface DaemonSocketPathMeasurement {
   fits: boolean;
 }
 
+/**
+ * The limit is a required argument, and deliberately has no default.
+ *
+ * A default would have to be one platform's number, and the whole point of this increment is that
+ * the operating system is a parameter rather than an assumption. The draft of this module defaulted
+ * to macOS's 104 with a comment promising the call sites would be moved onto
+ * `PlatformRuntime.socket.limitBytes` later — which is exactly the shape of the defect this seam
+ * exists to remove: correct today only because `assertSupportedRuntime` still refuses Linux, and
+ * silently wrong the moment it stops. A comment is not a mechanism. The type-checker is.
+ *
+ * The five call sites outside this package still spell `darwinSocketPathLimitBytes` because Wave 3
+ * is what hands them a platform runtime. Spelling it is the point: `grep darwinSocketPathLimitBytes
+ * packages/cli packages/daemon` is Wave 3's checklist, and it must come back empty.
+ */
 export function measureDaemonSocketPath(
   publishedPath: string,
-  limitBytes = daemonSocketPathLimitBytes,
+  limitBytes: number,
 ): DaemonSocketPathMeasurement {
   const boundPath = boundDaemonSocketPath(publishedPath);
   // Ties go to the published path: it is the one the user recognises and the one a client
@@ -102,7 +106,9 @@ export function measureDaemonSocketPath(
  * Raised instead of letting `listen`/`connect` fail with a bare `EINVAL`.
  *
  * Carries a `WtmErrorCode`, so the envelope and the exit code follow from the error itself
- * rather than from whichever handler happens to catch it.
+ * rather than from whichever handler happens to catch it. The message names the limit that was
+ * in force rather than a constant, so a reader on either platform is told the number their own
+ * kernel enforces.
  */
 export class DaemonSocketPathTooLongError extends Error {
   readonly code = 'WTM_SOCKET_PATH_TOO_LONG' as const;
@@ -135,7 +141,7 @@ export class DaemonSocketPathTooLongError extends Error {
 /** Refuses before anything is bound, connected, or created on disk. */
 export function assertDaemonSocketPathFits(
   publishedPath: string,
-  limitBytes = daemonSocketPathLimitBytes,
+  limitBytes: number,
 ): DaemonSocketPathMeasurement {
   const measurement = measureDaemonSocketPath(publishedPath, limitBytes);
   if (!measurement.fits) throw new DaemonSocketPathTooLongError(measurement);

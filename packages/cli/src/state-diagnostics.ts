@@ -1,12 +1,15 @@
 import { lstat } from 'node:fs/promises';
 import { createConnection } from 'node:net';
-import { homedir } from 'node:os';
 import {
   DaemonSocketPathTooLongError,
-  containsPath,
   measureDaemonSocketPath,
-  parsePortRange,
   publishedDaemonSocketPath,
+} from '@wtm/platform/socket';
+import { selectPlatformRuntime } from '@wtm/platform';
+import type { PlatformRuntime } from '@wtm/platform/ports';
+import {
+  containsPath,
+  parsePortRange,
   resolveWorkspaceConfig,
   type DaemonStateStore,
   type WorkspaceRecord,
@@ -42,6 +45,19 @@ export interface StateDiagnosticOptions {
    * `doctor` is answering about the machine it is running on; tests point it elsewhere.
    */
   daemonSocketPath?: string;
+  /**
+   * How the host platform is chosen, and the subject of the `platform` check.
+   *
+   * A thunk rather than a resolved runtime for one reason: `selectPlatformRuntime` *refuses* a
+   * host it has no backend for, and the command that has to keep answering on such a host is
+   * precisely this one. Taking the refusal here turns it into the `platform` finding instead of
+   * an exception raised on the way to reporting it.
+   *
+   * It is also the seam the Linux answer is proven through. `doctor` asked about a linux runtime
+   * from this macOS host reports linux's roots, systemd and 108 bytes, which is the only way that
+   * half of the report can be tested at all before C2.
+   */
+  selectPlatform?: () => PlatformRuntime;
 }
 
 /**
@@ -72,7 +88,29 @@ export function createStateDiagnosticDataSource(
     id: workspace.id, name: workspace.name, root: workspace.root, scope: workspace.scope,
   });
 
-  const socketPath = options.daemonSocketPath ?? publishedDaemonSocketPath(homedir());
+  /**
+   * The host, chosen once and remembered — refusal included.
+   *
+   * Once, because three answers below are drawn from it and a second selection is a second
+   * chance to disagree. Refusal included, because a host WTM has no backend for still gets a
+   * report: `platform` says why, and the checks that cannot be answered without a platform say
+   * nothing rather than guessing. The guess is what this increment removes — every one of these
+   * roots used to be spelled `~/Library/...` here, on every operating system.
+   */
+  const chooseHost = options.selectPlatform ?? (() => selectPlatformRuntime());
+  let host: { runtime: PlatformRuntime; refusal: null } | { runtime: null; refusal: unknown } | null = null;
+  const platform = () => (host ??= selectHost(chooseHost));
+
+  /**
+   * The address `doctor` measures and probes, or `null` when there is no platform to derive one
+   * from. It is deliberately the same derivation the CLI's own connect side uses, so the path
+   * the doctor reports on cannot be a different path from the one every command dials.
+   */
+  const socketPathFor = (): string | null => {
+    if (options.daemonSocketPath !== undefined) return options.daemonSocketPath;
+    const runtime = platform().runtime;
+    return runtime === null ? null : publishedDaemonSocketPath(runtime.paths.socketRoot);
+  };
   let reachabilityProbe: Promise<boolean> | null = null;
 
   /**
@@ -177,8 +215,55 @@ export function createStateDiagnosticDataSource(
     findings.push(portFinding(workspace, worktrees));
     findings.push(processFinding(worktrees));
     findings.push(await registrationFinding());
-    findings.push(socketPathFinding());
+    findings.push(platformFinding());
+    const socketPath = socketPathFinding();
+    if (socketPath !== null) findings.push(socketPath);
     return findings;
+  };
+
+  /**
+   * Which operating system WTM decided it is on, and every answer that decision settles.
+   *
+   * Item 9's last acceptance criterion is that the platform-specific differences are *reported*,
+   * and this is where they are. Not because a user cannot look them up, but because until this
+   * increment there was nothing to look up: the roots were spelled out at four call sites, the
+   * socket limit at five, and all nine said macOS whatever the host was. A single finding naming
+   * the runtime, its service manager, its three roots and its socket limit is how a reader
+   * confirms WTM agrees with them about where its files are — and it is the first thing to read
+   * when it does not.
+   *
+   * `pass` or `error`, and nothing between. There is no partial platform: either
+   * `selectPlatformRuntime` produced a runtime, in which case every answer below it is settled,
+   * or it refused the host, in which case nothing is. A `warning` here would be a state WTM
+   * cannot be in.
+   */
+  const platformFinding = (): DoctorDiagnostic['findings'][number] => {
+    const chosen = platform();
+    if (chosen.runtime === null) {
+      return {
+        check: 'platform',
+        status: 'error',
+        message: messageOf(chosen.refusal),
+        details: { code: refusalCode(chosen.refusal) },
+      };
+    }
+    const { id, paths, socket, service } = chosen.runtime;
+    return {
+      check: 'platform',
+      status: 'pass',
+      message: `${id}, with ${service.managerName} as the service manager. Data in `
+        + `${paths.dataRoot}, logs in ${paths.logRoot}, the daemon socket in ${paths.socketRoot}, `
+        + `under a ${socket.limitBytes}-byte socket address limit.`,
+      details: {
+        code: null,
+        platform: id,
+        serviceManager: service.managerName,
+        dataRoot: paths.dataRoot,
+        logRoot: paths.logRoot,
+        socketRoot: paths.socketRoot,
+        socketLimitBytes: socket.limitBytes,
+      },
+    };
   };
 
   /**
@@ -232,8 +317,15 @@ export function createStateDiagnosticDataSource(
    * limit is breached the daemon cannot bind at all, and a diagnostic that only speaks then is
    * speaking to someone who has already lost the daemon that would have run it.
    */
-  const socketPathFinding = (): DoctorDiagnostic['findings'][number] => {
-    const measurement = measureDaemonSocketPath(socketPath);
+  const socketPathFinding = (): DoctorDiagnostic['findings'][number] | null => {
+    const chosen = platform();
+    const socketPath = socketPathFor();
+    // No platform is no limit and no address: there is nothing to measure, and inventing a limit
+    // to measure against is how this file came to state macOS's 104 on every operating system.
+    // Left out entirely, the envelope back-fills it as `unknown`, which is what it is — and
+    // `platform`, directly above, carries the reason.
+    if (chosen.runtime === null || socketPath === null) return null;
+    const measurement = measureDaemonSocketPath(socketPath, chosen.runtime.socket.limitBytes);
     const headroom = measurement.limitBytes - measurement.byteLength;
     const details = {
       byteLength: measurement.byteLength,
@@ -285,6 +377,13 @@ export function createStateDiagnosticDataSource(
   };
 
   const probeDaemon = async (): Promise<boolean> => new Promise<boolean>((settle) => {
+    const socketPath = socketPathFor();
+    // No platform, no address to dial. Reporting the daemon absent is the truthful answer: a host
+    // WTM has no backend for has no daemon on it either, and `platform` says why.
+    if (socketPath === null) {
+      settle(false);
+      return;
+    }
     let socket: ReturnType<typeof createConnection>;
     try {
       socket = createConnection({ path: socketPath });
@@ -570,6 +669,34 @@ function isAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
+}
+
+/**
+ * The host, or the refusal, as a value rather than as an exception.
+ *
+ * Deliberately catches everything, not only `UnsupportedPlatformError`: the composition root also
+ * refuses a home that is not absolute, and a `doctor` that dies on the way to explaining why is
+ * worse than useless to the person whose environment is the problem.
+ */
+function selectHost(
+  choose: () => PlatformRuntime,
+): { runtime: PlatformRuntime; refusal: null } | { runtime: null; refusal: unknown } {
+  try {
+    return { runtime: choose(), refusal: null };
+  } catch (error) {
+    return { runtime: null, refusal: error };
+  }
+}
+
+/**
+ * The code a refusal carries, reported so the finding names the same code the envelope would.
+ * `UnsupportedPlatformError` carries `WTM_PLATFORM_UNSUPPORTED`; anything else declares nothing,
+ * and a details row is not the place to invent one.
+ */
+function refusalCode(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return null;
+  const code = (error as { code: unknown }).code;
+  return typeof code === 'string' && code.length > 0 ? code : null;
 }
 
 function messageOf(error: unknown): string {

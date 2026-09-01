@@ -9,6 +9,7 @@ import {
   type GitWorktreeRecord,
   type GuardedRemovalResult,
   type RemoteRefreshRecord,
+  type ProcessStartTimeReader,
   type RemovalRuntimeCoordinator,
   type RepositoryOperationLeaseStore,
   type WorktreeAnalysis,
@@ -30,6 +31,12 @@ export interface RemovalRuntimeBinding {
   worktreeId: string;
   coordinator: RemovalRuntimeCoordinator;
   leaseStore: RepositoryOperationLeaseStore;
+  /**
+   * How the lease decides whether a colliding holder is still running. Core states the question
+   * and refuses to answer it, so the platform choice arrives here from the composition root and
+   * this command only passes it along.
+   */
+  readProcessStartTime: ProcessStartTimeReader;
   /** Takes over a lease abandoned by a dead holder. This is `--resume`. */
   adopt: boolean;
 }
@@ -90,7 +97,12 @@ export async function runRemoveCommand(
         context,
         ...(binding === null ? {} : {
           coordinator: binding.coordinator,
-          lease: { store: binding.leaseStore, repositoryId: binding.repositoryId, adopt: binding.adopt },
+          lease: {
+            store: binding.leaseStore,
+            readProcessStartTime: binding.readProcessStartTime,
+            repositoryId: binding.repositoryId,
+            adopt: binding.adopt,
+          },
         }),
       });
     } catch (error) {

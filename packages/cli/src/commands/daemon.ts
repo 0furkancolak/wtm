@@ -1,12 +1,14 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname } from 'node:path';
-import { assertDaemonSocketPathFits, publishedDaemonSocketPath } from '@wtm/core';
+import { assertDaemonSocketPathFits, publishedDaemonSocketPath } from '@wtm/platform/socket';
+import { selectPlatformRuntime } from '@wtm/platform';
+import type { PlatformRuntime } from '@wtm/platform/ports';
 import { errorSeveritySchema, remediationSchema, wtmErrorCodeSchema } from '@wtm/protocol';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
 import { exitCodeForError } from '../exit-codes';
-import { launchdPaths } from '@wtm/daemon/launchd';
-import type { LaunchdLifecycle } from '@wtm/daemon/launchd';
+import { servicePathsFor } from '@wtm/daemon/service-lifecycle';
+import type { ServiceLifecycle } from '@wtm/daemon/service-lifecycle';
 
 export type DaemonLifecycleAction = 'install' | 'uninstall' | 'status';
 
@@ -36,35 +38,50 @@ export interface DaemonServeResult {
   envelope: JsonEnvelope<{ state: 'stopped'; signal: 'SIGINT' | 'SIGTERM' } | null>;
 }
 
-/** How long `install` waits for the daemon launchd just started to answer on its socket. */
+/** How long `install` waits for the daemon the service manager just started to answer on its socket. */
 const readinessDeadlineMs = 20_000;
 const readinessIntervalMs = 100;
 
 export async function runDaemonLifecycleCommand(
   action: DaemonLifecycleAction,
-  lifecycle: LaunchdLifecycle,
+  lifecycle: ServiceLifecycle,
   /**
-   * Whether the daemon is answering. launchd reports a service as running the moment it forks,
-   * so `install` used to return while the socket was not accepting yet and the very next
-   * `wtm start` failed as unavailable — and `status` claimed it was running throughout.
+   * Whether the daemon is answering. A service manager reports a service as running the moment it
+   * forks — launchd does, and so does systemd — so `install` used to return while the socket was
+   * not accepting yet and the very next `wtm start` failed as unavailable, with `status` claiming
+   * it was running throughout.
    */
   reachable?: () => Promise<boolean>,
   /**
-   * The address the installed agent will publish. Measured before `install` publishes anything,
-   * because an agent whose socket path cannot fit in a socket address will never answer: the
+   * The address the installed service will publish. Measured before `install` publishes anything,
+   * because a service whose socket path cannot fit in a socket address will never answer: the
    * readiness poll below would spend its entire deadline on it and then report `reachable: false`
    * with nothing to explain it, which is the state this preflight replaces with the reason.
+   *
+   * Defaults to whatever `platform` names as this host's socket root, so it stays the path the
+   * installed service actually publishes on rather than a second spelling of it.
    */
-  socketPath: string = publishedDaemonSocketPath(homedir()),
+  socketPath?: string,
+  /**
+   * The host this is being run on. Injected only by tests and by callers that have already
+   * chosen; production selects here, inside the `try`, so a host WTM has no backend for reaches
+   * the caller as a `WTM_PLATFORM_UNSUPPORTED` envelope rather than as a thrown default argument.
+   */
+  platform?: PlatformRuntime,
 ): Promise<JsonEnvelope<unknown>> {
+  let manager = unknownServiceManagerName;
   try {
+    const host = platform ?? selectPlatformRuntime();
+    manager = host.service.managerName;
+    const address = socketPath ?? publishedDaemonSocketPath(host.paths.socketRoot);
     // Before anything is published: the refusal names the length, the limit and the path, and
-    // it is the same preflight the daemon's own bind side runs, so the two cannot disagree.
-    if (action === 'install') assertDaemonSocketPathFits(socketPath);
-    const data = await lifecycle[action]();
+    // it is the same preflight the daemon's own bind side runs, so the two cannot disagree. The
+    // limit is this host's `sizeof(sun_path)` — 104 on macOS, 108 on Linux — not a constant.
+    if (action === 'install') assertDaemonSocketPathFits(address, host.socket.limitBytes);
+    const data = published(host, await lifecycle[action]());
     if (action === 'uninstall' || reachable === undefined) return successEnvelope(`daemon ${action}`, data);
     const ready = action === 'install' ? await waitUntilReachable(reachable) : await reachable();
-    return successEnvelope(`daemon ${action}`, { ...data as object, reachable: ready });
+    return successEnvelope(`daemon ${action}`, { ...data, reachable: ready });
   } catch (error) {
     return {
       schemaVersion: 1,
@@ -72,9 +89,31 @@ export async function runDaemonLifecycleCommand(
       command: `daemon ${action}`,
       data: null,
       warnings: [],
-      errors: [codedError(error, action) ?? launchdError(action, error)],
+      errors: [codedError(error, action) ?? serviceManagerError(action, error, manager)],
     };
   }
+}
+
+/**
+ * The lifecycle's result as `wtm daemon` publishes it.
+ *
+ * `definitionPath` is the field: it is the neutral name, it is what the lifecycle produces, and it
+ * is the one that stays true when the definition is a systemd unit rather than a plist.
+ *
+ * `plistPath` is kept beside it on macOS, carrying the same value. The program map's cross-cutting
+ * rule 4 makes JSON output a compatibility contract that may only grow, and a rename is not a
+ * growth — a script reading `plistPath` would simply stop finding it. So the field is *added*, not
+ * *renamed*, and the old name survives exactly where it is still honest. On Linux it is dropped:
+ * there is no plist there, and a `plistPath` naming a `.service` file would be a lie told for the
+ * sake of a schema. C2 removes the macOS half once the deprecation has been carried in a release.
+ */
+function published<T extends { definitionPath: string }>(
+  host: PlatformRuntime,
+  result: T,
+): T & { plistPath?: string } {
+  // Gated on the backend, not on the host: `plistPath` is a claim about the definition file being
+  // a plist, and the backend is what decides that.
+  return host.service.id === 'darwin' ? { ...result, plistPath: result.definitionPath } : result;
 }
 
 async function waitUntilReachable(reachable: () => Promise<boolean>): Promise<boolean> {
@@ -226,7 +265,10 @@ function reportableCondition(error: unknown): string {
  */
 function appendToDaemonErrorLog(entry: string): void {
   try {
-    const path = launchdPaths().stderrPath;
+    // The selected platform's service paths, not launchd's: on Linux the daemon's error log
+    // belongs under the XDG state root, and `~/Library/Logs/WTM` is not a directory there.
+    const runtime = selectPlatformRuntime();
+    const path = servicePathsFor(runtime.service, { home: homedir(), env: process.env }).stderrPath;
     // The same modes the daemon's managed logs are held at: a failure report names paths
     // inside the user's home and is no more public than the processes it describes.
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -323,24 +365,63 @@ function codedError(error: unknown, action: DaemonLifecycleAction | 'serve'): Wt
   };
 }
 
-function launchdError(action: DaemonLifecycleAction, error: unknown): WtmError {
+/**
+ * What the wording below calls the service manager when there is no platform to ask.
+ *
+ * Reachable only when `selectPlatformRuntime` itself refused, and that refusal is a coded
+ * `WTM_PLATFORM_UNSUPPORTED` which `codedError` answers before this function is consulted. It
+ * exists so the name is never *guessed*: the previous code said `launchd` unconditionally, which
+ * is a macOS fact stated as a universal one — exactly the defect spec D12 names.
+ */
+const unknownServiceManagerName = 'service';
+
+/**
+ * The envelope form of a lifecycle failure that carries only an internal `LAUNCHD_*` code.
+ *
+ * The codes keep their names deliberately (spec D12): they are internal, they never reach an
+ * envelope — this function is what maps them onto real `WtmErrorCode`s — and `launchd.test.ts`
+ * naming them 99 times while being byte-unchanged through a 2580-line refactor is the strongest
+ * evidence the increment has that macOS behaviour survived. Spending that on a rename no user can
+ * observe would be a bad trade.
+ *
+ * The *messages* are the opposite case, because a user does see them. Every one of them said
+ * `launchd`, and on a Linux host every one of them was false. They are templated over the manager
+ * the selected platform actually uses, which leaves macOS byte-identical — `launchd` substituted
+ * into each sentence reproduces the previous string exactly — and makes Linux say `systemd`.
+ */
+function serviceManagerError(
+  action: DaemonLifecycleAction,
+  error: unknown,
+  manager: string,
+): WtmError {
   const launchdCode = stringProperty(error, 'code');
   const code: WtmErrorCode = launchdCode === 'LAUNCHD_DOMAIN_UNAVAILABLE'
     ? 'WTM_DAEMON_UNAVAILABLE'
     : launchdCode === 'UNSAFE_LAUNCHD_PATH'
       ? 'RESOURCE_PATH_DENIED'
-      : launchdCode === 'INVALID_LAUNCHD_CONFIGURATION' || launchdCode === 'LAUNCHD_UNSUPPORTED_PLATFORM'
-        ? 'WTM_CONFIG_INVALID'
-        : 'WTM_DAEMON_REQUEST_FAILED';
-  const message = launchdCode === 'LAUNCHD_DOMAIN_UNAVAILABLE'
-    ? 'The launchd user domain is unavailable.'
-    : launchdCode === 'UNSAFE_LAUNCHD_PATH'
-      ? 'The launchd installation path is unsafe.'
+      // A backend that does not match the host is a platform refusal, and there is now a code that
+      // says so. It used to be reported as `WTM_CONFIG_INVALID` — nothing about the user's
+      // configuration is wrong — and the only reason to keep it there was that
+      // `WTM_PLATFORM_UNSUPPORTED` had no row in `exitCodeForError` and would have silently
+      // dropped this condition from exit 2 to exit 1. It has one now, and it is still 2.
       : launchdCode === 'LAUNCHD_UNSUPPORTED_PLATFORM'
-        ? 'launchd is only available on macOS.'
+        ? 'WTM_PLATFORM_UNSUPPORTED'
         : launchdCode === 'INVALID_LAUNCHD_CONFIGURATION'
-          ? 'The launchd configuration is invalid.'
-          : 'The launchd operation failed.';
+          ? 'WTM_CONFIG_INVALID'
+          : 'WTM_DAEMON_REQUEST_FAILED';
+  const message = launchdCode === 'LAUNCHD_DOMAIN_UNAVAILABLE'
+    ? `The ${manager} user domain is unavailable.`
+    : launchdCode === 'UNSAFE_LAUNCHD_PATH'
+      ? `The ${manager} installation path is unsafe.`
+      // Not `${manager} is only available on macOS.`: this code fires when the backend WTM is
+      // publishing through is not the one for the host, and naming the host's *own* manager there
+      // would be false twice over. Which host WTM decided it is on belongs to the platform check
+      // and to `UnsupportedPlatformError`, not to a service-manager message.
+      : launchdCode === 'LAUNCHD_UNSUPPORTED_PLATFORM'
+        ? 'WTM has no service manager for this host. `wtm doctor` reports the platform it detected.'
+        : launchdCode === 'INVALID_LAUNCHD_CONFIGURATION'
+          ? `The ${manager} configuration is invalid.`
+          : `The ${manager} operation failed.`;
   return {
     code,
     message,

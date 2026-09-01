@@ -4,9 +4,9 @@ import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  daemonSocketPathLimitBytes,
+  darwinSocketPathLimitBytes,
   publishedDaemonSocketPath,
-} from '@wtm/core';
+} from '@wtm/platform/socket';
 import {
   FrameDecoder,
   encodeFrame,
@@ -92,12 +92,46 @@ async function listeningDaemon(): Promise<string> {
   return path;
 }
 
+/**
+ * The macOS socket root, spelled out rather than read from `PlatformRuntime.paths.socketRoot`.
+ *
+ * Deriving it from the resolver under test would make this suite agree with whatever that
+ * resolver said. Spelling it literally is what pins macOS across the move onto the platform seam.
+ */
+function darwinSocketRoot(home: string): string {
+  return join(home, 'Library', 'Application Support', 'WTM');
+}
+
 /** A socket path one byte past what a Unix socket address can hold. */
-const overLimitSocketPath = publishedDaemonSocketPath(`/${'h'.repeat(62)}`);
+const overLimitSocketPath = publishedDaemonSocketPath(darwinSocketRoot(`/${'h'.repeat(62)}`));
 
 describe('daemon socket path in the CLI', () => {
   test('advertises the shared published path', () => {
-    expect(defaultDaemonSocketPath('/Users/x')).toBe(publishedDaemonSocketPath('/Users/x'));
+    expect(defaultDaemonSocketPath('/Users/x')).toBe(publishedDaemonSocketPath(darwinSocketRoot('/Users/x')));
+  });
+
+  test('the macOS address is the byte-for-byte one every installed daemon is already listening on', () => {
+    // The literal, not a derivation of it. `defaultDaemonSocketPath` now asks the platform runtime
+    // for its socket root instead of spelling `Library/Application Support` itself, and an
+    // installed LaunchAgent that survives that change has to keep answering on the same address —
+    // a daemon and a CLI that disagree about the path by one byte simply never meet.
+    expect(defaultDaemonSocketPath('/Users/x'))
+      .toBe('/Users/x/Library/Application Support/WTM/wtmd.sock');
+  });
+
+  test('ignores the XDG variables on macOS, so a home is not silently relocated', () => {
+    // A macOS user who exports `XDG_STATE_HOME` for some other tool must not find WTM's socket
+    // somewhere else. The variables are read from the ambient process here, which is what makes
+    // this the real assertion rather than a restatement of the resolver.
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = '/xdg/state';
+    try {
+      expect(defaultDaemonSocketPath('/Users/x'))
+        .toBe('/Users/x/Library/Application Support/WTM/wtmd.sock');
+    } finally {
+      if (previous === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previous;
+    }
   });
 
   test('maps the new code to exit 2, the class for configuration the user has to change', async () => {
@@ -130,12 +164,12 @@ describe('daemon socket path in the CLI', () => {
     expect(jsonEnvelopeSchema.parse(envelope)).toEqual(envelope);
     expect(envelope.ok).toBe(false);
     expect(envelope.errors[0].code).toBe('WTM_SOCKET_PATH_TOO_LONG');
-    expect(envelope.errors[0].message).toContain(String(daemonSocketPathLimitBytes));
-    expect(envelope.errors[0].message).toContain(String(daemonSocketPathLimitBytes + 1));
+    expect(envelope.errors[0].message).toContain(String(darwinSocketPathLimitBytes));
+    expect(envelope.errors[0].message).toContain(String(darwinSocketPathLimitBytes + 1));
     expect(envelope.errors[0].message).toContain(overLimitSocketPath);
     expect(envelope.errors[0].context).toMatchObject({
-      byteLength: daemonSocketPathLimitBytes + 1,
-      limitBytes: daemonSocketPathLimitBytes,
+      byteLength: darwinSocketPathLimitBytes + 1,
+      limitBytes: darwinSocketPathLimitBytes,
     });
     expect(envelope.errors[0].remediation).toEqual([{ kind: 'command-suggestion', argv: ['wtm', 'doctor'] }]);
     expect(exitCode).toBe(2);

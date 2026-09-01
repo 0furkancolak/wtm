@@ -66,8 +66,12 @@ const statusSchema = z.object({
  * because every workspace-scoped check below it presumes an answer to it: an unregistered
  * directory is why adapters, resources and ports have nothing to say, and reporting that as six
  * separate silences instead of one cause is what sent readers looking in the wrong place.
- * `socket-path` comes last because it is the only host-scoped check — it describes this
- * machine, not this workspace, and it is the same answer in every workspace on it.
+ * `platform` and `socket-path` come last because they are the host-scoped pair — they describe
+ * this machine, not this workspace, and they are the same answer in every workspace on it.
+ * `platform` precedes `socket-path` for the same reason `registration` precedes everything: it is
+ * the cause. The limit `socket-path` measures against *is* a platform fact — 104 bytes of
+ * `sun_path` on macOS, 108 on Linux — so a reader who sees a headroom number and wants to know
+ * where the limit came from finds the answer immediately above it rather than nowhere.
  *
  * This list, `doctorOrder` and `unknownDoctorFindings` are edited together. Deriving the schema
  * enum and the sort order from it leaves one place a check can be forgotten — the back-fill
@@ -75,7 +79,7 @@ const statusSchema = z.object({
  */
 export const doctorChecks = [
   'registration', 'git', 'config', 'adapters', 'resources', 'ports', 'process-records',
-  'socket-path',
+  'platform', 'socket-path',
 ] as const;
 
 const doctorSchema = z.object({
@@ -177,6 +181,7 @@ const unknownDoctorFindings: DoctorDiagnostic['findings'] = [
   { check: 'resources', status: 'unknown', message: 'Resource diagnostics are unavailable.' },
   { check: 'ports', status: 'unknown', message: 'Port diagnostics are unavailable.' },
   { check: 'process-records', status: 'unknown', message: 'Process record diagnostics are unavailable.' },
+  { check: 'platform', status: 'unknown', message: 'Platform diagnostics are unavailable.' },
   { check: 'socket-path', status: 'unknown', message: 'Socket path diagnostics are unavailable.' },
 ];
 

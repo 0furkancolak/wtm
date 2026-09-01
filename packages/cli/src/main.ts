@@ -6,13 +6,17 @@ import { constants, homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
 import { exitCodeForError } from './exit-codes';
-import type { AdapterTrustStore } from '@wtm/core';
 import {
   DaemonSocketPathTooLongError,
-  containsPath,
-  listGitWorktrees,
   measureDaemonSocketPath,
   publishedDaemonSocketPath,
+} from '@wtm/platform/socket';
+import { selectPlatformRuntime } from '@wtm/platform';
+import type { PlatformRuntime } from '@wtm/platform/ports';
+import type { AdapterTrustStore } from '@wtm/core';
+import {
+  containsPath,
+  listGitWorktrees,
   refreshRemoteTrackingRefs,
   resolveWorkspaceConfig,
   SQLiteStateStore,
@@ -22,15 +26,15 @@ import type { GitWorktreeRecord } from '@wtm/core';
 import {
   DaemonRegistrationError,
   branchName,
-  createLaunchdLifecycle,
   createProductionDaemon,
   defaultProductionRuntimePaths,
   findRegistration,
   prepareRuntimeResources,
   resolveWorktreeRuntime,
   taskResolutionInput,
-  type LaunchdLifecycle,
 } from '@wtm/daemon';
+import { createServiceLifecycle } from '@wtm/daemon/service-lifecycle';
+import type { ServiceLifecycle } from '@wtm/daemon/service-lifecycle';
 import {
   emptyDiagnosticDataSource,
   runDoctorCommand,
@@ -91,7 +95,7 @@ export interface CliDependencies {
   runtimeClient?: RuntimeDaemonClient;
   execForeground?: ForegroundExecutor;
   signal?: AbortSignal;
-  daemonLifecycle?: LaunchdLifecycle;
+  daemonLifecycle?: ServiceLifecycle;
   daemonRuntimeFactory?: () => Promise<ForegroundDaemonRuntime>;
   daemonSignals?: DaemonSignalSource;
   daemonProgramArguments?: readonly string[];
@@ -318,10 +322,29 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
 
   const daemon = program.command('daemon').description('Manage the per-user WTM daemon.');
   for (const action of ['install', 'uninstall', 'status'] as const) {
-    const lifecycle = daemon.command(action).description(`${capitalize(action)} the per-user WTM LaunchAgent.`);
+    // Not "LaunchAgent". The subcommand is driven by whichever service manager the selected
+    // platform names — launchd on macOS, systemd on Linux — and `wtm doctor`'s `platform` check
+    // reports that by name, so a help text that says LaunchAgent contradicts a diagnostic the same
+    // binary prints. The wording is deliberately the neutral one rather than a per-platform string:
+    // help output is rendered before a platform has been selected, and a description that had to
+    // ask the host which OS it is would be a second place that decides.
+    const lifecycle = daemon.command(action)
+      .description(`${capitalize(action)} the per-user WTM daemon service.`);
     addJsonOption(lifecycle);
     lifecycle.action(async (options: ScopeOptions) => {
-      const manager = dependencies.daemonLifecycle ?? createLaunchdLifecycle({
+      // Built from the *selected* backend, not from launchd.
+      //
+      // `createLaunchdLifecycle` hard-wires `darwinServiceBackend`, so while it was called here the
+      // Linux service backend was unreachable from the CLI entirely: `wtm daemon install` on Linux
+      // would have driven launchd's argument vectors against a host that has no `launchctl`. That
+      // is the failure this increment's opening section names — code that looks like Linux support,
+      // passes a thousand tests, and does not start — and it is pure wiring, so it is decidable
+      // here rather than on a kernel.
+      //
+      // `env` is left to default to the process environment, because the Linux backend's paths are
+      // XDG-derived and reading `{}` would put its unit in the wrong directory. macOS ignores it.
+      const manager = dependencies.daemonLifecycle ?? createServiceLifecycle({
+        backend: hostPlatformRuntime().service,
         programArguments: dependencies.daemonProgramArguments
           ?? daemonProgramArguments(dependencies.runtimeInvocation ?? defaultRuntimeInvocation()),
       });
@@ -849,6 +872,17 @@ function bindRemovalRuntime(options: {
       ...(options.client === undefined ? {} : { client: options.client }),
     }),
     leaseStore: store,
+    /**
+     * The platform reader the repository operation lease measures a colliding holder with.
+     *
+     * It is chosen here because the CLI is a composition root: `@wtm/core` states the question as
+     * a port and refuses to answer it, so somebody has to choose, and the only correct place to
+     * choose is the process entry point. It is the *selected* runtime rather than a hard-wired
+     * macOS one, so a lease holder is measured with the reader for the operating system actually
+     * running — `ps -o lstart=` on macOS, `/proc/<pid>/stat` on Linux — and the two identity
+     * strings can never be confused for one another.
+     */
+    readProcessStartTime: (pid) => hostPlatformRuntime().process.readStartTime(pid),
     adopt: options.adopt,
   };
 }
@@ -1069,7 +1103,7 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
   // The connect side gets the same preflight the daemon's bind side gets. Without it a home
   // too deep for a socket address answered `WTM_DAEMON_UNAVAILABLE`, which sends the reader
   // to look for a daemon that is missing for a reason no amount of restarting will change.
-  const socketPathMeasurement = measureDaemonSocketPath(socketPath);
+  const socketPathMeasurement = measureDaemonSocketPath(socketPath, hostPlatformRuntime().socket.limitBytes);
   const socketPathRefusal = socketPathMeasurement.fits
     ? null
     : new DaemonSocketPathTooLongError(socketPathMeasurement);
@@ -1330,8 +1364,33 @@ function exitCodeForEnvelope(envelope: JsonEnvelope<unknown>): number {
   return envelope.errors.reduce((code, error) => Math.max(code, exitCodeForError(error.code)), 1);
 }
 
+/**
+ * The host WTM is running on, chosen once for the whole process.
+ *
+ * Memoized because it is asked for on every command and the answer cannot change while the
+ * process lives; selected lazily rather than at module load because `selectPlatformRuntime`
+ * *refuses* a host it has no backend for, and a refusal thrown during `import` would take down
+ * `wtm --help` along with everything else.
+ *
+ * It deliberately has no fallback. A host WTM cannot name is reported as `WTM_PLATFORM_UNSUPPORTED`
+ * — the coded refusal `UnsupportedPlatformError` carries — rather than quietly answered with
+ * macOS's roots, which is what every call site replaced by this function used to do.
+ */
+let selectedHostPlatform: PlatformRuntime | null = null;
+function hostPlatformRuntime(): PlatformRuntime {
+  return (selectedHostPlatform ??= selectPlatformRuntime());
+}
+
+/**
+ * Where this user's daemon publishes its socket.
+ *
+ * The root is the platform's: `~/Library/Application Support/WTM` on macOS, `$XDG_RUNTIME_DIR/wtm`
+ * on Linux. `home` stays an argument so a caller can ask about a home that is not this process's,
+ * which is how the macOS answer is pinned to the exact path every installed daemon is already
+ * listening on.
+ */
 export function defaultDaemonSocketPath(home = homedir()): string {
-  return publishedDaemonSocketPath(home);
+  return publishedDaemonSocketPath(selectPlatformRuntime({ home }).paths.socketRoot);
 }
 
 /**

@@ -11,18 +11,6 @@ export {
 export type { GitCommandOptions, GitCommandResult, GitRepositoryIdentity } from './git/git-runner';
 export { parseGitWorktreePorcelain } from './git/worktree-parser';
 export { containsPath } from './paths/contains';
-export {
-  DaemonSocketPathTooLongError,
-  assertDaemonSocketPathFits,
-  boundDaemonSocketPath,
-  daemonDataDirectorySegments,
-  daemonDataRoot,
-  daemonSocketFileName,
-  daemonSocketPathLimitBytes,
-  measureDaemonSocketPath,
-  publishedDaemonSocketPath,
-} from './paths/daemon-socket';
-export type { DaemonSocketPathMeasurement } from './paths/daemon-socket';
 export type { GitWorktreeRecord } from './git/worktree-parser';
 export {
   analyzeWorktree,
@@ -72,6 +60,8 @@ export {
   withRepositoryOperationLease,
 } from './analysis/operation-lease';
 export type {
+  ProcessStartIdentity,
+  ProcessStartTimeReader,
   RepositoryOperationConflictDetail,
   RepositoryOperationLeaseInput,
   RepositoryOperationLeaseStore,
@@ -86,11 +76,6 @@ export type { RepoScopeInput, ResolvedRepoScope } from './config/repos';
 export type { ResolvedConfig, Provenance } from './config/provenance';
 export { resolveTemplate, WtmTemplateError } from './templates/resolve';
 export type { TemplateContext } from './templates/resolve';
-export {
-  installProcessStartIdentityReader,
-  readProcessStartIdentity,
-} from './runtime/process-identity';
-export type { ProcessStartIdentity, ProcessStartTimeReader } from './runtime/process-identity';
 export { resolveEnvironment, WtmEnvironmentError } from './runtime/environment';
 export type { EnvironmentResolutionInput } from './runtime/environment';
 export { resolveTask, WtmTaskResolutionError } from './runtime/task-resolver';

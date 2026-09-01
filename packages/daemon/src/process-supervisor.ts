@@ -1,29 +1,55 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
-import { promisify } from 'node:util';
 import type {
   ManagedProcessRecord, ManagedProcessState, ManagedProcessInput, ManagedProcessQuery,
   ManagedProcessUpdate, ManagedProcessCreateOptions, ManagedProcessReservationOptions,
 } from '@wtm/core';
+import { selectPlatformRuntime } from '@wtm/platform';
+import type {
+  ObservedProcessIdentity, ProcessPlatform, ProcessInspection as PlatformProcessInspection,
+} from '@wtm/platform/ports';
 import { ManagedLogStore, type PreparedManagedLogs } from './logs';
 
-const execFileAsync = promisify(execFile);
+/**
+ * The three `ps` readers this module used to contain now live in `@wtm/platform`, one macOS
+ * implementation beside one Linux implementation, and the functions below are the same names
+ * delegating to whichever one this host selects. The delegation is deliberate rather than a
+ * re-export: these functions are the daemon's *default* readers, and
+ * `ManagedProcessSupervisorOptions` has always let a caller inject its own — which is the seam
+ * `createProductionDaemon` uses to hand the supervisor the `PlatformRuntime.process` it chose.
+ *
+ * C1-3 left `createDarwinProcessPlatform()` here as a placeholder, correct only for as long as
+ * `assertSupportedRuntime` still refused Linux — and that refusal is gone as of this task, so a
+ * Linux daemon would have been parsing BSD `ps` output that never arrives and reading every
+ * supervised task as absent. The selection is `selectPlatformRuntime`'s, so there is no second
+ * platform branch here to keep in step with it.
+ *
+ * It is resolved on first use rather than at import: these functions are re-exported from the
+ * daemon's barrel and a module-level selection would make merely importing that barrel throw on a
+ * platform WTM has no backend for, which is a refusal the caller could no longer catch and report
+ * as an envelope.
+ */
+let selectedProcessPlatform: ProcessPlatform | null = null;
+
+function hostProcessPlatform(): ProcessPlatform {
+  selectedProcessPlatform ??= selectPlatformRuntime().process;
+  return selectedProcessPlatform;
+}
+
 const activeStates = ['STARTING', 'RUNNING', 'STOPPING'] as const;
 const anchorProtocolTimeoutMs = 10_000;
 
-export interface ProcessIdentity {
-  pid: number;
-  pgid: number;
-  processStartTime: string;
-  commandFingerprint: string;
-}
+/** The port's identity, re-exported under the name the daemon and its consumers already use. */
+export type ProcessIdentity = ObservedProcessIdentity;
+export type ProcessInspection = PlatformProcessInspection;
 
-export type ProcessInspection =
-  | { status: 'present'; identity: ProcessIdentity }
-  | { status: 'absent' }
-  | { status: 'failed'; reason: string };
-
+/**
+ * The one place the daemon's spelling is wider than the port's: `pids` is `readonly` here and is
+ * not in `@wtm/platform`. Narrowing it to match would reject any caller that supplies a frozen
+ * array to `ManagedProcessSupervisorOptions.inspectProcessGroup`, and a port value satisfies this
+ * type either way, so the widening costs nothing and the narrowing would cost a caller.
+ */
 export type ProcessGroupInspection =
   | { status: 'present'; pids: readonly number[] }
   | { status: 'absent' }
@@ -604,27 +630,7 @@ export class ManagedProcessSupervisor {
 }
 
 export async function inspectProcess(pid: number): Promise<ProcessInspection> {
-  if (!Number.isSafeInteger(pid) || pid < 1) return { status: 'absent' };
-  let stdout: string;
-  try {
-    stdout = (await execFileAsync('ps', [
-      '-ww', '-p', String(pid), '-o', 'pgid=', '-o', 'state=', '-o', 'lstart=', '-o', 'comm=', '-o', 'command=',
-    ], { encoding: 'utf8', env: stableEnvironment(), maxBuffer: 64 * 1024, timeout: 1_000 })).stdout;
-  } catch (error) {
-    return isPsAbsent(error) ? { status: 'absent' } : { status: 'failed', reason: safeErrorCode(error) };
-  }
-  const lines = stdout.split(/\r?\n/).filter((line) => line.trim().length > 0);
-  if (lines.length === 0) return { status: 'absent' };
-  if (lines.length !== 1) return { status: 'failed', reason: 'PS_PARSE_FAILED' };
-  const match = /^\s*(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\S+\s+\d+)\s+(\S+)\s+(.+?)\s*$/.exec(lines[0] as string);
-  if (match === null) return { status: 'failed', reason: 'PS_PARSE_FAILED' };
-  const pgid = Number.parseInt(match[1] as string, 10);
-  if (!Number.isSafeInteger(pgid) || pgid < 1) return { status: 'failed', reason: 'PS_PARSE_FAILED' };
-  if ((match[2] as string).startsWith('Z')) return { status: 'absent' };
-  return { status: 'present', identity: {
-    pid, pgid, processStartTime: match[3] as string,
-    commandFingerprint: observedCommandFingerprint(match[4] as string, match[5] as string),
-  } };
+  return await hostProcessPlatform().inspectProcess(pid);
 }
 
 export async function inspectProcessIdentity(pid: number): Promise<ProcessIdentity | null> {
@@ -633,23 +639,7 @@ export async function inspectProcessIdentity(pid: number): Promise<ProcessIdenti
 }
 
 export async function inspectProcessGroup(pgid: number): Promise<ProcessGroupInspection> {
-  if (!Number.isSafeInteger(pgid) || pgid < 1) return { status: 'absent' };
-  let stdout: string;
-  try {
-    stdout = (await execFileAsync('ps', ['-axo', 'pid=', '-o', 'pgid=', '-o', 'state='], {
-      encoding: 'utf8', env: stableEnvironment(), maxBuffer: 4 * 1024 * 1024, timeout: 1_000,
-    })).stdout;
-  } catch (error) { return { status: 'failed', reason: safeErrorCode(error) }; }
-  const pids: number[] = [];
-  for (const line of stdout.split(/\r?\n/)) {
-    if (line.trim().length === 0) continue;
-    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(line);
-    if (match === null) return { status: 'failed', reason: 'PS_PARSE_FAILED' };
-    if (Number.parseInt(match[2] as string, 10) === pgid && !(match[3] as string).startsWith('Z')) {
-      pids.push(Number.parseInt(match[1] as string, 10));
-    }
-  }
-  return pids.length === 0 ? { status: 'absent' } : { status: 'present', pids };
+  return await hostProcessPlatform().inspectProcessGroup(pgid);
 }
 
 function identityMatches(record: ManagedProcessRecord, identity: ProcessIdentity): boolean {
@@ -956,30 +946,11 @@ function defaultRuntimeInvocation(): RuntimeInvocation {
   return { executable: process.execPath, prefixArgs: [entry] };
 }
 
-function stableEnvironment(): NodeJS.ProcessEnv { return { ...process.env, LC_ALL: 'C', LANG: 'C' }; }
-function isPsAbsent(error: unknown): boolean {
-  return typeof error === 'object'
-    && error !== null
-    && 'code' in error
-    && error.code === 1
-    && 'stdout' in error
-    && String(error.stdout).trim().length === 0
-    && 'stderr' in error
-    && String(error.stderr).trim().length === 0;
-}
 function ownerKey(worktreeId: string, taskName: string): string { return `${worktreeId}\0${taskName}`; }
 function isActiveState(state: ManagedProcessState): boolean { return state === 'STARTING' || state === 'RUNNING' || state === 'STOPPING'; }
 function sameIdentity(left: ProcessIdentity, right: ProcessIdentity): boolean {
   return left.pid === right.pid && left.pgid === right.pgid
     && left.processStartTime === right.processStartTime && left.commandFingerprint === right.commandFingerprint;
-}
-function observedCommandFingerprint(executable: string, command: string): string {
-  const anchorMarker = /(?:^|\s)([a-f0-9]{64})\s*$/.exec(command)?.[1];
-  return createHash('sha256')
-    .update(executable)
-    .update('\0')
-    .update(anchorMarker === undefined ? command : `wtm-anchor:${anchorMarker}`)
-    .digest('hex');
 }
 function delay(milliseconds: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }
 function isNoSuchProcess(error: unknown): boolean { return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ESRCH'; }

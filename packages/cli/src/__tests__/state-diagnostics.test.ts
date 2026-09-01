@@ -11,6 +11,8 @@ import type {
   WorkspaceRecord,
   WorktreeRecord,
 } from '@wtm/core';
+import { selectPlatformRuntime, UnsupportedPlatformError } from '@wtm/platform';
+import { publishedDaemonSocketPath } from '@wtm/platform/socket';
 import { doctorChecks } from '../diagnostics';
 import { createStateDiagnosticDataSource } from '../state-diagnostics';
 
@@ -288,6 +290,102 @@ describe('socket-path', () => {
   });
 });
 
+describe('platform', () => {
+  it('reports the macOS roots, manager and limit as the exact strings they have always been', async () => {
+    // Pinned literally, not derived. This is the evidence that moving four hard-coded macOS
+    // spellings onto `PlatformRuntime.paths` moved nothing else: every path here is byte for byte
+    // the one the CLI and the daemon were already using.
+    const finding = (await findingsOn(darwinHost)).find(({ check }) => check === 'platform');
+
+    expect(finding).toEqual({
+      check: 'platform',
+      status: 'pass',
+      message: 'darwin, with launchd as the service manager. Data in '
+        + '/Users/x/Library/Application Support/WTM, logs in /Users/x/Library/Logs/WTM, the daemon '
+        + 'socket in /Users/x/Library/Application Support/WTM, under a 104-byte socket address limit.',
+      details: {
+        code: null,
+        platform: 'darwin',
+        serviceManager: 'launchd',
+        dataRoot: '/Users/x/Library/Application Support/WTM',
+        logRoot: '/Users/x/Library/Logs/WTM',
+        socketRoot: '/Users/x/Library/Application Support/WTM',
+        socketLimitBytes: 104,
+      },
+    });
+  });
+
+  it('reports systemd, the XDG roots and 108 bytes for a linux host', async () => {
+    const finding = (await findingsOn(linuxHost)).find(({ check }) => check === 'platform');
+
+    expect(finding).toMatchObject({
+      check: 'platform',
+      status: 'pass',
+      details: {
+        code: null,
+        platform: 'linux',
+        serviceManager: 'systemd',
+        dataRoot: '/home/x/.local/state/wtm',
+        logRoot: '/home/x/.local/state/wtm/logs',
+        // The socket goes where the platform says sockets go, which is also dramatically shorter
+        // than any home directory — the macOS length defect solved for free.
+        socketRoot: '/run/user/501/wtm',
+        socketLimitBytes: 108,
+      },
+    });
+  });
+
+  it('is an error only when the platform itself is refused', async () => {
+    const finding = (await findingsOn(() => { throw new UnsupportedPlatformError('win32'); }))
+      .find(({ check }) => check === 'platform');
+
+    expect(finding).toEqual({
+      check: 'platform',
+      status: 'error',
+      message: 'WTM has no backend for win32. Supported platforms: darwin, linux.',
+      details: { code: 'WTM_PLATFORM_UNSUPPORTED' },
+    });
+  });
+
+  it('never reports a status between pass and error', async () => {
+    // `pass` or `error`, and nothing between: there is no partial platform. Either the runtime
+    // resolved, in which case every root below it is settled, or it did not, in which case none is.
+    for (const select of [darwinHost, linuxHost, () => { throw new UnsupportedPlatformError('win32'); }]) {
+      const finding = (await findingsOn(select)).find(({ check }) => check === 'platform');
+      expect(finding?.status === 'pass' || finding?.status === 'error').toBe(true);
+    }
+  });
+
+  it('measures the socket path against the limit of the platform it reported', async () => {
+    // The two host-scoped checks answer from one selection, so `socket-path` cannot measure
+    // against macOS's 104 while `platform` reports linux.
+    const findings = await findingsOn(linuxHost);
+
+    expect(findings.find(({ check }) => check === 'socket-path'))
+      .toMatchObject({ details: { limitBytes: 108 } });
+  });
+
+  it('measures the address the platform actually publishes on', async () => {
+    // No `daemonSocketPath` override: the default has to be the socket root the platform names,
+    // or `doctor` reports on a path no command ever dials.
+    const findings = await findingsOn(darwinHost);
+
+    expect(findings.find(({ check }) => check === 'socket-path')).toMatchObject({
+      details: { path: publishedDaemonSocketPath('/Users/x/Library/Application Support/WTM') },
+    });
+  });
+
+  it('leaves socket-path unanswered rather than guessing a limit for a refused host', async () => {
+    // There is no `sizeof(sun_path)` for a platform WTM has no backend for. Left out, the
+    // envelope back-fills it as `unknown`; invented, it would be macOS's 104 stated as a
+    // universal fact, which is the defect this increment exists to remove.
+    const findings = await findingsOn(() => { throw new UnsupportedPlatformError('win32'); });
+
+    expect(findings.map(({ check }) => check)).not.toContain('socket-path');
+    expect(findings.find(({ check }) => check === 'platform')?.status).toBe('error');
+  });
+});
+
 async function tempDir(): Promise<string> {
   const root = mkdtempSync(join(tmpdir(), 'wtm-socket-'));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -319,3 +417,32 @@ async function socketPathFinding(daemonSocketPath: string) {
   return (await findingsAt('/workspace/web-feature', daemonSocketPath))
     .find(({ check }) => check === 'socket-path');
 }
+
+/**
+ * `doctor` asked about a named platform rather than about this host.
+ *
+ * The whole point of the seam is that the operating system is an argument, and this is where the
+ * CLI half of that is proven: the linux answer below is produced on a macOS machine, and the
+ * refusal below that is produced without a Windows one.
+ */
+async function findingsOn(select: () => ReturnType<typeof selectPlatformRuntime>) {
+  return (await createStateDiagnosticDataSource(store, {
+    cwd: '/workspace/web-feature',
+    globalConfigPath: '/workspace/config.toml',
+    selectPlatform: select,
+  }).readDoctor(registered)).findings;
+}
+
+const darwinHost = () => selectPlatformRuntime({
+  platform: 'darwin',
+  home: '/Users/x',
+  // Set, and ignored: a macOS user who exports XDG for some other tool must not find WTM's state
+  // relocated. The `platform` finding is where that would be visible if it ever stopped being true.
+  env: { XDG_STATE_HOME: '/xdg/state', XDG_CONFIG_HOME: '/xdg/config', XDG_RUNTIME_DIR: '/run/user/501' },
+});
+
+const linuxHost = () => selectPlatformRuntime({
+  platform: 'linux',
+  home: '/home/x',
+  env: { XDG_RUNTIME_DIR: '/run/user/501' },
+});

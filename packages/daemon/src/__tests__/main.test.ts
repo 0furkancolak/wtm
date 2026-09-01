@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { UnsupportedPlatformError } from '@wtm/platform';
+import { assertSupportedRuntime } from '../main';
 
 const scenarioPath = fileURLToPath(new URL('./main.scenario.ts', import.meta.url));
 
@@ -146,5 +148,44 @@ describe('WtmDaemon structural reconciliation', () => {
 
   test('detects a raw Git worktree added outside the workspace through the common Git dir', () => {
     expect(runScenario('raw-worktree')).toEqual({ detectedOutside: true, worktreeCount: 2 });
+  });
+});
+
+/**
+ * Which machines the daemon agrees to start on.
+ *
+ * The refusal used to be `platform !== 'darwin'` with the message "WTM V1 daemon requires macOS",
+ * which is now false in both directions: Linux has a backend, and a Windows user was told a fact
+ * about the product rather than what is missing and where it is being decided. The list of
+ * supported platforms is `@wtm/platform`'s rather than a second copy here, so adding a platform to
+ * the seam does not also require finding this line.
+ */
+describe('assertSupportedRuntime', () => {
+  const supportedNode = '24.4.1';
+
+  test('accepts both platforms the seam has a backend for', () => {
+    expect(() => assertSupportedRuntime('darwin', supportedNode)).not.toThrow();
+    expect(() => assertSupportedRuntime('linux', supportedNode)).not.toThrow();
+  });
+
+  test('refuses Windows with a coded error naming the increment that will decide it', () => {
+    const failure = ((): unknown => {
+      try { return assertSupportedRuntime('win32', supportedNode); }
+      catch (error) { return error; }
+    })();
+
+    // Coded, not a bare `Error`: Increment B established this after a startup failure reached a
+    // user as an unstructured string with no code, no severity and nothing to act on.
+    expect(failure).toBeInstanceOf(UnsupportedPlatformError);
+    const error = failure as UnsupportedPlatformError;
+    expect(error.code).toBe('WTM_PLATFORM_UNSUPPORTED');
+    expect(error.severity).toBe('error');
+    expect(error.context).toMatchObject({ platform: 'win32' });
+    expect(error.message).toContain('Windows');
+    expect(error.message).not.toContain('requires macOS');
+  });
+
+  test('still refuses a Node older than the one the daemon is built against', () => {
+    expect(() => assertSupportedRuntime('darwin', '22.11.0')).toThrow('Node.js 24 or newer');
   });
 });

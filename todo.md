@@ -697,12 +697,12 @@ XDG_RUNTIME_DIR
 
 ##### Linux yapılacaklar
 
-- [ ] `systemd --user` service installer/uninstaller.
-- [ ] `systemctl --user` lifecycle.
-- [ ] XDG directory resolution.
-- [ ] Unix socket path policy.
+- [x] `systemd --user` service installer/uninstaller.
+- [x] `systemctl --user` lifecycle.
+- [x] XDG directory resolution.
+- [x] Unix socket path policy.
 - [ ] POSIX process group supervision.
-- [ ] Linux process start-time / identity verification.
+- [x] Linux process start-time / identity verification.
 - [ ] inotify/fs.watch davranış testleri.
 - [ ] Linux permission / symlink semantics testleri.
 - [ ] ARM64 + x64 binary build pipeline.
@@ -835,15 +835,60 @@ wtm-windows-arm64.exe
 #### Kabul kriterleri
 
 - [ ] Core package platform-independent.
-- [ ] Platform-specific import'lar platform package dışında minimum.
-- [ ] macOS regression yok.
+- [x] Platform-specific import'lar platform package dışında minimum.
+- [x] macOS regression yok.
 - [ ] Linux x64 CI green.
 - [ ] Linux arm64 build doğrulanıyor.
 - [ ] Windows x64 CI green.
 - [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
 - [ ] JSON contract platformlar arasında aynı kalıyor.
 - [ ] CLI command names platforma göre değişmiyor.
-- [ ] Platform-specific farklar `wtm doctor` ile açıkça raporlanıyor.
+- [x] Platform-specific farklar `wtm doctor` ile açıkça raporlanıyor.
+
+---
+
+### [ ] 44. Ağ üzerinden paylaşılan `HOME`'da lease sahibi yanlışlıkla "gitmiş" okunuyor
+
+Increment C1'de, platform seam'i tasarlanırken bulundu; spec `2026-09-01-platform-seam-design.md`
+D5 ayrıntısını taşıyor.
+
+WTM her supervised process ve her destructive-operation lease için bir `(pid, process start time)`
+çifti saklıyor; PID reuse'u yakalayan şey bu çift. Start time string'i platforma göre farklı
+yazılıyor: macOS `ps`'in `lstart` çıktısını (`Mon Sep  1 12:00:00 2026`), Linux `/proc` üzerinden
+`<btime>:<starttime>` yazıyor. İki format asla eşit olamaz -- bu bilinçli, tek bir state kolonunun
+iki platformu versiyon etiketi olmadan taşımasını sağlayan şey de bu.
+
+Eşit olamamaları, karşılaşamayacakları anlamına gelmiyor. Bir macOS makinesiyle bir Linux makinesi
+aynı `HOME`'u ağ dosya sistemi üzerinden paylaşırsa ortada tek bir `state.db` var ve her host
+diğerinin yazdığı kimliği "başka bir process" olarak okuyor.
+
+- Supervised process kaydı için bu güvenli.
+- **Lease için değil.** "Başka process" demek "sahibi gitmiş, lease geri alınabilir" demek; oysa
+  sahip diğer host'ta hâlâ çalışıyor olabilir. Lease'lerin serileştirdiği işlemler worktree siliyor.
+
+Çözüm bir host identity kolonu: kimlik yalnızca aynı host'ta karşılaştırılmalı, farklı host'un
+tuttuğu satır `gone` değil `unknown` sayılmalı. Bu bir state schema değişikliği olduğu için C1
+kapsamına alınmadı.
+
+Maruziyet iki yerden birden dar, ve ikisi de kapanma aciliyetini düşürüyor: ağ üzerinden paylaşılan
+bir `HOME` **ve** iki işletim sisteminden eşzamanlı destructive işlem gerekiyor; üstelik liveness
+yalnızca TTL'i (varsayılan 120 sn) dolmuş bir satır için soruluyor, süresi dolmamış bir sahip zaten
+ölçülmeden conflict sayılıyor. Buna karşılık WTM Linux'ta gerçekten çalışmaya başlamadan önce
+kapanmalı: bugün ulaşılamaz olmasının tek sebebi Linux'un henüz çalışmaması.
+
+#### Yapılacaklar
+
+- [ ] Lease satırlarına (ve process kayıtlarına) host identity kolonu ekle; migration yaz.
+- [ ] Host identity'yi platform seam'inden üret; `HOME`'a değil makineye bağlı olsun.
+- [ ] Liveness karşılaştırmasını host-aware yap: farklı host -> `unknown`, asla `gone`.
+- [ ] Host bilgisi taşımayan eski satırların nasıl yorumlanacağına karar ver ve testle.
+- [ ] İki platformun kimlik string'lerini taşıyan tek bir `state.db` üzerinde test ekle.
+
+#### Kabul kriterleri
+
+- [ ] Başka bir host'un tuttuğu lease yalnızca TTL dolduğu için geri alınıyor; kimlik farkı tek
+      başına gerekçe olmuyor.
+- [ ] Aynı host üzerindeki PID reuse tespiti bugünkü davranışını koruyor.
 
 ---
 

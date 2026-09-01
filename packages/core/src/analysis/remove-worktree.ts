@@ -16,6 +16,7 @@ import {
 import { containsPath } from '../paths/contains';
 import {
   withRepositoryOperationLease,
+  type ProcessStartTimeReader,
   type RepositoryOperationLeaseStore,
   type RepositoryOperationSession,
 } from './operation-lease';
@@ -113,6 +114,12 @@ export interface GuardedRemovalInput {
    */
   lease?: {
     store: RepositoryOperationLeaseStore;
+    /**
+     * How the lease learns whether a colliding holder is still alive. It travels with the lease
+     * rather than sitting on the input because it is meaningless without one: the Git-only path
+     * takes no lease and asks the operating system nothing.
+     */
+    readProcessStartTime: ProcessStartTimeReader;
     repositoryId: string;
     adopt?: boolean | undefined;
   } | undefined;
@@ -226,6 +233,7 @@ async function withOptionalLease<T>(
   if (lease === undefined) return body(null);
   return withRepositoryOperationLease({
     store: lease.store,
+    readProcessStartTime: lease.readProcessStartTime,
     repositoryId: lease.repositoryId,
     operation: 'remove',
     ...(input.context.worktreeId === undefined ? {} : { subjectWorktreeId: input.context.worktreeId }),

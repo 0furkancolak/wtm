@@ -53,7 +53,7 @@ WTM is not a replacement for Git, Make, Bun, npm, pnpm, uv, Cargo, Go, Gradle, D
 2. `02-architecture.md` — system architecture and component responsibilities.
 3. `03-configuration-spec.md` — TOML schema, inheritance and templating.
 4. `04-cli-reference.md` — commands and local/global semantics.
-5. `05-daemon-and-macos-runtime.md` — launchd, filesystem watching, IPC and recovery.
+5. `05-daemon-and-macos-runtime.md` — platform runtimes, service managers, filesystem watching, IPC and recovery.
 6. `06-adapter-protocol.md` — language/framework-independent adapter architecture.
 7. `07-process-port-runtime.md` — port leases, process groups and runtime ownership.
 8. `08-storage-cache-gc.md` — dependency storage, APFS strategies and GC.

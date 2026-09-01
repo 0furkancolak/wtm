@@ -6,11 +6,23 @@ import {
   DaemonSocketPathTooLongError,
   boundDaemonSocketPath,
   daemonSocketFileName,
-  daemonSocketPathLimitBytes,
+  darwinSocketPathLimitBytes,
   publishedDaemonSocketPath,
-} from '@wtm/core';
+} from '@wtm/platform/socket';
 import { createProductionDaemon, defaultProductionRuntimePaths } from '../runtime-factory';
 import { UnixIpcServer } from '../server';
+
+/**
+ * The macOS socket root, spelled out rather than read from `PlatformRuntime.paths.socketRoot`.
+ *
+ * It is deliberately not the derivation under test: an assertion that computed the expected path
+ * the same way the factory does would pass whatever the factory decided. The full pinning of all
+ * five macOS paths to literal strings lives in `runtime-factory.test.ts`; this one keeps the
+ * socket path tied to the shared `publishedDaemonSocketPath` definition.
+ */
+function darwinSocketRoot(home: string): string {
+  return join(home, 'Library', 'Application Support', 'WTM');
+}
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -50,7 +62,7 @@ async function missing(path: string): Promise<boolean> {
 
 describe('daemon socket path preflight', () => {
   test('the IPC server refuses a path past the limit before it binds anything', async () => {
-    const directory = await directoryForSocketBytes(daemonSocketPathLimitBytes + 1);
+    const directory = await directoryForSocketBytes(darwinSocketPathLimitBytes + 1);
     const socketPath = join(directory, daemonSocketFileName);
     const server = new UnixIpcServer({
       socketPath,
@@ -63,8 +75,8 @@ describe('daemon socket path preflight', () => {
     expect(failure).toBeInstanceOf(DaemonSocketPathTooLongError);
     const error = failure as DaemonSocketPathTooLongError;
     expect(error.code).toBe('WTM_SOCKET_PATH_TOO_LONG');
-    expect(error.message).toContain(String(daemonSocketPathLimitBytes + 1));
-    expect(error.message).toContain(String(daemonSocketPathLimitBytes));
+    expect(error.message).toContain(String(darwinSocketPathLimitBytes + 1));
+    expect(error.message).toContain(String(darwinSocketPathLimitBytes));
     expect(error.message).toContain(socketPath);
     // Nothing was bound and nothing was linked: the refusal precedes `listen`, so neither the
     // published name nor the private bind name exists.
@@ -74,7 +86,7 @@ describe('daemon socket path preflight', () => {
   });
 
   test('a path exactly at the limit is not refused', async () => {
-    const directory = await directoryForSocketBytes(daemonSocketPathLimitBytes);
+    const directory = await directoryForSocketBytes(darwinSocketPathLimitBytes);
     const socketPath = join(directory, daemonSocketFileName);
     const server = new UnixIpcServer({
       socketPath,
@@ -88,7 +100,7 @@ describe('daemon socket path preflight', () => {
   });
 
   test('the production runtime factory refuses before creating its data directory', async () => {
-    const directory = await directoryForSocketBytes(daemonSocketPathLimitBytes + 8);
+    const directory = await directoryForSocketBytes(darwinSocketPathLimitBytes + 8);
     const dataRoot = join(directory, 'nested');
 
     const failure = await createProductionDaemon({ dataRoot }).then(() => null, (error: unknown) => error);
@@ -101,6 +113,7 @@ describe('daemon socket path preflight', () => {
   test('the factory derives the socket path from the shared definition', () => {
     const home = '/Users/somebody';
 
-    expect(defaultProductionRuntimePaths(home).socketPath).toBe(publishedDaemonSocketPath(home));
+    expect(defaultProductionRuntimePaths(home).socketPath)
+      .toBe(publishedDaemonSocketPath(darwinSocketRoot(home)));
   });
 });

@@ -303,6 +303,7 @@ describe('diagnostic command envelopes', () => {
         { check: 'resources', status: 'unknown', message: 'No resource diagnostics are available.' },
         { check: 'ports', status: 'pass', message: 'Endpoint lease is active.' },
         { check: 'process-records', status: 'unknown', message: 'No process records are available.' },
+        { check: 'platform', status: 'unknown', message: 'Platform diagnostics are unavailable.' },
         { check: 'socket-path', status: 'unknown', message: 'Socket path diagnostics are unavailable.' },
       ],
     });
@@ -349,6 +350,7 @@ describe('diagnostic command envelopes', () => {
       { check: 'resources', status: 'unknown', message: 'Resource diagnostics are unavailable.' },
       { check: 'ports', status: 'unknown', message: 'Port diagnostics are unavailable.' },
       { check: 'process-records', status: 'unknown', message: 'Process record diagnostics are unavailable.' },
+      { check: 'platform', status: 'unknown', message: 'Platform diagnostics are unavailable.' },
       { check: 'socket-path', status: 'unknown', message: 'Socket path diagnostics are unavailable.' },
     ]);
   });

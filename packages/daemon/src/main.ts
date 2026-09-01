@@ -8,6 +8,7 @@ import {
   type RepositoryRecord,
   type WorkspaceRecord,
 } from '@wtm/core';
+import { UnsupportedPlatformError, supportedPlatforms } from '@wtm/platform';
 import type { IpcRequest, JsonEnvelope } from '@wtm/protocol';
 import { ReconcilerQueue, type ReconcileBatch, type ReconcileSignal } from './reconciler-queue';
 import { UnixIpcServer, type IpcRequestHandler } from './server';
@@ -432,10 +433,42 @@ export class WtmDaemon {
   }
 }
 
+/**
+ * Refused because WTM has no backend for this machine, said the way a user can act on.
+ *
+ * It extends `@wtm/platform`'s refusal rather than replacing it, so the code, the severity, the
+ * context and the remediation are the seam's — one definition of what "unsupported platform"
+ * means, reaching the JSON envelope as a coded error rather than as a bare string. Only the
+ * message differs, because the daemon can say the one thing the seam cannot: *when* the missing
+ * platform is being decided. A user reading "WTM has no backend for win32" learns that it does not
+ * work; a user reading this learns that Windows is a known, scheduled piece of work, which is the
+ * difference between filing a bug and waiting for a release.
+ */
+export class UnsupportedDaemonPlatformError extends UnsupportedPlatformError {
+  constructor(platform: string) {
+    super(platform);
+    this.name = 'UnsupportedDaemonPlatformError';
+    this.message = `The WTM daemon has no backend for ${platform}. It runs on `
+      + `${supportedPlatforms.join(' and ')}; Windows support is Increment D, which decides `
+      + 'process-group and service-manager semantics together rather than one call site at a time.';
+  }
+}
+
+/**
+ * The platforms are `@wtm/platform`'s list, not a copy of it.
+ *
+ * This line used to read `platform !== 'darwin'`, and the message it raised — "WTM V1 daemon
+ * requires macOS" — was the last statement in the daemon that treated one operating system as the
+ * product's requirement. A second list here would be a second thing to remember when a platform is
+ * added, and the whole reason a `supportedPlatforms` export exists is that the seam is the place
+ * that answers this.
+ */
 export function assertSupportedRuntime(platform: NodeJS.Platform, nodeVersion: string): void {
   const major = Number.parseInt(nodeVersion.split('.')[0] ?? '', 10);
   if (!Number.isInteger(major) || major < 24) throw new Error('WTM daemon requires Node.js 24 or newer');
-  if (platform !== 'darwin') throw new Error('WTM V1 daemon requires macOS');
+  if (!(supportedPlatforms as readonly string[]).includes(platform)) {
+    throw new UnsupportedDaemonPlatformError(platform);
+  }
 }
 
 /**

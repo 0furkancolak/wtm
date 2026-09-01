@@ -1,0 +1,16 @@
+{
+  "name": "@wtm/platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./ports": "./src/ports.ts",
+    "./process": "./src/process/index.ts",
+    "./service": "./src/service/index.ts",
+    "./socket": "./src/socket/index.ts"
+  },
+  "dependencies": {
+    "@wtm/protocol": "workspace:*"
+  }
+}

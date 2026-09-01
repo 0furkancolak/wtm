@@ -13,6 +13,8 @@ import type {
   ManagedProcessUpdate,
   ManagedProcessReservationOptions,
 } from '@wtm/core';
+import { selectPlatformRuntime } from '@wtm/platform';
+import { createDarwinProcessPlatform } from '@wtm/platform/process';
 import { developmentRuntimeInvocation } from '../../../testkit/src/runtime-invocation';
 import { ManagedLogStore } from '../logs';
 import {
@@ -222,6 +224,58 @@ class FaultProcessStore extends MemoryProcessStore {
     return super.updateManagedProcess(id, update);
   }
 }
+
+/**
+ * The three `ps` readers moved to `@wtm/platform` in C1-3; the functions this module exports are
+ * now the same names delegating to the port the platform seam selects for this host. These tests
+ * are the ones that would fail if the delegation were wired to the wrong platform, or if a future
+ * edit reintroduced a second copy of the parsing here — the rest of this file exercises the
+ * readers through the supervisor and would still pass against a divergent duplicate.
+ *
+ * The host is macOS, so the selected port and `createDarwinProcessPlatform()` are the same
+ * implementation and these assertions cannot tell them apart. That is the limit of what is
+ * decidable here, and it is why the selection is asserted separately below rather than left to be
+ * inferred from readers that would agree either way.
+ */
+describe('the daemon default process readers are the platform macOS readers', () => {
+  const platform = createDarwinProcessPlatform();
+
+  test('delegate to the port the platform seam selected, not to a hardcoded macOS one', async () => {
+    const selected = selectPlatformRuntime().process;
+
+    expect(selectPlatformRuntime().id).toBe(process.platform as 'darwin' | 'linux');
+    expect(await inspectProcess(process.pid)).toEqual(await selected.inspectProcess(process.pid));
+    expect(await inspectProcessGroup(process.pid)).toEqual(await selected.inspectProcessGroup(process.pid));
+  });
+
+  test('agree with @wtm/platform about the running process', async () => {
+    const viaPlatform = await platform.inspectProcess(process.pid);
+    expect(viaPlatform.status).toBe('present');
+    expect(await inspectProcess(process.pid)).toEqual(viaPlatform);
+    expect(await inspectProcessIdentity(process.pid))
+      .toEqual(viaPlatform.status === 'present' ? viaPlatform.identity : null);
+  });
+
+  test('agree with @wtm/platform about the running process group', async () => {
+    const identity = await inspectProcessIdentity(process.pid);
+    expect(identity).not.toBeNull();
+    const pgid = (identity as ProcessIdentity).pgid;
+    const viaDaemon = await inspectProcessGroup(pgid);
+    const viaPlatform = await platform.inspectProcessGroup(pgid);
+    expect(viaDaemon.status).toBe('present');
+    expect(viaPlatform.status).toBe('present');
+    expect(viaDaemon.status === 'present' ? [...viaDaemon.pids] : []).toContain(process.pid);
+    expect(viaPlatform.status === 'present' ? [...viaPlatform.pids] : []).toContain(process.pid);
+  });
+
+  test('report a reaped process as absent, not as a failure', async () => {
+    const child = spawn('/usr/bin/true', [], { stdio: 'ignore' });
+    const pid = child.pid as number;
+    await new Promise<void>((resolve) => { child.on('exit', () => { resolve(); }); });
+    expect(await inspectProcess(pid)).toEqual({ status: 'absent' });
+    expect(await inspectProcessIdentity(pid)).toBeNull();
+  });
+});
 
 describe('ManagedProcessSupervisor', () => {
   test('stopping a task terminates its entire owned process group', async () => {

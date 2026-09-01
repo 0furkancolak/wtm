@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { chmod, link, lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
-import { assertDaemonSocketPathFits, boundDaemonSocketPath } from '@wtm/core';
+import { selectPlatformRuntime } from '@wtm/platform';
+import { assertDaemonSocketPathFits, boundDaemonSocketPath } from '@wtm/platform/socket';
 import {
   FrameDecoder,
   FrameSizeError,
@@ -25,6 +26,13 @@ export type IpcRequestHandler = (
 export interface UnixIpcServerOptions {
   socketPath: string;
   handler: IpcRequestHandler;
+  /**
+   * `sizeof(sun_path)` for the machine this server binds on. Defaults to the platform seam's
+   * answer for this host, which is the right default here and nowhere else: unlike every other
+   * path decision in WTM, this one is enforced by the kernel the `listen` actually runs against,
+   * so a runtime injected for a *different* platform must not weaken or tighten it.
+   */
+  socketPathLimitBytes?: number;
   maxFrameBytes?: number;
   maxConnections?: number;
   maxInFlightPerConnection?: number;
@@ -77,6 +85,22 @@ interface PreReadyInput {
   listener: (chunk: Buffer | string) => void;
 }
 
+/**
+ * The host's socket address limit, resolved once and only if something actually binds.
+ *
+ * This used to be the macOS constant, imported by name, which was correct only for as long as the
+ * daemon refused to start anywhere else. It is resolved lazily rather than at import because the
+ * refusal for an unsupported platform belongs to `assertSupportedRuntime`, where a caller can
+ * catch it and report it as an envelope — throwing it out of a module's top level instead would
+ * turn a coded error into an import failure.
+ */
+let hostLimitBytes: number | null = null;
+
+function hostSocketPathLimitBytes(): number {
+  hostLimitBytes ??= selectPlatformRuntime().socket.limitBytes;
+  return hostLimitBytes;
+}
+
 export class UnixIpcServer {
   readonly #socketPath: string;
   readonly #handler: IpcRequestHandler;
@@ -102,12 +126,14 @@ export class UnixIpcServer {
   #socketParent: DirectoryIdentity | null = null;
   #starting: Promise<void> | null = null;
   #closePromise: Promise<void> | null = null;
+  readonly #socketPathLimitBytes: number | null;
   #state: 'idle' | 'starting' | 'started' | 'closing' | 'closed' = 'idle';
   #ready = false;
 
   constructor(options: UnixIpcServerOptions) {
     this.#socketPath = options.socketPath;
     this.#handler = options.handler;
+    this.#socketPathLimitBytes = options.socketPathLimitBytes ?? null;
     this.#maxFrameBytes = options.maxFrameBytes ?? defaultMaxIpcFrameBytes;
     this.#maxConnections = positiveInteger(options.maxConnections ?? 64, 'Maximum IPC connections');
     this.#maxInFlightPerConnection = positiveInteger(
@@ -181,7 +207,7 @@ export class UnixIpcServer {
     // address fails at `listen` with a bare `EINVAL` that names neither the limit nor the
     // path, and by then the parent directory has already been secured and a stale socket may
     // already have been displaced -- work undone for a failure that was knowable up front.
-    assertDaemonSocketPathFits(this.#socketPath);
+    assertDaemonSocketPathFits(this.#socketPath, this.#socketPathLimitBytes ?? hostSocketPathLimitBytes());
     const parent = await secureSocketParent(dirname(this.#socketPath));
     await prepareSocketPath(this.#socketPath, parent, {
       probe: this.#probeExistingSocket,

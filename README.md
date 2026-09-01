@@ -7,7 +7,7 @@ repositories and linked worktrees, resolves per-worktree tasks and environments,
 long-running processes, allocates endpoints, and refuses unsafe worktree removal.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#requirements)
+[![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#platform-support)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D24-green.svg)](#requirements)
 [![JSON output](https://img.shields.io/badge/output-stable%20JSON-orange.svg)](#json-output-for-scripts-and-agents)
 
@@ -58,6 +58,7 @@ context-aware orchestration layer around them.
 - [Command reference](#command-reference)
 - [Make targets for this repository](#make-targets-for-this-repository)
 - [What V1 does and does not answer](#what-v1-does-and-does-not-answer)
+- [Platform support](#platform-support)
 - [Requirements](#requirements)
 - [Uninstall](#uninstall)
 - [Development](#development)
@@ -82,7 +83,7 @@ per-user daemon. For a shared prefix:
 sudo make install PREFIX=/usr/local
 ```
 
-To install the binary alone and leave launchd untouched:
+To install the binary alone and register no service:
 
 ```bash
 make install WITH_DAEMON=0
@@ -528,14 +529,19 @@ schema is in [docs/03-configuration-spec.md](docs/03-configuration-spec.md).
 
 ## The daemon
 
-Background supervision (`start`, `stop`, `restart`, `ps`, `logs`) needs a per-user daemon
-registered as a macOS LaunchAgent. `make install` registers it for you.
+Background supervision (`start`, `stop`, `restart`, `ps`, `logs`) needs a per-user daemon,
+registered with the platform's own service manager — a LaunchAgent under launchd on macOS.
+`make install` registers it for you.
 
 ```bash
-wtm daemon install     # register the LaunchAgent
+wtm daemon install     # register the service
 wtm daemon status      # is it registered and reachable?
 wtm daemon uninstall   # remove it
 ```
+
+`wtm daemon status` names the definition it is describing in `definitionPath`, and `wtm doctor`'s
+`platform` check names the service manager in force, so you can always find the file WTM published
+and the tool that loads it.
 
 Foreground commands — `status`, `analyze`, `resolve`, `run`, `exec`, `init` — work without
 it. Installing WTM never starts your tasks; only `wtm start` does.
@@ -581,7 +587,7 @@ wtm skill --install
 | `wtm logs [task] --follow` | Rotating per-task logs |
 | `wtm exec <argv...>` | Raw argv in the resolved environment |
 | `wtm disk` / `wtm gc` | Resource usage and safe collection |
-| `wtm daemon <action>` | Register, inspect, or remove the LaunchAgent |
+| `wtm daemon <action>` | Register, inspect, or remove the daemon service |
 | `wtm adapter <action>` | Manage trusted external adapters |
 | `wtm skill` | Print or install the Agent Skill |
 | `wtm doctor` | Deterministic workspace diagnostics |
@@ -623,16 +629,45 @@ WTM is pre-release and honest about its edges. Every command carries a real payl
 - External adapters are a defined protocol with a trust store; only the built-in adapters ship
   in this version.
 
+## Platform support
+
+| Platform | State |
+| --- | --- |
+| **macOS** (Apple silicon and Intel) | First-class. Built, tested and released here; the daemon runs under launchd. |
+| **Linux** | **In progress, and not usable yet.** The backend is written and unit-tested — XDG paths, the `sizeof(sun_path)` limit, the systemd user unit, the `systemctl --user` command set, `/proc` process identity — but it has never run on a Linux kernel. |
+| **Windows** | Not started. WTM refuses to run with `WTM_PLATFORM_UNSUPPORTED`. |
+
+Some detail on the Linux row, because "in progress" covers too much ground on its own.
+
+WTM's operating system is now a parameter rather than an assumption: one `PlatformRuntime` answers
+where files go, how long a socket address may be, how to recognise a process, and how to register a
+service. The core packages hold no macOS-specific import, literal or command, and a structural test
+fails if one re-enters them. A complete second implementation of that runtime exists for Linux, and
+it is exercised the same way the macOS one is: against captured kernel fixtures and injected
+command runners.
+
+That is evidence that the decisions are right. It is not evidence that WTM starts. No Linux CI job
+exists, no Linux binary is built, and nothing here has ever run on a Linux kernel — so nobody knows
+yet whether `systemctl --user` bootstraps this daemon, whether `sizeof(sun_path)` really is the 108
+bytes the header says, or whether an inotify-backed watcher behaves the way an FSEvents-backed one
+does. Getting those answers means running it on Linux, which is the next increment.
+
+Until then this package still declares `"os": ["darwin"]`, and its description and keywords still
+say macOS. That is deliberate: an npm package that installs on Linux and then does not start is a
+worse outcome than one that refuses to install. All three change when there is a green Linux CI run
+to justify them.
+
 ## Requirements
 
-- **macOS** for the LaunchAgent-managed daemon
+- **macOS** — the only platform WTM runs on today; see [Platform support](#platform-support)
 - **Node.js 24+** for the npm installation (the standalone executable embeds its own)
 - **Bun 1.3+** to build from source and to run the tests
 
 ### Disk access
 
-`make install` needs no permission you have to give by hand, and asks for none up front. A
-LaunchAgent reads the same files your shell does; the ordinary case is that it simply works.
+On macOS, `make install` needs no permission you have to give by hand, and asks for none up
+front. A LaunchAgent reads the same files your shell does; the ordinary case is that it simply
+works.
 
 macOS *can* withhold access from a background agent — most often for an external or network
 volume — and if that happens WTM says so, in `~/Library/Logs/WTM/daemon.error.log`, with the

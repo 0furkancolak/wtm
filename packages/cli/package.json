@@ -33,6 +33,7 @@
   "dependencies": {
     "@wtm/core": "workspace:*",
     "@wtm/daemon": "workspace:*",
+    "@wtm/platform": "workspace:*",
     "@wtm/protocol": "workspace:*",
     "commander": "14.0.2"
   }

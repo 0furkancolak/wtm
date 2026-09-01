@@ -26,6 +26,36 @@ binaries are Developer ID signed and notarized.
 
 ### Added
 
+- **A platform seam, and a Linux backend behind it that has not yet run on Linux.** On macOS
+  nothing about this release behaves differently: the launchd lifecycle, the paths, the socket and
+  the process identity are the same code, moved. What changed is that the operating system is now a
+  parameter. A new `@wtm/platform` package answers four questions — where files go, how long a Unix
+  socket address may be, how to recognise a process WTM started, and how to register a service —
+  and `@wtm/core` no longer contains a macOS-specific import, literal or spawned command, which a
+  structural test now enforces.
+
+  A complete Linux implementation of those four ports ships with it: XDG paths
+  (`XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, honoured only when absolute), the
+  108-byte `sun_path` limit, a systemd user unit named per `HOME` with the `systemctl --user`
+  command set that drives it, and process identity read from `/proc/<pid>/stat` rather than `ps`.
+  It is exercised against captured kernel fixtures and an injected fake `systemctl`, exactly the
+  way the launchd backend has always been exercised against a fake `launchctl`.
+
+  **That is not a claim that WTM runs on Linux.** There is no Linux CI job, no Linux binary, and
+  nothing here has ever run on a Linux kernel; `package.json` still declares `"os": ["darwin"]` for
+  that reason, and its description and keywords still say macOS. The next increment runs it on a
+  kernel and changes all three together with the evidence. `README.md` states the position, and
+  `docs/05-daemon-and-macos-runtime.md` — whose filename is now historical — documents both
+  backends and marks what is unverified.
+- `wtm doctor` reports a `platform` check: the selected runtime, the service manager it will use,
+  the resolved data, log and socket roots, and the socket address limit in force. It is `pass` or
+  `error`, and `error` only when WTM has no backend for the host.
+- `WTM_PLATFORM_UNSUPPORTED` (exit 2). Starting WTM on a platform it has no backend for — today,
+  Windows — is refused with a coded error naming the increment that will add it, rather than with
+  the message "WTM V1 daemon requires macOS", which was becoming false.
+- `wtm daemon status` and `install` report `definitionPath`, the platform-neutral name for the
+  file WTM published. `plistPath` is retained beside it on macOS with the same value and marked
+  deprecated; it is absent on Linux, where the definition is not a plist.
 - `wtm remove` is runtime-aware. It now stops the worktree's WTM-managed processes, verifies from
   the state database that they are gone, deletes the resources WTM materialized inside the worktree,
   releases its endpoint leases, and only then re-analyzes and lets Git delete it. The success

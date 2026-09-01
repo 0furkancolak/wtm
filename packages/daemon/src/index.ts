@@ -90,6 +90,18 @@ export {
   legacyLaunchdLabel,
   sanitizeLaunchdPathEnvironment,
 } from './launchd';
+export { createServiceLifecycle, servicePathsFor } from './service-lifecycle';
+export type {
+  ServiceInstallState,
+  ServiceLifecycle,
+  ServiceLifecycleOptions,
+  ServiceLifecycleResult,
+  ServicePaths,
+  ServiceStatusResult,
+  ServiceStatusState,
+  ServiceTransactionPhase,
+  ServiceUninstallState,
+} from './service-lifecycle';
 export type {
   LaunchdCommandResult,
   LaunchdCommandRunner,

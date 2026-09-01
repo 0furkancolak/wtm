@@ -32,6 +32,7 @@
       "dependencies": {
         "@wtm/core": "workspace:*",
         "@wtm/daemon": "workspace:*",
+        "@wtm/platform": "workspace:*",
         "@wtm/protocol": "workspace:*",
         "commander": "14.0.2",
       },
@@ -49,6 +50,14 @@
       "dependencies": {
         "@wtm/adapters": "workspace:*",
         "@wtm/core": "workspace:*",
+        "@wtm/platform": "workspace:*",
+        "@wtm/protocol": "workspace:*",
+      },
+    },
+    "packages/platform": {
+      "name": "@wtm/platform",
+      "version": "0.1.0",
+      "dependencies": {
         "@wtm/protocol": "workspace:*",
       },
     },
@@ -129,6 +138,8 @@
     "@wtm/core": ["@wtm/core@workspace:packages/core"],
 
     "@wtm/daemon": ["@wtm/daemon@workspace:packages/daemon"],
+
+    "@wtm/platform": ["@wtm/platform@workspace:packages/platform"],
 
     "@wtm/protocol": ["@wtm/protocol@workspace:packages/protocol"],
 

@@ -63,6 +63,31 @@ Covers item 9 (macOS + Linux halves) and the Linux rows of the platform checklis
 
 Exit: core packages contain no OS-specific import; Linux x64 CI green; macOS regression-free.
 
+> **Split into C1 and C2, 2026-09-01.** The exit above mixes two claims that are provable in
+> different places. "Core packages contain no OS-specific import" and "macOS regression-free" are
+> decided entirely on the development machine. "Linux x64 CI green" cannot be: there is no Linux
+> kernel here, so the only instrument that can answer it is a CI run. Landing both together would
+> mean a commit whose macOS half is proven and whose Linux half is a claim awaiting a push — and
+> the two halves would be indistinguishable to anyone reading the history. They are therefore two
+> increments, and the boundary is *what can be verified where*, not what is convenient to write.
+>
+> **C1 — the platform seam.** `PlatformRuntime` and its ports extracted; macOS moved behind them
+> with no behaviour change; the Linux backend written to completion everywhere it is decidable
+> without a Linux kernel (path policy, socket policy, unit-file rendering, `/proc` parsing, the
+> `systemctl --user` command set) and driven by fixtures and injected runners, exactly as the
+> launchd backend is already driven today. **C1 makes no claim that WTM runs on Linux.** Its exit
+> is: core holds no macOS-specific import, the full suite is green on macOS with no behaviour
+> change, and a structural test fails if OS-specific knowledge re-enters core.
+>
+> **C2 — Linux in CI.** An `ubuntu` job in the CI matrix, the integration behaviour only a real
+> kernel decides (inotify, real `/proc`, a real `systemctl --user`, a real 108-byte socket), the
+> Linux binary targets, and whatever the first red run finds. Exit: Linux x64 CI green.
+>
+> The ordering matters for a second reason. Extracting a seam with only one implementation behind
+> it is the ordinary way to build the wrong seam, so C1 does not stop at the interface: it lands
+> the second implementation's *decidable* half at the same time, which is what forces the seam to
+> be shaped by two platforms rather than by one platform's habits.
+
 ### Increment D — Windows backend
 
 Covers item 9's Windows half, including the daemon-lifecycle decision (Scheduled Task vs per-user
