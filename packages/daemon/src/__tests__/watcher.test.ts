@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, opendir, rm, writeFile } from 'node:fs/promises';
+import { wtmErrorSchema } from '@wtm/protocol';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -243,7 +244,14 @@ describe('StructuralWatcher', () => {
     const failure = new Error('watch failed');
     emitError(failure);
 
-    expect(errors).toEqual([failure]);
+    // The raw error is kept as the cause, not reported in place of the named condition: what
+    // reaches the daemon log is the sentence a person can act on, and the original is still
+    // there for whoever is reading frames.
+    expect(errors).toHaveLength(1);
+    const reported = errors[0] as Error & { code?: string };
+    expect(reported.code).toBe('WTM_WATCH_UNAVAILABLE');
+    expect(reported.message).toContain('/registered');
+    expect(reported.cause).toBe(failure);
     expect(signals).toEqual([{ root: '/registered', kind: 'watch-error' }]);
     expect(closes).toBe(1);
     await watcher.close();
@@ -371,5 +379,140 @@ describe('StructuralWatcher', () => {
     expect(closes.get(worktrees)).toBe(1);
     expect(fingerprint).toContain('refs:truncated');
     expect(fingerprint).toContain('worktrees:truncated');
+  });
+});
+
+/**
+ * A watch that cannot be opened used to reach the user as whatever libuv threw -- `ENOSPC: no
+ * space left on device, watch '/Users/...'` -- repeated for as long as the condition lasted. On
+ * Linux that sentence is actively misleading: the disk is not full, the kernel is out of inotify
+ * watches, and the fix is one sysctl the message never named. These tests pin the named condition
+ * and the remedy, and pin that the remedy is the *host's* -- a macOS user must never be sent to
+ * change a Linux kernel parameter.
+ */
+describe('WatchUnavailableError', () => {
+  function refuse(code: string, message: string): (root: string) => never {
+    return (root) => {
+      throw Object.assign(new Error(`${code}: ${message}, watch '${root}'`), { code, errno: -28 });
+    };
+  }
+
+  function watcherRefusing(
+    module: NonNullable<typeof watcherModule>,
+    platform: NodeJS.Platform,
+    refusal: (root: string) => never,
+  ) {
+    return new module.StructuralWatcher({
+      registrations: [{ workspaceRoot: '/registered', repositories: [] }],
+      schedule: () => {},
+      fingerprint: async () => 'initial',
+      platform,
+      watchFactory: (root) => refusal(root),
+    });
+  }
+
+  async function refusalFrom(watcher: { start(): Promise<void> }): Promise<Error & {
+    code?: string;
+    severity?: string;
+    context?: Record<string, unknown>;
+    remediation?: readonly { kind: string; argv: string[] }[];
+  }> {
+    try {
+      await watcher.start();
+    } catch (error) {
+      return error as Error & { code?: string };
+    }
+    throw new Error('the watcher started when the watch was refused');
+  }
+
+  test('names the inotify budget and the sysctl that raises it on Linux', async () => {
+    expect(watcherModule).not.toBeNull();
+    if (watcherModule === null) return;
+    const watcher = watcherRefusing(watcherModule, 'linux', refuse('ENOSPC', 'no space left on device'));
+
+    const error = await refusalFrom(watcher);
+
+    expect(error.code).toBe('WTM_WATCH_UNAVAILABLE');
+    expect(error.severity).toBe('error');
+    expect(error.message).toContain('/registered');
+    expect(error.message).toContain('ENOSPC');
+    expect(error.message).toContain('fs.inotify.max_user_watches');
+    expect(error.context).toMatchObject({ root: '/registered', errno: 'ENOSPC', platform: 'linux' });
+    expect(error.remediation?.[0]?.argv.join(' ')).toContain('fs.inotify.max_user_watches');
+    // `daemon serve` rebuilds a coded failure into the JSON envelope structurally, from these
+    // four fields. Parsing them here is what says the remedy survives that trip instead of being
+    // flattened to `WTM_DAEMON_REQUEST_FAILED` and exit 1.
+    expect(wtmErrorSchema.safeParse({
+      code: error.code,
+      message: error.message,
+      severity: error.severity,
+      context: error.context,
+      remediation: error.remediation,
+    }).success).toBe(true);
+  });
+
+  test('reports one line, because the daemon log records one line per condition', async () => {
+    expect(watcherModule).not.toBeNull();
+    if (watcherModule === null) return;
+    const watcher = watcherRefusing(watcherModule, 'linux', refuse('ENOSPC', 'no space left on device'));
+
+    // `createDaemonErrorReporter` truncates at the first line break and marks it `[...]`, so a
+    // remedy on a second line is a remedy the user never reads.
+    expect((await refusalFrom(watcher)).message).not.toContain('\n');
+  });
+
+  test('sends a macOS user to the file-descriptor limit, never to a Linux sysctl', async () => {
+    expect(watcherModule).not.toBeNull();
+    if (watcherModule === null) return;
+    const watcher = watcherRefusing(watcherModule, 'darwin', refuse('EMFILE', 'too many open files'));
+
+    const error = await refusalFrom(watcher);
+
+    expect(error.message).toContain('EMFILE');
+    expect(error.message).not.toContain('fs.inotify');
+    expect(error.context).toMatchObject({ platform: 'darwin' });
+  });
+
+  test('names the inotify instance limit for a Linux descriptor exhaustion', async () => {
+    expect(watcherModule).not.toBeNull();
+    if (watcherModule === null) return;
+    const watcher = watcherRefusing(watcherModule, 'linux', refuse('EMFILE', 'too many open files'));
+
+    expect((await refusalFrom(watcher)).message).toContain('fs.inotify.max_user_instances');
+  });
+
+  test('keeps a condition it has no remedy for readable, and invents no remedy for it', async () => {
+    expect(watcherModule).not.toBeNull();
+    if (watcherModule === null) return;
+    const watcher = watcherRefusing(watcherModule, 'linux', refuse('EACCES', 'permission denied'));
+
+    const error = await refusalFrom(watcher);
+
+    expect(error.code).toBe('WTM_WATCH_UNAVAILABLE');
+    expect(error.message).toContain('EACCES');
+    expect(error.message).not.toContain('fs.inotify');
+    expect(error.remediation ?? []).toHaveLength(0);
+  });
+
+  test('closes the handles it had already opened when a later root is refused', async () => {
+    expect(watcherModule).not.toBeNull();
+    if (watcherModule === null) return;
+    const closed: string[] = [];
+    const watcher = new watcherModule.StructuralWatcher({
+      registrations: [
+        { workspaceRoot: '/a', repositories: [] },
+        { workspaceRoot: '/b', repositories: [] },
+      ],
+      schedule: () => {},
+      fingerprint: async () => 'initial',
+      platform: 'linux',
+      watchFactory: (root) => {
+        if (root === '/b') throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+        return { close: () => { closed.push(root); }, onError: () => () => {} };
+      },
+    });
+
+    await expect(watcher.start()).rejects.toThrow('fs.inotify.max_user_watches');
+    expect(closed).toEqual(['/a']);
   });
 });

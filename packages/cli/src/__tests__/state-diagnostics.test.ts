@@ -12,7 +12,7 @@ import type {
   WorktreeRecord,
 } from '@wtm/core';
 import { selectPlatformRuntime, UnsupportedPlatformError } from '@wtm/platform';
-import { publishedDaemonSocketPath } from '@wtm/platform/socket';
+import { daemonSocketFileName, publishedDaemonSocketPath } from '@wtm/platform/socket';
 import { doctorChecks } from '../diagnostics';
 import { createStateDiagnosticDataSource } from '../state-diagnostics';
 
@@ -255,38 +255,88 @@ describe('registration', () => {
   });
 });
 
+/**
+ * `sizeof(sun_path)` for the machine this file runs on: 104 bytes on macOS, 108 on Linux.
+ *
+ * The four checks below reach `socketPathFinding`, which goes through `findingsAt` — and
+ * `findingsAt` passes no `selectPlatform`, so the finding is measured against *this host's*
+ * limit. Written as the literal `104` the headroom, the status and the `104-byte limit` in the
+ * message were all macOS's answers asserted of whatever host ran them. What each test claims is a
+ * relationship — this much headroom, this far over — and the limit it is measured against is the
+ * host's to say.
+ */
+const hostLimitBytes = selectPlatformRuntime().socket.limitBytes;
+
+/**
+ * A socket path of exactly `bytes` bytes, ending in the name the daemon actually publishes.
+ *
+ * Every one of these measurements is a property of the address's length, so the fixture has to hit
+ * a length rather than merely be deep.
+ */
+function socketPathOfBytes(bytes: number): string {
+  const segment = bytes - daemonSocketFileName.length - 2;
+  if (segment < 1) throw new Error(`${bytes} bytes cannot hold a socket path`);
+  const path = `/${'d'.repeat(segment)}/${daemonSocketFileName}`;
+  if (Buffer.byteLength(path) !== bytes) throw new Error('fixture did not hit the requested length');
+  return path;
+}
+
 describe('socket-path', () => {
   it('reports the headroom left before the path becomes unbindable', async () => {
     const finding = await socketPathFinding(join('/tmp', 'wtmd.sock'));
 
     expect(finding?.status).toBe('pass');
     expect(finding?.message).toContain('bytes to spare');
-    expect(finding?.details).toMatchObject({ byteLength: 14, limitBytes: 104, headroom: 90 });
+    // 14 bytes is a fact about `/tmp/wtmd.sock`; the headroom left over is a fact about the host.
+    expect(finding?.details).toMatchObject({
+      byteLength: 14,
+      limitBytes: hostLimitBytes,
+      headroom: hostLimitBytes - 14,
+    });
   });
 
   it('warns while the path still binds, not only once it has stopped', async () => {
-    const finding = await socketPathFinding(`/${'d'.repeat(84)}/wtmd.sock`);
+    // Nine bytes short of unbindable — under the 16-byte warning threshold on either platform,
+    // and still a path the daemon binds today. That combination is the whole claim: the warning
+    // has to arrive while there is still a daemon to run `doctor` with.
+    const finding = await socketPathFinding(socketPathOfBytes(hostLimitBytes - 9));
 
     expect(finding?.status).toBe('warning');
-    expect(finding?.details).toMatchObject({ byteLength: 95, limitBytes: 104, headroom: 9 });
+    expect(finding?.details).toMatchObject({
+      byteLength: hostLimitBytes - 9,
+      limitBytes: hostLimitBytes,
+      headroom: 9,
+    });
     expect(finding?.message).toContain('headroom');
   });
 
   it('reports a path over the limit as an error naming the measured length', async () => {
-    const finding = await socketPathFinding(`/${'d'.repeat(120)}/wtmd.sock`);
+    const finding = await socketPathFinding(socketPathOfBytes(hostLimitBytes + 27));
 
     expect(finding?.status).toBe('error');
-    expect(finding?.details).toMatchObject({ code: 'WTM_SOCKET_PATH_TOO_LONG', byteLength: 131 });
-    expect(finding?.message).toContain('131 bytes');
-    expect(finding?.message).toContain('104-byte limit');
+    expect(finding?.details).toMatchObject({
+      code: 'WTM_SOCKET_PATH_TOO_LONG',
+      byteLength: hostLimitBytes + 27,
+    });
+    expect(finding?.message).toContain(`${hostLimitBytes + 27} bytes`);
+    expect(finding?.message).toContain(`${hostLimitBytes}-byte limit`);
   });
 
   it('measures bytes rather than code units', async () => {
     // A home directory holding non-ASCII characters is longer than its character count, and
     // the limit is a property of the address in bytes.
-    const finding = await socketPathFinding(`/${'ü'.repeat(50)}/wtmd.sock`);
+    const path = `/${'ü'.repeat(50)}/wtmd.sock`;
+    expect(path.length).toBe(61);
+
+    const finding = await socketPathFinding(path);
 
     expect(finding?.details).toMatchObject({ byteLength: 111 });
+    // Stated rather than left to be inferred: 111 bytes is past every limit WTM has a backend
+    // for, so the status this fixture characterises is the same one on either host. It was left
+    // unasserted, which meant the test would have gone on passing had the finding silently
+    // become a `pass` on a platform whose limit was larger.
+    expect(hostLimitBytes).toBeLessThan(111);
+    expect(finding?.status).toBe('error');
   });
 });
 

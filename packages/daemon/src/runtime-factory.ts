@@ -161,6 +161,15 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     // runtime to and wrong for this one: the composition root has already chosen a platform, and
     // a supervisor inspecting processes through a different one than the daemon was built for is
     // the exact class of drift the seam exists to remove.
+    //
+    // `platform` is part of that and was missing while the two readers below were not, which made
+    // the omission invisible: the readers are what a *test* observes, and the platform is what the
+    // spawned anchor is told. An injected runtime for the other platform — which
+    // `runtime-factory.test.ts` constructs — would have produced an anchor reporting its identity
+    // in the host's dialect and a port reading it in the injected one, and the two dialects cannot
+    // compare equal. That surfaces as `ANCHOR_IDENTITY_MISMATCH`, which blames the process for
+    // changing identity when in fact nobody ever asked it the same question twice.
+    platform: platformRuntime.id,
     inspectProcess: async (pid) => await platformRuntime.process.inspectProcess(pid),
     inspectProcessGroup: async (pgid) => await platformRuntime.process.inspectProcessGroup(pgid),
     ...(options.gracePeriodMs === undefined ? {} : { gracePeriodMs: options.gracePeriodMs }),

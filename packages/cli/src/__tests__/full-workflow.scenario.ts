@@ -2,23 +2,61 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { selectPlatformRuntime } from '@wtm/platform';
+import { publishedDaemonSocketPath } from '@wtm/platform/socket';
+import { isolatedHomeEnvironment } from '../../../testkit/src/isolated-home';
 import type { CliDependencies } from '../main';
 
 const root = await realpath(await mkdtemp(join(tmpdir(), 'wtm-e2e-')));
 const home = join(root, 'home');
-const launchAgents = join(home, 'Library', 'LaunchAgents');
-const dataRoot = join(home, 'Library', 'Application Support', 'WTM');
+/**
+ * The whole environment that confines this run to `home`, not `HOME` alone.
+ *
+ * On macOS the two are the same thing. On Linux the XDG variables are read from the ambient
+ * environment and override what `HOME` implies, so a scenario that set only `HOME` would keep
+ * reading and writing the runner's own state root and socket directory — the machine this fixture
+ * exists to stay off. It is assigned onto `process.env` because everything below inherits it:
+ * `runCli` runs in this process and `git()` passes `process.env` straight through.
+ */
+Object.assign(process.env, isolatedHomeEnvironment(home));
+/**
+ * Where this platform puts WTM's files, asked rather than spelled out.
+ *
+ * The three paths below used to be `home/Library/...`, which is the host's answer only on macOS.
+ * On Linux they named directories WTM would never touch, so `serviceRootUntouched` and
+ * `socketAbsent` — the two claims here that a service was *not* installed and a daemon was *not*
+ * started — became vacuously true exactly where a second service manager exists to install into
+ * (D3, D4). Derived from the isolated environment, both mean the same thing on either platform.
+ */
+const hostPaths = selectPlatformRuntime({ home, env: process.env }).paths;
+const serviceRoot = hostPaths.serviceRoot;
+const dataRoot = hostPaths.dataRoot;
 const databasePath = join(dataRoot, 'state.db');
-const socketPath = join(dataRoot, 'wtmd.sock');
+const socketPath = publishedDaemonSocketPath(hostPaths.socketRoot);
 const gitConfig = join(root, 'gitconfig');
 const remote = join(root, 'remote.git');
 const main = join(root, 'workspace', 'repo');
 const nested = join(main, 'src');
 const linked = join(root, 'linked-feature');
-await mkdir(launchAgents, { recursive: true, mode: 0o700 });
+/**
+ * The premise, checked before anything is created from it.
+ *
+ * `serviceRootUntouched` and `socketAbsent` below are claims that WTM did *not* write something.
+ * A claim of that shape is true of every directory in the world, so it is worth nothing unless the
+ * directory it names is one this fixture owns — and it is a derivation away from naming the
+ * runner's. Failing here rather than reporting `true` about somebody else's `~/.config` is the
+ * difference between a green run and a green run that proves nothing.
+ */
+const escaped = Object.entries({ serviceRoot, dataRoot, socketPath })
+  .filter(([, path]) => !path.startsWith(`${home}/`));
+if (escaped.length > 0) {
+  await rm(root, { recursive: true, force: true });
+  throw new Error(`Fixture paths escaped ${home}: ${escaped.map(([name, path]) => `${name}=${path}`).join(', ')}`);
+}
+
+await mkdir(serviceRoot, { recursive: true, mode: 0o700 });
 await mkdir(main, { recursive: true, mode: 0o700 });
 await writeFile(gitConfig, '');
-process.env.HOME = home;
 process.env.GIT_CONFIG_GLOBAL = gitConfig;
 process.env.GIT_CONFIG_NOSYSTEM = '1';
 
@@ -148,7 +186,10 @@ try {
     },
     pushed,
     safelyRemoved: removed.code === 0 && !(await exists(linked)),
-    launchAgentsUntouched: (await readdir(launchAgents)).length === 0,
+    // The field keeps its macOS name because the assertion that reads it lives in
+    // `full-workflow.test.ts`; the directory it reports on is now whichever one this platform
+    // installs user services into — `~/Library/LaunchAgents` or `~/.config/systemd/user`.
+    serviceRootUntouched: (await readdir(serviceRoot)).length === 0,
     socketAbsent: !(await exists(socketPath)),
     remoteProtocol: 'file',
   }));

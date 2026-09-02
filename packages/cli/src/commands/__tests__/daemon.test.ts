@@ -1,10 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   DaemonSocketPathTooLongError,
+  daemonSocketFileName,
   darwinSocketPathLimitBytes,
   linuxSocketPathLimitBytes,
   measureDaemonSocketPath,
@@ -14,7 +16,7 @@ import { selectPlatformRuntime } from '@wtm/platform';
 import type { PlatformRuntime } from '@wtm/platform/ports';
 import { jsonEnvelopeSchema } from '@wtm/protocol';
 import { launchdPaths } from '@wtm/daemon/launchd';
-import type { ServiceLifecycle } from '@wtm/daemon/service-lifecycle';
+import { servicePathsFor, type ServiceLifecycle } from '@wtm/daemon/service-lifecycle';
 import {
   runDaemonLifecycleCommand,
   serveDaemon,
@@ -22,6 +24,7 @@ import {
 } from '../daemon';
 import { exitCodeForError } from '../../exit-codes';
 import { createCli, runCli } from '../../main';
+import { isolatedHomeEnvironment } from '../../../../testkit/src/isolated-home';
 import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
 
 const serveScenarioPath = fileURLToPath(new URL('./daemon-serve.scenario.ts', import.meta.url));
@@ -63,8 +66,66 @@ async function messageFor(code: string, platform: PlatformRuntime): Promise<stri
   return envelope.errors[0]?.message;
 }
 
-/** A published socket path one byte past what a Unix socket address can hold. */
-const overLimitSocketPath = publishedDaemonSocketPath(darwinSocketRoot(`/${'h'.repeat(62)}`));
+/**
+ * `sizeof(sun_path)` for the machine this file runs on: 104 bytes on macOS, 108 on Linux.
+ *
+ * Every fixture below that reaches a *host* measurement is sized from this. Written as
+ * `darwinSocketPathLimitBytes + 1` they were 105 bytes — past macOS's limit and three inside
+ * Linux's — so on a Linux runner the refusals these tests are named for never happened.
+ */
+const hostLimitBytes = selectPlatformRuntime().socket.limitBytes;
+
+/**
+ * A socket path of exactly `bytes` bytes, ending in the name the daemon actually publishes.
+ *
+ * The refusal is a property of the address's length, so a fixture for it has to hit a length.
+ * `boundDaemonSocketPath` substitutes the file name's first character rather than prefixing it,
+ * which is what keeps the measured path exactly this long.
+ */
+function socketPathOfBytes(bytes: number): string {
+  const segment = bytes - daemonSocketFileName.length - 2;
+  if (segment < 1) throw new Error(`${bytes} bytes cannot hold a socket path`);
+  const path = `/${'h'.repeat(segment)}/${daemonSocketFileName}`;
+  if (Buffer.byteLength(path) !== bytes) throw new Error('fixture did not hit the requested length');
+  return path;
+}
+
+/** One byte past what a Unix socket address holds on this host: 105 on macOS, 109 on Linux. */
+const overLimitOnHost = socketPathOfBytes(hostLimitBytes + 1);
+
+/**
+ * One byte past *macOS's* limit, for the tests that name macOS's limit alongside it.
+ *
+ * Those tests hand the limit to `measureDaemonSocketPath` themselves, so nothing about them is a
+ * question about this host: they are the platform half of D3 and stay written in darwin's numbers.
+ */
+const overLimitOnDarwin = publishedDaemonSocketPath(darwinSocketRoot(`/${'h'.repeat(62)}`));
+
+/**
+ * The daemon address this host publishes for `home`, under the isolation the child is given.
+ *
+ * Both halves matter. `paths.socketRoot` is macOS's `~/Library/Application Support/WTM` and
+ * Linux's `$XDG_RUNTIME_DIR/wtm`, and `isolatedHomeEnvironment` is what makes the second of those
+ * a directory under `home` rather than the runner's shared `/run/user/<uid>` — which is both why
+ * a fixture can size it and why two tests cannot collide on it.
+ */
+function hostSocketPathFor(home: string): string {
+  return publishedDaemonSocketPath(
+    selectPlatformRuntime({ home, env: isolatedHomeEnvironment(home) }).paths.socketRoot,
+  );
+}
+
+/**
+ * Where this host's daemon appends its error log for `home`.
+ *
+ * The same derivation `createDaemonErrorReporter` writes through (`daemon.ts:271`), rather than
+ * `launchdPaths(home).stderrPath`: `~/Library/Logs/WTM` is not a directory on Linux, and the log
+ * this test reads is the one the daemon actually wrote.
+ */
+function hostDaemonErrorLogFor(home: string): string {
+  const env = isolatedHomeEnvironment(home);
+  return servicePathsFor(selectPlatformRuntime({ home, env }).service, { home, env }).stderrPath;
+}
 
 describe('daemon lifecycle command', () => {
   test.each(['install', 'uninstall', 'status'] as const)('returns a schema-valid %s envelope', async (action) => {
@@ -83,7 +144,13 @@ describe('daemon lifecycle command', () => {
       throw error;
     };
 
-    const envelope = await runDaemonLifecycleCommand('status', manager);
+    // `darwinHost`, because the message below names launchd. Left to select the host, this pinned
+    // macOS's wording to whatever machine ran it — the `service manager wording` block further
+    // down already proves the same code reads "The systemd user domain is unavailable." on Linux,
+    // so on a Linux runner this assertion was simply the other platform's sentence. What is being
+    // pinned here is the envelope's shape: one error, the public code, the filtered context, and
+    // no trace of `raw secret`.
+    const envelope = await runDaemonLifecycleCommand('status', manager, undefined, undefined, darwinHost);
 
     expect(envelope).toEqual({
       schemaVersion: 1,
@@ -110,7 +177,9 @@ describe('daemon lifecycle command', () => {
     let probed = 0;
     const reachable = async () => { probed += 1; return false; };
 
-    const envelope = await runDaemonLifecycleCommand('install', manager, reachable, overLimitSocketPath);
+    // No `platform` argument: `runDaemonLifecycleCommand` selects the host and measures against
+    // its limit, so the address has to be one byte past *that* limit rather than past macOS's.
+    const envelope = await runDaemonLifecycleCommand('install', manager, reachable, overLimitOnHost);
 
     // Nothing was published, and the readiness poll — which would have spent its whole deadline
     // waiting for a socket that cannot exist — was never entered.
@@ -119,13 +188,13 @@ describe('daemon lifecycle command', () => {
     expect(jsonEnvelopeSchema.parse(envelope)).toEqual(envelope);
     expect(envelope.ok).toBe(false);
     expect(envelope.errors[0]?.code).toBe('WTM_SOCKET_PATH_TOO_LONG');
-    expect(envelope.errors[0]?.message).toContain(String(darwinSocketPathLimitBytes));
-    expect(envelope.errors[0]?.message).toContain(String(darwinSocketPathLimitBytes + 1));
-    expect(envelope.errors[0]?.message).toContain(overLimitSocketPath);
+    expect(envelope.errors[0]?.message).toContain(String(hostLimitBytes));
+    expect(envelope.errors[0]?.message).toContain(String(hostLimitBytes + 1));
+    expect(envelope.errors[0]?.message).toContain(overLimitOnHost);
     expect(envelope.errors[0]?.context).toMatchObject({
       action: 'install',
-      byteLength: darwinSocketPathLimitBytes + 1,
-      limitBytes: darwinSocketPathLimitBytes,
+      byteLength: hostLimitBytes + 1,
+      limitBytes: hostLimitBytes,
     });
     expect(envelope.errors[0]?.remediation).toEqual([{ kind: 'command-suggestion', argv: ['wtm', 'doctor'] }]);
   });
@@ -133,11 +202,13 @@ describe('daemon lifecycle command', () => {
   test('a socket path that fits is installed and polled as before', async () => {
     const manager = fakeManager();
 
+    // The address this host would really publish for that home, not macOS's spelling of it: this
+    // preflight runs against the host's limit, so its fitting fixture is the host's too.
     const envelope = await runDaemonLifecycleCommand(
       'install',
       manager,
       async () => true,
-      publishedDaemonSocketPath(darwinSocketRoot('/Users/x')),
+      publishedDaemonSocketPath(selectPlatformRuntime({ home: '/Users/x' }).paths.socketRoot),
     );
 
     expect(envelope).toMatchObject({ ok: true, command: 'daemon install', data: { reachable: true } });
@@ -231,9 +302,15 @@ describe('the published definition path', () => {
     expect(envelope.ok || envelope.errors[0]?.code === 'WTM_DAEMON_UNAVAILABLE').toBe(true);
     if (envelope.ok) {
       expect(exitCode).toBe(0);
-      // The definition the selected backend names, in both spellings, with the same value.
-      expect(data.definitionPath).toBe(launchdPaths().plistPath);
-      expect(data.plistPath).toBe(launchdPaths().plistPath);
+      // The definition the *selected* backend names — a plist under `~/Library/LaunchAgents` on
+      // macOS, a unit under `$XDG_CONFIG_HOME/systemd/user` on Linux — built the way `main.ts:346`
+      // builds it, from `hostPlatformRuntime().service` with the process's own home and
+      // environment. Reading `launchdPaths()` here asked a macOS resolver about a host that may
+      // not be macOS, which is the same defect one level up from the one this test exists for.
+      // Whether `plistPath` rides beside it is a platform question, and the two tests above
+      // answer it by injection on both platforms rather than by whichever host ran this one.
+      expect(data.definitionPath)
+        .toBe(servicePathsFor(selectPlatformRuntime().service, { home: homedir(), env: process.env }).definitionPath);
     }
   });
 
@@ -417,7 +494,7 @@ describe('daemon serve', () => {
   test('a coded startup failure keeps its code, its measurement, its remediation and its exit status', async () => {
     const signals = new FakeSignals();
     const reported: unknown[] = [];
-    const failure = new DaemonSocketPathTooLongError(measureDaemonSocketPath(overLimitSocketPath, darwinSocketPathLimitBytes));
+    const failure = new DaemonSocketPathTooLongError(measureDaemonSocketPath(overLimitOnDarwin, darwinSocketPathLimitBytes));
 
     const result = await serveDaemon({
       runtimeFactory: async () => { throw failure; },
@@ -435,12 +512,12 @@ describe('daemon serve', () => {
       severity: 'error',
       context: {
         action: 'serve',
-        path: overLimitSocketPath,
+        path: overLimitOnDarwin,
         byteLength: darwinSocketPathLimitBytes + 1,
         limitBytes: darwinSocketPathLimitBytes,
         exceededBy: 1,
-        publishedPath: overLimitSocketPath,
-        boundPath: measureDaemonSocketPath(overLimitSocketPath, darwinSocketPathLimitBytes).boundPath,
+        publishedPath: overLimitOnDarwin,
+        boundPath: measureDaemonSocketPath(overLimitOnDarwin, darwinSocketPathLimitBytes).boundPath,
       },
       remediation: [{ kind: 'command-suggestion', argv: ['wtm', 'doctor'] }],
     }]);
@@ -456,7 +533,9 @@ describe('daemon failure output', () => {
     const home = await mkdtemp('/tmp/wtm-daemon-failure-');
     try {
       const result = spawnSync('node', ['--import', 'tsx', serveFailureScenarioPath], {
-        env: { ...process.env, HOME: home },
+        // `HOME` alone is not isolation: on Linux the ambient `XDG_*` variables survive the spread
+        // and send the child's state, config and socket back out to the runner's own directories.
+        env: { ...process.env, ...isolatedHomeEnvironment(home) },
         timeout: scenarioTimeoutMs,
         encoding: 'utf8',
       });
@@ -477,7 +556,7 @@ describe('daemon failure output', () => {
 
       // Dropping the frames from the terminal must not drop them from the record: the daemon
       // runs unattended and its own log is the only place the cause can survive.
-      const log = await readFile(launchdPaths(home).stderrPath, 'utf8');
+      const log = await readFile(hostDaemonErrorLogFor(home), 'utf8');
       expect(log).toContain('at createProductionDaemon (/Users/runner/work/wtm/wtm/dist/sea/.build/sea-bin.cjs');
     } finally {
       await rm(home, { recursive: true, force: true });
@@ -486,10 +565,10 @@ describe('daemon failure output', () => {
 
   test('an over-long HOME refuses serve with one coded line naming the length and the limit', async () => {
     const fixture = await overLongHome();
-    const measurement = measureDaemonSocketPath(publishedDaemonSocketPath(darwinSocketRoot(fixture.home)), darwinSocketPathLimitBytes);
+    const measurement = measureDaemonSocketPath(hostSocketPathFor(fixture.home), hostLimitBytes);
     try {
       const result = spawnSync('node', ['--import', 'tsx', serveScenarioPath], {
-        env: { ...process.env, HOME: fixture.home },
+        env: { ...process.env, ...isolatedHomeEnvironment(fixture.home) },
         timeout: scenarioTimeoutMs,
         encoding: 'utf8',
       });
@@ -501,11 +580,11 @@ describe('daemon failure output', () => {
       expect(envelope).toMatchObject({ ok: false, command: 'daemon serve', data: null });
       expect(envelope.errors[0].code).toBe('WTM_SOCKET_PATH_TOO_LONG');
       expect(envelope.errors[0].message).toContain(String(measurement.byteLength));
-      expect(envelope.errors[0].message).toContain(String(darwinSocketPathLimitBytes));
+      expect(envelope.errors[0].message).toContain(String(hostLimitBytes));
       expect(envelope.errors[0].context).toMatchObject({
         action: 'serve',
         byteLength: measurement.byteLength,
-        limitBytes: darwinSocketPathLimitBytes,
+        limitBytes: hostLimitBytes,
       });
       expect(envelope.errors[0].remediation).toEqual([{ kind: 'command-suggestion', argv: ['wtm', 'doctor'] }]);
 
@@ -513,7 +592,7 @@ describe('daemon failure output', () => {
       const reported = result.stderr.trimEnd().split('\n');
       expect(reported).toHaveLength(1);
       expect(reported[0]).toContain(String(measurement.byteLength));
-      expect(reported[0]).toContain(String(darwinSocketPathLimitBytes));
+      expect(reported[0]).toContain(String(hostLimitBytes));
       for (const stream of [result.stdout, result.stderr]) {
         expect(stream).not.toContain('    at ');
         expect(stream).not.toContain('/Users/runner');
@@ -525,18 +604,28 @@ describe('daemon failure output', () => {
 });
 
 /**
- * A real HOME whose published socket path lands one byte past the limit.
+ * A real HOME whose published socket path lands one byte past *this host's* limit.
  *
  * The refusal is a property of the address's length, so the fixture has to hit a length rather
  * than merely be deep — and the directory is created for real, because a refusal that only
  * happened because `HOME` did not exist would prove nothing about the measurement.
+ *
+ * The padding used to be computed from `~/Library/Application Support/WTM/wtmd.sock`, which is 33
+ * bytes longer than the address the same home yields on Linux. A home padded for macOS therefore
+ * produced a Linux socket path nowhere near 109 bytes, and the serve the test expects to be
+ * refused would have started. Both platforms grow their socket path byte for byte with the home
+ * — macOS because the socket sits under it, Linux because `isolatedHomeEnvironment` puts
+ * `$XDG_RUNTIME_DIR` under it — so the padding is arithmetic, and the result is checked rather
+ * than assumed.
  */
 async function overLongHome(): Promise<{ root: string; home: string }> {
   const root = await mkdtemp('/tmp/wtm-daemon-long-home-');
-  const padding = darwinSocketPathLimitBytes + 1
-    - Buffer.byteLength(publishedDaemonSocketPath(darwinSocketRoot(root))) - 1;
+  const padding = hostLimitBytes + 1 - Buffer.byteLength(hostSocketPathFor(root)) - 1;
   if (padding < 1) throw new Error('the temporary root is already past the socket path limit');
   const home = join(root, 'h'.repeat(padding));
+  if (Buffer.byteLength(hostSocketPathFor(home)) !== hostLimitBytes + 1) {
+    throw new Error('fixture did not land one byte past the socket path limit');
+  }
   await mkdir(home, { recursive: true });
   return { root, home };
 }
@@ -585,9 +674,12 @@ describe('daemon CLI surface', () => {
 
   test('wires serve to the production runtime factory and closes its real socket on SIGTERM', async () => {
     const home = await mkdtemp('/tmp/wtm-daemon-serve-');
-    const socketPath = join(home, 'Library', 'Application Support', 'WTM', 'wtmd.sock');
+    // The address this host publishes under that home. Spelled as `Library/Application Support`
+    // the wait below could only ever time out on Linux, ten seconds at a time, while the daemon
+    // was in fact listening perfectly well one directory away.
+    const socketPath = hostSocketPathFor(home);
     const child = spawn('node', ['--import', 'tsx', serveScenarioPath], {
-      env: { ...process.env, HOME: home },
+      env: { ...process.env, ...isolatedHomeEnvironment(home) },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const resultPromise = childResult(child);

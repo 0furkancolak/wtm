@@ -4,7 +4,9 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'n
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { selectPlatformRuntime } from '../../packages/platform/src/select';
 import { createFakeAdapter, type FakeAdapter } from '../../packages/testkit/src/fake-adapter';
+import { isolatedHomeEnvironment } from '../../packages/testkit/src/isolated-home';
 import { createAdapterTrustStore, trustRepositoryAdapter } from '../../packages/core/src/plan/adapter-trust';
 import { invokeExternalAdapter } from '../../packages/core/src/plan/external-adapter';
 import { ManagedLogStore } from '../../packages/daemon/src/logs';
@@ -26,16 +28,36 @@ afterEach(async () => {
 });
 
 async function isolatedHome(): Promise<{ home: string; repository: string; temporary: string }> {
-  // macOS caps Unix socket paths at 104 bytes, so the daemon needs a short home.
+  // Every supported platform caps Unix socket paths — 104 bytes on macOS, 108 on Linux — and the
+  // daemon's address is built under the home, so the home has to be short on either of them.
   const home = await mkdtemp('/tmp/wtm-sea-');
   await chmod(home, 0o700);
   const repository = join(home, 'repository');
   const temporary = join(home, 'tmp');
   await mkdir(repository, { mode: 0o700 });
   await mkdir(temporary, { mode: 0o700 });
-  // macOS resolves the temporary root through a symlink; WTM reports real paths.
+  // macOS resolves /tmp through a symlink to /private/tmp and WTM reports real paths, so the
+  // fixture has to report them too. On Linux /tmp is a real directory and this resolves to itself.
   cleanups.push(async () => { await rm(home, { recursive: true, force: true }); });
   return { home, repository: realpathSync(repository), temporary };
+}
+
+/**
+ * The environment every standalone child runs under.
+ *
+ * Deliberately built rather than inherited: `systemPath` is the whole point of the smoke test, and
+ * `isolatedHomeEnvironment` is what makes the home an actual confinement instead of only a `HOME`
+ * — on Linux an ambient `XDG_RUNTIME_DIR` would otherwise send the daemon's socket to the
+ * runner's `/run/user/<uid>` and out of the directory this fixture deletes.
+ */
+function standaloneEnvironment(options: { home: string; temporary: string }): Record<string, string> {
+  return {
+    PATH: systemPath,
+    ...isolatedHomeEnvironment(options.home),
+    TMPDIR: options.temporary,
+    LC_ALL: 'C',
+    LANG: 'C',
+  };
 }
 
 function runStandalone(
@@ -45,7 +67,7 @@ function runStandalone(
   const result = spawnSync(executable, [...args], {
     cwd: options.cwd,
     encoding: 'utf8',
-    env: { PATH: systemPath, HOME: options.home, TMPDIR: options.temporary, LC_ALL: 'C', LANG: 'C' },
+    env: standaloneEnvironment(options),
   });
   return { status: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
@@ -71,7 +93,7 @@ function spawnDaemon(options: { cwd: string; home: string; temporary: string }):
   const daemon = spawn(executable, ['daemon', 'serve'], {
     cwd: options.cwd,
     stdio: 'ignore',
-    env: { PATH: systemPath, HOME: options.home, TMPDIR: options.temporary, LC_ALL: 'C', LANG: 'C' },
+    env: standaloneEnvironment(options),
   });
   cleanups.push(async () => {
     daemon.kill('SIGTERM');
@@ -119,7 +141,15 @@ describe.skipIf(!existsSync(executable))('standalone executable', () => {
     // A second process reads the same persistent database through the embedded schema.
     expect(analyze.status, analyze.stderr || analyze.stdout).toBe(0);
     expect(JSON.parse(analyze.stdout).ok).toBe(true);
-    expect(statSync(join(paths.home, 'Library/Application Support/WTM/state.db')).isFile()).toBe(true);
+    // Derived, not spelled: this test exercises the host, so `~/Library/Application Support` is a
+    // macOS answer to the question rather than the question. The executable resolved its own data
+    // root from the same policy and the same environment, so reading it back through
+    // `selectPlatformRuntime` asserts the two agree instead of asserting one platform's layout.
+    const dataRoot = selectPlatformRuntime({
+      home: paths.home,
+      env: isolatedHomeEnvironment(paths.home),
+    }).paths.dataRoot;
+    expect(statSync(join(dataRoot, 'state.db')).isFile()).toBe(true);
   });
 
   test('prints the embedded canonical agent skill', async () => {

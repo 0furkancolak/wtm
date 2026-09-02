@@ -14,7 +14,8 @@ import type {
   ManagedProcessReservationOptions,
 } from '@wtm/core';
 import { selectPlatformRuntime } from '@wtm/platform';
-import { createDarwinProcessPlatform } from '@wtm/platform/process';
+import type { ProcessPlatform } from '@wtm/platform/ports';
+import { createDarwinProcessPlatform, createLinuxProcessPlatform } from '@wtm/platform/process';
 import { developmentRuntimeInvocation } from '../../../testkit/src/runtime-invocation';
 import { ManagedLogStore } from '../logs';
 import {
@@ -34,6 +35,13 @@ const cleanups: Array<() => Promise<void>> = [];
 
 function createSupervisor(options: ManagedProcessSupervisorOptions): ManagedProcessSupervisor {
   return new ManagedProcessSupervisor({ runtimeInvocation: developmentRuntimeInvocation(), ...options });
+}
+
+/** This host's backend, named without asking the seam under test which one it would have named. */
+function hostProcessBackend(): ProcessPlatform {
+  if (process.platform === 'darwin') return createDarwinProcessPlatform();
+  if (process.platform === 'linux') return createLinuxProcessPlatform();
+  throw new Error(`no @wtm/platform process backend for ${process.platform}`);
 }
 
 afterEach(async () => {
@@ -232,13 +240,16 @@ class FaultProcessStore extends MemoryProcessStore {
  * edit reintroduced a second copy of the parsing here — the rest of this file exercises the
  * readers through the supervisor and would still pass against a divergent duplicate.
  *
- * The host is macOS, so the selected port and `createDarwinProcessPlatform()` are the same
- * implementation and these assertions cannot tell them apart. That is the limit of what is
- * decidable here, and it is why the selection is asserted separately below rather than left to be
- * inferred from readers that would agree either way.
+ * The block used to name `createDarwinProcessPlatform()` because macOS was the only host that ran
+ * it. It now names whichever backend this host's kernel is, chosen from `process.platform`
+ * directly rather than through `selectPlatformRuntime()` — a runtime compared against itself
+ * agrees whichever backend it picked, so the seam has to be checked against an opinion formed
+ * without it. On macOS that opinion is the BSD `ps` reader and on Linux the `/proc` reader, which
+ * makes this one block real coverage on both, and makes the CI kernel the thing that finally
+ * exercises the Linux half C1 could only design.
  */
-describe('the daemon default process readers are the platform macOS readers', () => {
-  const platform = createDarwinProcessPlatform();
+describe('the daemon default process readers are this host\'s platform port', () => {
+  const platform = hostProcessBackend();
 
   test('delegate to the port the platform seam selected, not to a hardcoded macOS one', async () => {
     const selected = selectPlatformRuntime().process;

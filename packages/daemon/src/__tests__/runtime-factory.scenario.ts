@@ -74,6 +74,12 @@ try {
         process.taskName === 'hold' && process.state === 'RUNNING'),
       stopExit: stop.exitCode,
       stopState: stop.envelope.data.processes[0].state,
+      // Reported only by the default-client run, because that is the only one whose socket is
+      // derived rather than handed in — the others would be reading back their own argument. The
+      // test that spawned this asserts the address landed inside the temporary home, which is the
+      // claim `HOME` isolation makes and the one that stops holding on Linux the moment the XDG
+      // variables are left ambient.
+      ...(useDefaultClient ? { socketPath: runtime.paths.socketPath } : {}),
     }));
   }
 } finally {

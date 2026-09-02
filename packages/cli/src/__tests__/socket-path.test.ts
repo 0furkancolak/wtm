@@ -4,9 +4,10 @@ import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  darwinSocketPathLimitBytes,
+  daemonSocketFileName,
   publishedDaemonSocketPath,
 } from '@wtm/platform/socket';
+import { selectPlatformRuntime } from '@wtm/platform';
 import {
   FrameDecoder,
   encodeFrame,
@@ -93,40 +94,70 @@ async function listeningDaemon(): Promise<string> {
 }
 
 /**
- * The macOS socket root, spelled out rather than read from `PlatformRuntime.paths.socketRoot`.
+ * `sizeof(sun_path)` for the machine this file runs on: 104 bytes on macOS, 108 on Linux.
  *
- * Deriving it from the resolver under test would make this suite agree with whatever that
- * resolver said. Spelling it literally is what pins macOS across the move onto the platform seam.
+ * `runCli` measures the address it is given against `hostPlatformRuntime().socket.limitBytes`
+ * (`main.ts:1106`), so a fixture written as `darwinSocketPathLimitBytes + 1` was 105 bytes — past
+ * macOS's limit and comfortably inside Linux's. The refusal the test below is named for simply
+ * did not happen there, and the command connected instead.
  */
-function darwinSocketRoot(home: string): string {
-  return join(home, 'Library', 'Application Support', 'WTM');
+const hostLimitBytes = selectPlatformRuntime().socket.limitBytes;
+
+/**
+ * A socket path of exactly `bytes` bytes, ending in the name the daemon actually publishes.
+ *
+ * The refusal is a property of the address's length, so the fixture has to hit a length rather
+ * than merely be deep. The file name is the real one because `boundDaemonSocketPath` substitutes
+ * its first character rather than prefixing it, which is what keeps the measured path exactly
+ * this long.
+ */
+function socketPathOfBytes(bytes: number): string {
+  const segment = bytes - daemonSocketFileName.length - 2;
+  if (segment < 1) throw new Error(`${bytes} bytes cannot hold a socket path`);
+  const path = `/${'h'.repeat(segment)}/${daemonSocketFileName}`;
+  if (Buffer.byteLength(path) !== bytes) throw new Error('fixture did not hit the requested length');
+  return path;
 }
 
-/** A socket path one byte past what a Unix socket address can hold. */
-const overLimitSocketPath = publishedDaemonSocketPath(darwinSocketRoot(`/${'h'.repeat(62)}`));
+/** One byte past what a Unix socket address holds on this host: 105 on macOS, 109 on Linux. */
+const overLimitSocketPath = socketPathOfBytes(hostLimitBytes + 1);
 
 describe('daemon socket path in the CLI', () => {
-  test('advertises the shared published path', () => {
-    expect(defaultDaemonSocketPath('/Users/x')).toBe(publishedDaemonSocketPath(darwinSocketRoot('/Users/x')));
+  test('advertises the shared published path, wherever this platform keeps its sockets', () => {
+    // `defaultDaemonSocketPath` takes a home but not a platform: it asks the host. So this is the
+    // half of the macOS claim that is about the CLI, stated so it stays true on either host — the
+    // advertised address is `publishedDaemonSocketPath` applied to *this* platform's socket root
+    // and nothing else. It fails if the CLI goes back to deriving the address from the data root
+    // (which on Linux is a different directory), or spells `wtmd.sock` a second time itself.
+    expect(defaultDaemonSocketPath('/Users/x'))
+      .toBe(publishedDaemonSocketPath(selectPlatformRuntime({ home: '/Users/x' }).paths.socketRoot));
   });
 
   test('the macOS address is the byte-for-byte one every installed daemon is already listening on', () => {
-    // The literal, not a derivation of it. `defaultDaemonSocketPath` now asks the platform runtime
-    // for its socket root instead of spelling `Library/Application Support` itself, and an
-    // installed LaunchAgent that survives that change has to keep answering on the same address —
-    // a daemon and a CLI that disagree about the path by one byte simply never meet.
-    expect(defaultDaemonSocketPath('/Users/x'))
+    // The literal, and a *named* platform rather than this host. Asked of the host, this assertion
+    // demanded `Library/Application Support` from a Linux runner that has no such directory — and
+    // the fix is not to weaken the claim but to say which platform it is about. Together with the
+    // test above it still pins the whole chain on macOS: the CLI publishes at the platform's
+    // socket root, and darwin's socket root is this exact address. An installed LaunchAgent that
+    // survives the move onto the platform seam has to keep answering here, because a daemon and a
+    // CLI that disagree about the path by one byte simply never meet.
+    const darwin = selectPlatformRuntime({ platform: 'darwin', home: '/Users/x', env: {} });
+
+    expect(publishedDaemonSocketPath(darwin.paths.socketRoot))
       .toBe('/Users/x/Library/Application Support/WTM/wtmd.sock');
   });
 
   test('ignores the XDG variables on macOS, so a home is not silently relocated', () => {
     // A macOS user who exports `XDG_STATE_HOME` for some other tool must not find WTM's socket
-    // somewhere else. The variables are read from the ambient process here, which is what makes
-    // this the real assertion rather than a restatement of the resolver.
+    // somewhere else. The variable is read from the ambient process, which is what makes this the
+    // real assertion rather than a restatement of the resolver: `selectPlatformRuntime` defaults
+    // `env` to `process.env`, and that default is the one production takes.
     const previous = process.env.XDG_STATE_HOME;
     process.env.XDG_STATE_HOME = '/xdg/state';
     try {
-      expect(defaultDaemonSocketPath('/Users/x'))
+      const darwin = selectPlatformRuntime({ platform: 'darwin', home: '/Users/x' });
+
+      expect(publishedDaemonSocketPath(darwin.paths.socketRoot))
         .toBe('/Users/x/Library/Application Support/WTM/wtmd.sock');
     } finally {
       if (previous === undefined) delete process.env.XDG_STATE_HOME;
@@ -164,12 +195,12 @@ describe('daemon socket path in the CLI', () => {
     expect(jsonEnvelopeSchema.parse(envelope)).toEqual(envelope);
     expect(envelope.ok).toBe(false);
     expect(envelope.errors[0].code).toBe('WTM_SOCKET_PATH_TOO_LONG');
-    expect(envelope.errors[0].message).toContain(String(darwinSocketPathLimitBytes));
-    expect(envelope.errors[0].message).toContain(String(darwinSocketPathLimitBytes + 1));
+    expect(envelope.errors[0].message).toContain(String(hostLimitBytes));
+    expect(envelope.errors[0].message).toContain(String(hostLimitBytes + 1));
     expect(envelope.errors[0].message).toContain(overLimitSocketPath);
     expect(envelope.errors[0].context).toMatchObject({
-      byteLength: darwinSocketPathLimitBytes + 1,
-      limitBytes: darwinSocketPathLimitBytes,
+      byteLength: hostLimitBytes + 1,
+      limitBytes: hostLimitBytes,
     });
     expect(envelope.errors[0].remediation).toEqual([{ kind: 'command-suggestion', argv: ['wtm', 'doctor'] }]);
     expect(exitCode).toBe(2);

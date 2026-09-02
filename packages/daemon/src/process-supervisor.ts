@@ -7,7 +7,8 @@ import type {
 } from '@wtm/core';
 import { selectPlatformRuntime } from '@wtm/platform';
 import type {
-  ObservedProcessIdentity, ProcessPlatform, ProcessInspection as PlatformProcessInspection,
+  ObservedProcessIdentity, PlatformId, PlatformRuntime, ProcessPlatform,
+  ProcessInspection as PlatformProcessInspection,
 } from '@wtm/platform/ports';
 import { ManagedLogStore, type PreparedManagedLogs } from './logs';
 
@@ -30,12 +31,22 @@ import { ManagedLogStore, type PreparedManagedLogs } from './logs';
  * platform WTM has no backend for, which is a refusal the caller could no longer catch and report
  * as an envelope.
  */
-let selectedProcessPlatform: ProcessPlatform | null = null;
+let selectedRuntime: PlatformRuntime | null = null;
 
-function hostProcessPlatform(): ProcessPlatform {
-  selectedProcessPlatform ??= selectPlatformRuntime().process;
-  return selectedProcessPlatform;
+function hostPlatformRuntime(): PlatformRuntime {
+  selectedRuntime ??= selectPlatformRuntime();
+  return selectedRuntime;
 }
+
+function hostProcessPlatform(): ProcessPlatform { return hostPlatformRuntime().process; }
+
+/**
+ * The id the anchor is told, when nobody told this supervisor one. It is deliberately the same
+ * selection `hostProcessPlatform` reads from, resolved on the same first use: the anchor's identity
+ * dialect and the reader that checks it have to come from one decision, or the check compares two
+ * spellings of the same process and reports a mismatch.
+ */
+function hostPlatformId(): PlatformId { return hostPlatformRuntime().id; }
 
 const activeStates = ['STARTING', 'RUNNING', 'STOPPING'] as const;
 const anchorProtocolTimeoutMs = 10_000;
@@ -78,6 +89,16 @@ export interface ManagedProcessSupervisorOptions {
   now?: () => Date;
   onError?: (error: unknown) => void;
   runtimeInvocation?: RuntimeInvocation;
+  /**
+   * The platform whose identity dialect the anchor is told to report in. It belongs beside
+   * `inspectProcess`, and for the same reason: a caller that hands this supervisor a platform's
+   * readers has to hand it that platform's anchor too, or the anchor's self-report and the reading
+   * it is checked against are two different spellings and every start fails
+   * `ANCHOR_IDENTITY_MISMATCH`. Defaults to the host selection, resolved on first use rather than
+   * in the constructor so that constructing a supervisor on an unsupported platform is not itself
+   * the error.
+   */
+  platform?: PlatformId;
   /** Test seam for exercising durable cleanup ownership when cooperative abort fails. */
   anchorIgnoresAbort?: boolean;
 }
@@ -133,6 +154,7 @@ export class ManagedProcessSupervisor {
   readonly #onError: (error: unknown) => void;
   readonly #anchorIgnoresAbort: boolean;
   readonly #runtimeInvocation: RuntimeInvocation;
+  readonly #platform: PlatformId | undefined;
   readonly #locks = new Map<string, Promise<void>>();
   readonly #owned = new Map<string, OwnedChild>();
   #closed = false;
@@ -149,6 +171,7 @@ export class ManagedProcessSupervisor {
     this.#onError = options.onError ?? (() => {});
     this.#anchorIgnoresAbort = options.anchorIgnoresAbort ?? false;
     this.#runtimeInvocation = options.runtimeInvocation ?? defaultRuntimeInvocation();
+    this.#platform = options.platform;
   }
 
   async start(input: ManagedProcessStartInput): Promise<ManagedProcessStartResult> {
@@ -365,6 +388,7 @@ export class ManagedProcessSupervisor {
         logs,
         ignoreAbort: this.#anchorIgnoresAbort,
         runtimeInvocation: this.#runtimeInvocation,
+        platform: this.#platform ?? hostPlatformId(),
       });
     } catch (error) {
       throw startFailure(input, error);
@@ -858,6 +882,7 @@ async function spawnAnchor(options: {
   logs: PreparedManagedLogs;
   ignoreAbort: boolean;
   runtimeInvocation: RuntimeInvocation;
+  platform: PlatformId;
 }): Promise<ChildProcess> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -871,6 +896,11 @@ async function spawnAnchor(options: {
         env: {
           ...(options.input.env ?? process.env),
           WTM_ANCHOR_SPEC: JSON.stringify({
+            // Told, never observed. The anchor reports its identity in this platform's dialect
+            // because that is the dialect `#inspectProcess` will read it back in; an anchor that
+            // consulted its own `process.platform` could disagree with the supervisor that spawned
+            // it, and the disagreement would reach the user as a process that changed identity.
+            platform: options.platform,
             argv: options.input.argv,
             shell: options.input.shell ?? false,
             ignoreAbort: options.ignoreAbort,

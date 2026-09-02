@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { watch, type Dirent, type FSWatcher } from 'node:fs';
 import { lstat, open, opendir } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { Remediation } from '@wtm/protocol';
 import type { ReconcileSignal } from './reconciler-queue';
 
 export interface RepositoryWatchRegistration {
@@ -41,6 +42,16 @@ export interface StructuralWatcherOptions {
   fingerprint?: (root: string, roles: ReadonlySet<WatchRole>) => Promise<string>;
   directoryFactory?: FingerprintDirectoryFactory;
   onError?: (error: unknown) => void;
+  /**
+   * Which host's remedy the watcher names when a watch is refused.
+   *
+   * A parameter, never a read of `process.platform` inside the message builder: the whole point
+   * of the seam is that the operating system is decided once and passed down, and a diagnostic
+   * that observed its own platform would be the one place left that could disagree with the
+   * daemon about which machine it is on. It also makes both messages reachable from either
+   * host's test run, which is the only way the Linux wording is checked before Linux CI exists.
+   */
+  platform?: NodeJS.Platform;
 }
 
 interface WatchedRoot {
@@ -61,12 +72,109 @@ const manifestNames = new Set([
 ]);
 const configNames = new Set(['.node-version', '.nvmrc', '.tool-versions', 'wtm.toml']);
 
+/**
+ * A root that could not be put under a watch, or could not be put back under one.
+ *
+ * The condition used to reach the user as whatever libuv threw, once per retry: on Linux that is
+ * `ENOSPC: no space left on device, watch '/home/...'`, a sentence which is false about the disk,
+ * silent about the actual limit, and repeated forever. Nothing in it names `fs.inotify.max_user_watches`,
+ * which is the one thing that ends the condition. This is the same failure shape the product has
+ * already removed elsewhere -- an accurate report nobody can act on -- so it carries a code, a
+ * severity, the reading it was made from, and a remedy, exactly as `UnsupportedPlatformError` does.
+ *
+ * The message is deliberately one line. `createDaemonErrorReporter` writes the first line of a
+ * condition to stderr and marks the rest `[...]`, keeping the remainder for the daemon's own error
+ * log, so a remedy on a second line is a remedy the user does not read.
+ */
+export class WatchUnavailableError extends Error {
+  readonly code = 'WTM_WATCH_UNAVAILABLE' as const;
+  readonly severity = 'error' as const;
+  readonly context: Record<string, unknown>;
+  readonly remediation: readonly Remediation[];
+
+  constructor(root: string, platform: NodeJS.Platform, cause: unknown) {
+    const errno = errnoOf(cause);
+    super(watchRefusalMessage(root, platform, errno, cause), { cause });
+    this.name = 'WatchUnavailableError';
+    this.context = { root, errno, platform };
+    this.remediation = watchRefusalRemediation(platform, errno);
+  }
+}
+
+/** The errno libuv reported, or `null` for a failure that named no condition at all. */
+function errnoOf(cause: unknown): string | null {
+  if (typeof cause !== 'object' || cause === null || !('code' in cause)) return null;
+  const code = (cause as { code: unknown }).code;
+  return typeof code === 'string' && code.length > 0 ? code : null;
+}
+
+/**
+ * `ENOSPC` and `EMFILE` are the two ways a host says "no more watches", and they are the only two
+ * conditions here with a remedy specific enough to print. Everything else is reported with the
+ * reading that produced it and no advice: a guessed remedy is worse than none, which is why the
+ * daemon's other diagnostics went looking for evidence before naming a cause.
+ */
+function watchRefusalMessage(
+  root: string,
+  platform: NodeJS.Platform,
+  errno: string | null,
+  cause: unknown,
+): string {
+  // What the daemon does next, stated once. It names no command deliberately: there is no
+  // `wtm reconcile` subcommand -- `reconcile` is an IPC request, sent today only by `wtm init`
+  // -- and a remedy that prints a command the CLI does not have is the defect this whole error
+  // exists to remove, one level down.
+  const retrying = 'WTM keeps retrying the watch, at most a minute apart, and until one is '
+    + 'established it notices changes under that root only when something else makes it reconcile';
+  if (errno === 'ENOSPC' && platform === 'linux') {
+    return `WTM cannot watch ${root}: the kernel refused another inotify watch (ENOSPC), which is `
+      + 'the watch budget rather than the disk. Raise fs.inotify.max_user_watches (sudo sysctl -w '
+      + `fs.inotify.max_user_watches=524288, persisted under /etc/sysctl.d). ${retrying}.`;
+  }
+  if (errno === 'EMFILE' || errno === 'ENFILE' || errno === 'ENOSPC') {
+    const remedy = platform === 'linux'
+      ? 'Raise fs.inotify.max_user_instances, or the daemon\'s open-file limit (ulimit -n)'
+      : 'Raise the daemon\'s open-file limit (ulimit -n)';
+    return `WTM cannot watch ${root}: the host refused another filesystem watch (${errno}). `
+      + `${remedy}. ${retrying}.`;
+  }
+  return `WTM cannot watch ${root}: the host refused the watch (${conditionOf(errno, cause)}). `
+    + `${retrying}.`;
+}
+
+/** The reading itself, on one line, for a condition with no remedy worth printing. */
+function conditionOf(errno: string | null, cause: unknown): string {
+  const raw = cause instanceof Error ? cause.message : String(cause);
+  const line = raw.trim().split(/[\r\n]/, 1)[0]?.trim() ?? '';
+  if (line !== '') return line;
+  return errno ?? 'no condition reported';
+}
+
+/**
+ * A remedy is offered only where WTM knows the knob. 524288 is a starting value, not a
+ * measurement: it is the raised default several distributions already ship and what watch-heavy
+ * tools ask for, and the argv exists so the knob's name is copy-pasteable rather than to promise
+ * that one number is right for every machine. Nothing runs it -- `docs/18` states that a
+ * remediation is a suggestion.
+ */
+function watchRefusalRemediation(platform: NodeJS.Platform, errno: string | null): readonly Remediation[] {
+  if (platform !== 'linux') return [];
+  if (errno === 'ENOSPC') {
+    return [{ kind: 'command-suggestion', argv: ['sudo', 'sysctl', '-w', 'fs.inotify.max_user_watches=524288'] }];
+  }
+  if (errno === 'EMFILE' || errno === 'ENFILE') {
+    return [{ kind: 'command-suggestion', argv: ['sudo', 'sysctl', '-w', 'fs.inotify.max_user_instances=1024'] }];
+  }
+  return [];
+}
+
 export class StructuralWatcher {
   readonly #roots: WatchedRoot[];
   readonly #schedule: StructuralWatcherOptions['schedule'];
   readonly #watchFactory: NonNullable<StructuralWatcherOptions['watchFactory']>;
   readonly #fingerprint: NonNullable<StructuralWatcherOptions['fingerprint']>;
   readonly #onError: (error: unknown) => void;
+  readonly #platform: NodeJS.Platform;
   readonly #inFlight = new Set<Promise<void>>();
   #state: 'idle' | 'starting' | 'started' | 'closing' | 'closed' = 'idle';
   #startPromise: Promise<void> | null = null;
@@ -80,6 +188,7 @@ export class StructuralWatcher {
       ...(options.directoryFactory === undefined ? {} : { directoryFactory: options.directoryFactory }),
     }));
     this.#onError = options.onError ?? (() => {});
+    this.#platform = options.platform ?? process.platform;
   }
 
   start(): Promise<void> {
@@ -102,11 +211,18 @@ export class StructuralWatcher {
           this.#closeRoots(opened);
           return;
         }
-        watched.handle = this.#watchFactory(
-          watched.root,
-          { recursive: true },
-          (_eventType, filename) => this.#signal(watched, filename),
-        );
+        // Only the establishment is wrapped. A fingerprint that throws is a reading of the
+        // directory, not a refusal to watch it, and calling both "cannot watch" would put a
+        // remedy about kernel limits on a condition that has nothing to do with them.
+        try {
+          watched.handle = this.#watchFactory(
+            watched.root,
+            { recursive: true },
+            (_eventType, filename) => this.#signal(watched, filename),
+          );
+        } catch (error) {
+          throw new WatchUnavailableError(watched.root, this.#platform, error);
+        }
         opened.push(watched);
         watched.unsubscribeError = watched.handle.onError((error) => this.#watchError(watched, error));
       }
@@ -204,7 +320,11 @@ export class StructuralWatcher {
 
   #watchError(watched: WatchedRoot, error: Error): void {
     if (this.#state === 'closing' || this.#state === 'closed') return;
-    this.#safeOnError(error);
+    // Reported as the named condition, with the original kept as its cause: a recursive watch
+    // fails this way rather than at open time, because the kernel refuses the *next* watch as
+    // the tree grows, and that is precisely the failure a user cannot diagnose from the raw
+    // errno.
+    this.#safeOnError(new WatchUnavailableError(watched.root, this.#platform, error));
     try {
       this.#closeRoots([watched]);
     } catch (cleanupError) {

@@ -7,44 +7,33 @@ import type { DaemonStateStore } from '@wtm/core';
 import { UnsupportedPlatformError, selectPlatformRuntime } from '@wtm/platform';
 import type { PlatformRuntime } from '@wtm/platform/ports';
 import { DaemonSocketPathTooLongError, daemonSocketFileName } from '@wtm/platform/socket';
+import { isolatedHomeEnvironment } from '../../../testkit/src/isolated-home';
 import { MemoryManagedProcessStore } from '../../../testkit/src/managed-process-store';
 import {
   inspectProcessGroup,
   inspectProcessIdentity,
   type ProcessIdentity,
 } from '../process-supervisor';
-import { createProductionDaemon, defaultProductionRuntimePaths } from '../runtime-factory';
+import {
+  createProductionDaemon,
+  defaultProductionRuntimePaths,
+  type ProductionRuntimePaths,
+} from '../runtime-factory';
 
 const scenarioPath = fileURLToPath(new URL('./runtime-factory.scenario.ts', import.meta.url));
 const privateDatabaseScenarioPath = fileURLToPath(new URL('./private-database.scenario.ts', import.meta.url));
 
 describe('production daemon composition', () => {
   test('runs CLI start, ps, and stop through a real temporary socket and SQLite store', () => {
-    const result = spawnSync('node', ['--import', 'tsx', scenarioPath], {
-      encoding: 'utf8',
-      timeout: 20_000,
-    });
-    expect(result.status, result.stderr || result.stdout).toBe(0);
-    expect(result.signal).toBeNull();
-    expect(result.stderr).toBe('');
-    expect(JSON.parse(result.stdout)).toEqual({
-      startExit: 0,
-      startState: 'RUNNING',
-      psRunning: true,
-      stopExit: 0,
-      stopState: 'STOPPED',
-    });
-  }, 20_000);
-
-  test('default CLI client reaches the documented HOME socket without runtime injection', () => {
-    const home = mkdtempSync('/tmp/wtm-default-home-');
+    const isolated = isolatedHome();
     try {
-      const result = spawnSync('node', ['--import', 'tsx', scenarioPath, 'default-client'], {
+      const result = spawnSync('node', ['--import', 'tsx', scenarioPath], {
         encoding: 'utf8',
         timeout: 20_000,
-        env: { ...process.env, HOME: home },
+        env: isolated.env,
       });
       expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.signal).toBeNull();
       expect(result.stderr).toBe('');
       expect(JSON.parse(result.stdout)).toEqual({
         startExit: 0,
@@ -54,13 +43,48 @@ describe('production daemon composition', () => {
         stopState: 'STOPPED',
       });
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      isolated.cleanup();
+    }
+  }, 20_000);
+
+  /**
+   * The one test here that lets the daemon and the client find each other by derivation instead of
+   * by injection, which is why it is also the one that would have gone green while losing all its
+   * isolation: on Linux, client and daemon read the same ambient `XDG_RUNTIME_DIR` and agree about
+   * the runner's real socket — a shared address, outside the directory this test deletes. So the
+   * scenario reports where it actually bound and the address is checked against the fixture, rather
+   * than the agreement between two processes being taken as evidence that either was confined.
+   */
+  test('default CLI client reaches the documented HOME socket without runtime injection', () => {
+    const isolated = isolatedHome();
+    try {
+      const result = spawnSync('node', ['--import', 'tsx', scenarioPath, 'default-client'], {
+        encoding: 'utf8',
+        timeout: 20_000,
+        env: isolated.env,
+      });
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stderr).toBe('');
+      const output = JSON.parse(result.stdout) as Record<string, unknown>;
+      expect(output).toEqual({
+        startExit: 0,
+        startState: 'RUNNING',
+        psRunning: true,
+        stopExit: 0,
+        stopState: 'STOPPED',
+        socketPath: expect.any(String),
+      });
+      expect(output['socketPath']).toStartWith(`${isolated.path}/`);
+    } finally {
+      isolated.cleanup();
     }
   }, 20_000);
 
   test('closing the daemon releases control handles while a detached task remains live', async () => {
+    const isolated = isolatedHome();
     const child = spawn('node', ['--import', 'tsx', scenarioPath, 'close-live'], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: isolated.env,
     });
     const exited = waitForExit(child, 15_000);
     const output = await readJsonLine(child.stdout);
@@ -79,18 +103,50 @@ describe('production daemon composition', () => {
         }
         await waitForGroupAbsent(identity.pgid);
       }
+      // After the group, not before: the detached task outlives the daemon by design here, and
+      // removing the home it was started from while it is still running is how a cleanup turns
+      // into the thing it was cleaning up after.
+      isolated.cleanup();
     }
   }, 20_000);
 
   test('uses the private custom database parent rather than only the data root', () => {
-    const result = spawnSync('node', ['--import', 'tsx', privateDatabaseScenarioPath], {
-      encoding: 'utf8', timeout: 20_000,
-    });
-    expect(result.status, result.stderr || result.stdout).toBe(0);
-    expect(result.stderr).toBe('');
-    expect(JSON.parse(result.stdout)).toEqual({ created: true, unsafeParentRejected: true });
+    const isolated = isolatedHome();
+    try {
+      const result = spawnSync('node', ['--import', 'tsx', privateDatabaseScenarioPath], {
+        encoding: 'utf8', timeout: 20_000, env: isolated.env,
+      });
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(JSON.parse(result.stdout)).toEqual({ created: true, unsafeParentRejected: true });
+    } finally {
+      isolated.cleanup();
+    }
   }, 20_000);
 });
+
+/**
+ * A home directory of this run's own, and the rest of the environment that makes it one.
+ *
+ * `HOME` alone is that guarantee on macOS only, where every path WTM writes derives from
+ * `~/Library`. On Linux `XDG_RUNTIME_DIR`, `XDG_STATE_HOME` and `XDG_CONFIG_HOME` are read from the
+ * ambient environment and override what `HOME` implies (`platform-paths.ts:58-72`), and a GitHub
+ * runner exports the first of them — so a child spawned with `{ ...process.env, HOME: temp }` binds
+ * its socket at the runner's real `/run/user/<uid>/wtm/wtmd.sock`, an address every other scenario
+ * in the run resolves to as well and one no fixture here deletes. `isolatedHomeEnvironment` is the
+ * whole set; its doc comment says why it also names variables WTM does not read today.
+ *
+ * `describe('an isolated home confines WTM to it')` below is the evidence that this environment
+ * does what its name says, on both platforms rather than only the one CI happens to be on.
+ */
+function isolatedHome(): { path: string; env: NodeJS.ProcessEnv; cleanup: () => void } {
+  const path = mkdtempSync('/tmp/wtm-scenario-home-');
+  return {
+    path,
+    env: { ...process.env, ...isolatedHomeEnvironment(path) },
+    cleanup: () => rmSync(path, { recursive: true, force: true }),
+  };
+}
 
 async function readJsonLine(stream: NodeJS.ReadableStream): Promise<Record<string, unknown>> {
   let value = '';
@@ -215,6 +271,78 @@ describe('default production runtime paths', () => {
 
     expect(failure).toBeInstanceOf(UnsupportedPlatformError);
     expect((failure as UnsupportedPlatformError).code).toBe('WTM_PLATFORM_UNSUPPORTED');
+  });
+});
+
+/**
+ * The evidence for `isolatedHome()` above, run through WTM's own derivations.
+ *
+ * The scenarios in this file are spawned with that environment and the claim made of it is that
+ * everything the child writes lands under one temporary directory. Asserting that on macOS proves
+ * nothing about Linux, and asserting it on Linux is not possible from here — so it is asked of the
+ * functions the children resolve their paths through, once per platform: the daemon's five from
+ * `defaultProductionRuntimePaths`, and the sixth, `serviceRoot`, from the platform runtime, since
+ * a service definition is the one thing WTM writes outside the daemon's own roots.
+ *
+ * `hostile` is what a GitHub Linux runner actually exports. It is spread *first*, so the helper has
+ * to win rather than merely be present: an `isolatedHomeEnvironment` that forgot a variable would
+ * leave that path pointing at the runner and fail here rather than in CI.
+ */
+describe('an isolated home confines WTM to it', () => {
+  // Not a `mkdtemp`: nothing is created or read, and a fixed string makes the expected paths below
+  // legible as the layout each platform actually produces.
+  const home = '/tmp/wtm-fixture-home';
+  const hostile = {
+    XDG_RUNTIME_DIR: '/run/user/1000',
+    XDG_STATE_HOME: '/var/lib/somebody/state',
+    XDG_CONFIG_HOME: '/etc/xdg/somebody',
+  };
+  const resolve = (
+    platform: 'darwin' | 'linux',
+    env: Readonly<Record<string, string>>,
+  ): ProductionRuntimePaths & { serviceRoot: string } => ({
+    ...defaultProductionRuntimePaths(home, { platform, env }),
+    serviceRoot: selectPlatformRuntime({ platform, home, env }).paths.serviceRoot,
+  });
+  const confined = (platform: 'darwin' | 'linux') =>
+    resolve(platform, { ...hostile, ...isolatedHomeEnvironment(home) });
+
+  test('macOS writes every path under the fixture home', () => {
+    expect(confined('darwin')).toEqual({
+      dataRoot: `${home}/Library/Application Support/WTM`,
+      databasePath: `${home}/Library/Application Support/WTM/state.db`,
+      socketPath: `${home}/Library/Application Support/WTM/wtmd.sock`,
+      logRoot: `${home}/Library/Logs/WTM`,
+      globalConfigPath: `${home}/Library/Application Support/WTM/config.toml`,
+      serviceRoot: `${home}/Library/LaunchAgents`,
+    });
+  });
+
+  test('Linux writes every path under the fixture home, socket and service root included', () => {
+    expect(confined('linux')).toEqual({
+      dataRoot: `${home}/.local/state/wtm`,
+      databasePath: `${home}/.local/state/wtm/state.db`,
+      socketPath: `${home}/run/wtm/wtmd.sock`,
+      logRoot: `${home}/.local/state/wtm/logs`,
+      globalConfigPath: `${home}/.config/wtm/config.toml`,
+      serviceRoot: `${home}/.config/systemd/user`,
+    });
+  });
+
+  /**
+   * The same fixture with only `HOME` overridden — what every test in this file did until now.
+   * macOS is unmoved, which is exactly why this survived unnoticed for an increment; Linux keeps
+   * the runner's state root and its shared socket address, so two such tests would contend for one
+   * socket and neither would delete what it wrote.
+   */
+  test('HOME alone confines macOS and does not confine Linux', () => {
+    expect(resolve('darwin', hostile)).toEqual(confined('darwin'));
+    expect(resolve('linux', hostile)).toMatchObject({
+      dataRoot: '/var/lib/somebody/state/wtm',
+      socketPath: '/run/user/1000/wtm/wtmd.sock',
+      globalConfigPath: '/etc/xdg/somebody/wtm/config.toml',
+      serviceRoot: '/etc/xdg/somebody/systemd/user',
+    });
   });
 });
 

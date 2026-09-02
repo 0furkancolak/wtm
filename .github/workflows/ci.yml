@@ -6,20 +6,35 @@ permissions:
   contents: read
 jobs:
   validate:
-    name: Validate ${{ matrix.arch }}
+    name: Validate ${{ matrix.platform }} ${{ matrix.arch }}
     timeout-minutes: 30
     # The release ships an executable per architecture, and they do not fail together: linking and
     # signing behave differently on x64. Building only on Apple silicon left the other half of the
     # release unproven until a tag tried to publish it.
+    #
+    # The linux leg runs the same list, in the same order, deliberately. Increment C1 wrote a whole
+    # Linux backend that no kernel had ever executed, and the failure mode of that kind of work is
+    # a second green column that proves less than the first: a leg that skipped the standalone
+    # build, or the end-to-end workflow, or the tests that spawn and supervise real processes,
+    # would report the same word for a much weaker claim. Where linux genuinely cannot run
+    # something, the spec says so in writing rather than the matrix saying it in silence.
+    #
+    # `platform` is in the job name because `arch` alone no longer identifies a leg: x64 now names
+    # both macos-15-intel and ubuntu.
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: arm64
+          - platform: darwin
+            arch: arm64
             runner: macos-15
-          - arch: x64
+          - platform: darwin
+            arch: x64
             runner: macos-15-intel
+          - platform: linux
+            arch: x64
+            runner: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

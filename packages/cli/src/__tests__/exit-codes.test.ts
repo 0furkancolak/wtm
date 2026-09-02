@@ -22,6 +22,7 @@ const expectedExitCodes: Readonly<Record<WtmErrorCode, number>> = {
   WTM_CONFIG_INVALID: 2,
   WTM_SOCKET_PATH_TOO_LONG: 2,
   WTM_PLATFORM_UNSUPPORTED: 2,
+  WTM_WATCH_UNAVAILABLE: 2,
 
   // 3 — a safety refusal. Nothing was done, and the caller has somewhere to look.
   GIT_MAIN_WORKTREE: 3,

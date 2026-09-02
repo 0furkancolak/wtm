@@ -4,6 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isolatedHomeEnvironment } from '../../../testkit/src/isolated-home';
 import { scenarioTimeoutMs } from '../../../testkit/src/scenario-child';
 
 /**
@@ -24,8 +25,11 @@ test('every command in the README quick start succeeds in a clean workspace', ()
 
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wtm-quick-start-')));
   try {
-    const workspace = prepareWorkspace(root);
+    // The environment first: the fixture repository is built with the same `PATH`, `HOME` and
+    // `GIT_CONFIG_GLOBAL` the quick start itself runs under, so what the reader arrives at is a
+    // repository this run created rather than one the developer's global Git config shaped.
     const environment = isolatedEnvironment(root);
+    const workspace = prepareWorkspace(root, environment);
 
     // The first line is the reader's `cd`; standing in the temporary workspace is this test's
     // version of following it. Anything else has to run, exactly as written, and exit 0.
@@ -61,10 +65,17 @@ function quickStartCommands(): string[] {
  * `wtm.toml`, and no adapter of any kind. `resolve` answers for the worktree the reader is
  * standing in, so the workspace root being a repository is part of following the instructions.
  */
-function prepareWorkspace(root: string): string {
+function prepareWorkspace(root: string, environment: NodeJS.ProcessEnv): string {
   const workspace = join(root, 'workspace');
   mkdirSync(workspace, { recursive: true, mode: 0o700 });
-  const git = (...args: string[]): void => { execFileSync('/usr/bin/git', args, { cwd: workspace }); };
+  // `git`, not `/usr/bin/git`. The reader's Git is whichever one their `PATH` finds, and it is the
+  // one the quick start's own commands run; pinning an absolute path here would have this fixture
+  // and the thing it is a fixture for disagree about which Git they mean on any machine that keeps
+  // it somewhere else — and would leave the fixture reading the developer's global config while
+  // the commands it feeds run without it.
+  const git = (...args: string[]): void => {
+    execFileSync('git', args, { cwd: workspace, env: environment });
+  };
   git('init', '-q', '--initial-branch=main');
   git('config', 'user.name', 'WTM Quick Start');
   git('config', 'user.email', 'wtm-quick-start@example.invalid');
@@ -79,6 +90,12 @@ function prepareWorkspace(root: string): string {
  * running the suite, and a `wtm` on `PATH` that is this working tree rather than whatever is
  * installed on it. Building the standalone executable first would test the release rather than the
  * README, and cost a minute per run to do it.
+ *
+ * `HOME` is one of five variables rather than the only one because on Linux it is not enough: the
+ * XDG variables come from the ambient environment and override what `HOME` implies, and a CI runner
+ * exports `XDG_RUNTIME_DIR`. A quick start that resolved its socket and state to the runner's own
+ * directories would still pass — it would simply be reading and writing the machine this claims not
+ * to touch. `isolatedHomeEnvironment` carries the full set and the reasoning.
  */
 function isolatedEnvironment(root: string): NodeJS.ProcessEnv {
   const home = join(root, 'home');
@@ -98,7 +115,7 @@ function isolatedEnvironment(root: string): NodeJS.ProcessEnv {
   for (const name of Object.keys(environment)) if (name.startsWith('WTM_')) delete environment[name];
   return {
     ...environment,
-    HOME: home,
+    ...isolatedHomeEnvironment(home),
     PATH: `${binaries}:${environment['PATH'] ?? ''}`,
     GIT_CONFIG_GLOBAL: gitConfig,
     GIT_CONFIG_NOSYSTEM: '1',

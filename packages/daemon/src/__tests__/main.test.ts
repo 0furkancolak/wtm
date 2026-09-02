@@ -1,8 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import type { DaemonStateStore } from '@wtm/core';
 import { UnsupportedPlatformError } from '@wtm/platform';
-import { assertSupportedRuntime } from '../main';
+import { protocolVersion } from '@wtm/protocol';
+import { WtmDaemon, assertSupportedRuntime, watchRetryDelayMs } from '../main';
+import type { IpcRequestHandler } from '../server';
+import type { ReconcileSignal, ReconcilerClock } from '../reconciler-queue';
 
 const scenarioPath = fileURLToPath(new URL('./main.scenario.ts', import.meta.url));
 
@@ -187,5 +191,231 @@ describe('assertSupportedRuntime', () => {
 
   test('still refuses a Node older than the one the daemon is built against', () => {
     expect(() => assertSupportedRuntime('darwin', '22.11.0')).toThrow('Node.js 24 or newer');
+  });
+});
+
+
+/**
+ * A watch the host will not give back is a permanent condition, and the daemon used to answer it
+ * by rebuilding every watcher five times a second forever. Measured before this was written: with
+ * a replacement that fails as soon as it is armed, the rebuild interval was a flat 201 ms -- the
+ * queue's debounce -- for as long as the failure lasted. (The 1 s coalesce ceiling does not slow
+ * this down; it only ever shortens a wait.) Nothing is gained by any of those attempts: the only
+ * thing that ends the condition is a person raising a limit.
+ */
+class TestClock implements ReconcilerClock {
+  #now = 0;
+  #next = 1;
+  readonly #timers = new Map<number, { due: number; callback: () => void }>();
+
+  now(): number {
+    return this.#now;
+  }
+
+  setTimeout(callback: () => void, delayMs: number): unknown {
+    const handle = this.#next;
+    this.#next += 1;
+    this.#timers.set(handle, { due: this.#now + delayMs, callback });
+    return handle;
+  }
+
+  clearTimeout(handle: unknown): void {
+    this.#timers.delete(handle as number);
+  }
+
+  /** Moves to `now + ms`, firing whatever falls due on the way in due order. */
+  advance(ms: number): void {
+    const target = this.#now + ms;
+    for (;;) {
+      const due = [...this.#timers.entries()]
+        .filter(([, timer]) => timer.due <= target)
+        .sort(([, left], [, right]) => left.due - right.due)[0];
+      if (due === undefined) break;
+      this.#timers.delete(due[0]);
+      this.#now = due[1].due;
+      due[1].callback();
+    }
+    this.#now = target;
+  }
+}
+
+/** A store with nothing registered: this suite is about the retry, not about what is watched. */
+const emptyStore = {
+  listWorkspaces: () => [],
+  listRepositories: () => [],
+  listWorktrees: () => [],
+} as unknown as DaemonStateStore;
+
+interface FailingWatchHarness {
+  clock: TestClock;
+  daemon: WtmDaemon;
+  request: IpcRequestHandler;
+  fail: () => void;
+  starts: () => number;
+}
+
+async function harnessWithFailingWatch(): Promise<FailingWatchHarness> {
+  const clock = new TestClock();
+  let schedule!: (signal: ReconcileSignal) => void;
+  let request!: IpcRequestHandler;
+  let starts = 0;
+  const daemon = new WtmDaemon({
+    stateStore: emptyStore,
+    socketPath: '/unused/wtmd.sock',
+    clock,
+    serverFactory: ({ handler }) => {
+      request = handler;
+      return { start: async () => {}, close: async () => {} };
+    },
+    watcherFactory: (_registrations, capturedSchedule) => {
+      schedule = capturedSchedule;
+      return {
+        start: async () => { starts += 1; },
+        close: async () => {},
+        whenIdle: async () => {},
+      };
+    },
+  });
+  await daemon.start();
+  return {
+    clock,
+    daemon,
+    request,
+    fail: () => { schedule({ root: '/failing', kind: 'watch-error' }); },
+    starts: () => starts,
+  };
+}
+
+describe('watch retry backoff', () => {
+  test('doubles from a second to a ceiling of a minute, and stays there', () => {
+    expect([0, 1, 2, 3, 4, 5, 6, 7, 8, 40].map(watchRetryDelayMs))
+      .toEqual([0, 1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000, 60_000]);
+  });
+
+  test('re-arms a watch immediately the first time and waits before the second attempt', async () => {
+    const harness = await harnessWithFailingWatch();
+    try {
+      expect(harness.starts()).toBe(1);
+
+      // A watch error is usually transient -- a root replaced under a `git worktree` command,
+      // an editor's atomic rename -- so the first recovery is not delayed at all.
+      harness.fail();
+      await harness.daemon.flush();
+      expect(harness.starts()).toBe(2);
+
+      // The replacement failed too, so this is not a transient condition. Nothing may be
+      // rebuilt until the delay has actually elapsed.
+      harness.fail();
+      await harness.daemon.flush();
+      expect(harness.starts()).toBe(2);
+
+      harness.clock.advance(999);
+      await harness.daemon.flush();
+      expect(harness.starts()).toBe(2);
+
+      harness.clock.advance(1);
+      await harness.daemon.flush();
+      expect(harness.starts()).toBe(3);
+    } finally {
+      await harness.daemon.close();
+    }
+  });
+
+  test('reaches one attempt a minute after about a minute of failing, and no faster', async () => {
+    const harness = await harnessWithFailingWatch();
+    try {
+      // Every wait the backoff produces, walked in order: 0, 1, 2, 4, 8, 16, 32, then the
+      // ceiling. Seven attempts in the first minute rather than three hundred.
+      for (const delayMs of [0, 1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000]) {
+        const before = harness.starts();
+        harness.fail();
+        await harness.daemon.flush();
+        if (delayMs > 0) {
+          expect({ delayMs, starts: harness.starts() }).toEqual({ delayMs, starts: before });
+          harness.clock.advance(delayMs);
+          await harness.daemon.flush();
+        }
+        expect({ delayMs, starts: harness.starts() }).toEqual({ delayMs, starts: before + 1 });
+      }
+    } finally {
+      await harness.daemon.close();
+    }
+  });
+
+  test('a failure long after the last one is a new failure, not the tail of an old streak', async () => {
+    const harness = await harnessWithFailingWatch();
+    try {
+      harness.fail();
+      await harness.daemon.flush();
+      harness.fail();
+      harness.clock.advance(1_000);
+      await harness.daemon.flush();
+      const settled = harness.starts();
+
+      // A machine that watched happily for two minutes and then lost one watch must recover as
+      // quickly as one that had never failed. Carrying the streak forever would make a single
+      // transient failure on a long-lived daemon wait out a minute for no reason.
+      harness.clock.advance(120_000);
+      harness.fail();
+      await harness.daemon.flush();
+
+      expect(harness.starts()).toBe(settled + 1);
+    } finally {
+      await harness.daemon.close();
+    }
+  });
+
+  test('an explicit reconcile does not wait out the backoff', async () => {
+    const harness = await harnessWithFailingWatch();
+    try {
+      // Climb to the ceiling first: this is the state the remedy has to be usable from.
+      for (const delayMs of [0, 1_000, 2_000, 4_000, 8_000, 16_000, 32_000]) {
+        harness.fail();
+        await harness.daemon.flush();
+        harness.clock.advance(delayMs);
+        await harness.daemon.flush();
+      }
+      harness.fail();
+      await harness.daemon.flush();
+      const waiting = harness.starts();
+
+      // Anything that asks the daemon to reconcile -- `wtm init` is the client that does today
+      // -- is about to be answered from a topology the daemon cannot observe, so the retry it is
+      // sitting on is brought forward rather than left to finish waiting.
+      const response = await harness.request({
+        protocol: protocolVersion,
+        id: 'reconcile-1',
+        command: 'reconcile',
+      });
+
+      expect(response.ok).toBe(true);
+      expect(harness.starts()).toBe(waiting + 1);
+
+      // And the streak restarts with it. The rebuild the user asked for failed again, so the
+      // daemon still backs off -- but from a second, not from the minute it had climbed to,
+      // because the user has changed something and the evidence for the old streak is stale.
+      harness.fail();
+      await harness.daemon.flush();
+      expect(harness.starts()).toBe(waiting + 1);
+      harness.clock.advance(1_000);
+      await harness.daemon.flush();
+      expect(harness.starts()).toBe(waiting + 2);
+    } finally {
+      await harness.daemon.close();
+    }
+  });
+
+  test('a retry armed when the daemon closes does not rebuild anything afterwards', async () => {
+    const harness = await harnessWithFailingWatch();
+    harness.fail();
+    await harness.daemon.flush();
+    harness.fail();
+    await harness.daemon.flush();
+    const closed = harness.starts();
+
+    await harness.daemon.close();
+    harness.clock.advance(600_000);
+
+    expect(harness.starts()).toBe(closed);
   });
 });

@@ -2,8 +2,11 @@
  * `sizeof(sun_path)` — how many bytes of a Unix socket address the kernel will hold.
  *
  * It is the one platform fact in this port, and the two platforms disagree by four bytes. The
- * numbers live here, apart from the measurement, because their *provenance* differs: one was
- * measured on the machine this code was written on and the other cannot be.
+ * numbers live here, apart from the code that applies them, because their *provenance* differs:
+ * one is confirmed wherever a developer runs the suite, the other only where CI runs it. Both are
+ * now measured rather than asserted — `__tests__/limit-measurement.test.ts` binds real addresses
+ * on the host and compares the boundary against whichever of these two numbers governs it — and
+ * each comment below says under what conditions.
  */
 
 /**
@@ -13,6 +16,10 @@
  * bytes bind and 105 fail. Measured on macOS 15 / Node 24 by binding paths of every length
  * from 96 to 112 bytes: 104 listens, 105 raises `EINVAL`, and `connect()` draws the line in
  * exactly the same place (105 gives `EINVAL` where 104 gives `ENOENT`).
+ *
+ * That sweep is no longer a one-off recorded in prose: `__tests__/limit-measurement.test.ts`
+ * re-runs the experiment — the bind sweep, widened to 128 bytes, and the `connect()` comparison
+ * with it — on every macOS run.
  *
  * Bun is more permissive — its own limit sits at 118 bytes — so a `bun test` or a `bun run`
  * of the daemon will happily bind a path the shipped Node SEA cannot. That divergence is the
@@ -25,17 +32,24 @@
 export const darwinSocketPathLimitBytes = 104;
 
 /**
- * The same limit on Linux, where `sun_path` is four bytes longer — and **this number was not
- * measured**.
+ * The same limit on Linux, where `sun_path` is four bytes longer.
  *
- * 108 is the value in `linux/un.h` and has been for the lifetime of the ABI. Nothing in this
- * repository can confirm it: there is no Linux kernel here to bind against, so unlike the macOS
- * number above there is no experiment behind it, only a documented constant. Increment C2 binds
- * a 108-byte and a 109-byte address on a real kernel and is where this stops being a citation.
+ * 108 is the value in `linux/un.h` and has been for the lifetime of the ABI. Through C1 it was
+ * only that — a citation, with no Linux kernel in this repository to bind against, and the comment
+ * here said so. `__tests__/limit-measurement.test.ts` closes that gap: on the Linux CI job it
+ * sweeps every address length from 96 to 128 bytes in a Node child and asserts that the largest
+ * that listens is exactly the number above and the next raises `EINVAL`, with `connect()` drawing
+ * the same line. 108 is now an experiment rather than a quotation.
  *
- * Recording that gap is the point of writing the number down here rather than reading it out of
- * a header at runtime: a wrong constant would show up as a daemon that refuses a path it could
- * have bound, or — worse — accepts one it cannot, and neither failure would name this line
- * unless the line says what it is.
+ * The bound on that claim is worth stating precisely, because "measured" invites more than it
+ * earns. It is measured on the kernel and glibc that `ubuntu-latest` x64 was running under Node 24
+ * the last time the job ran. It is not measured on musl, on arm64, or on whatever a user has, and
+ * this line is not evidence about those.
+ *
+ * What the test buys is therefore not universality but *notice*. A kernel or libc that moved the
+ * boundary would otherwise show up as a daemon that refuses a path it could have bound, or — worse
+ * — accepts one it cannot; with the measurement in the suite it shows up as a red build naming
+ * this constant, which is the whole reason for writing the number down here instead of reading it
+ * out of a header at runtime.
  */
 export const linuxSocketPathLimitBytes = 108;

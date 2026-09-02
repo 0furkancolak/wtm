@@ -59,6 +59,7 @@ WTM_DAEMON_REQUEST_FAILED
 WTM_OPERATION_CONFLICT
 WTM_SOCKET_PATH_TOO_LONG
 WTM_PLATFORM_UNSUPPORTED
+WTM_WATCH_UNAVAILABLE
 ```
 
 `WTM_OPERATION_CONFLICT` means another process already holds a destructive-operation lease on the
@@ -80,6 +81,25 @@ a configuration the user has to change — a shorter home directory — so it ex
 `context` carries `platform`, the `process.platform` value that was refused, and `supported`, the
 list of platform ids WTM does have a backend for. It exits with code 2: nothing about the workspace
 is wrong, and no retry will help.
+
+`WTM_WATCH_UNAVAILABLE` means a registered root could not be put under a filesystem watch, or could
+not be put back under one. `context` carries `root` (the directory that could not be watched),
+`errno` (the condition the host reported, or `null` when it reported none) and `platform` (the
+backend whose remedy the message names). The message names the condition and the remedy for the
+host WTM is running on: on Linux an `ENOSPC` is the inotify watch budget rather than the disk, and
+the remediation raises `fs.inotify.max_user_watches`; an `EMFILE` names `fs.inotify.max_user_instances`
+and the open-file limit; on macOS the same refusals name the open-file limit only. A condition WTM
+has no specific remedy for is reported with the reading that produced it and no advice.
+
+The daemon keeps serving while a root is unwatched — it still reconciles whenever something asks
+it to — but it does not notice changes under that root on its own. It retries the watch with
+backoff: the first attempt is immediate, then 1 s, 2 s, 4 s and so on to a ceiling of one attempt a
+minute, so a raised limit is picked up within a minute without restarting the daemon.
+
+It exits with code 2. The status is only ever seen when the refusal stopped `wtm daemon serve` from
+starting, and at startup the reasons are host limits and permissions: something outside WTM has to
+be raised or granted, and running the command again does not clear it. That is the same class as a
+socket path that does not fit.
 
 ### Git
 

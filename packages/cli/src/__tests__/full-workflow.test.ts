@@ -35,7 +35,7 @@ test('runs the complete release safety workflow in an isolated local fixture', (
     },
     pushed: true,
     safelyRemoved: true,
-    launchAgentsUntouched: true,
+    serviceRootUntouched: true,
     socketAbsent: true,
     remoteProtocol: 'file',
   });

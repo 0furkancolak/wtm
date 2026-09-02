@@ -129,9 +129,23 @@ describe('inspectProcess', () => {
   });
 
   test('reports a read error as a failure, never as an absence', async () => {
-    const { reader } = fakeProc({ '/proc/stat': procStat, '/proc/9/stat': errno('EACCES') });
+    const { reader } = fakeProc({ '/proc/stat': procStat, '/proc/9/stat': errno('EIO') });
     expect(await createLinuxProcessPlatform({ proc: reader }).inspectProcess(9))
-      .toEqual({ status: 'failed', reason: 'EACCES' });
+      .toEqual({ status: 'failed', reason: 'EIO' });
+  });
+
+  /**
+   * Deliberately the opposite of what the group scan does with the same errno, and the asymmetry is
+   * the whole point. The scan enumerates every process on the machine and asks which ones are mine,
+   * so an entry it may not read answers that question: not mine. Here the caller named one PID and
+   * asked whether *that* process is alive, and "I am not allowed to look" is not an answer — calling
+   * it absence would report a running lease holder as gone, and the operations behind those leases
+   * delete worktrees.
+   */
+  test.each(['EACCES', 'EPERM'])('reports a permission denial on a named pid as a failure, never as an absence (%s)', async (code) => {
+    const { reader } = fakeProc({ '/proc/stat': procStat, '/proc/9/stat': errno(code) });
+    expect(await createLinuxProcessPlatform({ proc: reader }).inspectProcess(9))
+      .toEqual({ status: 'failed', reason: code });
   });
 
   test('reports an unparseable stat line as a failure, never as an absence', async () => {
@@ -266,10 +280,39 @@ describe('inspectProcessGroup', () => {
     expect(inspection.status === 'present' ? inspection.pids : null).toEqual([1]);
   });
 
-  test('reports a read error on a member as a failure, never as an absent group', async () => {
-    const { reader } = fakeProc({ ...files, '/proc/8/stat': errno('EACCES') }, { '/proc': procListing });
+  /**
+   * The scan reads every process on the machine, which means it reads other users' processes. Under
+   * `hidepid`, systemd's `ProtectProc=`, or an LSM policy those reads are denied, and a denial that
+   * aborted the scan would make every group inspection on the host fail. A failed inspection stops
+   * the supervisor from killing a group it should kill, so the cost of getting this wrong is a
+   * leaked process tree rather than a wrong number.
+   */
+  test.each(['EACCES', 'EPERM'])('treats a member entry it may not read as not its own, rather than failing the scan (%s)', async (code) => {
+    const { reader } = fakeProc({ ...files, '/proc/8/stat': errno(code) }, { '/proc': procListing });
+    const inspection = await createLinuxProcessPlatform({ proc: reader }).inspectProcessGroup(6);
+    expect(inspection.status === 'present' ? [...inspection.pids].sort((a, b) => a - b) : null)
+      .toEqual([6, 9, 10]);
+  });
+
+  /**
+   * The committed consequence of the rule above, pinned so it cannot be weakened by accident. It is
+   * sound for the same reason the rule is: a member of a group this process leads was forked by this
+   * process and runs as its user, and every mechanism that hides a `/proc` entry keys on exactly the
+   * inspector's inability to inspect a process it does not own. A process cannot be hidden from its
+   * own parent. The genuinely broken `/proc` is caught one level up, where `readDirectory` fails.
+   */
+  test('reports a group as absent when every entry that could have held it was unreadable', async () => {
+    const denied: Record<string, string | Error> = { '/proc/stat': procStat };
+    for (const entry of procListing) if (/^\d+$/.test(entry)) denied[`/proc/${entry}/stat`] = errno('EACCES');
+    const { reader } = fakeProc(denied, { '/proc': procListing });
     expect(await createLinuxProcessPlatform({ proc: reader }).inspectProcessGroup(6))
-      .toEqual({ status: 'failed', reason: 'EACCES' });
+      .toEqual({ status: 'absent' });
+  });
+
+  test('reports a read error that is not a permission denial as a failure, never as an absent group', async () => {
+    const { reader } = fakeProc({ ...files, '/proc/8/stat': errno('EIO') }, { '/proc': procListing });
+    expect(await createLinuxProcessPlatform({ proc: reader }).inspectProcessGroup(6))
+      .toEqual({ status: 'failed', reason: 'EIO' });
   });
 
   test('reports an unparseable member line as a failure', async () => {

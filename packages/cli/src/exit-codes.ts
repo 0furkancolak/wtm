@@ -33,6 +33,14 @@ export function exitCodeForError(code: WtmErrorCode): number {
     // No backend for this operating system. Nothing about the workspace is wrong and no retry
     // helps, which is the same class as a socket path that cannot fit: the user has to change
     // something outside WTM.
+    || code === 'WTM_WATCH_UNAVAILABLE'
+    // A watch the host refused to open. This status is only ever *seen* when the refusal
+    // stopped `wtm daemon serve` from starting, and at startup the reasons are host limits and
+    // permissions -- an exhausted `fs.inotify.max_user_watches`, a file-descriptor ceiling, a
+    // root the daemon may not read. Every one of them is raised outside WTM and none of them is
+    // cleared by running the command again, which is the same class as a socket path that does
+    // not fit. Reporting it as 1 would tell a script to retry a condition that only a person
+    // can change.
   ) return 2;
   if (
     code === 'GIT_MAIN_WORKTREE'

@@ -1107,7 +1107,15 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
   const socketPathRefusal = socketPathMeasurement.fits
     ? null
     : new DaemonSocketPathTooLongError(socketPathMeasurement);
-  const wantsRuntimeClient = dependencies.runtimeClient === undefined && isRuntimeInvocation(argv);
+  // A help invocation is not a runtime invocation. `wtm remove --help` was opening a socket to the
+  // daemon in order to print static text, then discarding the failure — invisible in normal use,
+  // but it made `refresh-remotes.test.ts` pass or fail according to whether the developer running
+  // it happened to have a daemon up, and it would have been red on every CI runner regardless of
+  // platform. Nothing downstream of `--help` can reach the daemon, so the connection had no reader
+  // even when it succeeded.
+  const wantsRuntimeClient = dependencies.runtimeClient === undefined
+    && isRuntimeInvocation(argv)
+    && !isHelpInvocation(argv);
   const defaultClient = wantsRuntimeClient && socketPathRefusal === null
     ? new DaemonClient({ socketPath })
     : null;
@@ -1444,6 +1452,10 @@ function usageFailureEnvelope(argv: readonly string[], commanderCode: string): J
       context: { commanderCode },
     }],
   };
+}
+
+function isHelpInvocation(argv: readonly string[]): boolean {
+  return hasOptionIntent(argv, '--help') || hasOptionIntent(argv, '-h');
 }
 
 function hasOptionIntent(argv: readonly string[], option: string): boolean {

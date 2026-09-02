@@ -10,9 +10,14 @@
  * below is otherwise unremarkable. WTM compares a stored `(pid, startTime)` pair against the live
  * process to decide whether an operation lease may be reclaimed. Reporting absence for a process
  * that is merely unreadable reclaims a lease that somebody else is still holding, and the operations
- * behind those leases delete worktrees. So: `ENOENT` on `/proc/<pid>` is absence. A read error, a
- * permission error, an unparseable line, a `/proc/stat` without a `btime` — every one of those is a
- * *failure*, reported as `failed` or thrown, never as absence.
+ * behind those leases delete worktrees. So, for the two readers that are handed a PID and asked
+ * about it: `ENOENT` on `/proc/<pid>` is absence. A read error, a permission error, an unparseable
+ * line, a `/proc/stat` without a `btime` — every one of those is a *failure*, reported as `failed`
+ * or thrown, never as absence.
+ *
+ * `inspectProcessGroup` is not handed a PID; it enumerates the machine and asks which processes are
+ * mine. That is a different question, its errors are weighted the other way round, and the reasoning
+ * is at the `catch` that decides it.
  *
  * Everything is read through an injected reader so the parsing and the absent/failed decisions are
  * exercised against captured kernel output. This increment adds no Linux CI job and this file has
@@ -142,10 +147,26 @@ export function createLinuxProcessPlatform(
       try {
         content = await proc.readFile(`${root}/${entry}/stat`);
       } catch (error) {
-        // A process exiting while the directory is being walked is the normal case, not an error:
-        // the scan takes long enough that it happens on any busy machine. Anything else is a
-        // failure, because a group reported as absent stops a supervisor from killing it.
-        if (isMissingEntry(error)) continue;
+        // Two different normal cases, both of which mean "not a member of this group".
+        //
+        // A process exiting while the directory is being walked is the first: the scan takes long
+        // enough that it happens on any busy machine.
+        //
+        // An entry this process may not read is the second. The walk covers every process on the
+        // host, so it covers other users' processes, and under `hidepid`, systemd's `ProtectProc=`
+        // or an LSM policy those reads are denied. Aborting the scan on one of them would make
+        // *every* group inspection on such a host fail, and the supervisor treats a failed
+        // inspection as "do not kill" — so the cost of getting this wrong is a leaked process tree
+        // rather than a wrong number. macOS gets the right answer for free here: `ps` omits rows it
+        // may not see rather than refusing to run.
+        //
+        // Calling a denied entry a non-member is sound, not merely convenient: a member of a group
+        // this process leads was forked by this process and runs as its user, and every mechanism
+        // that hides a `/proc` entry keys on exactly the reader's inability to inspect a process it
+        // does not own. A process is never hidden from its own parent. The set stops there for the
+        // same reason: `EIO`, `ENOMEM`, `EMFILE` and the rest say the scan itself is broken, and
+        // reading a broken scan as an empty group is the same defect pointed the other way.
+        if (isMissingEntry(error) || isRestrictedEntry(error)) continue;
         return { status: 'failed', reason: safeErrorCode(error) };
       }
       const fields = parseProcStat(content);
@@ -186,4 +207,22 @@ function isMissingEntry(error: unknown): boolean {
     && error !== null
     && 'code' in error
     && (error.code === 'ENOENT' || error.code === 'ESRCH');
+}
+
+/**
+ * The entry exists but this process may not read it. `EACCES` is what a `hidepid=1` mount, systemd's
+ * `ProtectProc=`, or a `/proc` restricted by an LSM produces on another user's `stat`; `EPERM` is
+ * the same denial arriving from a layer that spells it that way, and admitting only one of the pair
+ * would leave the defect reachable through the other. A `hidepid=2` mount hides the directory
+ * outright, which arrives as `ENOENT` and is `isMissingEntry`'s case, not this one.
+ *
+ * Kept as a separate predicate from `isMissingEntry` rather than folded into it, because only the
+ * group scan may use it. For a PID a caller named, "I am not allowed to look" is not absence, and a
+ * single predicate would make it one at the two call sites where that reclaims somebody's lease.
+ */
+function isRestrictedEntry(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error.code === 'EACCES' || error.code === 'EPERM');
 }

@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { migrationFileNames } from '../packages/core/src/state/assets';
 import { seaAssetKeys, seaMigrationAssetKeys, seaSkillAssetKey } from '../packages/cli/src/sea-assets';
+import type { PlatformId } from '../packages/platform/src/ports';
 
 export { seaAssetKeys };
 
@@ -15,6 +16,13 @@ export const seaFuse = 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2';
 
 export interface SeaBuildHost {
   root: string;
+  /**
+   * Injected rather than read from `process.platform`, for the same reason `arch` is: it is the
+   * only way the Linux half of this pipeline can be exercised from a macOS machine. It is
+   * `PlatformId` rather than `string` so the field can only ever name a platform WTM has a
+   * backend for; `seaBuildPlatform` is where an unsupported host is turned away.
+   */
+  platform: PlatformId;
   arch: string;
   nodeExecutable: string;
   nodeVersion: string;
@@ -30,6 +38,7 @@ export interface SeaBuildHost {
 export interface SeaBuildResult {
   executable: string;
   version: string;
+  platform: PlatformId;
   arch: string;
 }
 
@@ -59,37 +68,54 @@ export async function buildSea(host: SeaBuildHost): Promise<SeaBuildResult> {
     }, null, 2)}\n`);
     check(host, host.nodeExecutable, ['--experimental-sea-config', configuration]);
 
+    const darwin = host.platform === 'darwin';
     host.copyFile(host.nodeExecutable, executable);
     host.chmod(executable, 0o755);
-    // The published runtime ships unstripped; its debug and local symbols are ~25 MB of dead weight.
-    // Stripping comes first: removing the signature leaves link edit information that no longer
-    // fills __LINKEDIT, and on x64 `strip` refuses that layout outright. Stripping a still-signed
-    // binary only warns that it invalidates the signature, which is what the next line removes.
+    // The published runtime ships unstripped; its debug and local symbols are ~25 MB of dead
+    // weight. The command is not a platform question — `-x` and `-S` mean discard-local-symbols
+    // and strip-debug on GNU binutils exactly as they do on Apple's strip, and /usr/bin/strip is
+    // the path on Ubuntu as well as macOS. Its *position* is a darwin question: there, removing
+    // the signature first leaves link edit information that no longer fills __LINKEDIT, and on
+    // x64 `strip` refuses that layout outright, while stripping a still-signed binary only warns
+    // that it invalidates the signature — which is what the next command removes anyway. ELF has
+    // no __LINKEDIT and nothing signs it, so on Linux that argument decides nothing and strip is
+    // first only because there is nothing for it to come after.
     check(host, '/usr/bin/strip', ['-x', '-S', executable]);
-    // The inherited runtime signature does not cover the injected blob.
-    check(host, '/usr/bin/codesign', ['--remove-signature', executable]);
+    if (darwin) {
+      // The inherited runtime signature does not cover the injected blob. On Linux this is a
+      // no-op rather than a substitution: an ELF Node carries no embedded signature, so there is
+      // nothing to remove, and an ad-hoc Linux signature would attest to nothing that the
+      // published checksum does not already.
+      check(host, '/usr/bin/codesign', ['--remove-signature', executable]);
+    }
     check(host, host.nodeExecutable, [
       join(host.root, 'node_modules/postject/dist/cli.js'),
       executable,
+      // Already the ELF section name as well as the Mach-O one, so only the segment flag below is
+      // platform-specific.
       'NODE_SEA_BLOB',
       blob,
       '--sentinel-fuse',
       seaFuse,
-      '--macho-segment-name',
-      'NODE_SEA',
+      // postject declares `--macho-segment-name` unconditionally (`postject/dist/cli.js:61-65`),
+      // so passing it on Linux would be accepted and ignored. It is dropped for honesty: a build
+      // command should not name a Mach-O construct while writing an ELF section.
+      ...(darwin ? ['--macho-segment-name', 'NODE_SEA'] : []),
     ]);
-    // A stable signing identifier. Without `--identifier`, codesign derives one from the file
-    // name and content, so every build signed itself as a different program: macOS records a
-    // disk-access grant against the code it was given, and each rebuild asked for it again.
-    check(host, '/usr/bin/codesign', ['--sign', '-', '--identifier', signingIdentifier, '--force', executable]);
-    check(host, '/usr/bin/codesign', ['--verify', '--strict', executable]);
+    if (darwin) {
+      // A stable signing identifier. Without `--identifier`, codesign derives one from the file
+      // name and content, so every build signed itself as a different program: macOS records a
+      // disk-access grant against the code it was given, and each rebuild asked for it again.
+      check(host, '/usr/bin/codesign', ['--sign', '-', '--identifier', signingIdentifier, '--force', executable]);
+      check(host, '/usr/bin/codesign', ['--verify', '--strict', executable]);
+    }
   } catch (error) {
     host.remove(executable);
     throw error;
   } finally {
     host.remove(workDirectory);
   }
-  return { executable, version, arch: host.arch };
+  return { executable, version, platform: host.platform, arch: host.arch };
 }
 
 /** The identity macOS remembers this executable by, across every build of it. */
@@ -122,6 +148,7 @@ export function createSeaBuildHost(): SeaBuildHost {
   const nodeExecutable = execFileSync('node', ['-p', 'process.execPath'], { encoding: 'utf8' }).trim();
   return {
     root: resolve(fileURLToPath(import.meta.url), '../..'),
+    platform: seaBuildPlatform(process.platform),
     arch: process.arch,
     nodeExecutable,
     nodeVersion: execFileSync(nodeExecutable, ['-p', 'process.versions.node'], { encoding: 'utf8' }).trim(),
@@ -147,6 +174,18 @@ export function createSeaBuildHost(): SeaBuildHost {
     makeDirectory(path) { mkdirSync(path, { recursive: true, mode: 0o700 }); },
     remove(path) { rmSync(path, { recursive: true, force: true }); },
   };
+}
+
+/**
+ * The pipeline knows two operating systems. A third one has to fail here, with its own name in the
+ * message, rather than three commands later when `/usr/bin/codesign` is missing or `strip` refuses
+ * a format nobody chose to support.
+ */
+function seaBuildPlatform(platform: NodeJS.Platform): PlatformId {
+  if (platform !== 'darwin' && platform !== 'linux') {
+    throw new Error(`Standalone builds support darwin and linux; this host runs ${platform}`);
+  }
+  return platform;
 }
 
 /**
@@ -178,5 +217,5 @@ function check(host: SeaBuildHost, command: string, args: readonly string[]): vo
 
 if (import.meta.main) {
   const result = await buildSea(createSeaBuildHost());
-  process.stdout.write(`${result.executable} (wtm ${result.version}, darwin-${result.arch})\n`);
+  process.stdout.write(`${result.executable} (wtm ${result.version}, ${result.platform}-${result.arch})\n`);
 }

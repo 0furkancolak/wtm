@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { createServer } from 'node:net';
 import { createAdapterTrustStore } from '@wtm/core';
 import { jsonEnvelopeSchema } from '@wtm/protocol';
 import { createFakeAdapter } from '../../../testkit/src/fake-adapter';
@@ -112,6 +114,14 @@ describe('Commander CLI', () => {
       const output = capture();
       expect(await runCli(testCase.argv, {
         cwd: '/workspace/repo',
+        // Without this the CLI builds its own client and dials the *developer's* daemon socket,
+        // because the socket path is derived from the real home and nothing here overrides it.
+        // That made this test pass or fail according to whether the person running it happened to
+        // have a daemon up: it was green through all of Increment C1 on a machine that did, and
+        // red on the same commit once the daemon stopped. Every CI runner is the second case.
+        // What the test is actually about is that three argv shapes reach three parsers with the
+        // right input, which is settled entirely by the runners below.
+        runtimeClient: { request: async () => ok(testCase.command) },
         resolveRunner: async (input) => { calls.push({ command: 'resolve', input }); return ok('resolve'); },
         analyzeRunner: async (input) => { calls.push({ command: 'analyze', input }); return ok('analyze'); },
         removeRunner: async (input) => { calls.push({ command: 'remove', input }); return ok('remove'); },
@@ -125,6 +135,28 @@ describe('Commander CLI', () => {
       { command: 'analyze', input: { repoPath: '/workspace/repo', selector: '../linked' } },
       { command: 'remove', input: { repoPath: '/workspace/repo', selector: '../linked' } },
     ]);
+  });
+
+  test('printing help for a runtime command opens no connection to the daemon', async () => {
+    // Asserted against a socket that would answer, not one that would fail: a client that dials a
+    // dead address and swallows the error is indistinguishable from one that never dialled, which
+    // is exactly how this went unnoticed. A listener counts what actually arrived.
+    const directory = await mkdtemp(join(tmpdir(), 'wtm-help-'));
+    const socketPath = join(directory, 'd.sock');
+    let connections = 0;
+    const server = createServer((socket) => { connections += 1; socket.destroy(); });
+    await new Promise<void>((resolve) => { server.listen(socketPath, () => resolve()); });
+
+    try {
+      const output = capture();
+      await runCli(['remove', '--help'], { daemonSocketPath: socketPath, ...output.io });
+
+      expect(output.stdout()).toContain('--refresh-remotes');
+      expect(connections).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => { server.close(() => resolve()); });
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   test('skill print emits exactly the canonical skill without an added newline or envelope', async () => {

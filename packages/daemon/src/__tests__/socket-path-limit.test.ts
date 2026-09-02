@@ -6,9 +6,9 @@ import {
   DaemonSocketPathTooLongError,
   boundDaemonSocketPath,
   daemonSocketFileName,
-  darwinSocketPathLimitBytes,
   publishedDaemonSocketPath,
 } from '@wtm/platform/socket';
+import { selectPlatformRuntime } from '@wtm/platform';
 import { createProductionDaemon, defaultProductionRuntimePaths } from '../runtime-factory';
 import { UnixIpcServer } from '../server';
 
@@ -23,6 +23,17 @@ import { UnixIpcServer } from '../server';
 function darwinSocketRoot(home: string): string {
   return join(home, 'Library', 'Application Support', 'WTM');
 }
+
+/**
+ * `sizeof(sun_path)` for the machine this file runs on: 104 bytes on macOS, 108 on Linux.
+ *
+ * The three tests below bind — or refuse to bind — on *this* host, through a server and a factory
+ * that both read the host's own policy. Sized against `darwinSocketPathLimitBytes` they built a
+ * 105-byte fixture, which macOS refuses and Linux binds without complaint: on Linux the refusal
+ * these tests are named for simply never happened and `failure` came back null. The claim is
+ * "one byte past the limit"; 105 was an accident of macOS.
+ */
+const hostLimitBytes = selectPlatformRuntime().socket.limitBytes;
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -62,7 +73,7 @@ async function missing(path: string): Promise<boolean> {
 
 describe('daemon socket path preflight', () => {
   test('the IPC server refuses a path past the limit before it binds anything', async () => {
-    const directory = await directoryForSocketBytes(darwinSocketPathLimitBytes + 1);
+    const directory = await directoryForSocketBytes(hostLimitBytes + 1);
     const socketPath = join(directory, daemonSocketFileName);
     const server = new UnixIpcServer({
       socketPath,
@@ -75,8 +86,8 @@ describe('daemon socket path preflight', () => {
     expect(failure).toBeInstanceOf(DaemonSocketPathTooLongError);
     const error = failure as DaemonSocketPathTooLongError;
     expect(error.code).toBe('WTM_SOCKET_PATH_TOO_LONG');
-    expect(error.message).toContain(String(darwinSocketPathLimitBytes + 1));
-    expect(error.message).toContain(String(darwinSocketPathLimitBytes));
+    expect(error.message).toContain(String(hostLimitBytes + 1));
+    expect(error.message).toContain(String(hostLimitBytes));
     expect(error.message).toContain(socketPath);
     // Nothing was bound and nothing was linked: the refusal precedes `listen`, so neither the
     // published name nor the private bind name exists.
@@ -86,7 +97,7 @@ describe('daemon socket path preflight', () => {
   });
 
   test('a path exactly at the limit is not refused', async () => {
-    const directory = await directoryForSocketBytes(darwinSocketPathLimitBytes);
+    const directory = await directoryForSocketBytes(hostLimitBytes);
     const socketPath = join(directory, daemonSocketFileName);
     const server = new UnixIpcServer({
       socketPath,
@@ -100,7 +111,7 @@ describe('daemon socket path preflight', () => {
   });
 
   test('the production runtime factory refuses before creating its data directory', async () => {
-    const directory = await directoryForSocketBytes(darwinSocketPathLimitBytes + 8);
+    const directory = await directoryForSocketBytes(hostLimitBytes + 8);
     const dataRoot = join(directory, 'nested');
 
     const failure = await createProductionDaemon({ dataRoot }).then(() => null, (error: unknown) => error);
@@ -110,10 +121,19 @@ describe('daemon socket path preflight', () => {
     expect(await missing(dataRoot)).toBe(true);
   });
 
-  test('the factory derives the socket path from the shared definition', () => {
-    const home = '/Users/somebody';
-
-    expect(defaultProductionRuntimePaths(home).socketPath)
-      .toBe(publishedDaemonSocketPath(darwinSocketRoot(home)));
+  test('the factory derives the socket path from the shared definition, on either platform', () => {
+    // Named platforms rather than this host. The claim — that the socket path is
+    // `publishedDaemonSocketPath` applied to whatever the platform calls its socket root — is as
+    // true of the platform this suite is not running on, and asking the host would have made the
+    // expected value follow the answer instead of pinning it.
+    //
+    // Linux is the leg with teeth. Its socket root is not its data root, so a factory that went
+    // back to `join(dataRoot, daemonSocketFileName)` would still satisfy the macOS line above.
+    expect(defaultProductionRuntimePaths('/Users/somebody', { platform: 'darwin', env: {} }).socketPath)
+      .toBe(publishedDaemonSocketPath(darwinSocketRoot('/Users/somebody')));
+    expect(defaultProductionRuntimePaths('/home/somebody', {
+      platform: 'linux',
+      env: { XDG_RUNTIME_DIR: '/run/user/1000' },
+    }).socketPath).toBe(publishedDaemonSocketPath('/run/user/1000/wtm'));
   });
 });

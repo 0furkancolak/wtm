@@ -10,7 +10,12 @@ import {
 } from '@wtm/core';
 import { UnsupportedPlatformError, supportedPlatforms } from '@wtm/platform';
 import type { IpcRequest, JsonEnvelope } from '@wtm/protocol';
-import { ReconcilerQueue, type ReconcileBatch, type ReconcileSignal } from './reconciler-queue';
+import {
+  ReconcilerQueue,
+  type ReconcileBatch,
+  type ReconcileSignal,
+  type ReconcilerClock,
+} from './reconciler-queue';
 import { UnixIpcServer, type IpcRequestHandler } from './server';
 import { runtimeCommandNames } from './runtime-controller';
 import {
@@ -73,9 +78,66 @@ export interface WtmDaemonOptions {
   fingerprint?: StructuralWatcherOptions['fingerprint'];
   platform?: NodeJS.Platform;
   nodeVersion?: string;
+  clock?: ReconcilerClock;
 }
 
 const noRecoveryWork = async () => {};
+
+/**
+ * Timers that never hold the process open, matching the reconciler queue's own clock.
+ *
+ * A watch retry waiting out its backoff is not a reason for `wtm daemon serve` to refuse to exit,
+ * and an un-unref'd timer of up to a minute is exactly how a clean shutdown turns into a hang.
+ */
+const systemClock: ReconcilerClock = {
+  now: () => Date.now(),
+  setTimeout: (callback, delayMs) => {
+    const handle = setTimeout(callback, delayMs);
+    handle.unref();
+    return handle;
+  },
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+const watchRetryBaseMs = 1_000;
+const watchRetryCeilingMs = 60_000;
+
+/**
+ * How long the daemon waits before rebuilding watchers after a watch failed, by how many rebuilds
+ * have already failed in a row.
+ *
+ * The first retry is immediate, because the common watch error is transient: a root swapped under
+ * a `git worktree` command, an editor's atomic rename, a volume that blinked. Delaying that one
+ * would make the daemon slower at the failure it actually recovers from, for no gain.
+ *
+ * Everything after it doubles, because a second failure means the condition is not transient. The
+ * ceiling is a minute, and the sequence reaches it after 0+1+2+4+8+16+32 = 63 s -- seven attempts
+ * in the first minute instead of the ~300 that a flat 201 ms interval produced, and one a minute
+ * thereafter. A minute is where it stops for two reasons. A retry is not free: it rebuilds every
+ * watch in every registered workspace and fingerprints every root, which is real disk work to
+ * repeat forever for a condition only a person can clear. And it is not free to make it longer
+ * either: the ceiling is also the worst case for how long WTM stays blind after someone raises
+ * `fs.inotify.max_user_watches`, and a person who has just changed a sysctl is standing there
+ * waiting. A minute is the longest wait worth asking of them, and it is what the diagnostic
+ * promises -- there is no user-facing command that forces a rebuild, so this number is the whole
+ * answer to "how long until it notices I fixed it".
+ */
+export function watchRetryDelayMs(consecutiveFailedRebuilds: number): number {
+  if (consecutiveFailedRebuilds <= 0) return 0;
+  const doublings = Math.min(consecutiveFailedRebuilds - 1, 30);
+  return Math.min(watchRetryBaseMs * 2 ** doublings, watchRetryCeilingMs);
+}
+
+/**
+ * How long a watch has to behave before the next failure counts as a first one.
+ *
+ * Twice the ceiling: a failure that recurs at the slowest cadence the backoff can produce is still
+ * the same unresolved condition, while a daemon that watched happily for two minutes and then lost
+ * a watch has earned an immediate retry. Without a reset, one bad afternoon would leave a
+ * long-lived daemon taking a minute to recover from every transient failure for the rest of its
+ * life.
+ */
+const watchRetryResetMs = 2 * watchRetryCeilingMs;
 
 export class WtmDaemon {
   readonly #stateStore: DaemonStateStore;
@@ -92,6 +154,7 @@ export class WtmDaemon {
   readonly #queue: ReconcilerQueue;
   readonly #platform: NodeJS.Platform;
   readonly #nodeVersion: string;
+  readonly #clock: ReconcilerClock;
   #snapshot: DaemonRegistrationSnapshot = { workspaces: [], repositories: [] };
   #watcher: DaemonWatcherLifecycle | null = null;
   #server: DaemonServerLifecycle | null = null;
@@ -99,6 +162,9 @@ export class WtmDaemon {
   #started = false;
   #closed = false;
   #watchRefreshPending = false;
+  #watchRetry: { signal: ReconcileSignal; timer: unknown } | null = null;
+  #failedWatchRebuilds = 0;
+  #lastWatchFailureAt: number | null = null;
 
   constructor(options: WtmDaemonOptions) {
     this.#stateStore = options.stateStore;
@@ -119,6 +185,7 @@ export class WtmDaemon {
     this.#listGitWorktrees = options.listGitWorktrees ?? defaultListGitWorktrees;
     this.#platform = options.platform ?? process.platform;
     this.#nodeVersion = options.nodeVersion ?? process.versions.node;
+    this.#clock = options.clock ?? systemClock;
     this.#watcherFactory = options.watcherFactory ?? ((registrations, schedule) => new StructuralWatcher({
       registrations,
       schedule,
@@ -130,6 +197,7 @@ export class WtmDaemon {
     this.#queue = new ReconcilerQueue({
       run: async (batch) => this.#runBatch(batch),
       onError: this.#onError,
+      clock: this.#clock,
     });
   }
 
@@ -156,6 +224,7 @@ export class WtmDaemon {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#cancelWatchRetry();
     try {
       await this.#starting;
     } catch {
@@ -325,7 +394,13 @@ export class WtmDaemon {
   }
 
   async #runBatch(batch: ReconcileBatch): Promise<void> {
-    if (batch.kinds.includes('watch-error')) this.#watchRefreshPending = true;
+    // Counted per rebuild rather than per signal. One exhausted inotify budget refuses every root
+    // at once, so a burst of signals is one failure; what the backoff has to measure is how many
+    // times the daemon has re-armed the watches and had them fail again.
+    if (batch.kinds.includes('watch-error')) {
+      this.#watchRefreshPending = true;
+      this.#failedWatchRebuilds += 1;
+    }
     const registrations = registrationKey(this.#snapshot);
     this.#snapshot = await this.#availableRegistrations();
     // A workspace registered or retired since the last pass changes what has to be watched.
@@ -348,9 +423,59 @@ export class WtmDaemon {
     if (failures.length > 0) throw failures[0];
   }
 
+  /**
+   * What a watcher's signals go through, so that a watch which cannot be re-established does not
+   * cost a full rebuild several times a second for as long as the condition lasts.
+   *
+   * Only `watch-error` is delayed. Every other signal is a real change on disk that a user is
+   * waiting to see reflected, and delaying those would be a regression in the daemon's whole
+   * reason for existing.
+   */
+  #scheduleFromWatcher(signal: ReconcileSignal): void {
+    if (signal.kind !== 'watch-error') {
+      this.#queue.schedule(signal);
+      return;
+    }
+    const now = this.#clock.now();
+    const sinceLastFailure = this.#lastWatchFailureAt === null
+      ? Number.POSITIVE_INFINITY
+      : now - this.#lastWatchFailureAt;
+    this.#lastWatchFailureAt = now;
+    // A retry already armed covers this signal whatever root it names: the rebuild it will run
+    // re-establishes every watch in the snapshot, not just the one that reported the failure.
+    if (this.#watchRetry !== null) return;
+    if (sinceLastFailure >= watchRetryResetMs) this.#failedWatchRebuilds = 0;
+    const delayMs = watchRetryDelayMs(this.#failedWatchRebuilds);
+    if (delayMs === 0) {
+      this.#queue.schedule(signal);
+      return;
+    }
+    const timer = this.#clock.setTimeout(() => {
+      this.#watchRetry = null;
+      if (!this.#closed) this.#queue.schedule(signal);
+    }, delayMs);
+    this.#watchRetry = { signal, timer };
+  }
+
+  /** Runs a waiting retry now. The caller is the user saying they have changed something. */
+  #releaseWatchRetry(): void {
+    const pending = this.#watchRetry;
+    if (pending === null) return;
+    this.#clock.clearTimeout(pending.timer);
+    this.#watchRetry = null;
+    this.#failedWatchRebuilds = 0;
+    this.#queue.schedule(pending.signal);
+  }
+
+  #cancelWatchRetry(): void {
+    if (this.#watchRetry === null) return;
+    this.#clock.clearTimeout(this.#watchRetry.timer);
+    this.#watchRetry = null;
+  }
+
   async #replaceWatcher(): Promise<void> {
     const registrations = await buildWatchRegistrations(this.#stateStore, this.#snapshot);
-    const replacement = this.#watcherFactory(registrations, (signal) => this.#queue.schedule(signal));
+    const replacement = this.#watcherFactory(registrations, (signal) => this.#scheduleFromWatcher(signal));
     await replacement.start();
     if (this.#closed) {
       await replacement.close();
@@ -364,6 +489,12 @@ export class WtmDaemon {
   async #handleRequest(request: IpcRequest): Promise<JsonEnvelope<unknown>> {
     if (request.command === 'ping') return successEnvelope('ping', { pid: process.pid });
     if (request.command === 'reconcile') {
+      // A reconcile request is a client saying the world has changed, and a watch waiting out its
+      // backoff is the most likely thing that has: whoever asked is about to be answered from a
+      // topology WTM cannot currently observe. Bringing the retry forward costs one rebuild that
+      // was going to happen anyway, and takes the ceiling out of the path of a user who has just
+      // fixed the limit and re-run something.
+      this.#releaseWatchRetry();
       // Read the registrations again before scheduling. A workspace registered since the
       // daemon started is not in the snapshot yet, so a reconcile asked for immediately after
       // `wtm init` scheduled nothing for it, discovered none of its worktrees, and — because
