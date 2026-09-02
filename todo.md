@@ -846,16 +846,19 @@ wtm-windows-arm64.exe
 - [x] Core package platform-independent. — `platform-independence.test.ts` yapısal olarak
       zorluyor; iki gözden geçirilmiş istisna var, ikisi de tabloda gerekçesiyle yazılı.
 - [x] Platform-specific import'lar platform package dışında minimum.
-- [ ] macOS regression yok. — **macOS CI kırmızı.** `48b4bd4`'ten beri kırmızıymış ve C1
-      "doğrulandı" diye bildirilirken kimse bakmamış (spec F15). Kalan tek hata runner'ın
-      launchd yol zincirini reddetmesi; teşhis eklendi, doğru mu fazla katı mı bir sonraki
-      koşu söyleyecek.
-- [x] Linux x64 CI green. — `33655596273`, her adım koştu, atlanan yok.
+- [x] macOS regression yok. — `33657859156`'da her iki macOS bacağı da yeşil; **2026-08-31'den
+      beri ilk tam yeşil koşu**. Kırmızılık `48b4bd4`'ten beri sürüyordu ve C1 "doğrulandı" diye
+      bildirilirken kimse CI'a bakmamıştı (spec F15). Kalan hata runner'ın `~/Library/LaunchAgents`
+      dizinini 0755 olduğu için reddetmesiydi; kural düzeltildi (F16), regresyon değildi.
+- [x] Linux x64 CI green. — `33657859156`, üç bacakta da yedi gate'in hepsi koştu, atlanan yok.
 - [ ] Linux arm64 build doğrulanıyor.
 - [ ] Windows x64 CI green.
 - [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
-- [ ] JSON contract platformlar arasında aynı kalıyor.
-- [ ] CLI command names platforma göre değişmiyor.
+- [ ] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
+      `plistPath` macOS'a özel bir ek alan olarak bilerek duruyor (D11), kaldırılması daemon JSON
+      sözleşmesini kırmak için bağımsız bir nedeni olan ilk artıma programlandı.
+- [x] CLI command names platforma göre değişmiyor. — aynı komut listesi iki platformda da
+      `main.test.ts` tarafından sabitleniyor.
 - [x] Platform-specific farklar `wtm doctor` ile açıkça raporlanıyor.
 
 ---

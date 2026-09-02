@@ -710,6 +710,50 @@ spec was right.
 8. `package.json` declares `["darwin", "linux"]`, pinned by a test (D10).
 9. `todo.md` item 9's Linux checklist reflects what CI now proves, and no more.
 
+## Outcome
+
+**Met, 2026-09-02, run `33657859156`: all three legs green — linux x64, darwin arm64, darwin x64
+— with every one of the seven gates run on every leg and nothing skipped.** The first fully green
+CI run since `454a088` on 2026-08-31.
+
+Against the acceptance criteria:
+
+1. The ubuntu leg runs `lint`, `typecheck`, `test`, `test:e2e`, `build`, `package:verify` and
+   `binary:verify`. Green. ✓
+2. macOS legs green, and no test was skipped or weakened to get there. The one macOS refusal that
+   remained was a genuine product defect (F16), not a concession. ✓
+3. `wtm start` supervises a managed task on Linux — proven twice over: `process-supervisor`
+   against the real kernel, and the standalone executable owning a task through its own anchor. ✓
+4. No test asserts a platform constant while exercising the host, and none isolates by `HOME`
+   alone. ✓
+5. `linuxSocketPathLimitBytes` is measured on the CI kernel, in a Node child, with the boundary
+   confirmed as a single step and `connect()` drawing the same line. ✓
+6. `WTM_WATCH_UNAVAILABLE`, exit 2, documented, with backoff. ✓
+7. `binary:verify` produced `dist/sea/wtm … linux-x64` and all nine standalone tests passed
+   against it on the runner. ✓
+8. `package.json` declares `["darwin", "linux"]`, pinned to the platforms the CI matrix validates
+   — so claiming a platform without adding its job is now a red build. ✓
+9. `todo.md` item 9's Linux checklist reflects what ran on a kernel. The arm64 binary box stays
+   unchecked; there is no arm64 Linux runner. ✓
+
+### The open questions, answered
+
+- **Recursive watching on Linux**: works. `detects a raw Git worktree added outside the workspace
+  through the common Git dir` passed on the runner in 599 ms, well inside its 5 s budget, using
+  Node 24's recursive watch on a real inotify. Per D7, nothing was built for a failure that did
+  not happen. The `ENOSPC` path remains untested — the diagnostic exists, the exhaustion does not.
+- **`linuxSocketPathLimitBytes = 108`**: correct on the CI kernel, now measured rather than cited.
+- **`systemctl --user` on a runner**: reachable as a binary, but there is no logind user session,
+  so the bus is unavailable. That is now a named, exit-4 condition rather than an unclassified
+  failure (F13) — and it exposed a defect that would have broken every Linux desktop, not just CI.
+- **systemd ≥ 240 for `Type=exec`/`append:`**: still unverified. Nothing in CI installs a unit, so
+  nothing has exercised it. Carried.
+
+### What this increment did not claim, and still does not
+
+No Linux release, no Linux arm64, no musl, and no integration-tested systemd lifecycle. The
+release pipeline is Increment E's, and D9 records the six sites and two rules it inherits.
+
 ## Open questions only a kernel answers
 
 Carried in deliberately unresolved, per D7 and D14:
