@@ -401,6 +401,22 @@ development tests drive.
 `install`, `uninstall` and `status` are driven by the service manager of the platform WTM
 selected — launchd on macOS, systemd on Linux. `wtm doctor`'s `platform` check names which.
 
+All three need a user service manager to talk to. Where there is none — `launchctl` with no user
+domain on macOS, `systemctl --user` with no session bus on Linux, which is the ordinary state
+inside many containers, across `su`, and on a host with lingering disabled — the answer is one
+coded condition on both platforms rather than a generic failure:
+
+```text
+$ wtm daemon status
+The systemd user domain is unavailable.
+$ echo $?
+4
+```
+
+That is `WTM_DAEMON_UNAVAILABLE`. On Linux the usual remedy is `loginctl enable-linger "$USER"`,
+which gives the account a user manager that does not depend on a login session. Foreground
+commands do not need the daemon at all.
+
 `install` reports one of four states:
 
 | State | Meaning |
@@ -442,8 +458,14 @@ Linux envelope for that reason.
 
 `plistPath` is retained on macOS purely for compatibility — JSON output is a contract that may
 only grow, and a rename is not a growth: a script reading `plistPath` would simply stop finding
-it. Both fields are present there and always carry the same value. A later increment removes
-`plistPath` once the deprecation has been carried in a release.
+it. Both fields are present there and always carry the same value.
+
+**When it goes.** `plistPath` is removed by the first increment that has an independent reason to
+break the daemon JSON contract, and not before. `definitionPath` is already present on every
+platform, which is the property a portable consumer needs; `plistPath` is an *additional* macOS
+field no portable consumer reads. Removing it on its own would break `0.1.0-rc.1` consumers and buy
+nothing, so it is scheduled rather than executed: it rides along with a break that is happening
+anyway. Read `definitionPath`.
 
 ## Skill
 

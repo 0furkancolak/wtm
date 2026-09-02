@@ -43,11 +43,11 @@ describe('launchd descriptor', () => {
     expect(plan.root).toBe(home);
     expect(plan.definition).toEqual([
       { path: '/Users/test/Library', ownerOnly: false },
-      { path: '/Users/test/Library/LaunchAgents', ownerOnly: true },
+      { path: '/Users/test/Library/LaunchAgents', ownerOnly: false },
     ]);
     expect(plan.install).toEqual([
       { path: '/Users/test/Library', ownerOnly: false },
-      { path: '/Users/test/Library/LaunchAgents', ownerOnly: true },
+      { path: '/Users/test/Library/LaunchAgents', ownerOnly: false },
       { path: '/Users/test/Library/Application Support', ownerOnly: false },
       { path: '/Users/test/Library/Application Support/WTM', ownerOnly: true },
       { path: '/Users/test/Library/Logs', ownerOnly: false },

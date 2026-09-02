@@ -10,8 +10,28 @@ PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 BINARY := dist/sea/wtm
 INSTALLED := $(BINDIR)/wtm
-STATEDIR := $(HOME)/Library/Application Support/WTM
-# Installing registers the LaunchAgent, so supervised tasks work straight away.
+# Where `wtm` keeps a user's data, resolved the same way the product resolves it. This was a
+# single macOS path, so on Linux `make purge` announced it had removed a directory that had never
+# existed and left the real state and configuration in place -- a cleanup command that reports
+# success and cleans nothing is worse than one that is missing.
+#
+# macOS keeps the config file inside the data root but the logs outside it; Linux keeps the logs
+# inside the data root but the config outside it. So neither platform is one directory, and the
+# macOS half was quietly leaving ~/Library/Logs/WTM behind before Linux existed at all.
+#
+# The two roots are separate variables rather than one whitespace-separated list, because
+# `Application Support` contains a space: any make construct that iterates a list splits it into
+# `.../Library/Application` and `Support/WTM`, and this recipe passes what it iterates to `rm -rf`.
+# Quoting happens in the shell, where the expansion is one word.
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+STATE_ROOT := $(HOME)/Library/Application Support/WTM
+CONFIG_ROOT := $(HOME)/Library/Logs/WTM
+else
+STATE_ROOT := $(if $(XDG_STATE_HOME),$(XDG_STATE_HOME),$(HOME)/.local/state)/wtm
+CONFIG_ROOT := $(if $(XDG_CONFIG_HOME),$(XDG_CONFIG_HOME),$(HOME)/.config)/wtm
+endif
+# Installing registers the user service, so supervised tasks work straight away.
 # Set WITH_DAEMON=0 for an install that touches nothing outside the prefix.
 WITH_DAEMON ?= 1
 
@@ -58,9 +78,8 @@ uninstall: ## Unregister the daemon and remove the installed executable
 
 reinstall: uninstall install ## Remove, rebuild, and install again
 
-purge: uninstall ## Uninstall, then delete this user's WTM state and configuration
-	@printf 'removing %s\n' '$(STATEDIR)'
-	rm -rf '$(STATEDIR)'
+purge: uninstall ## Uninstall, then delete this user's WTM state, logs, and configuration
+	@for directory in '$(STATE_ROOT)' '$(CONFIG_ROOT)'; do printf 'removing %s\n' "$$directory"; rm -rf "$$directory"; done
 
 where: ## Report which wtm PATH resolves to, its version, and the daemon
 	@command -v wtm && wtm --version | head -1 || printf 'wtm is not on PATH\n'
@@ -107,13 +126,13 @@ formula: ## Render the Homebrew formula from the real checksums
 
 ##@ Daemon
 
-daemon-install: ## Register the WTM LaunchAgent for the current user
+daemon-install: ## Register the WTM user service (launchd or systemd) for the current user
 	wtm daemon install
 
 daemon-status: ## Report whether the daemon is registered and reachable
 	wtm daemon status
 
-daemon-uninstall: ## Remove the LaunchAgent
+daemon-uninstall: ## Remove the WTM user service (launchd or systemd)
 	wtm daemon uninstall
 
 ##@ Housekeeping

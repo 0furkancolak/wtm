@@ -68,6 +68,17 @@ repository, so the requested operation would race it. `context` carries `reposit
 the abandoned holder recorded), and `abandoned`. It is a safety policy block, so it exits with code
 3.
 
+`WTM_DAEMON_UNAVAILABLE` means a required daemon operation could not reach the daemon. It also
+covers the case one step earlier, where WTM could not reach the *service manager* that would start
+it: `launchctl` with no user domain on macOS, and `systemctl --user` with no session bus on Linux —
+the ordinary state inside many containers, across `su`, and on a host with lingering disabled. The
+message names the manager in force (`The systemd user domain is unavailable.`), and the usual Linux
+remedy is `loginctl enable-linger "$USER"`, which gives the account a user manager that does not
+depend on a login session. systemd does not spend a distinct exit status on a bus failure — it
+exits 1, like a dozen ordinary refusals — so WTM classifies the condition rather than reading it
+off the exit code, which is why it is one diagnosable answer on both platforms instead of a generic
+request failure on one of them. It exits with code 4.
+
 `WTM_SOCKET_PATH_TOO_LONG` means the daemon's Unix socket path does not fit in the platform's
 socket address. The limit is that platform's `sizeof(sun_path)` — 104 bytes on macOS, 108 on
 Linux — so on macOS a path of 104 bytes binds and one of 105 fails with `EINVAL`. It counts

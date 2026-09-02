@@ -270,14 +270,32 @@ function plistStringValue(content: string, key: 'Label' | 'WorkingDirectory' | '
 
 /**
  * `~/Library` is not owner-only and must not be made so -- it is the user's own library, shared
- * with every application on the machine. The three leaves are, because they hold this daemon's
- * definition, its database and its logs, and nothing else has business reading them.
+ * with every application on the machine.
+ *
+ * **`~/Library/LaunchAgents` is not owner-only either, and this was wrong until a CI runner said
+ * so.** It was `true` on the reasoning that macOS creates `~/Library` subdirectories at 0700, so
+ * requiring it cost nothing. A GitHub macOS runner has it at **0755, correctly owned**, and so does
+ * any machine where something other than WTM created it under the standard umask -- Xcode, an
+ * installer, a `mkdir`. WTM refused to so much as report its own status there, with a message that
+ * named neither the directory nor the mode.
+ *
+ * The rule this restores is the one the Linux backend already states: the load-bearing check is
+ * `(mode & 0o022) === 0`, no group or other *write*, which is what stops another user planting a
+ * definition this daemon would execute as you, and 0755 satisfies it. `ownerOnly` adds only a ban
+ * on group and other *read and traverse*, and the reasoning that justifies it for
+ * `~/.config/systemd/user` justifies it here identically: **`LaunchAgents` is not WTM's directory.**
+ * It is shared with every other application's launch agents, so tightening it is tightening
+ * somebody else's, and its readability protects nothing -- the plist inside is still checked for
+ * `(mode & 0o077) === 0`, so the definition's contents stay unreadable inside a 0755 directory.
+ *
+ * The two leaves below keep `ownerOnly`, because the database and the logs are WTM's own and
+ * nothing else has business reading them.
  */
 function darwinDirectories(input: ServiceDirectoryInput): ServiceDirectoryPlan {
   const libraryDirectory = dirname(input.serviceRoot);
   const definition = [
     { path: libraryDirectory, ownerOnly: false },
-    { path: input.serviceRoot, ownerOnly: true },
+    { path: input.serviceRoot, ownerOnly: false },
   ];
   return {
     root: input.home,

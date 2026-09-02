@@ -15,7 +15,7 @@ Official references consulted for the design package. These links are implementa
 ## Node.js
 
 - Node.js filesystem API: https://nodejs.org/api/fs.html
-  - on macOS, `fs.watch()` uses kqueue for files and FSEvents for directories.
+  - on macOS, `fs.watch()` uses kqueue for files and FSEvents for directories; on Linux it uses inotify.
   - the callback filename is not guaranteed, motivating reconcile-from-truth behavior.
 - Node.js releases: https://nodejs.org/en/about/previous-releases
   - Node 24 is LTS as of the design date (2026-08-26).

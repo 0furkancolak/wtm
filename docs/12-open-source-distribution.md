@@ -99,18 +99,29 @@ The protocol/interface must allow the helper to be replaced.
 
 V1 ships two channels from one codebase:
 
-1. **Standalone macOS executable.** A Node SEA build that embeds the pinned Node 24 runtime, the SQL
+1. **Standalone executable.** A Node SEA build that embeds the pinned Node 24 runtime, the SQL
    migrations and the agent skill. It stores state through `node:sqlite`, so it contains no native
    addon and needs no Node, Bun or compiler on the target machine. Built by `bun run build:binary`
-   and proven by `bun run binary:verify`.
+   and proven by `bun run binary:verify`. Both are platform-aware: the same commands produce a
+   Mach-O on macOS and an ELF on Linux x64, and CI runs `binary:verify` on all three legs. Only the
+   macOS builds are **published**.
 2. **npm global package** for developers already running Node 24+. This channel keeps
-   `better-sqlite3` and the ordinary Node module resolution.
+   `better-sqlite3` and the ordinary Node module resolution, and the manifest declares
+   `"os": ["darwin", "linux"]`.
 
 Both channels run the same CLI. The only difference is how a WTM child process is launched: the npm
 build re-invokes `node <cli>`, the standalone build re-invokes its own executable.
 
+**Nothing is released for Linux.** The release workflow, the release artifact names
+(`wtm-darwin-{arm64,x64}.tar.gz`), the rule that a stable release must carry a Developer ID signed
+executable, and the Homebrew formula are all macOS-only and must change together; two of them are
+decisions rather than renames, because a Linux binary can only ever be unsigned and the workflow
+currently requires every build job to report the same signing status. Until that work lands, Linux
+users install from source or from npm.
+
 A Homebrew formula is prepared in `packaging/homebrew/wtm.rb.template` and rendered by
-`bun run formula:render`. **No public tap repository exists yet.** Until one is published, install
+`bun run formula:render`; it is macOS-only, as its inputs are the two darwin archive digests.
+**No public tap repository exists yet.** Until one is published, install
 from a custom tap or directly from a downloaded archive.
 
 The daemon is installed separately through:

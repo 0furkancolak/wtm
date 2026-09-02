@@ -1,9 +1,11 @@
 # Daemon and Platform Runtime
 
 > **The filename is historical.** This document is still `05-daemon-and-macos-runtime.md` because
-> renaming it would break every link that already points at it, in this repository and outside it,
-> for a cosmetic gain. The content is not macOS-only: it describes the daemon on both platforms WTM
-> has a backend for.
+> renaming it would break every link that already points at it — `docs/README.md`'s index, the
+> changelog, and anything outside this repository — for a cosmetic gain. The content is not
+> macOS-only: it describes the daemon on both platforms WTM has a backend for, and the title above
+> is the name that matters. The rename is worth doing only alongside a change that already breaks
+> these links for a reason.
 
 ## Which platform, and what has been verified where
 
@@ -17,16 +19,27 @@ process, and how to register a service. There are two backends today:
 | Definition | LaunchAgent plist | systemd user unit |
 | Process identity | `ps -o lstart=` | `/proc/<pid>/stat` |
 | Socket | Unix domain socket | Unix domain socket |
-| Status | Shipped and tested on macOS | **Written and unit-tested; never run on a Linux kernel** |
+| Status | Shipped, tested and released on arm64 and x64 | Tested on x64; **nothing is released for Linux** |
 
-The Linux column is proven exactly the way the launchd column has always been proven in this
-repository: against captured fixtures and injected command runners. That establishes what the
-argument vectors are, what the unit file contains, and what the parsers do with real kernel output.
-It establishes nothing about whether `systemctl --user` bootstraps this daemon, because no Linux CI
-job exists, no Linux binary is built, and nothing here has ever run on a Linux kernel. That is the
-next increment's work, and until it is done `package.json` still declares `"os": ["darwin"]` — an
-npm package that installs on Linux and then does not start is a worse failure than one that refuses
-to install.
+Both columns run the same CI gates. The `ubuntu-latest` x64 leg runs `lint`, `typecheck`, the full
+suite, `test:e2e`, `build`, `package:verify` and `binary:verify` — the same list as the two macOS
+legs, in the same order — and is green. It builds a real ELF standalone executable and exercises it
+against a real repository, so the Linux column is evidence from a kernel rather than from fixtures:
+the daemon serves over its socket end to end, a managed task is owned through the process anchor,
+and a trusted external adapter runs through its guarded child.
+
+`package.json` declares `"os": ["darwin", "linux"]`, pinned by a test to the platforms CI actually
+validates.
+
+Four limits are stated here rather than left to be discovered:
+
+- **x64 only.** There is no Linux arm64 runner and no Linux arm64 build.
+- **glibc only.** `ubuntu-latest` is glibc. musl and Alpine are unproven and unclaimed.
+- **Nothing is published for Linux.** The release workflow, its artifact names, the signing rule
+  and the Homebrew formula are all still macOS-only. Installing on Linux means building from source
+  or using the npm package.
+- **The systemd lifecycle is not integration-tested**, for the reason given under
+  [the systemd user unit](#linux-the-systemd-user-unit).
 
 Windows has no backend. `selectPlatformRuntime` refuses it with `WTM_PLATFORM_UNSUPPORTED` (exit
 2), and the daemon's refusal names the Windows increment — which decides process-group and
@@ -41,7 +54,7 @@ and a reader disagree about where WTM's files are.
 
 V1 uses TypeScript on Node.js 24 LTS.
 
-Node's native `fs.watch()` maps directory watches to FSEvents on macOS, so a separate Rust/Swift watcher is not justified before profiling.
+Node's native `fs.watch()` maps directory watches to FSEvents on macOS and to inotify on Linux, so a separate Rust/Swift watcher is not justified before profiling.
 
 ## Process model
 
@@ -131,9 +144,19 @@ macOS may withhold disk access from a background agent. The executable is signed
 
 ### Linux: the systemd user unit
 
-**Written and unit-tested against an injected fake `systemctl`; never run on a systemd host.**
-Everything in this section describes what the code does. Nothing in it is a report of a working
-installation.
+Two claims are separated here, because they carry different weight.
+
+**What CI proves.** The CLI selects this backend on Linux, drives `/usr/bin/systemctl`, and
+classifies what comes back — including reporting an unreachable user manager as a named condition
+rather than as a generic failure. That runs on the CI kernel.
+
+**What CI does not prove.** The lifecycle itself — install, enable, start — is not
+integration-tested. A GitHub runner has no logind user session, so there is no user manager to
+accept a unit, and isolating a test by `HOME` cannot manufacture one: a running user manager was
+started with the login `HOME`, so a unit written under a test's temporary `HOME` is invisible to it.
+The unit file's contents, the argument vectors and the output parsing are covered by unit tests
+against an injected fake `systemctl`, exactly as the launchd backend has always been covered against
+a fake `launchctl`. That is a written limitation, not a skipped test.
 
 `wtm daemon install` publishes a user unit under:
 
@@ -175,7 +198,20 @@ launchd command set:
 - **`show --property=Version` against the manager.** It fails when there is no session bus to talk
   to: inside a container, over `su`, on a host with lingering disabled. That is the same
   distinction `launchctl print gui/<uid>` draws between "no service" and "no session", and the two
-  are reported differently because their remedies differ.
+  are reported differently because their remedies differ. A user sees
+  `The systemd user domain is unavailable.` — `WTM_DAEMON_UNAVAILABLE`, exit 4, the same code and
+  status macOS reports for the same condition — and the usual remedy is
+  `loginctl enable-linger "$USER"`, which gives the account a user manager that does not depend on
+  a login session. Foreground commands need none of this.
+
+  systemd does not spend an exit status on a bus failure; it exits 1, like a dozen ordinary
+  refusals. The command runner classifies the condition from stderr, in the same layer that already
+  knows `systemctl` 5 and `launchctl` 113 both mean "no such service" — what a manager's failure
+  *means* is knowledge about that manager. `systemctl` is also run with the bus variables
+  (`DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`) and the unit-lookup variables (`HOME`,
+  `XDG_CONFIG_HOME`) passed through from this process; a name that is absent stays absent, because
+  sd-bus reads an empty `DBUS_SESSION_BUS_ADDRESS` as a configured address that does not work, which
+  is a worse answer than no address at all.
 - **Exit code `5`.** systemd's `EXIT_NOTINSTALLED`. `stop` and `disable` answer with it for a unit
   that is already gone, which is an absence rather than a failure — the same classification
   `launchctl`'s `113` gets, made in the same place.
@@ -261,13 +297,19 @@ Use:
 watch(root, { recursive: true })
 ```
 
-for local macOS directories. The callback is only a scheduling signal. `filename` is treated as optional because Node does not guarantee it on every event.
+for local directories on both platforms. The callback is only a scheduling signal. `filename` is treated as optional because Node does not guarantee it on every event.
 
-`fs.watch` is cross-platform and is not behind the platform seam. Whether its *semantics* match on
-Linux — recursive watching, what an inotify-backed watcher coalesces, what it reports for a
-directory replaced rather than modified — is a question only a real kernel answers, and it is not
-answered here. The reconciliation below is designed not to depend on any individual event arriving,
-which is what keeps a watcher difference from being a correctness difference.
+`fs.watch` is cross-platform and is not behind the platform seam. The one semantic question that
+had to be answered by a kernel rather than by documentation — whether Node 24's `recursive: true`
+on Linux delivers events for directories created *after* the watch was opened — is answered: on the
+Linux job the daemon scenario suite still notices a linked worktree created outside the workspace
+root, which it can only see through the `worktrees/` directory `git` adds under the repository's
+administrative root while the watch is already open, and it notices it inside the same budget it
+allows on macOS. No per-directory fallback walk was needed. Finer differences
+(what an inotify-backed watcher coalesces, what it reports for a directory replaced rather than
+modified) are still not enumerated here, and deliberately do not matter: the reconciliation below
+is designed not to depend on any individual event arriving, which is what keeps a watcher
+difference from being a correctness difference.
 
 The watcher layer debounces/coalesces bursts and schedules a bounded reconciliation rather than acting directly on every filesystem event.
 
@@ -356,7 +398,13 @@ differently:
 | Platform | `sizeof(sun_path)` | How that number was established |
 | --- | --- | --- |
 | macOS | 104 bytes | **Measured.** Paths of every length from 96 to 112 bytes were bound on macOS 15 / Node 24: 104 listens, 105 raises `EINVAL`, and `connect()` draws the line in the same place. |
-| Linux | 108 bytes | **Not measured.** It is the value in `linux/un.h` and has been for the lifetime of the ABI, recorded here as a documented constant with its provenance. Nothing in this repository can bind a Linux socket, so there is no experiment behind it. C2 binds a 108-byte and a 109-byte address on a real kernel. |
+| Linux | 108 bytes | **Measured.** The value in `linux/un.h`, and now also an experiment: on the Linux CI job a Node child sweeps every address length from 96 to 128 bytes and asserts that 108 listens, 109 raises `EINVAL`, and `connect()` draws the same line. |
+
+What the Linux measurement buys is notice rather than universality. It is measured on the kernel
+and glibc `ubuntu-latest` x64 was running under Node 24 the last time the job ran — not on musl, not
+on arm64, and not on whatever a given user has. A kernel or libc that moved the boundary would
+otherwise surface as a daemon refusing a path it could have bound, or accepting one it cannot; with
+the measurement in the suite it surfaces as a red build naming the constant.
 
 Both numbers flow through the same preflight. `wtm daemon serve`, `wtm daemon install` and the
 CLI's connect side measure the address in bytes before binding or dialling, and refuse with
@@ -417,9 +465,15 @@ reclaims — a wrong absence — in exchange for releasing a lease a few millise
 reaps the child. Whether a zombie lease holder *should* be reclaimable is a real question; it
 belongs with lease semantics, not with the platform seam.
 
-One gap is stated rather than half-closed: `process-anchor.ts` still parses BSD `ps` output. Its
-call lives inside a program serialised into a string and executed by a separate `node`, so it
-cannot import a platform port; it is rendered per platform in the next increment.
+`process-anchor.ts` reads identity in both dialects. Its code lives inside a program serialised
+into a string and executed by a separate `node`, so it cannot import a platform port and both
+readers are inlined there. The anchor is **told** which platform to speak, through its spec, and
+does not read `process.platform`: the dialect is a property of the decision the supervisor already
+made, and an anchor that observed its own could disagree with the port reading it — a disagreement
+that would surface as `ANCHOR_IDENTITY_MISMATCH`, blaming the process for changing identity when
+in fact the two sides were speaking different languages. The duplication is held to the port by a
+live test that compares the anchor's reading against `@wtm/platform`'s on whichever platform the
+suite is executing on, so drift is a red build rather than a silent divergence.
 
 ## Daemon unavailable
 

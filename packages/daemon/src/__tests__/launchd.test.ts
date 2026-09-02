@@ -606,6 +606,30 @@ describe('launchd lifecycle', () => {
     await expect(lifecycle.install()).rejects.toMatchObject({ code: 'UNSAFE_LAUNCHD_PATH' });
   });
 
+  test('installs into a LaunchAgents another application created world-readable', async () => {
+    // 0755, correctly owned, is what a GitHub macOS runner has and what any machine has where
+    // something other than WTM created the directory under the standard umask -- Xcode, an
+    // installer, a `mkdir`. WTM used to demand exactly 0700 and refused to report even its own
+    // status there, naming neither the directory nor the mode. `LaunchAgents` is shared with every
+    // other application's launch agents: it is not WTM's to tighten, and its readability protects
+    // nothing, because the plist inside is still required to be 0600.
+    const home = await fakeHome();
+    await mkdir(join(home, 'Library', 'LaunchAgents'), { recursive: true, mode: 0o700 });
+    await chmod(join(home, 'Library', 'LaunchAgents'), 0o755);
+    const lifecycle = createLaunchdLifecycle({
+      home, uid: process.getuid?.() ?? 0, platform: 'darwin', programArguments: ['/bin/echo'],
+      commandRunner: async (argv) => (
+        argv[1] === 'print' && argv[2]?.includes('/dev.wtm.daemon') ? missingService() : success()
+      ),
+    });
+
+    await lifecycle.install();
+
+    const published = await lstat(launchdPaths(home).plistPath);
+    // The directory relaxed; the definition did not.
+    expect(published.mode & 0o777).toBe(0o600);
+  });
+
   test('rejects a hardlinked plist target', async () => {
     const home = await fakeHome();
     const outside = await fakeHome();

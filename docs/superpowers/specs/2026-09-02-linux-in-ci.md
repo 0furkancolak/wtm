@@ -418,6 +418,45 @@ and fixed on the Linux side, where demanding 0700 of `~/.config` would have refu
 box.
 
 
+### F16 — The rule C1 fixed on Linux was still wrong on macOS, and only a foreign macOS could say so
+
+The diagnostic added for F15 answered on the next run (33656766383):
+
+```
+RESOURCE_PATH_DENIED: The launchd installation path is unsafe.
+{"path":"/Users/runner/Library/LaunchAgents","reason":"readable by group or other, and must be
+ owner-only","mode":"755","owner":501}
+```
+
+`~/Library/LaunchAgents` at **0755, correctly owned**. WTM demanded exactly 0700 and refused to
+report even its own status.
+
+C1 already litigated this exact question — for Linux. Its comment in `service/linux.ts:230-247`
+says the unit directory is deliberately not owner-only because `~/.config/systemd/user` is 0755
+everywhere, is shared with `systemctl enable`, and *is not WTM's to tighten*; and that the
+load-bearing check is `(mode & 0o022) === 0`, no group or other **write**, which 0755 satisfies.
+Then the same paragraph asserts that macOS's `LaunchAgents` "deliberately still is" owner-only,
+because "macOS gets that for free — it creates `~/Library` subdirectories at 0700, so requiring it
+there costs nothing."
+
+That last clause is the error, and it is a factual claim about a population of machines made from
+a sample of one. A GitHub macOS runner has it at 0755, and so does any machine where something
+other than WTM created it under the standard umask — Xcode, an installer, a `mkdir`. On those,
+`wtm daemon install` could never have worked.
+
+The correction is to apply C1's own rule where C1 declined to: `~/Library/LaunchAgents` is shared
+with every other application's launch agents, so it is not WTM's directory either, and its
+readability protects nothing — the plist inside is still required to be 0600, verified by the new
+test. The data root and log root keep `ownerOnly`, because those WTM does own. The group-writable
+refusal is untouched and its test stayed green through the mutation check.
+
+What makes this finding worth the space is not the mode bit. C1 reached the right *rule* and then
+mis-applied it, because the only macOS it could consult agreed with it. A second platform is what
+exposed F9 and F12; a second *instance of the same platform* is what exposed this. Both are the
+same lesson: a property confirmed by every machine you can reach is not thereby a property of the
+platform.
+
+
 ## Decisions
 
 ### D1 — The anchor is told its platform; it does not observe it

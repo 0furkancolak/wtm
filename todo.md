@@ -843,10 +843,14 @@ wtm-windows-arm64.exe
 
 #### Kabul kriterleri
 
-- [ ] Core package platform-independent.
+- [x] Core package platform-independent. — `platform-independence.test.ts` yapısal olarak
+      zorluyor; iki gözden geçirilmiş istisna var, ikisi de tabloda gerekçesiyle yazılı.
 - [x] Platform-specific import'lar platform package dışında minimum.
-- [x] macOS regression yok.
-- [ ] Linux x64 CI green.
+- [ ] macOS regression yok. — **macOS CI kırmızı.** `48b4bd4`'ten beri kırmızıymış ve C1
+      "doğrulandı" diye bildirilirken kimse bakmamış (spec F15). Kalan tek hata runner'ın
+      launchd yol zincirini reddetmesi; teşhis eklendi, doğru mu fazla katı mı bir sonraki
+      koşu söyleyecek.
+- [x] Linux x64 CI green. — `33655596273`, her adım koştu, atlanan yok.
 - [ ] Linux arm64 build doğrulanıyor.
 - [ ] Windows x64 CI green.
 - [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.

@@ -26,7 +26,35 @@ binaries are Developer ID signed and notarized.
 
 ### Added
 
-- **A platform seam, and a Linux backend behind it that has not yet run on Linux.** On macOS
+- **Linux x64 support, proven by CI rather than asserted.** An `ubuntu-latest` x64 job runs `lint`,
+  `typecheck`, the full suite, `test:e2e`, `build`, `package:verify` and `binary:verify` — the same
+  gates as the two macOS legs, in the same order, with nothing skipped, weakened or made
+  platform-conditional to get there — and it is green. It builds the standalone executable as a
+  real ELF and exercises it against a real repository: the daemon serves over its socket end to
+  end, `wtm start` launches and supervises a managed task through the process anchor, and a trusted
+  external adapter runs through its guarded child.
+
+  `package.json` now declares `"os": ["darwin", "linux"]`, with the description and keywords to
+  match, and a test pins that field to the platforms CI actually validates so the manifest cannot
+  drift ahead of the evidence.
+
+  Four things this deliberately does **not** claim. **Nothing is released for Linux** — the release
+  workflow, the artifact names, the signing rule and the Homebrew formula are all still macOS-only,
+  so a Linux install means building from source or using the npm package. **Not arm64**: there is
+  no Linux arm64 runner and no Linux arm64 build. **Not musl or Alpine**: `ubuntu-latest` is glibc.
+  And **the systemd lifecycle is not integration-tested** — a CI runner has no logind user session,
+  so install → enable → start cannot be exercised there, and `HOME` isolation cannot manufacture
+  one. What CI proves about it is that the CLI reaches the systemd backend, drives `systemctl`, and
+  reports an unreachable user manager as a named condition. That is a written limitation rather
+  than a skipped test.
+- `WTM_WATCH_UNAVAILABLE` (exit 2). A registered root that cannot be put under a filesystem watch
+  used to produce an anonymous error and a silent retry five times a second, forever, for a
+  condition only a human can clear. It now carries a code, the reading that produced it, and the
+  remedy for the host: on Linux an `ENOSPC` is the inotify watch budget rather than the disk, and
+  the message names `fs.inotify.max_user_watches`. The retry backs off to one attempt a minute, so
+  a raised limit is picked up without restarting the daemon, and the daemon keeps serving and
+  reconciling while a root is unwatched.
+- **A platform seam: the operating system is a parameter, not an assumption.** On macOS
   nothing about this release behaves differently: the launchd lifecycle, the paths, the socket and
   the process identity are the same code, moved. What changed is that the operating system is now a
   parameter. A new `@wtm/platform` package answers four questions — where files go, how long a Unix
@@ -38,15 +66,12 @@ binaries are Developer ID signed and notarized.
   (`XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, honoured only when absolute), the
   108-byte `sun_path` limit, a systemd user unit named per `HOME` with the `systemctl --user`
   command set that drives it, and process identity read from `/proc/<pid>/stat` rather than `ps`.
-  It is exercised against captured kernel fixtures and an injected fake `systemctl`, exactly the
-  way the launchd backend has always been exercised against a fake `launchctl`.
+  Its unit tests run against captured kernel fixtures and an injected fake `systemctl`, exactly the
+  way the launchd backend has always been tested against a fake `launchctl`; the CI job above is
+  what runs it on a kernel.
 
-  **That is not a claim that WTM runs on Linux.** There is no Linux CI job, no Linux binary, and
-  nothing here has ever run on a Linux kernel; `package.json` still declares `"os": ["darwin"]` for
-  that reason, and its description and keywords still say macOS. The next increment runs it on a
-  kernel and changes all three together with the evidence. `README.md` states the position, and
   `docs/05-daemon-and-macos-runtime.md` — whose filename is now historical — documents both
-  backends and marks what is unverified.
+  backends.
 - `wtm doctor` reports a `platform` check: the selected runtime, the service manager it will use,
   the resolved data, log and socket roots, and the socket address limit in force. It is `pass` or
   `error`, and `error` only when WTM has no backend for the host.
@@ -95,6 +120,53 @@ binaries are Developer ID signed and notarized.
 
 ### Fixed
 
+- **The file-identity check that guards every destructive operation did not hold on Linux.** WTM
+  answers "is the object at this path still the object I inspected?" by comparing `(dev, ino, uid)`,
+  in fourteen files: the destructive-operation core behind `wtm remove`, the resource sandbox, the
+  GC's quarantine protocol, the adapter trust store, and the service publisher's transactional
+  rename. APFS never hands a deleted inode number back; ext4 and tmpfs hand it back immediately, so
+  delete-then-recreate at the same path produced an object the check called identical — and for the
+  precise attack it exists to stop, substituting a file between check and use, it returned the wrong
+  answer. The predicate now holds an open descriptor on the pinned object and additionally requires
+  the link count to be non-zero, so an object that was unlinked can never be mistaken for one that
+  was not, whatever number the filesystem reissues. Six tests had been asserting exactly this and
+  were failing on Linux; not one of them was relaxed. A measurement test records what the running
+  filesystem actually does with a reused inode, so this stops being an inference on either platform.
+- **`systemctl --user` could never have worked, on any Linux host.** The runner passed `execFile` an
+  `env` of five names, which *replaces* the environment rather than extending it, so `systemctl`
+  lost `$DBUS_SESSION_BUS_ADDRESS` and `$XDG_RUNTIME_DIR` and could not find the user bus. The bus
+  variables and the unit-lookup variables (`HOME`, `XDG_CONFIG_HOME`) now pass through from the WTM
+  process, and a name that is absent stays absent — sd-bus reads an empty
+  `DBUS_SESSION_BUS_ADDRESS` as a configured address that does not work, which is worse than none.
+- An unreachable user service manager is one named condition on both platforms. Linux reported it as
+  `WTM_DAEMON_REQUEST_FAILED` at exit 1; it is now `WTM_DAEMON_UNAVAILABLE` at exit 4 with the
+  message `The systemd user domain is unavailable.` — the same code and status macOS has reported
+  for the identical launchd condition since before the seam existed. systemd does not spend an exit
+  status on a bus failure, so the command runner classifies it, in the layer that already knows
+  `systemctl` 5 and `launchctl` 113 both mean "no such service". macOS never produces the new
+  classification, so its command sequence is byte-identical.
+- External adapters could not run on Linux. The adapter executes from an unlinked private copy
+  addressed as `/dev/fd/<n>`, and being anonymous is the security guarantee; on Linux `/dev/fd` is
+  `/proc/self/fd`, whose magic symlinks read `"… (deleted)"` once the file is unlinked, so Node's
+  ESM resolver failed its `realpath` while `stat` and `open` on the same descriptor still worked.
+  The child exited 1 with empty stderr and every failure flattened into `External adapter request
+  failed.` Twenty-five tests were red and none of them carried any information about why.
+- `wtm remove --help` constructed a daemon client and dialled the socket in order to print static
+  text. Nothing downstream of `--help` can reach the daemon, so the connection had no reader even
+  when it succeeded — and its silence is why the behaviour survived: two tests passed only because
+  the developer's machine happened to have a daemon running, and turned red on the identical commit
+  once it stopped. Help invocations no longer count as runtime invocations, pinned by a test that
+  counts connections arriving at a real listening socket.
+- On Linux, a `/proc` entry that cannot be read is treated as "not a member of this group" rather
+  than failing the whole scan. `ENOENT` was already handled — a process exiting mid-walk is
+  ordinary — but an `EACCES` or `EPERM` on another user's entry made every group inspection fail,
+  and a failed inspection stops the supervisor from killing a group it should kill. macOS has had
+  the right semantics for free, because `ps` simply omits rows it may not see.
+- `linuxSocketPathLimitBytes = 108` is measured rather than cited. On the Linux job a Node child
+  sweeps address lengths from 96 to 128 bytes and asserts where `listen` and `connect` draw the
+  line. It is measured on `ubuntu-latest` x64 glibc under Node 24 and nowhere else; what it buys is
+  notice — a kernel or libc that moved the boundary becomes a red build naming the constant instead
+  of a daemon that refuses a path it could have bound.
 - A worktree that had ever run a task could not be removed. The resources WTM itself materialized in
   it are untracked content to Git, so the first safety gate refused before the cleanup stage that
   exists to delete them — `cleanup.collectedResources` could only ever be `0`. That gate now defers

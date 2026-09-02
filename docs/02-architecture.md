@@ -3,16 +3,16 @@
 ## High-level model
 
 ```text
-                            macOS
+              macOS │ Linux   (one PlatformRuntime, selected at startup)
                               │
-                           launchd
+             launchd │ systemd --user
                               │
                              wtmd
                               │
              ┌────────────────┼─────────────────┐
              │                │                 │
           fs.watch           Git             SQLite
-        (FSEvents dirs)   porcelain state      state
+      (FSEvents/inotify)  porcelain state      state
              │                │                 │
              └────────────────┼─────────────────┘
                               │
@@ -49,7 +49,7 @@ packages/
 ├── protocol/        # shared types, JSON schemas, error codes
 ├── core/            # config, Git model, planning, analysis, ownership
 ├── adapters/        # built-in adapter implementations
-├── daemon/          # watcher, IPC server, launchd lifecycle, supervisor
+├── daemon/          # watcher, IPC server, service lifecycle, supervisor
 ├── cli/             # command parsing and human/JSON presentation
 └── testkit/         # temporary Git repositories and fixture helpers
 
@@ -77,7 +77,7 @@ The core owns:
 - safe deletion policy;
 - state transitions.
 
-Core modules do not directly perform UI rendering and do not stay coupled to launchd.
+Core modules do not directly perform UI rendering and are not coupled to any one operating system: everything platform-specific lives behind `@wtm/platform`, and a structural test fails if a platform-specific import, literal or spawned command re-enters `core` or `protocol`.
 
 ## Daemon responsibilities
 
@@ -88,7 +88,7 @@ The daemon owns:
 - the Unix socket server;
 - persistent managed-process supervision;
 - log redirection/rotation;
-- launchd installation state;
+- service installation state (launchd or the systemd user manager);
 - background cleanup retries.
 
 The daemon never interprets a framework-specific lockfile itself; it calls the core/adapter layer.
@@ -183,7 +183,7 @@ This ownership is the key to deterministic cleanup.
 
 ## Why TypeScript first
 
-Node's native filesystem watcher uses FSEvents for directory watches on macOS, so the V1 watcher can be implemented without a Rust/Swift helper. TypeScript also lowers contribution cost and keeps protocol/CLI types shared.
+Node's native filesystem watcher uses FSEvents for directory watches on macOS and inotify on Linux, so the V1 watcher can be implemented without a Rust/Swift helper on either. TypeScript also lowers contribution cost and keeps protocol/CLI types shared.
 
 Rust is intentionally reserved for a measured performance problem, not used preemptively. A native helper can later replace a narrow interface such as watcher/process inspection without changing the core contract.
 
@@ -192,7 +192,7 @@ Rust is intentionally reserved for a measured performance problem, not used pree
 - external adapter crash: adapter call fails; daemon remains alive;
 - malformed adapter JSON: rejected by protocol schema;
 - Git command failure: repository becomes degraded, other repositories continue;
-- daemon crash: launchd restarts it and startup reconciliation repairs state;
+- daemon crash: the service manager restarts it — launchd's `KeepAlive`, systemd's `Restart=on-failure` — and startup reconciliation repairs state;
 - stale process record: identity verification prevents killing unrelated PIDs;
 - unavailable Docker: cleanup remains pending and retries later;
 - invalid config: affected workspace is degraded; other registered workspaces remain operational.

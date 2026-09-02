@@ -1,7 +1,7 @@
 # WTM — Worktree Runtime Manager
 
 Status: **Implemented and pre-release — no published artifact or release tag yet**  
-Primary platform: **macOS**  
+Platforms: **macOS (arm64, x64) and Linux x64 — both green in CI; releases are macOS-only**  
 Primary implementation language: **TypeScript**  
 Runtime baseline: **Node.js 24 LTS**  
 Development tooling: **Bun 1.3+**
@@ -38,7 +38,7 @@ WTM is not a replacement for Git, Make, Bun, npm, pnpm, uv, Cargo, Go, Gradle, D
 - TypeScript first; Rust only after profiling proves a native helper is necessary.
 - Node 24 LTS is the runtime baseline for V1.
 - Bun 1.3+ manages the development workspace, dependencies, scripts and tests.
-- macOS directory watching uses Node's native `fs.watch`, which maps directory watches to FSEvents.
+- Directory watching uses Node's native `fs.watch` — FSEvents on macOS, inotify on Linux — rather than a native helper.
 - `git worktree list --porcelain -z` is the source of truth for worktree topology.
 - SQLite stores persistent identities, resource ownership, port assignments and process metadata.
 - CLI and daemon communicate over a Unix domain socket.
@@ -53,7 +53,7 @@ WTM is not a replacement for Git, Make, Bun, npm, pnpm, uv, Cargo, Go, Gradle, D
 2. `02-architecture.md` — system architecture and component responsibilities.
 3. `03-configuration-spec.md` — TOML schema, inheritance and templating.
 4. `04-cli-reference.md` — commands and local/global semantics.
-5. `05-daemon-and-macos-runtime.md` — platform runtimes, service managers, filesystem watching, IPC and recovery.
+5. `05-daemon-and-macos-runtime.md` — platform runtimes (launchd and systemd), service managers, filesystem watching, IPC and recovery. The filename is historical; the content covers both platforms.
 6. `06-adapter-protocol.md` — language/framework-independent adapter architecture.
 7. `07-process-port-runtime.md` — port leases, process groups and runtime ownership.
 8. `08-storage-cache-gc.md` — dependency storage, APFS strategies and GC.
@@ -84,6 +84,6 @@ The first usable release should support:
 - safe `wtm remove` preflight;
 - Bun/pnpm/npm, uv, Cargo, Go, Make and Docker Compose built-in detection;
 - the Agent Skill;
-- launchd installation.
+- launchd installation (a systemd user unit is the Linux equivalent).
 
 Everything else can evolve without breaking this foundation.

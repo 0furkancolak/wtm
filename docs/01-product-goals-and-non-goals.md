@@ -105,7 +105,7 @@ WTM may print suggested commands, but destructive or publication decisions stay 
 
 ### N6 — Supporting every operating system in V1
 
-The first supported platform is macOS. Architecture should avoid needless macOS coupling in pure core modules so Linux can be added later.
+macOS was the first supported platform, and Linux x64 is now supported alongside it: the operating system is a parameter behind one platform seam, and the same CI gates run on both. Pure core modules hold no platform coupling at all, which a structural test enforces. Windows is not supported and is refused with a coded error rather than half-working. Linux arm64, musl and Alpine are unclaimed, and nothing is released for Linux yet.
 
 ### N7 — Solving build caching better than native build systems
 

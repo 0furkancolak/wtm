@@ -1,13 +1,13 @@
 # WTM — Worktree Runtime Manager
 
-**Run many Git worktrees at once, on macOS, without port collisions, `.env` copying, or losing uncommitted work.**
+**Run many Git worktrees at once, on macOS and Linux, without port collisions, `.env` copying, or losing uncommitted work.**
 
 WTM is a local-first runtime and safety manager for Git worktrees. It discovers your
 repositories and linked worktrees, resolves per-worktree tasks and environments, supervises
 long-running processes, allocates endpoints, and refuses unsafe worktree removal.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#platform-support)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20x64-lightgrey.svg)](#platform-support)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D24-green.svg)](#requirements)
 [![JSON output](https://img.shields.io/badge/output-stable%20JSON-orange.svg)](#json-output-for-scripts-and-agents)
 
@@ -70,14 +70,16 @@ context-aware orchestration layer around them.
 ### From source, today (recommended while pre-release)
 
 Requires [Bun](https://bun.sh) 1.3+ and Node.js 24+ to build. The result is a single
-standalone executable that needs neither afterwards.
+standalone executable that needs neither afterwards. This is the route on Linux: the published
+release archives are macOS-only, and building from source is what CI itself does on
+`ubuntu-latest`.
 
 ```bash
 git clone https://github.com/0furkancolak/wtm.git && cd wtm && make install
 ```
 
 `make install` builds the executable, installs it into `~/.local/bin`, and registers the
-per-user daemon. For a shared prefix:
+per-user daemon — a LaunchAgent on macOS, a systemd user unit on Linux. For a shared prefix:
 
 ```bash
 sudo make install PREFIX=/usr/local
@@ -89,7 +91,7 @@ To install the binary alone and register no service:
 make install WITH_DAEMON=0
 ```
 
-### Homebrew (not available yet)
+### Homebrew (macOS, not available yet)
 
 The formula is rendered and committed only for stable tags, and a stable release requires a
 Developer ID signed executable. Until one is published there is no tap to add:
@@ -99,6 +101,11 @@ brew tap 0furkancolak/wtm && brew install 0furkancolak/wtm/wtm
 ```
 
 ### Direct macOS binary
+
+The release archives are macOS-only — `wtm-darwin-arm64` and `wtm-darwin-x64`. There is no Linux
+download: nothing is published for Linux yet, and adding it means changing the release workflow,
+the artifact names, the signing rule and the Homebrew formula together, which is a later
+increment. Install on Linux from source or from npm.
 
 Select the archive matching your architecture, verify it against `SHA256SUMS`, then extract:
 
@@ -147,6 +154,9 @@ npm install --global worktree-runtime-manager@next
 The npm package carries no runtime of its own and uses the Node.js you already have. The
 standalone executable embeds one, which is why it is roughly 97 MB on disk.
 
+The package declares `"os": ["darwin", "linux"]`, so it installs on both and refuses elsewhere
+rather than installing and then failing to start.
+
 ## Quick start
 
 Five commands, from nothing to a resolved task. They work in a clean workspace with no `Makefile`
@@ -183,9 +193,11 @@ wtm init --yes
 ```
 
 `init` walks the tree (five levels deep by default), records every repository and linked
-worktree it finds, and writes a `wtm.toml` next to itself. It registers the workspace in
-WTM's own state under `~/Library/Application Support/WTM`; nothing outside that directory
-and the `wtm.toml` is modified.
+worktree it finds, and writes a `wtm.toml` next to itself. It registers the workspace in WTM's own
+state directory — `~/Library/Application Support/WTM` on macOS, `~/.local/state/wtm` on Linux
+(`$XDG_STATE_HOME/wtm` when that is set to an absolute path). Nothing outside that directory and
+the `wtm.toml` is modified. `wtm doctor`'s `platform` check prints the roots in force, so you never
+have to guess which layout you are on.
 
 A workspace root need not itself be a Git repository. A directory holding ten sibling
 repositories, each with its own worktrees, is a valid workspace.
@@ -485,9 +497,9 @@ tables the file does not already define. Anything already decided is reported an
 ## Configuration
 
 `wtm.toml` lives at the workspace root — the directory `wtm init` was run in, which in a
-multi-repository setup is above all of them. A user-level
-`~/Library/Application Support/WTM/config.toml` is merged underneath it, and a repository may
-override anything in its own `.wtm.toml`.
+multi-repository setup is above all of them. A user-level config file is merged underneath it —
+`~/Library/Application Support/WTM/config.toml` on macOS, `~/.config/wtm/config.toml` on Linux —
+and a repository may override anything in its own `.wtm.toml`.
 
 ```toml
 version = 1
@@ -530,8 +542,8 @@ schema is in [docs/03-configuration-spec.md](docs/03-configuration-spec.md).
 ## The daemon
 
 Background supervision (`start`, `stop`, `restart`, `ps`, `logs`) needs a per-user daemon,
-registered with the platform's own service manager — a LaunchAgent under launchd on macOS.
-`make install` registers it for you.
+registered with the platform's own service manager — a LaunchAgent under launchd on macOS, a
+systemd user unit driven by `systemctl --user` on Linux. `make install` registers it for you.
 
 ```bash
 wtm daemon install     # register the service
@@ -544,7 +556,28 @@ wtm daemon uninstall   # remove it
 and the tool that loads it.
 
 Foreground commands — `status`, `analyze`, `resolve`, `run`, `exec`, `init` — work without
-it. Installing WTM never starts your tasks; only `wtm start` does.
+the daemon on either platform. Installing WTM never starts your tasks; only `wtm start` does.
+
+### On Linux: `systemctl --user` needs a user session bus
+
+`systemctl --user` talks to a per-user systemd manager over `$DBUS_SESSION_BUS_ADDRESS`, falling
+back to `$XDG_RUNTIME_DIR`. On an ordinary desktop or a login that goes through `pam_systemd` there
+is one and this is invisible. Where there is not — many containers, an `su` into another account, a
+host with lingering disabled — WTM cannot register a service, and says so by name:
+
+```text
+The systemd user domain is unavailable.
+```
+
+That is `WTM_DAEMON_UNAVAILABLE`, exit 4, and it is the same code and the same exit status macOS
+reports when launchd has no user domain to talk to. The usual remedy is to give the account a user
+manager that does not depend on a login session:
+
+```bash
+loginctl enable-linger "$USER"
+```
+
+None of this affects the foreground commands above.
 
 ## JSON output for scripts and agents
 
@@ -603,7 +636,7 @@ Full detail: [docs/04-cli-reference.md](docs/04-cli-reference.md).
 | `make install` | Build, install to `~/.local/bin`, register the daemon |
 | `make reinstall` | Rebuild and reinstall |
 | `make uninstall` | Unregister the daemon and remove the executable |
-| `make purge` | Uninstall, then delete this user's WTM state |
+| `make purge` | Uninstall, then delete this user's WTM state (macOS layout only) |
 | `make where` | Which `wtm` is on PATH, its version, the daemon |
 | `make check` | Lint, typecheck, unit suites |
 | `make verify` | The full release gate |
@@ -634,38 +667,46 @@ WTM is pre-release and honest about its edges. Every command carries a real payl
 | Platform | State |
 | --- | --- |
 | **macOS** (Apple silicon and Intel) | First-class. Built, tested and released here; the daemon runs under launchd. |
-| **Linux** | **In progress, and not usable yet.** The backend is written and unit-tested — XDG paths, the `sizeof(sun_path)` limit, the systemd user unit, the `systemctl --user` command set, `/proc` process identity — but it has never run on a Linux kernel. |
+| **Linux x64** (glibc) | Supported and tested. Every CI gate the macOS legs run — lint, typecheck, the full suite, the end-to-end suite, the build, the package check and the standalone-executable check — runs on `ubuntu-latest` and is green. **Nothing is released for Linux yet**: install from source or from npm. |
+| **Linux arm64, musl/Alpine** | Unproven. No runner, no build, no claim. |
 | **Windows** | Not started. WTM refuses to run with `WTM_PLATFORM_UNSUPPORTED`. |
 
-Some detail on the Linux row, because "in progress" covers too much ground on its own.
-
-WTM's operating system is now a parameter rather than an assumption: one `PlatformRuntime` answers
+WTM's operating system is a parameter rather than an assumption: one `PlatformRuntime` answers
 where files go, how long a socket address may be, how to recognise a process, and how to register a
 service. The core packages hold no macOS-specific import, literal or command, and a structural test
-fails if one re-enters them. A complete second implementation of that runtime exists for Linux, and
-it is exercised the same way the macOS one is: against captured kernel fixtures and injected
-command runners.
+fails if one re-enters them.
 
-That is evidence that the decisions are right. It is not evidence that WTM starts. No Linux CI job
-exists, no Linux binary is built, and nothing here has ever run on a Linux kernel — so nobody knows
-yet whether `systemctl --user` bootstraps this daemon, whether `sizeof(sun_path)` really is the 108
-bytes the header says, or whether an inotify-backed watcher behaves the way an FSEvents-backed one
-does. Getting those answers means running it on Linux, which is the next increment.
+What the Linux job proves, on a real kernel rather than against fixtures: `wtm start` launches and
+supervises a managed task, with the process anchor and the platform's `/proc` reader agreeing on
+process identity; the daemon serves over its Unix socket end to end; a trusted external adapter
+runs through its guarded child; `sizeof(sun_path)` is 108 bytes, bound and refused at the boundary
+rather than quoted from a header; and the same standalone executable the macOS legs build is built
+as an ELF and exercised against a real repository.
 
-Until then this package still declares `"os": ["darwin"]`, and its description and keywords still
-say macOS. That is deliberate: an npm package that installs on Linux and then does not start is a
-worse outcome than one that refuses to install. All three change when there is a green Linux CI run
-to justify them.
+Two limits are worth stating rather than leaving to be discovered:
+
+- **The systemd lifecycle is not integration-tested.** A CI runner has no logind user session, so
+  install → enable → start cannot be exercised there and no amount of `HOME` isolation helps — a
+  running user manager was started with the login `HOME`. What CI does prove is that the CLI
+  reaches the systemd backend, drives `systemctl`, and reports an unreachable user manager as a
+  named, coded condition rather than as a generic failure. See
+  [the daemon](#on-linux-systemctl---user-needs-a-user-session-bus).
+- **`launchctl` and launchd are macOS-only**, and so is everything about signing, notarization and
+  Homebrew in this README.
+
+The package declares `"os": ["darwin", "linux"]`, pinned by a test to the platforms CI actually
+validates, so the manifest cannot drift ahead of the evidence.
 
 ## Requirements
 
-- **macOS** — the only platform WTM runs on today; see [Platform support](#platform-support)
+- **macOS, or Linux x64 with glibc** — see [Platform support](#platform-support)
 - **Node.js 24+** for the npm installation (the standalone executable embeds its own)
 - **Bun 1.3+** to build from source and to run the tests
+- On Linux, a **systemd user manager** for background supervision; foreground commands need none
 
-### Disk access
+### Disk access (macOS)
 
-On macOS, `make install` needs no permission you have to give by hand, and asks for none up
+`make install` needs no permission you have to give by hand, and asks for none up
 front. A LaunchAgent reads the same files your shell does; the ordinary case is that it simply
 works.
 
@@ -692,12 +733,20 @@ make uninstall   # unregister the daemon, remove the executable
 make purge       # the above, plus this user's WTM state and configuration
 ```
 
+`make purge` deletes the macOS state directory only; on Linux, remove the directories below by
+hand after `make uninstall`.
+
 By hand, if you installed some other way:
 
 ```bash
 wtm daemon uninstall
 rm -f "$(command -v wtm)"
-rm -rf "$HOME/Library/Application Support/WTM"
+
+# macOS
+rm -rf "$HOME/Library/Application Support/WTM" "$HOME/Library/Logs/WTM"
+
+# Linux
+rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/wtm" "${XDG_CONFIG_HOME:-$HOME/.config}/wtm"
 ```
 
 Removing WTM never touches your repositories or worktrees.
