@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, link, lstat, mkdir, readdir, rename, rmdir, unlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type { ResourceGuard } from './guard';
+import { pinInode, type InodePin, type ResourceGuard } from './guard';
 
 export interface ResourceSandboxIdentity {
   id: string;
@@ -188,6 +188,19 @@ export async function applyGcPlan(plan: GcPlan, options: ApplyGcOptions): Promis
     let phase: 'validation' | GcJournalPhase = 'validation';
     let quarantinePath: string | undefined;
     let leaseToken: string | undefined;
+    /**
+     * A live reference to the object this iteration validated, held until the quarantine move.
+     *
+     * `assertCandidateIdentity` compares `(dev, ino, uid)`, which stops being an identity the
+     * moment the object it describes is deleted: on ext4 and tmpfs the number is reissued at once,
+     * so the `rm` and re-create that `beforeQuarantine` performs handed the old checks a stranger
+     * they called the candidate, and the GC deleted it. The pin is what makes the number mean
+     * something again, and `holds` refuses on the unlink itself. See `InodePin`.
+     *
+     * It is released before the deletion, not after: past the quarantine move WTM is unlinking the
+     * object on purpose, and a liveness check there would refuse the GC's own work.
+     */
+    let pin: InodePin | null = null;
     try {
       const authorization = await options.guard.authorize(candidate.path, 'delete');
       const current = await lstatIfExists(candidate.path);
@@ -228,6 +241,10 @@ export async function applyGcPlan(plan: GcPlan, options: ApplyGcOptions): Promis
         continue;
       }
       assertCandidateIdentity(candidate, current);
+      pin = await pinInode(candidate.path);
+      if (pin === null || !await pin.holds(current)) {
+        throw cleanupFailure('A GC candidate could not be held for the duration of its removal.', { path: candidate.path });
+      }
       await options.guard.revalidate(authorization);
       if (dryRun) {
         items.push({ storageObjectId: candidate.storageObjectId, path: candidate.path, outcome: 'would-delete' });
@@ -267,7 +284,12 @@ export async function applyGcPlan(plan: GcPlan, options: ApplyGcOptions): Promis
       await options.guard.revalidate(authorization);
       const beforeMove = await lstatIfExists(candidate.path);
       if (beforeMove === null) throw cleanupFailure('GC target disappeared before quarantine.', { path: candidate.path });
-      assertCandidateIdentity(candidate, beforeMove);
+      assertCandidateShape(candidate, beforeMove);
+      // The tuple comparison for this boundary lives inside `holds` and nowhere else, so that
+      // breaking the pin turns this red here and not only on the Linux runner.
+      if (!await pin.holds(beforeMove)) {
+        throw cleanupFailure('The GC candidate was replaced after it was validated.', { path: candidate.path });
+      }
 
       const quarantineAuthorization = await options.guard.authorize(quarantinePath, 'write');
       await options.guard.revalidate(quarantineAuthorization);
@@ -357,6 +379,8 @@ export async function applyGcPlan(plan: GcPlan, options: ApplyGcOptions): Promis
           || (quarantinePath === undefined ? false : await lstatIfExists(quarantinePath).then((stat) => stat !== null).catch(() => true));
         await options.lease.release(candidate.storageObjectId, leaseToken, quarantined).catch(() => {});
       }
+    } finally {
+      await pin?.close();
     }
   }
   return { dryRun, items };
@@ -747,6 +771,21 @@ function assertCandidateIdentity(candidate: GcCandidate, stat: Awaited<ReturnTyp
     || (stat.isFile() && stat.nlink !== 1)
   ) {
     throw cleanupFailure('GC candidate identity changed or is unsafe.', { path: candidate.path });
+  }
+}
+
+/**
+ * Everything `assertCandidateIdentity` checks except the identity itself.
+ *
+ * Split out for the one boundary that has a pin: the kind, ownership and link-count checks are
+ * still this function's, and the "is it the same object" half is delegated to the pin, which is a
+ * stronger answer than the tuple and the only one that holds on a filesystem that reissues inode
+ * numbers.
+ */
+function assertCandidateShape(candidate: GcCandidate, stat: Awaited<ReturnType<typeof lstat>>): void {
+  const expectedKind = candidate.kind === 'directory' ? stat.isDirectory() : stat.isFile();
+  if (!expectedKind || stat.isSymbolicLink() || stat.uid !== candidate.uid || (stat.isFile() && stat.nlink !== 1)) {
+    throw cleanupFailure('The GC candidate is no longer a safe removal target.', { path: candidate.path });
   }
 }
 

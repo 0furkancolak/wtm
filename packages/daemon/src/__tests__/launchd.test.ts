@@ -28,6 +28,25 @@ async function fakeHome(): Promise<string> {
   return home;
 }
 
+/**
+ * Runs an external tool that this test requires, or fails saying the tool is missing.
+ *
+ * `spawnSync` reports a binary that does not exist by setting `error` and leaving `status` unset,
+ * so an assertion written straight against `status` compares nothing to zero and blames the
+ * artifact for the absence of the validator. That is exactly how the `plutil` assertion above read
+ * on the first Linux runner. Every external tool in this file goes through here so the failure
+ * always names which tool, and so a test that should have been skipped fails loudly rather than
+ * quietly claiming the thing it was checking is broken.
+ */
+function runRequiredTool(tool: string, args: readonly string[]): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync(tool, [...args], { encoding: 'utf8' });
+  if (result.error !== undefined) throw new Error(`${tool} is not available on this host: ${String(result.error)}`);
+  if (result.status === null || result.status === undefined) {
+    throw new Error(`${tool} produced no exit status (signal ${String(result.signal)})`);
+  }
+  return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+}
+
 describe('launchd plist', () => {
   test('renders a deterministic shell-free plist and XML-escapes every dynamic value', () => {
     expect(generateLaunchdPlist({
@@ -92,7 +111,21 @@ describe('launchd plist', () => {
     })).toThrow('executable must be absolute');
   });
 
-  test('produces a plist accepted by the macOS property-list validator', async () => {
+  /**
+   * `/usr/bin/plutil` ships with macOS and has no Linux equivalent -- nothing on Linux validates an
+   * Apple property list, and there is no reason to want one: launchd is the only consumer of this
+   * artifact and launchd only exists on macOS. So this skips on the tool, not on the platform. The
+   * distinction is the point of the name: a guard that read `process.platform !== 'darwin'` would
+   * be indistinguishable from the ones that hide a genuine Linux gap, and this is not one.
+   *
+   * It skipped for the wrong reason first. `spawnSync` on a binary that is not there returns
+   * without a status, so `expect(result.status).toBe(0)` compared nothing to zero and reported a
+   * plist that failed validation -- when what had happened was that the validator was absent.
+   * `runMacosTool` below is why no assertion in this file can make that mistake again.
+   */
+  const plutilIsInstalled = process.platform === 'darwin';
+
+  test.skipIf(!plutilIsInstalled)('produces a plist accepted by /usr/bin/plutil, the macOS property-list validator', async () => {
     const home = await fakeHome();
     const path = join(home, 'agent.plist');
     await writeFile(path, generateLaunchdPlist({
@@ -103,7 +136,7 @@ describe('launchd plist', () => {
       stderrPath: join(home, 'daemon.error.log'),
     }));
 
-    const result = spawnSync('/usr/bin/plutil', ['-lint', '--', path], { encoding: 'utf8' });
+    const result = runRequiredTool('/usr/bin/plutil', ['-lint', '--', path]);
     expect(result.status, result.stderr || result.stdout).toBe(0);
   });
 });
@@ -486,7 +519,13 @@ describe('launchd lifecycle', () => {
       },
     });
 
-    await expect(lifecycle.uninstall()).rejects.toMatchObject({ code: 'UNSAFE_LAUNCHD_PATH' });
+    // The message, not just the code: on APFS the `(dev, ino, uid)` tuple alone would also have
+    // refused this, so a test that asserted only the outcome could not tell whether the refusal
+    // came from the check that holds on Linux. Naming the pin's message is what makes the fix
+    // falsifiable on this machine -- weaken `InodePin.holds` and this goes red here.
+    await expect(lifecycle.uninstall()).rejects.toMatchObject({
+      code: 'UNSAFE_LAUNCHD_PATH', message: 'launchd plist was replaced before removal',
+    });
     expect(await readFile(paths.plistPath, 'utf8')).toBe('replacement');
   });
 
@@ -506,7 +545,9 @@ describe('launchd lifecycle', () => {
       },
     });
 
-    await expect(lifecycle.uninstall()).rejects.toMatchObject({ code: 'UNSAFE_LAUNCHD_PATH' });
+    await expect(lifecycle.uninstall()).rejects.toMatchObject({
+      code: 'UNSAFE_LAUNCHD_PATH', message: 'launchd plist was replaced at removal boundary',
+    });
     expect(await readFile(paths.plistPath, 'utf8')).toBe('concurrent-winner');
   });
 
@@ -642,7 +683,9 @@ describe('launchd lifecycle', () => {
       },
     });
 
-    await expect(lifecycle.install()).rejects.toMatchObject({ code: 'UNSAFE_LAUNCHD_PATH' });
+    await expect(lifecycle.install()).rejects.toMatchObject({
+      code: 'UNSAFE_LAUNCHD_PATH', message: 'launchd plist was replaced before replacement',
+    });
     expect(await readFile(paths.plistPath, 'utf8')).toBe('concurrent-winner');
   });
 
@@ -1878,7 +1921,9 @@ describe('launchd lifecycle', () => {
       },
     });
 
-    await expect(contender.install()).rejects.toMatchObject({ code: 'UNSAFE_LAUNCHD_PATH' });
+    await expect(contender.install()).rejects.toMatchObject({
+      code: 'UNSAFE_LAUNCHD_PATH', message: 'restore quarantine was replaced at link boundary',
+    });
     expect(runnerCalled).toBe(false);
     await expect(readFile(paths.plistPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await readFile(quarantinePath, 'utf8')).toBe('foreign-quarantine');
@@ -2087,8 +2132,8 @@ describe('launchd lifecycle', () => {
     const paths = launchdPaths(home);
     await mkdir(paths.agentsDirectory, { recursive: true, mode: 0o700 });
     const lockPath = join(paths.agentsDirectory, `.${paths.label}.operation-lock`);
-    const created = spawnSync('/usr/bin/mkfifo', [lockPath], { encoding: 'utf8' });
-    expect(created.status).toBe(0);
+    const created = runRequiredTool('/usr/bin/mkfifo', [lockPath]);
+    expect(created.status, created.stderr).toBe(0);
     const lifecycle = createLaunchdLifecycle({
       home, platform: 'darwin', programArguments: ['/bin/echo'], lockPollAttempts: 1,
       processInspector: inspector('new-start', 'dead', null),

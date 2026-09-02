@@ -296,10 +296,30 @@ describe('the published definition path', () => {
     const data = envelope.data as Record<string, unknown>;
 
     expect(envelope.command).toBe('daemon status');
-    // Two outcomes are legitimate on a real macOS host: launchd answered about the label for this
-    // HOME, or the user domain was not reachable at all (no GUI session). Both are pinned, so the
-    // branch below cannot quietly stop running.
-    expect(envelope.ok || envelope.errors[0]?.code === 'WTM_DAEMON_UNAVAILABLE').toBe(true);
+    // What this host answered, spelled out instead of collapsed into a boolean.
+    //
+    // The first Linux CI run (33648234137) failed the line below with `Expected: true, Received:
+    // false` and the log then said nothing whatsoever about *which* code came back — the one fact
+    // needed to act on it. This is the only assertion in the file that reads a real service
+    // manager rather than an injected one, so it is the one that cannot afford to throw the
+    // envelope away. Compared as a string, the failure names the code, the message and the command
+    // context the lifecycle attached (`operation`, `exitCode`, `stderr`).
+    const answer = envelope.ok
+      ? 'ok'
+      : `${envelope.errors[0]?.code}: ${envelope.errors[0]?.message} ${JSON.stringify(envelope.errors[0]?.context ?? {})}`;
+    // Two outcomes are legitimate against a real host, and neither of them is a macOS fact:
+    //
+    // - the manager answered about the service published for this HOME, or
+    // - the *user* manager was not reachable at all — no GUI session on macOS, no user bus on
+    //   Linux (a container, an `ssh` session without lingering, a CI runner with no logind
+    //   session).
+    //
+    // The second is a condition users hit on both platforms and WTM already has a name for it:
+    // `LAUNCHD_DOMAIN_UNAVAILABLE` inside the lifecycle, `WTM_DAEMON_UNAVAILABLE` and exit 4 in
+    // the envelope. Accepting a third answer here would mean accepting that on Linux the same
+    // condition arrives as an unclassified `WTM_DAEMON_REQUEST_FAILED` at exit 1, which is the
+    // asymmetry this seam exists to remove — so the pattern stays at two.
+    expect(answer).toMatch(/^(?:ok|WTM_DAEMON_UNAVAILABLE: )/);
     if (envelope.ok) {
       expect(exitCode).toBe(0);
       // The definition the *selected* backend names — a plist under `~/Library/LaunchAgents` on
@@ -311,6 +331,13 @@ describe('the published definition path', () => {
       // answer it by injection on both platforms rather than by whichever host ran this one.
       expect(data.definitionPath)
         .toBe(servicePathsFor(selectPlatformRuntime().service, { home: homedir(), env: process.env }).definitionPath);
+    } else {
+      // The other legitimate answer is only diagnosable if the shell hears it too: exit 4 is what
+      // `docs/04-cli-reference.md` documents for "the daemon is unavailable for an operation that
+      // requires it", and a script that reads statuses rather than JSON is the reader that cannot
+      // tell it from a generic failure otherwise. Written as the literal the table promises, not
+      // as `exitCodeForError(...)`, which would agree with whatever that table said.
+      expect(exitCode).toBe(4);
     }
   });
 

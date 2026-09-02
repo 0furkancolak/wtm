@@ -26,6 +26,8 @@ export {
 } from './darwin';
 export type { LaunchdCommandSet, LaunchdPlistOptions } from './darwin';
 export {
+  inheritedSystemctlEnvironment,
+  isUnreachableManager,
   linuxProcessInspector,
   linuxServiceBackend,
   renderSystemdUnit,

@@ -11,7 +11,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { linuxServiceBackend } from '@wtm/platform/service';
+import { inheritedSystemctlEnvironment, isUnreachableManager, linuxServiceBackend } from '@wtm/platform/service';
 import type { ServiceCommandResult } from '@wtm/platform/service';
 import { createServiceLifecycle, servicePathsFor } from '../service-lifecycle';
 import type { ServiceLifecycleOptions } from '../service-lifecycle';
@@ -370,3 +370,62 @@ function notFound(): ServiceCommandResult {
 function failure(exitCode: number, stderr: string): ServiceCommandResult {
   return { outcome: 'failure', exitCode, stdout: '', stderr };
 }
+
+describe('an unreachable user manager', () => {
+  // `systemctl --user` addresses the user bus through `$DBUS_SESSION_BUS_ADDRESS` or
+  // `$XDG_RUNTIME_DIR`. An ssh session without lingering, a container, and a CI runner all have
+  // neither, and systemd does not spend an exit status on it -- the bus failure exits 1, the same
+  // as a dozen ordinary refusals. Before this was classified, WTM told those users their systemd
+  // *operation* had failed, which sends them to debug a service nothing ever got to ask about.
+  // macOS has reported the same condition as `LAUNCHD_DOMAIN_UNAVAILABLE` since before the seam
+  // existed; this is Linux saying it in the same words.
+  test('is reported as a domain that is unavailable, not as a command that failed', async () => {
+    const home = await fakeHome();
+    // A manager that answers nothing: every verb comes back as an unreachable bus, which is what
+    // `runSystemctl` now classifies from stderr because systemd exits 1 for it.
+    const unreachable: FakeSystemd = {
+      ...fakeSystemd(join(home, '.config', 'systemd', 'user')),
+      runner: async () => ({
+        outcome: 'manager-unreachable',
+        exitCode: 1,
+        stdout: '',
+        stderr: 'Failed to connect to bus: No medium found',
+      }),
+    };
+
+    await expect(lifecycle(home, unreachable).status()).rejects.toMatchObject({
+      code: 'LAUNCHD_DOMAIN_UNAVAILABLE',
+    });
+  });
+
+  test('outranks the not-installed status, because nothing answered about the unit', () => {
+    // systemd's exit 5 means "no such unit". A manager that never answered has said nothing about
+    // the unit at all, so reading 5 as absence there would report a service as uninstalled on the
+    // strength of a bus that was never reached.
+    expect(isUnreachableManager('Failed to connect to bus: No medium found')).toBe(true);
+    expect(isUnreachableManager('Failed to get D-Bus connection: Operation not permitted')).toBe(true);
+    expect(isUnreachableManager('Unit wtm.service could not be found.')).toBe(false);
+    expect(isUnreachableManager('')).toBe(false);
+  });
+
+  test('passes the bus through from this process rather than assuming it', () => {
+    // `execFile`'s `env` replaces the environment instead of extending it, so every name the child
+    // needs has to be named. An empty value is not passed on: sd-bus reads an empty
+    // `DBUS_SESSION_BUS_ADDRESS` as a configured address that does not work, which is a worse
+    // answer than an absent one.
+    const before = { ...process.env };
+    try {
+      process.env.DBUS_SESSION_BUS_ADDRESS = 'unix:path=/run/user/1000/bus';
+      process.env.XDG_RUNTIME_DIR = '/run/user/1000';
+      process.env.XDG_CONFIG_HOME = '';
+      expect(inheritedSystemctlEnvironment()).toMatchObject({
+        DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+        XDG_RUNTIME_DIR: '/run/user/1000',
+      });
+      expect(inheritedSystemctlEnvironment()).not.toHaveProperty('XDG_CONFIG_HOME');
+    } finally {
+      for (const key of Object.keys(process.env)) if (!(key in before)) delete process.env[key];
+      Object.assign(process.env, before);
+    }
+  });
+});

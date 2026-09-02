@@ -24,14 +24,14 @@ describe('guarded adapter child runtime invocation', () => {
     const originalPath = process.env.PATH;
     process.env.PATH = '';
     try {
-      await expect(invokeExternalAdapter({
+      expect(await invokeExternalAdapter({
         adapterId: 'fake',
         executablePath: adapter.executablePath,
         repositoryRoot: adapter.root,
         operation: 'metadata',
         trust,
         runtimeInvocation: developmentRuntimeInvocation(),
-      })).resolves.toEqual(response);
+      })).toEqual(response);
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;

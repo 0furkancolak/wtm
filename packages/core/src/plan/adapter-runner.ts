@@ -36,7 +36,21 @@ export async function runAdapterChild(descriptor: number, executableBasename: st
   });
   registerHooks({
     resolve(specifier, context, nextResolve) {
-      if (specifier === entry || specifier === descriptorPath) return nextResolve(specifier, context);
+      // Short-circuited rather than handed to the default resolver, and this is a platform fact
+      // rather than an optimisation. `finalizeResolution` calls `realpath` on every resolved file
+      // path. On macOS `/dev/fd` is the `fdesc` filesystem and `realpath('/dev/fd/3')` returns
+      // itself, so the default path worked. On Linux `/dev/fd` is `/proc/self/fd`, whose entries
+      // are magic symlinks that read `"/tmp/.../adapter.mjs (deleted)"` once the file is unlinked
+      // -- and the private copy this child executes is *always* unlinked, because being anonymous
+      // is the guarantee. `stat` and `open` on that descriptor still work; only `realpath` fails,
+      // with ENOENT on a path that has " (deleted)" glued to the end of it.
+      //
+      // Reproduced in node:24.18.0-bookworm: readlink reports the deleted suffix, statSync says
+      // isFile, openSync succeeds, realpathSync throws. It cost 25 red tests in the first Linux CI
+      // run, all of them reporting `External adapter request failed.` and nothing else.
+      if (specifier === entry || specifier === descriptorPath) {
+        return { url: entry, format: 'module', shortCircuit: true };
+      }
       if (specifier.startsWith('node:') && isSupportedBuiltin(specifier)) return nextResolve(specifier, context);
       return deny();
     },

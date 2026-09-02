@@ -43,6 +43,20 @@ import {
   sanitizePathEnvironment,
   transactionPathError,
 } from '@wtm/platform/service';
+/**
+ * The identity primitive, shared rather than restated.
+ *
+ * `sameInode` and its 57 call sites below are not the defect the first Linux CI run exposed --
+ * `readSafeManagedFile` is. It opens the plist, describes it, and closes the descriptor before the
+ * description is ever compared against anything. A description of an object is forgeable on a
+ * filesystem that reissues inode numbers; a reference to one is not. Holding the descriptor across
+ * the check-then-use window makes every one of those 57 comparisons true again without editing a
+ * single one, and gives the boundaries below a positive answer -- `nlink === 0` -- for the case the
+ * tuple cannot see. `@wtm/core/resources/guard` owns the primitive because the resource sandbox
+ * needed exactly the same repair; the alternative was the same twenty lines in two packages, and
+ * a duplicated safety predicate is how the two halves drift apart.
+ */
+import { pinInode, type InodePin } from '@wtm/core/resources/guard';
 import type {
   LegacyServiceMigration,
   ManagedDirectory,
@@ -274,11 +288,24 @@ export function createServiceLifecycle(options: ServiceLifecycleOptions): Servic
   });
 
   const commandError = (operation: string, result: ServiceCommandResult): ServiceLifecycleError =>
-    new ServiceLifecycleError(
-      'LAUNCHD_COMMAND_FAILED',
-      `${backend.commandName} ${operation} failed.`,
-      commandContext(operation, result),
-    );
+    // Every operation funnels through here, which is why the unreachable-manager case is answered
+    // here rather than at each of the dozen call sites. A manager that never answered has not
+    // failed at the thing it was asked to do; saying `${backend.commandName} print failed` sends
+    // the reader to debug a service nobody ever got to ask about. macOS reached this conclusion
+    // through `printDomain` and had a code for it since before the seam existed -- Linux was
+    // reporting the identical condition as an unclassified failure at exit 1, where macOS reports
+    // it as `WTM_DAEMON_UNAVAILABLE` at exit 4.
+    result.outcome === 'manager-unreachable'
+      ? new ServiceLifecycleError(
+        'LAUNCHD_DOMAIN_UNAVAILABLE',
+        backend.domainUnavailableMessage,
+        commandContext(operation, result),
+      )
+      : new ServiceLifecycleError(
+        'LAUNCHD_COMMAND_FAILED',
+        `${backend.commandName} ${operation} failed.`,
+        commandContext(operation, result),
+      );
 
   /** The manager saying it does not know this service, however it chose to say it. */
   const isAbsentResult = (result: ServiceCommandResult): boolean => result.outcome === 'not-found';
@@ -1250,6 +1277,15 @@ async function publishSafeManagedFile(
   let handle: FileHandle | null = null;
   let ownedTemporary: FileIdentity | undefined;
   let quarantined: FileIdentity | undefined;
+  // Held for as long as `existing.identity` is going to be believed, and acquired immediately
+  // before the `try` that releases it. Without it, a racer that deletes the old definition and
+  // writes its own at the same path hands every boundary below an object the tuple calls
+  // identical, and the publication quarantines and replaces the winner instead of refusing.
+  const existingPin = existing === null ? null : await pinInode(path);
+  if (existing !== null && (existingPin === null || !await existingPin.holds(existing.identity))) {
+    await existingPin?.close();
+    throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd plist was replaced before publication');
+  }
   try {
     if (transaction !== undefined) {
       await transaction.assertOwned();
@@ -1299,13 +1335,13 @@ async function publishSafeManagedFile(
       await hook?.('before-replace-move', path);
       await assertDirectoryIdentity(directory, parent, uid, scope.serviceDirectoryOwnerOnly);
       current = await readSafeManagedFile(scope, path, uid);
-      if (current === null || !sameFileIdentity(existing.identity, current.identity)) {
-        throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd plist changed before replacement');
+      if (current === null || !await pinStillHolds(existingPin, current.identity)) {
+        throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd plist was replaced before replacement');
       }
       await transaction?.assertOwned();
       const exactReplacementSource = await readSafeManagedFile(scope, path, uid);
-      if (exactReplacementSource === null || !sameFileIdentity(existing.identity, exactReplacementSource.identity)) {
-        throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd plist changed at replacement move');
+      if (exactReplacementSource === null || !await pinStillHolds(existingPin, exactReplacementSource.identity)) {
+        throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd plist was replaced at replacement move');
       }
       await rename(path, quarantine);
       await assertDirectoryIdentity(directory, parent, uid, scope.serviceDirectoryOwnerOnly);
@@ -1447,6 +1483,8 @@ async function publishSafeManagedFile(
     }
     if (error instanceof ServiceLifecycleError) throw error;
     throw pathError('Could not publish launchd plist safely', error);
+  } finally {
+    await existingPin?.close();
   }
 }
 
@@ -1461,60 +1499,86 @@ async function removeSafeManagedFile(
   const snapshot = await readSafeManagedFile(scope, path, uid);
   if (snapshot === null) return;
   if (expected !== undefined) assertSameFileIdentity(expected, snapshot.identity);
-  const directory = resolve(path, '..');
-  const parent = await assertSafeDirectory(directory, uid, scope.serviceDirectoryOwnerOnly);
-  await hook?.('before-remove', path);
-  let before = await readSafeManagedFile(scope, path, uid);
-  if (before === null || !sameFileIdentity(snapshot.identity, before.identity)) {
+  // Held from the inspection to the quarantine move, which is the whole of the window a substituted
+  // plist has to arrive in. Every boundary below asks the pin, not a second `lstat`: the tuple
+  // comparison for this operation lives in one place so that breaking it is visible here, on the
+  // platform where the tuple alone would still have looked right.
+  const pin = await pinInode(path);
+  if (pin === null || !await pin.holds(snapshot.identity)) {
+    await pin?.close();
     throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd plist changed before removal');
   }
-  await hook?.('before-quarantine', path);
-  await assertDirectoryIdentity(directory, parent, uid, scope.serviceDirectoryOwnerOnly);
-  before = await readSafeManagedFile(scope, path, uid);
-  if (before === null || !sameFileIdentity(snapshot.identity, before.identity)) {
-    throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd plist changed at removal boundary');
+  try {
+    const directory = resolve(path, '..');
+    const parent = await assertSafeDirectory(directory, uid, scope.serviceDirectoryOwnerOnly);
+    await hook?.('before-remove', path);
+    let before = await readSafeManagedFile(scope, path, uid);
+    if (before === null || !await pinStillHolds(pin, before.identity)) {
+      throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd plist was replaced before removal');
+    }
+    await hook?.('before-quarantine', path);
+    await assertDirectoryIdentity(directory, parent, uid, scope.serviceDirectoryOwnerOnly);
+    before = await readSafeManagedFile(scope, path, uid);
+    if (before === null || !await pinStillHolds(pin, before.identity)) {
+      throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd plist was replaced at removal boundary');
+    }
+    const suffix = transaction?.id ?? crypto.randomUUID();
+    const quarantine = `${path}.removed-${suffix}`;
+    if (transaction !== undefined) {
+      await transaction.assertOwned();
+      await writeTransactionJournal(transaction, {
+        version: 1, transactionId: transaction.id, operation: 'remove', phase: 'prepared',
+        temporary: null, quarantine: quarantine.split(sep).at(-1) as string,
+        original: snapshot.identity, replacement: null, expected: null,
+      });
+      await runTransactionHook(transaction, 'removal-prepared');
+    }
+    await transaction?.assertOwned();
+    const exactRemovalSource = await readSafeManagedFile(scope, path, uid);
+    if (exactRemovalSource === null || !await pinStillHolds(pin, exactRemovalSource.identity)) {
+      throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd plist was replaced at removal move');
+    }
+    await rename(path, quarantine);
+    await assertDirectoryIdentity(directory, parent, uid, scope.serviceDirectoryOwnerOnly);
+    const moved = await readSafeManagedFile(scope, quarantine, uid);
+    if (moved === null || !await pinStillHolds(pin, moved.identity)) {
+      if (moved !== null) await restoreQuarantinedFile(scope, path, quarantine, uid, parent, moved.identity);
+      throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd plist changed during removal');
+    }
+    if (transaction !== undefined) {
+      await writeTransactionJournal(transaction, {
+        version: 1, transactionId: transaction.id, operation: 'remove', phase: 'removal-quarantined',
+        temporary: null, quarantine: quarantine.split(sep).at(-1) as string,
+        original: moved.identity, replacement: null, expected: null,
+      });
+      await runTransactionHook(transaction, 'removal-quarantined');
+    }
+    await transaction?.assertOwned();
+    await removeOwnedSibling(scope, quarantine, uid, parent, moved.identity);
+    if (transaction !== undefined) {
+      await writeTransactionJournal(transaction, {
+        version: 1, transactionId: transaction.id, operation: 'remove', phase: 'removal-cleaned',
+        temporary: null, quarantine: quarantine.split(sep).at(-1) as string,
+        original: moved.identity, replacement: null, expected: null,
+      });
+      await runTransactionHook(transaction, 'removal-cleaned');
+    }
+  } finally {
+    await pin.close();
   }
-  const suffix = transaction?.id ?? crypto.randomUUID();
-  const quarantine = `${path}.removed-${suffix}`;
-  if (transaction !== undefined) {
-    await transaction.assertOwned();
-    await writeTransactionJournal(transaction, {
-      version: 1, transactionId: transaction.id, operation: 'remove', phase: 'prepared',
-      temporary: null, quarantine: quarantine.split(sep).at(-1) as string,
-      original: snapshot.identity, replacement: null, expected: null,
-    });
-    await runTransactionHook(transaction, 'removal-prepared');
-  }
-  await transaction?.assertOwned();
-  const exactRemovalSource = await readSafeManagedFile(scope, path, uid);
-  if (exactRemovalSource === null || !sameFileIdentity(snapshot.identity, exactRemovalSource.identity)) {
-    throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd plist changed at removal move');
-  }
-  await rename(path, quarantine);
-  await assertDirectoryIdentity(directory, parent, uid, scope.serviceDirectoryOwnerOnly);
-  const moved = await readSafeManagedFile(scope, quarantine, uid);
-  if (moved === null || !sameFileIdentity(snapshot.identity, moved.identity)) {
-    if (moved !== null) await restoreQuarantinedFile(scope, path, quarantine, uid, parent, moved.identity);
-    throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd plist changed during removal');
-  }
-  if (transaction !== undefined) {
-    await writeTransactionJournal(transaction, {
-      version: 1, transactionId: transaction.id, operation: 'remove', phase: 'removal-quarantined',
-      temporary: null, quarantine: quarantine.split(sep).at(-1) as string,
-      original: moved.identity, replacement: null, expected: null,
-    });
-    await runTransactionHook(transaction, 'removal-quarantined');
-  }
-  await transaction?.assertOwned();
-  await removeOwnedSibling(scope, quarantine, uid, parent, moved.identity);
-  if (transaction !== undefined) {
-    await writeTransactionJournal(transaction, {
-      version: 1, transactionId: transaction.id, operation: 'remove', phase: 'removal-cleaned',
-      temporary: null, quarantine: quarantine.split(sep).at(-1) as string,
-      original: moved.identity, replacement: null, expected: null,
-    });
-    await runTransactionHook(transaction, 'removal-cleaned');
-  }
+}
+
+/**
+ * The one question every boundary in a pinned operation asks.
+ *
+ * `sameInode` compares two descriptions and is right whenever nothing has been deleted; this
+ * compares a description against a *reference*, which is the only form of the question that
+ * survives a filesystem willing to reissue an inode number. Named and shared rather than inlined
+ * so the boundaries read alike, and so there is exactly one place to break when checking that they
+ * are still load-bearing.
+ */
+async function pinStillHolds(pin: InodePin | null, current: FileIdentity): Promise<boolean> {
+  return pin !== null && current.nlink === 1 && await pin.holds(current);
 }
 
 async function restorePreviousDefinition(
@@ -1911,141 +1975,158 @@ async function recoverInterruptedTransaction(
   let targetIdentity = await readOwnedIdentity(target, transaction.uid, [1, 2]);
   let temporaryIdentity = temporary === null ? null : await readOwnedIdentity(temporary, transaction.uid, [1, 2]);
   const quarantineIdentity = quarantine === null ? null : await readOwnedIdentity(quarantine, transaction.uid, [1, 2]);
-
-  if (journal.operation === 'publish') {
-    if (journal.phase === 'preparing') {
-      if (temporary === null || journal.expected === null || journal.expected === undefined) {
-        throw transactionPathError('publish pre-intent is incomplete');
-      }
-      if (quarantineIdentity !== null) throw transactionPathError('publish pre-intent has an impossible quarantine');
-      const preIntentTargetIdentity = await readOwnedIdentity(target, transaction.uid, [1]);
-      if ((journal.original === null && preIntentTargetIdentity !== null)
-        || (journal.original !== null
-          && (preIntentTargetIdentity === null || !sameInode(journal.original, preIntentTargetIdentity)))) {
-        throw transactionPathError('publish pre-intent source identity changed');
-      }
-      const temporarySnapshot = await readOwnedFile(
-        temporary,
-        transaction.uid,
-        [1],
-        maxManagedDefinitionBytes,
-        transaction.metadataReadHook,
-      );
-      if (temporarySnapshot === null) {
-        await transaction.assertOwned();
-        await removeExactFile(transaction.journalPath, snapshot.identity, transaction.uid, [1]);
-        return;
-      }
-      if (!sameExpectedContent(journal.expected, temporarySnapshot.content)) {
-        throw transactionPathError('publish pre-intent temporary content mismatch');
-      }
-      journal = { ...journal, phase: 'prepared', replacement: temporarySnapshot.identity };
-      await writeRecoveredTransactionJournal(transaction, journal);
-      await runTransactionHook(transaction, 'temporary-adopted');
-      await transaction.assertOwned();
-      const adoptedSnapshot = await readOwnedFile(
-        transaction.journalPath,
-        transaction.uid,
-        [1],
-        maxTransactionMetadataBytes,
-        transaction.metadataReadHook,
-      );
-      if (adoptedSnapshot === null) throw transactionPathError('adopted transaction journal disappeared');
-      snapshot = adoptedSnapshot;
-      targetIdentity = await readOwnedIdentity(target, transaction.uid, [1, 2]);
-      temporaryIdentity = temporarySnapshot.identity;
-    }
-    if (journal.replacement === null) throw transactionPathError('publish journal lacks replacement identity');
-    if (temporaryIdentity !== null && !sameInode(journal.replacement, temporaryIdentity)) {
-      throw transactionPathError('publish temporary identity mismatch');
-    }
-    if (targetIdentity !== null && sameInode(journal.replacement, targetIdentity)) {
-      if (temporaryIdentity !== null) {
-        if (!sameInode(targetIdentity, temporaryIdentity)) throw transactionPathError('published temp identity mismatch');
-        await transaction.assertOwned();
-        await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [2]);
-      }
-      const stable = await readOwnedIdentity(target, transaction.uid, [1]);
-      if (stable === null || !sameInode(journal.replacement, stable)) throw transactionPathError('published target did not stabilize');
-      if (quarantineIdentity !== null) {
-        if (journal.original === null || !sameInode(journal.original, quarantineIdentity)) {
-          throw transactionPathError('replacement quarantine identity mismatch');
+  /**
+   * A crash-left quarantine is the one object in this file whose identity arrives from disk rather
+   * than from an inspection this process made, so the window across the crash is nobody's to
+   * close and the journal's `original` stays a hint there. The window from here to the restore
+   * link is this process's own, and it is the one a contender can use: without the pin, deleting
+   * the quarantine and writing its own file at that path produces something the tuple accepts, and
+   * the recovery links a stranger back into place as the user's launchd definition.
+   */
+  const quarantinePin = quarantine === null || quarantineIdentity === null ? null : await pinInode(quarantine);
+  try {
+    if (journal.operation === 'publish') {
+      if (journal.phase === 'preparing') {
+        if (temporary === null || journal.expected === null || journal.expected === undefined) {
+          throw transactionPathError('publish pre-intent is incomplete');
         }
+        if (quarantineIdentity !== null) throw transactionPathError('publish pre-intent has an impossible quarantine');
+        const preIntentTargetIdentity = await readOwnedIdentity(target, transaction.uid, [1]);
+        if ((journal.original === null && preIntentTargetIdentity !== null)
+          || (journal.original !== null
+            && (preIntentTargetIdentity === null || !sameInode(journal.original, preIntentTargetIdentity)))) {
+          throw transactionPathError('publish pre-intent source identity changed');
+        }
+        const temporarySnapshot = await readOwnedFile(
+          temporary,
+          transaction.uid,
+          [1],
+          maxManagedDefinitionBytes,
+          transaction.metadataReadHook,
+        );
+        if (temporarySnapshot === null) {
+          await transaction.assertOwned();
+          await removeExactFile(transaction.journalPath, snapshot.identity, transaction.uid, [1]);
+          return;
+        }
+        if (!sameExpectedContent(journal.expected, temporarySnapshot.content)) {
+          throw transactionPathError('publish pre-intent temporary content mismatch');
+        }
+        journal = { ...journal, phase: 'prepared', replacement: temporarySnapshot.identity };
+        await writeRecoveredTransactionJournal(transaction, journal);
+        await runTransactionHook(transaction, 'temporary-adopted');
         await transaction.assertOwned();
-        await removeExactFile(quarantine as string, quarantineIdentity, transaction.uid, [1]);
+        const adoptedSnapshot = await readOwnedFile(
+          transaction.journalPath,
+          transaction.uid,
+          [1],
+          maxTransactionMetadataBytes,
+          transaction.metadataReadHook,
+        );
+        if (adoptedSnapshot === null) throw transactionPathError('adopted transaction journal disappeared');
+        snapshot = adoptedSnapshot;
+        targetIdentity = await readOwnedIdentity(target, transaction.uid, [1, 2]);
+        temporaryIdentity = temporarySnapshot.identity;
       }
-    } else if (targetIdentity === null) {
-      if (quarantineIdentity !== null) {
-        if (journal.original === null || !sameInode(journal.original, quarantineIdentity)) {
-          throw transactionPathError('restore quarantine identity mismatch');
+      if (journal.replacement === null) throw transactionPathError('publish journal lacks replacement identity');
+      if (temporaryIdentity !== null && !sameInode(journal.replacement, temporaryIdentity)) {
+        throw transactionPathError('publish temporary identity mismatch');
+      }
+      if (targetIdentity !== null && sameInode(journal.replacement, targetIdentity)) {
+        if (temporaryIdentity !== null) {
+          if (!sameInode(targetIdentity, temporaryIdentity)) throw transactionPathError('published temp identity mismatch');
+          await transaction.assertOwned();
+          await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [2]);
         }
-        await runTransactionHook(transaction, 'before-restore-link');
-        await transaction.assertOwned();
-        const exactQuarantine = await readOwnedIdentity(quarantine as string, transaction.uid, [1]);
-        if (exactQuarantine === null || !sameFileIdentity(quarantineIdentity, exactQuarantine)
-          || !sameInode(journal.original, exactQuarantine)) {
-          throw transactionPathError('restore quarantine changed at link boundary');
-        }
-        await link(quarantine as string, target);
-        const linkedQuarantine = await readOwnedIdentity(quarantine as string, transaction.uid, [2]);
-        const linkedTarget = await readOwnedIdentity(target, transaction.uid, [2]);
-        if (linkedQuarantine === null || linkedTarget === null
-          || !sameInode(journal.original, linkedQuarantine)
-          || !sameInode(journal.original, linkedTarget)
-          || !sameInode(linkedQuarantine, linkedTarget)) {
-          if (linkedQuarantine !== null && linkedTarget !== null && sameInode(linkedQuarantine, linkedTarget)) {
-            await removeExactFile(target, linkedTarget, transaction.uid, [2]);
+        const stable = await readOwnedIdentity(target, transaction.uid, [1]);
+        if (stable === null || !sameInode(journal.replacement, stable)) throw transactionPathError('published target did not stabilize');
+        if (quarantineIdentity !== null) {
+          if (journal.original === null || !sameInode(journal.original, quarantineIdentity)) {
+            throw transactionPathError('replacement quarantine identity mismatch');
           }
-          throw transactionPathError('restore quarantine changed during link');
+          await transaction.assertOwned();
+          await removeExactFile(quarantine as string, quarantineIdentity, transaction.uid, [1]);
         }
-        await runTransactionHook(transaction, 'restore-linked');
+      } else if (targetIdentity === null) {
+        if (quarantineIdentity !== null) {
+          if (journal.original === null || !sameInode(journal.original, quarantineIdentity)) {
+            throw transactionPathError('restore quarantine identity mismatch');
+          }
+          await runTransactionHook(transaction, 'before-restore-link');
+          await transaction.assertOwned();
+          const exactQuarantine = await readOwnedIdentity(quarantine as string, transaction.uid, [1]);
+          // The pin was taken on the same object `journal.original` was just matched against, so
+          // `sameInode(journal.original, exactQuarantine)` used to stand here as well. It is gone on
+          // purpose: it is the weaker half of this exact question, it answers wrongly wherever inode
+          // numbers are reissued, and leaving it beside the pin would have kept this boundary green
+          // on macOS no matter what the pin did -- which is how a check stops being load-bearing
+          // without anyone noticing.
+          if (exactQuarantine === null || !await pinStillHolds(quarantinePin, exactQuarantine)) {
+            throw transactionPathError('restore quarantine was replaced at link boundary');
+          }
+          await link(quarantine as string, target);
+          const linkedQuarantine = await readOwnedIdentity(quarantine as string, transaction.uid, [2]);
+          const linkedTarget = await readOwnedIdentity(target, transaction.uid, [2]);
+          if (linkedQuarantine === null || linkedTarget === null
+            || !sameInode(journal.original, linkedQuarantine)
+            || !sameInode(journal.original, linkedTarget)
+            || !sameInode(linkedQuarantine, linkedTarget)) {
+            if (linkedQuarantine !== null && linkedTarget !== null && sameInode(linkedQuarantine, linkedTarget)) {
+              await removeExactFile(target, linkedTarget, transaction.uid, [2]);
+            }
+            throw transactionPathError('restore quarantine changed during link');
+          }
+          await runTransactionHook(transaction, 'restore-linked');
+          await transaction.assertOwned();
+          await removeExactFile(quarantine as string, journal.original, transaction.uid, [2]);
+          const restored = await readOwnedIdentity(target, transaction.uid, [1]);
+          if (restored === null || !sameInode(journal.original, restored)) throw transactionPathError('old definition restore failed');
+        } else if (journal.original !== null) {
+          throw transactionPathError('old definition disappeared during interrupted publication');
+        }
+        if (temporaryIdentity !== null) {
+          await transaction.assertOwned();
+          await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [1]);
+        }
+      } else if (quarantineIdentity !== null && journal.original !== null
+        && sameInode(journal.original, targetIdentity) && sameInode(targetIdentity, quarantineIdentity)
+        && targetIdentity.nlink === 2 && quarantineIdentity.nlink === 2) {
         await transaction.assertOwned();
-        await removeExactFile(quarantine as string, journal.original, transaction.uid, [2]);
-        const restored = await readOwnedIdentity(target, transaction.uid, [1]);
-        if (restored === null || !sameInode(journal.original, restored)) throw transactionPathError('old definition restore failed');
-      } else if (journal.original !== null) {
-        throw transactionPathError('old definition disappeared during interrupted publication');
-      }
-      if (temporaryIdentity !== null) {
-        await transaction.assertOwned();
-        await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [1]);
-      }
-    } else if (quarantineIdentity !== null && journal.original !== null
-      && sameInode(journal.original, targetIdentity) && sameInode(targetIdentity, quarantineIdentity)
-      && targetIdentity.nlink === 2 && quarantineIdentity.nlink === 2) {
-      await transaction.assertOwned();
-      await removeExactFile(quarantine as string, quarantineIdentity, transaction.uid, [2]);
-      const stable = await readOwnedIdentity(target, transaction.uid, [1]);
-      if (stable === null || !sameInode(journal.original, stable)) throw transactionPathError('restored target did not stabilize');
-      if (temporaryIdentity !== null) {
-        await transaction.assertOwned();
-        await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [1]);
+        await removeExactFile(quarantine as string, quarantineIdentity, transaction.uid, [2]);
+        const stable = await readOwnedIdentity(target, transaction.uid, [1]);
+        if (stable === null || !sameInode(journal.original, stable)) throw transactionPathError('restored target did not stabilize');
+        if (temporaryIdentity !== null) {
+          await transaction.assertOwned();
+          await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [1]);
+        }
+      } else {
+        if (temporaryIdentity !== null) {
+          await transaction.assertOwned();
+          await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [1]);
+        }
+        if (quarantineIdentity !== null) {
+          if (journal.original === null || !sameInode(journal.original, quarantineIdentity)) {
+            throw transactionPathError('concurrent-winner quarantine mismatch');
+          }
+          await transaction.assertOwned();
+          await removeExactFile(quarantine as string, quarantineIdentity, transaction.uid, [1]);
+        }
       }
     } else {
-      if (temporaryIdentity !== null) {
-        await transaction.assertOwned();
-        await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [1]);
-      }
+      if (journal.original === null) throw transactionPathError('removal journal lacks original identity');
       if (quarantineIdentity !== null) {
-        if (journal.original === null || !sameInode(journal.original, quarantineIdentity)) {
-          throw transactionPathError('concurrent-winner quarantine mismatch');
-        }
+        if (!sameInode(journal.original, quarantineIdentity)) throw transactionPathError('removal quarantine identity mismatch');
         await transaction.assertOwned();
         await removeExactFile(quarantine as string, quarantineIdentity, transaction.uid, [1]);
+      } else if (targetIdentity !== null && !sameInode(journal.original, targetIdentity)) {
+        // A concurrent winner is preserved; the exact removal object is already absent.
       }
     }
-  } else {
-    if (journal.original === null) throw transactionPathError('removal journal lacks original identity');
-    if (quarantineIdentity !== null) {
-      if (!sameInode(journal.original, quarantineIdentity)) throw transactionPathError('removal quarantine identity mismatch');
-      await transaction.assertOwned();
-      await removeExactFile(quarantine as string, quarantineIdentity, transaction.uid, [1]);
-    } else if (targetIdentity !== null && !sameInode(journal.original, targetIdentity)) {
-      // A concurrent winner is preserved; the exact removal object is already absent.
-    }
+    await transaction.assertOwned();
+    await removeExactFile(transaction.journalPath, snapshot.identity, transaction.uid, [1]);
+  } finally {
+    await quarantinePin?.close();
   }
-  await transaction.assertOwned();
-  await removeExactFile(transaction.journalPath, snapshot.identity, transaction.uid, [1]);
 }
 
 async function removeJournalIfOwned(transaction: ServiceTransaction): Promise<void> {

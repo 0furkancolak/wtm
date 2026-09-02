@@ -207,6 +207,12 @@ describe('resource sandbox guard', () => {
     await rm(parent, { recursive: true });
     await mkdir(parent, { mode: 0o700 });
 
-    await expect(guard.revalidate(token)).rejects.toMatchObject({ code: 'RESOURCE_PATH_DENIED' });
+    // Asserting the message, not only the code: on APFS a recreated directory gets a new inode
+    // number and the old tuple comparison refused this too, so the code alone cannot say which
+    // check answered. This one names the pin, which is the check that also holds where inode
+    // numbers come back -- break `InodePin.holds` and this goes red on macOS.
+    await expect(guard.revalidate(token)).rejects.toMatchObject({
+      code: 'RESOURCE_PATH_DENIED', message: 'A resource parent was replaced after authorization.',
+    });
   });
 });

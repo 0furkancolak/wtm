@@ -44,7 +44,20 @@ import type {
  * the runner because the exit code that means it (113 for `launchctl`, 5 for `systemctl`) is the
  * one piece of this that is neither the argument vector nor the state machine.
  */
-export type ServiceCommandOutcome = 'success' | 'not-found' | 'failure';
+/**
+ * `manager-unreachable` is the answer to a question `failure` cannot express: the command never
+ * reached a service manager at all. macOS never produced it -- `launchctl` talks to a domain that
+ * exists whenever the user is logged in -- so through C1 there were three values and they were
+ * enough. Linux has a fourth case as a matter of course: `systemctl --user` addresses the user bus
+ * through `$DBUS_SESSION_BUS_ADDRESS`/`$XDG_RUNTIME_DIR`, and an ssh session without lingering, a
+ * container, and a CI runner all have no such bus. That is not "the operation failed", and
+ * reporting it as one sent the user to debug a service that was never asked about.
+ *
+ * The runner classifies it rather than the lifecycle, for the same reason the runner is already
+ * what knows that `systemctl` exit 5 and `launchctl` 113 both mean "no such service": what a
+ * manager's failure *means* is knowledge about that manager, and it is the only layer that has it.
+ */
+export type ServiceCommandOutcome = 'success' | 'not-found' | 'failure' | 'manager-unreachable';
 
 export interface ServiceCommandResult {
   outcome: ServiceCommandOutcome;

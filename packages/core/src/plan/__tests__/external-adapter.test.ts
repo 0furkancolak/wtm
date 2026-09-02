@@ -10,6 +10,7 @@ import { developmentRuntimeInvocation } from '../../../../testkit/src/runtime-in
 import { createAdapterTrustStore, trustRepositoryAdapter } from '../adapter-trust';
 import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
 import {
+  ExternalAdapterError,
   invokeExternalAdapter as invokeAdapterDirectly,
   type ExternalAdapterCleanupState,
   type ExternalAdapterInvocation,
@@ -30,10 +31,10 @@ describe('external adapter bridge', () => {
   test('does not execute a repository-local adapter before exact trust is recorded', async () => {
     const adapter = await fakeAdapter(metadataResponse());
 
-    await expect(invokeExternalAdapter({
+    expect(await adapterFailure(invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
       operation: 'metadata', trust: createAdapterTrustStore(),
-    })).rejects.toMatchObject({
+    }))).toMatchObject({
       code: 'ADAPTER_NOT_TRUSTED',
       message: 'Repository-local external adapter is not trusted.',
     });
@@ -48,10 +49,10 @@ describe('external adapter bridge', () => {
     const trust = createAdapterTrustStore();
     await trustRepositoryAdapter(trust, { adapterId: 'fake', executablePath: adapter.executablePath });
 
-    await expect(invokeExternalAdapter({
+    expect(await adapterFailure(invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
       operation: 'metadata', trust,
-    })).rejects.toMatchObject({
+    }))).toMatchObject({
       code: 'ADAPTER_PROTOCOL_INCOMPATIBLE',
       message: 'External adapter protocol is incompatible.',
     });
@@ -65,10 +66,10 @@ describe('external adapter bridge', () => {
     const trust = createAdapterTrustStore();
     await trustRepositoryAdapter(trust, { adapterId: 'fake', executablePath: adapter.executablePath });
 
-    await expect(invokeExternalAdapter({
+    expect(await adapterFailure(invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
       operation: 'metadata', trust,
-    })).rejects.toMatchObject({
+    }))).toMatchObject({
       code: 'ADAPTER_PROTOCOL_INCOMPATIBLE',
       message: 'External adapter protocol is incompatible.',
     });
@@ -78,20 +79,20 @@ describe('external adapter bridge', () => {
     const adapter = await fakeAdapter(metadataResponse());
     const trust = await trusted(adapter);
 
-    await expect(invokeExternalAdapter({
+    expect(await invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
       operation: 'metadata', trust,
-    })).resolves.toEqual(metadataResponse());
+    })).toEqual(metadataResponse());
   });
 
   test('allows a trusted installed adapter outside the repository root', async () => {
     const adapter = await fakeAdapter(metadataResponse());
     const trust = await trusted(adapter);
 
-    await expect(invokeExternalAdapter({
+    expect(await invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: join(adapter.root, 'repository'),
       operation: 'metadata', trust,
-    })).resolves.toEqual(metadataResponse());
+    })).toEqual(metadataResponse());
   });
 
   test('strictly validates a trusted non-metadata operation response', async () => {
@@ -100,7 +101,7 @@ describe('external adapter bridge', () => {
     });
     const trust = await trusted(adapter);
 
-    await expect(invokeExternalAdapter({
+    expect(await adapterFailure(invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
       operation: 'plan', trust,
       context: {
@@ -108,7 +109,7 @@ describe('external adapter bridge', () => {
         repository: { root: '/repository', mainRoot: '/repository' },
         worktree: { root: '/worktree', id: 1, branch: 'feature' },
       },
-    })).rejects.toMatchObject({
+    }))).toMatchObject({
       code: 'ADAPTER_INVALID_RESPONSE',
       message: 'External adapter returned an invalid response.',
     });
@@ -119,10 +120,10 @@ describe('external adapter bridge', () => {
     adapters.push(adapter);
     const trust = await trusted(adapter);
 
-    await expect(invokeExternalAdapter({
+    expect(await adapterFailure(invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
       operation: 'metadata', trust,
-    })).rejects.toMatchObject({
+    }))).toMatchObject({
       code: 'ADAPTER_INVALID_RESPONSE',
       message: 'External adapter returned an invalid response.',
     });
@@ -141,10 +142,10 @@ describe('external adapter bridge', () => {
     adapters.push(adapter);
     const trust = await trusted(adapter);
 
-    await expect(invokeExternalAdapter({
+    expect(await adapterFailure(invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
       operation: 'metadata', trust,
-    })).rejects.toMatchObject({
+    }))).toMatchObject({
       code: 'ADAPTER_INVALID_RESPONSE',
       message: 'External adapter returned an invalid response.',
     });
@@ -155,10 +156,10 @@ describe('external adapter bridge', () => {
     adapters.push(adapter);
     const trust = await trusted(adapter);
 
-    await expect(invokeExternalAdapter({
+    expect(await adapterFailure(invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
       operation: 'metadata', trust, timeoutMs: 20,
-      })).rejects.toMatchObject({
+      }))).toMatchObject({
       code: 'ADAPTER_TIMEOUT',
       message: 'External adapter request timed out.',
     });
@@ -176,7 +177,7 @@ describe('external adapter bridge', () => {
     const result = await Promise.race([
       pending.then(
         () => ({ status: 'resolved' as const }),
-        (error: unknown) => ({ status: 'rejected' as const, error }),
+        (error: unknown) => ({ status: 'rejected' as const, error: describeAdapterFailure(error) }),
       ),
       delay(750).then(() => ({ status: 'pending' as const })),
     ]);
@@ -196,10 +197,10 @@ describe('external adapter bridge', () => {
     adapters.push(adapter);
     const trust = await trusted(adapter);
 
-    await expect(invokeExternalAdapter({
+    expect(await adapterFailure(invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
       operation: 'metadata', trust, timeoutMs: 500,
-    })).rejects.toMatchObject({
+    }))).toMatchObject({
       code: 'ADAPTER_TIMEOUT',
       message: 'External adapter request timed out.',
     });
@@ -216,11 +217,11 @@ describe('external adapter bridge', () => {
     const baselinePipes = activePipeResources();
     let cleanup: ExternalAdapterCleanupState | undefined;
 
-    await expect(invokeExternalAdapter({
+    expect(await adapterFailure(invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
       operation: 'metadata', trust, timeoutMs: 500,
       hooks: { afterTerminalCleanup: (state) => { cleanup = state; } },
-    })).rejects.toMatchObject({ code: 'ADAPTER_TIMEOUT' });
+    }))).toMatchObject({ code: 'ADAPTER_TIMEOUT' });
     expect(await adapter.runs()).toBe(1);
     expect(await adapter.descendantSpawns()).toBe(1);
     await delay(25);
@@ -242,10 +243,10 @@ describe('external adapter bridge', () => {
 
     for (const adapter of [stdoutAdapter, stderrAdapter]) {
       const trust = await trusted(adapter);
-      await expect(invokeExternalAdapter({
+      expect(await adapterFailure(invokeExternalAdapter({
         adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
         operation: 'metadata', trust, maxOutputBytes: 1_024,
-      })).rejects.toMatchObject({
+      }))).toMatchObject({
         code: 'ADAPTER_INVALID_RESPONSE',
         message: 'External adapter returned an invalid response.',
       });
@@ -257,10 +258,10 @@ describe('external adapter bridge', () => {
     const trust = await trusted(adapter);
     await appendFile(adapter.executablePath, '\n// changed adapter bytes\n');
 
-    await expect(invokeExternalAdapter({
+    expect(await adapterFailure(invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
       operation: 'metadata', trust,
-    })).rejects.toMatchObject({
+    }))).toMatchObject({
       code: 'ADAPTER_NOT_TRUSTED',
       message: 'Repository-local external adapter is not trusted.',
     });
@@ -273,11 +274,11 @@ describe('external adapter bridge', () => {
     adapters.push(replacement);
     const trust = await trusted(adapter);
 
-    await expect(invokeExternalAdapter({
+    expect(await invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
       operation: 'metadata', trust,
       hooks: { async beforeSpawn() { await rename(replacement.executablePath, adapter.executablePath); } },
-    })).resolves.toEqual(metadataResponse());
+    })).toEqual(metadataResponse());
     expect(await adapter.runs()).toBe(1);
     expect(await replacement.runs()).toBe(0);
   });
@@ -293,7 +294,7 @@ describe('external adapter bridge', () => {
     const before = await lstat(adapter.executablePath);
     let after: Awaited<ReturnType<typeof lstat>> | undefined;
 
-    await expect(invokeExternalAdapter({
+    expect(await invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
       operation: 'metadata', trust,
       hooks: {
@@ -302,7 +303,7 @@ describe('external adapter bridge', () => {
           after = await lstat(adapter.executablePath);
         },
       },
-    })).resolves.toEqual(verifiedResponse);
+    })).toEqual(verifiedResponse);
     expect({ device: after?.dev, inode: after?.ino }).toEqual({ device: before.dev, inode: before.ino });
   });
 
@@ -338,10 +339,10 @@ describe('external adapter bridge', () => {
 
     try {
       await trustRepositoryAdapter(trust, { adapterId: 'fake', executablePath });
-      await expect(invokeExternalAdapter({
+      expect(await invokeExternalAdapter({
         adapterId: 'fake', executablePath, repositoryRoot: root,
         operation: 'metadata', trust,
-      })).resolves.toMatchObject({ adapter: { name: expected } });
+      })).toMatchObject({ adapter: { name: expected } });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -353,9 +354,9 @@ describe('external adapter bridge', () => {
     const trust = await trustedScript(adapter);
 
     try {
-      await expect(invokeExternalAdapter({
+      expect(await adapterFailure(invokeExternalAdapter({
         adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root, operation: 'metadata', trust,
-      })).rejects.toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
+      }))).toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
     } finally {
       await adapter.cleanup();
     }
@@ -367,9 +368,9 @@ describe('external adapter bridge', () => {
     const trust = await trustedScript(adapter);
 
     try {
-      await expect(invokeExternalAdapter({
+      expect(await adapterFailure(invokeExternalAdapter({
         adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root, operation: 'metadata', trust,
-      })).rejects.toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
+      }))).toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
     } finally {
       await adapter.cleanup();
     }
@@ -381,9 +382,9 @@ describe('external adapter bridge', () => {
 
     try {
       const trust = await trustedScript(adapter);
-      await expect(invokeExternalAdapter({
+      expect(await adapterFailure(invokeExternalAdapter({
         adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root, operation: 'metadata', trust,
-      })).rejects.toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
+      }))).toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
     } finally {
       await adapter.cleanup();
     }
@@ -400,9 +401,9 @@ describe('external adapter bridge', () => {
 
     try {
       const trust = await trustedScript(adapter);
-      await expect(invokeExternalAdapter({
+      expect(await adapterFailure(invokeExternalAdapter({
         adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root, operation: 'metadata', trust,
-      })).rejects.toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
+      }))).toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
     } finally {
       await adapter.cleanup();
     }
@@ -432,9 +433,9 @@ describe('external adapter bridge', () => {
 
     try {
       const trust = await trustedScript(adapter);
-      await expect(invokeExternalAdapter({
+      expect(await adapterFailure(invokeExternalAdapter({
         adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root, operation: 'metadata', trust,
-      })).rejects.toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
+      }))).toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
     } finally {
       await Promise.all([adapter.cleanup(), rm(root, { recursive: true, force: true })]);
     }
@@ -460,9 +461,9 @@ describe('external adapter bridge', () => {
 
     try {
       const trust = await trustedScript(adapter);
-      await expect(invokeExternalAdapter({
+      expect(await adapterFailure(invokeExternalAdapter({
         adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root, operation: 'metadata', trust,
-      })).rejects.toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
+      }))).toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
     } finally {
       await Promise.all([adapter.cleanup(), rm(root, { recursive: true, force: true })]);
     }
@@ -494,9 +495,9 @@ describe('external adapter bridge', () => {
 
     try {
       const trust = await trustedScript(adapter);
-      await expect(invokeExternalAdapter({
+      expect(await adapterFailure(invokeExternalAdapter({
         adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root, operation: 'metadata', trust,
-      })).rejects.toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
+      }))).toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
     } finally {
       await Promise.all([adapter.cleanup(), rm(root, { recursive: true, force: true })]);
     }
@@ -511,9 +512,9 @@ describe('external adapter bridge', () => {
     try {
       const trust = await trustedScript(adapter);
       await writeFile(dependencyPath, `export const response = ${JSON.stringify({ ...metadataResponse(), adapter: { ...metadataResponse().adapter, name: 'changed dependency' } })};\n`, { mode: 0o700 });
-      await expect(invokeExternalAdapter({
+      expect(await adapterFailure(invokeExternalAdapter({
         adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root, operation: 'metadata', trust,
-      })).rejects.toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
+      }))).toMatchObject({ code: 'ADAPTER_NOT_TRUSTED', message: 'External adapter module dependency is not permitted.' });
     } finally {
       await Promise.all([adapter.cleanup(), rm(root, { recursive: true, force: true })]);
     }
@@ -534,7 +535,7 @@ describe('external adapter bridge', () => {
         ...(timeoutMs === undefined ? {} : { timeoutMs }),
         hooks: { afterDescriptorClose: () => { descriptorClosed += 1; } },
       });
-      if (adapter === success) await expect(outcome).resolves.toEqual(metadataResponse());
+      if (adapter === success) expect(await outcome).toEqual(metadataResponse());
       else await expect(outcome).rejects.toBeDefined();
       expect(descriptorClosed).toBe(1);
     }
@@ -545,17 +546,67 @@ describe('external adapter bridge', () => {
     const trust = await trusted(adapter);
     let descriptorClosed = 0;
 
-    await expect(invokeExternalAdapter({
+    expect(await adapterFailure(invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
       operation: 'metadata', trust,
       hooks: {
         runtimeExecutable: join(adapter.root, 'missing-node-runtime'),
         afterDescriptorClose: () => { descriptorClosed += 1; },
       },
-    })).rejects.toMatchObject({ code: 'ADAPTER_INVALID_RESPONSE' });
+      // A spawn that never produced a child and a child that ran and failed reject with the same
+      // code and the same sentence. The errno is the only thing that separates them, so the error
+      // has to carry it or the two are indistinguishable in a log.
+    }))).toMatchObject({ code: 'ADAPTER_INVALID_RESPONSE', context: { spawnErrno: 'ENOENT' } });
     expect(descriptorClosed).toBe(1);
   });
+
+  test('reports the exit status and stderr of an adapter child that fails', async () => {
+    const adapter = await declaredAdapter([
+      "process.stdin.resume(); await new Promise((resolve) => process.stdin.on('end', resolve));",
+      "process.stderr.write('adapter refused: missing toolchain\\n', () => process.exit(3));",
+    ].join('\n'));
+
+    try {
+      const trust = await trustedScript(adapter);
+      // `External adapter request failed.` is the whole of what a failed child used to say. The
+      // first Linux CI run produced 25 of those and no way to tell a dead child from a silent one,
+      // so the outcome the child actually had travels on the error.
+      expect(await adapterFailure(invokeExternalAdapter({
+        adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root, operation: 'metadata', trust,
+      }))).toMatchObject({
+        code: 'ADAPTER_INVALID_RESPONSE',
+        message: 'External adapter request failed.',
+        context: {
+          adapterId: 'fake',
+          operation: 'metadata',
+          exitCode: 3,
+          signal: null,
+          stderrTail: 'adapter refused: missing toolchain',
+        },
+      });
+    } finally {
+      await adapter.cleanup();
+    }
+  });
 });
+
+/**
+ * bun prints `Promise { <rejected> }` for a lost `.resolves` assertion and no more than
+ * `[ExternalAdapterError: <message>]` for a lost `.rejects` one, so neither shows the `context`
+ * the error carries. The first Linux CI run (33648234137) failed 25 of these and the log said
+ * `External adapter request failed.` 25 times and nothing else — root-causing it cost a second
+ * run. Asserting against a plain object instead puts the child's exit status, signal and stderr
+ * in the failure output, where the next reader needs them.
+ */
+function describeAdapterFailure(error: unknown): Record<string, unknown> {
+  if (!(error instanceof ExternalAdapterError)) return { unexpectedError: error };
+  return { code: error.code, message: error.message, context: error.context };
+}
+
+/** A resolution is a failure for every caller of this, so it is reported rather than thrown. */
+function adapterFailure(pending: Promise<unknown>): Promise<Record<string, unknown>> {
+  return pending.then((response) => ({ unexpectedlyResolved: response }), describeAdapterFailure);
+}
 
 async function fakeAdapter(response: unknown): Promise<FakeAdapter> {
   const adapter = await createFakeAdapter({ type: 'response', response });

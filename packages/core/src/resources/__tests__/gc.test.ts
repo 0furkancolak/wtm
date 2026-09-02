@@ -256,7 +256,14 @@ describe('safe resource GC', () => {
         },
       },
     });
-    expect(result.items[0]).toMatchObject({ outcome: 'failed', phase: 'prepared' });
+    expect(result.items[0]).toMatchObject({
+      outcome: 'failed',
+      phase: 'prepared',
+      // Naming the message pins which check refused. `assertCandidateIdentity`'s tuple comparison
+      // refuses this on APFS and accepts it on ext4, so a test that asserted only the outcome
+      // would have gone on passing here while the GC deleted the replacement on Linux.
+      error: { message: 'The GC candidate was replaced after it was validated.' },
+    });
     expect(await readFile(target, 'utf8')).toBe('raced');
   });
 

@@ -1,4 +1,5 @@
-import { lstat, realpath } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, open, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { runGit } from '../git/git-runner';
@@ -26,12 +27,111 @@ interface PathIdentity {
   uid: number;
 }
 
+/**
+ * A live reference to one filesystem object, held so that the question "is this still the object
+ * I inspected?" has an answer.
+ *
+ * `(dev, ino, uid)` is the whole of the identity `lstat` offers, and comparing it across time is a
+ * proof of sameness only for as long as the inode number cannot be handed to something else. On
+ * APFS that happens to hold -- a deleted inode number is never reissued -- and every check-then-use
+ * defence in this repository was written, and passed, on that accident. ext4 and tmpfs reissue it
+ * immediately, so `rm(p)` followed by a create at `p` produces an object this comparison calls
+ * identical. The first Linux CI run (33648234137) turned six tests red on exactly that: the
+ * service publisher's uninstall removed the replacement it was written to preserve, the sandbox
+ * guard accepted a swapped parent, and the GC deleted a file that had been substituted under it.
+ * `daemon/src/__tests__/inode-reuse-measurement.test.ts` measures both halves on whichever
+ * platform runs -- it sits there rather than here because spec D8 forbids this package from
+ * knowing which platform that is -- so this paragraph is a fact the suite re-checks, not an
+ * inference.
+ *
+ * An open descriptor answers it, by two independent mechanisms whose blind spots do not overlap:
+ *
+ *  - **The number cannot be reissued while the pin is held.** The kernel does not free an inode
+ *    that a descriptor still references, so a replacement created at the same path is forced to
+ *    take a different number, and the `(dev, ino, uid)` comparison becomes true again. This is why
+ *    the fix repairs the 57 comparison sites in `service-lifecycle.ts` without editing one of
+ *    them: they were never the defect. The defect was that an `lstat` snapshot is a *description*
+ *    of an object, and descriptions are forgeable; a descriptor is a *reference*.
+ *  - **`fstat` reports `nlink === 0` once the object is unlinked**, which says the object is gone
+ *    without inferring it from a number at all.
+ *
+ * `holds` requires both because each covers the other's platform blind spot, measured, not
+ * assumed: darwin never clears `nlink` on a descriptor whose *directory* has been removed (it
+ * still reads 2 after `rmdir`), so the second mechanism is file-only there; and on Linux the first
+ * mechanism is the one doing the work whenever a racer recreates at the same path. Folding both
+ * into one predicate is also what makes the fix falsifiable on macOS: the tuple comparison lives
+ * here and nowhere else at the boundaries that use a pin, so breaking `holds` turns those tests
+ * red on this machine instead of only on the runner.
+ *
+ * Rejected on the way here: widening the tuple with `birthtimeMs` or `ctimeMs`. Linux stamps both
+ * from `current_time()`, which reads a clock updated once per tick, so a delete and a recreate
+ * microseconds apart share a timestamp -- the cheap fix would have been one that silently does not
+ * work on the only platform that needs it.
+ */
+export interface InodePin {
+  readonly dev: number;
+  readonly ino: number;
+  readonly uid: number;
+  /** Whether `current`, freshly read from the pinned path, is still the pinned object. */
+  holds(current: { dev: number | bigint; ino: number | bigint; uid: number | bigint } | null): Promise<boolean>;
+  close(): Promise<void>;
+}
+
+/**
+ * Pins whatever `path` names right now, or returns `null` if that is nothing this can hold.
+ *
+ * `O_NOFOLLOW` so a symlink swapped in is refused rather than pinned through to its destination,
+ * and `O_NONBLOCK` so a FIFO left at the path cannot park the open until someone opens the other
+ * end -- a check that hangs fails no more safely than one that answers wrongly. A caller that gets
+ * `null` has already lost the object it meant to hold and must deny; it never means "no pin
+ * needed".
+ */
+export async function pinInode(path: string): Promise<InodePin | null> {
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    if (isFileError(error, 'ENOENT') || isFileError(error, 'ELOOP') || isFileError(error, 'ENOTDIR')) return null;
+    throw error;
+  }
+  try {
+    const pinned = await handle.stat();
+    const dev = Number(pinned.dev);
+    const ino = Number(pinned.ino);
+    const uid = Number(pinned.uid);
+    return {
+      dev,
+      ino,
+      uid,
+      async holds(current) {
+        if (current === null) return false;
+        if (Number(current.dev) !== dev || Number(current.ino) !== ino || Number(current.uid) !== uid) return false;
+        return Number((await handle.stat()).nlink) !== 0;
+      },
+      async close() { await handle.close().catch(() => {}); },
+    };
+  } catch (error) {
+    await handle.close().catch(() => {});
+    throw error;
+  }
+}
+
 export interface ResourcePathAuthorization {
   readonly path: string;
   readonly intent: ResourceGuardIntent;
   readonly sandbox: PathIdentity;
   readonly parentPath: string;
   readonly parent: PathIdentity;
+  /**
+   * Which of this guard's pins on `parentPath` vouched for this authorization.
+   *
+   * A path can be legitimately re-pinned -- the GC removes its own quarantine containers and a
+   * later `authorize` under the same parent must be allowed to hold whatever is there now. Without
+   * this, a re-pin would hand the *old* token a *new* pin to be revalidated against, and on a
+   * filesystem that reissues inode numbers the two would compare equal. Naming the pin is what
+   * keeps `authorize` from quietly re-vouching for a capability it never issued.
+   */
+  readonly parentPin: number;
   readonly leaf?: PathIdentity;
 }
 
@@ -57,6 +157,8 @@ export class ResourcePathGuardError extends Error {
 }
 
 const unresolvedPathSyntax = /[$*?{}]/;
+
+const resolvedVoid = Promise.resolve();
 
 export async function createResourceGuard(options: ResourceGuardOptions): Promise<ResourceGuard> {
   assertResolvedAbsolutePath(options.sandboxRoot, 'sandboxRoot');
@@ -92,6 +194,66 @@ export async function createResourceGuard(options: ResourceGuardOptions): Promis
   assertSafeDirectory(sandboxRoot, sandboxStat, currentUid);
   const sandboxIdentity = identity(sandboxStat);
 
+  /**
+   * One pin per directory this guard has vouched for, keyed by path.
+   *
+   * An authorization is a capability that says "at time T, this path sat under this parent, and
+   * that parent was safe". Nothing but a live reference makes that statement re-checkable later --
+   * see `InodePin` -- so the guard holds one for every directory it has answered about, and
+   * `revalidateParent` answers from the pin rather than from a second `lstat`.
+   *
+   * Keyed by path, so the cost is one descriptor per distinct directory a guard touches and not
+   * one per `authorize` call: a GC sweep of a thousand objects under one parent holds one. Guards
+   * are built per command and per operation, and the descriptors go with them.
+   */
+  const directoryPins = new Map<string, { readonly id: number; readonly pin: InodePin }>();
+  const pinChain = new Map<string, Promise<void>>();
+  let nextPinId = 1;
+
+  const sandboxPin = await pinInode(sandboxRoot);
+  if (sandboxPin === null || !await sandboxPin.holds(sandboxStat)) {
+    deny('The configured resource sandbox could not be held for inspection.', { sandboxRoot });
+  }
+
+  /**
+   * Pins `path`, or reuses the pin already held for it.
+   *
+   * A cached pin is only reused once it has agreed with what is on disk now. A directory this
+   * guard vouched for earlier may legitimately be gone -- the GC removes its own quarantine
+   * containers -- and re-pinning is the right answer there; refusing would fail closed on the
+   * product's own housekeeping, which is its own outage.
+   */
+  const pinDirectory = (path: string, expected: PathIdentity): Promise<number> => {
+    // Serialized per path. Two `authorize` calls for siblings under one parent run concurrently in
+    // this codebase (`planResourceMaterialization` is fanned out with `Promise.all`), and an
+    // unserialized cache check would let both miss, both pin, and the loser's token carry a pin id
+    // the map no longer holds -- a refusal on the guard's own bookkeeping rather than on anything
+    // that happened to the directory.
+    const previous = pinChain.get(path) ?? resolvedVoid;
+    const next = previous.then(() => pinDirectoryExclusively(path, expected));
+    pinChain.set(path, next.then(() => undefined, () => undefined));
+    return next;
+  };
+
+  const pinDirectoryExclusively = async (path: string, expected: PathIdentity): Promise<number> => {
+    const cached = directoryPins.get(path);
+    if (cached !== undefined) {
+      if (cached.pin.dev === expected.dev && cached.pin.ino === expected.ino && await cached.pin.holds(expected)) {
+        return cached.id;
+      }
+      directoryPins.delete(path);
+      await cached.pin.close();
+    }
+    const pin = await pinInode(path);
+    if (pin === null || !await pin.holds(expected)) {
+      await pin?.close();
+      deny('A resource parent changed while it was being authorized.', { path });
+    }
+    const id = nextPinId++;
+    directoryPins.set(path, { id, pin });
+    return id;
+  };
+
   const authorize = async (
     requestedPath: string,
     intent: ResourceGuardIntent,
@@ -109,7 +271,7 @@ export async function createResourceGuard(options: ResourceGuardOptions): Promis
       repositoryRoots,
       gitDirectoryPaths,
     });
-    await assertSandboxIdentity(sandboxRoot, sandboxIdentity, currentUid);
+    await assertSandboxIdentity(sandboxRoot, sandboxIdentity, currentUid, sandboxPin);
 
     const leaf = await inspectExistingComponents(sandboxRoot, path, currentUid);
     if (!parentOnly && leaf !== undefined && !leaf.isFile() && !leaf.isDirectory()) {
@@ -120,12 +282,14 @@ export async function createResourceGuard(options: ResourceGuardOptions): Promis
     }
     await assertNotTracked(path, repositoryRoots, git);
     const parent = await nearestExistingDirectory(path, sandboxRoot, currentUid);
+    const parentPin = await pinDirectory(parent.path, identity(parent.stat));
     return {
       path,
       intent,
       sandbox: sandboxIdentity,
       parentPath: parent.path,
       parent: identity(parent.stat),
+      parentPin,
       ...(leaf === undefined ? {} : { leaf: identity(leaf) }),
     };
   };
@@ -134,10 +298,19 @@ export async function createResourceGuard(options: ResourceGuardOptions): Promis
     if (token.sandbox.dev !== sandboxIdentity.dev || token.sandbox.ino !== sandboxIdentity.ino) {
       deny('The sandbox capability does not belong to this guard.', { path: token.path });
     }
-    await assertSandboxIdentity(sandboxRoot, sandboxIdentity, currentUid);
+    await assertSandboxIdentity(sandboxRoot, sandboxIdentity, currentUid, sandboxPin);
     const parent = await lstat(token.parentPath).catch(() => null);
-    if (parent === null || !parent.isDirectory() || !sameIdentity(parent, token.parent)) {
+    if (parent !== null && !parent.isDirectory()) {
       deny('A resource parent changed after authorization.', { path: token.path, parent: token.parentPath });
+    }
+    // The identity comparison lives inside the pin and nowhere else here. A second `lstat`
+    // comparison beside it would be the weaker half of the same question -- and would have kept
+    // this test green on macOS while the guard accepted a swapped parent on Linux.
+    const held = directoryPins.get(token.parentPath);
+    if (held === undefined || held.id !== token.parentPin
+      || held.pin.dev !== token.parent.dev || held.pin.ino !== token.parent.ino
+      || !await held.pin.holds(parent)) {
+      deny('A resource parent was replaced after authorization.', { path: token.path, parent: token.parentPath });
     }
   };
 
@@ -302,9 +475,16 @@ function assertSafeDirectory(path: string, stat: Awaited<ReturnType<typeof lstat
   if ((mode & 0o022) !== 0) deny('A resource parent is group/world writable.', { path, mode: mode & 0o777 });
 }
 
-async function assertSandboxIdentity(root: string, expected: PathIdentity, currentUid: number): Promise<void> {
+async function assertSandboxIdentity(
+  root: string,
+  expected: PathIdentity,
+  currentUid: number,
+  pin: InodePin,
+): Promise<void> {
   const stat = await lstat(root).catch(() => null);
-  if (stat === null || !sameIdentity(stat, expected)) deny('The configured resource sandbox identity changed.', { root });
+  if (stat === null || !sameIdentity(stat, expected) || !await pin.holds(stat)) {
+    deny('The configured resource sandbox identity changed.', { root });
+  }
   assertSafeDirectory(root, stat, currentUid);
 }
 

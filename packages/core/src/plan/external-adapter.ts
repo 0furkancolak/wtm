@@ -29,6 +29,8 @@ const defaultTimeoutMs: Readonly<Record<AdapterOperation, number>> = {
 const defaultMaxOutputBytes = 1_048_576;
 const terminateGraceMs = 100;
 const moduleDeniedSentinel = 'WTM_ADAPTER_MODULE_DENIED';
+const maxStderrExcerptBytes = 512;
+const maxStderrExcerptChars = 200;
 
 export interface ExternalAdapterInvocation {
   adapterId: string;
@@ -66,6 +68,31 @@ export interface ExternalAdapterCleanupState {
   stdoutDataListeners: number;
   stderrDataListeners: number;
   childCloseListeners: number;
+}
+
+/**
+ * What the adapter child actually did, carried on every failure it caused.
+ *
+ * Before this existed a failed child rejected with nothing but the sentence
+ * `External adapter request failed.` — the same sentence for a runtime that could not be
+ * spawned, a child killed by a signal, and a child that exited after printing the reason on
+ * stderr. The first Linux CI run (33648234137) turned 25 tests red carrying exactly that
+ * sentence, and none of them said whether the child had run at all. Diagnosing it needed a
+ * second round trip that the error itself should have made unnecessary.
+ *
+ * `docs/06-adapter-protocol.md` designates stderr the adapter's diagnostic channel, so a bounded
+ * tail of it travels here. stdout does not: it carries the response and whatever the adapter put
+ * in it, and `rejects malformed stdout without leaking adapter output` exists to keep it out.
+ */
+export interface ExternalAdapterChildOutcome {
+  /** Absent until the child has exited; `null` when it was killed by a signal instead. */
+  exitCode?: number | null;
+  signal?: NodeJS.Signals | null;
+  /** `errno`-style code from a spawn that never produced a child, e.g. `ENOENT` on the runtime. */
+  spawnErrno?: string;
+  spawnSyscall?: string;
+  stderrBytes?: number;
+  stderrTail?: string;
 }
 
 export class ExternalAdapterError extends Error {
@@ -120,7 +147,12 @@ export async function invokeExternalAdapter(input: ExternalAdapterInvocation): P
     if (error instanceof AdapterTrustError) {
       throw new ExternalAdapterError('ADAPTER_NOT_TRUSTED', error.message, adapterContext(input));
     }
-    throw new ExternalAdapterError('ADAPTER_INVALID_RESPONSE', 'External adapter request failed.', adapterContext(input));
+    // Anything reaching here is WTM's own failure, not the adapter's. Naming it costs nothing —
+    // the alternative is the generic sentence with no way to tell it from a failed child.
+    throw new ExternalAdapterError('ADAPTER_INVALID_RESPONSE', 'External adapter request failed.', {
+      ...adapterContext(input),
+      reason: failureReason(error),
+    });
   }
 }
 
@@ -152,10 +184,12 @@ function requestAdapter(
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let stderrProbe = Buffer.alloc(0);
+    let stderrExcerpt = Buffer.alloc(0);
     let moduleDependencyDenied = false;
     const stdout: Buffer[] = [];
     let failure: ExternalAdapterError | null = null;
     let terminateTimer: ReturnType<typeof setTimeout> | undefined;
+    const outcome: ExternalAdapterChildOutcome = {};
     const child = spawn(input.runtimeInvocation.executable, [
       ...input.runtimeInvocation.prefixArgs,
       '__wtm_internal_adapter',
@@ -190,6 +224,9 @@ function requestAdapter(
       const combined = Buffer.concat([stderrProbe, chunk]);
       moduleDependencyDenied ||= combined.includes(moduleDeniedSentinel);
       stderrProbe = combined.subarray(-(moduleDeniedSentinel.length - 1));
+      // Only the tail is retained. An adapter that fails after writing a megabyte of diagnostics
+      // still has to fit its reason into an error, and the last thing it said is the reason.
+      stderrExcerpt = Buffer.concat([stderrExcerpt, chunk]).subarray(-maxStderrExcerptBytes);
       if (stderrBytes > input.maxOutputBytes) {
         stop(new ExternalAdapterError(
           'ADAPTER_INVALID_RESPONSE', 'External adapter returned an invalid response.', adapterContext(input),
@@ -199,10 +236,18 @@ function requestAdapter(
     const onStdinError = () => stop(new ExternalAdapterError(
       'ADAPTER_INVALID_RESPONSE', 'External adapter request failed.', adapterContext(input),
     ));
-    const onError = () => finish(new ExternalAdapterError(
-      'ADAPTER_INVALID_RESPONSE', 'External adapter request failed.', adapterContext(input),
-    ));
+    const onError = (error: NodeJS.ErrnoException) => {
+      // `error` here means no child was ever produced — a missing or unexecutable runtime — which
+      // is indistinguishable from a child that ran and failed unless the errno is carried out.
+      if (typeof error.code === 'string') outcome.spawnErrno = error.code;
+      if (typeof error.syscall === 'string') outcome.spawnSyscall = error.syscall;
+      finish(new ExternalAdapterError(
+        'ADAPTER_INVALID_RESPONSE', 'External adapter request failed.', adapterContext(input),
+      ));
+    };
     const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      outcome.exitCode = code;
+      outcome.signal = signal;
       if (failure !== null) return finish(failure);
       if (moduleDependencyDenied) {
         return finish(new ExternalAdapterError(
@@ -247,7 +292,12 @@ function requestAdapter(
       if (failure !== null) signalAdapterProcessGroup(child, 'SIGKILL');
       releaseChildResources();
       if (error === undefined) resolveRequest(Buffer.concat(stdout));
-      else rejectRequest(error);
+      // Rebuilt rather than mutated: a timeout error is constructed before the child has exited,
+      // so the outcome it should carry is only known here. Code and message are preserved exactly.
+      else rejectRequest(new ExternalAdapterError(error.code, error.message, {
+        ...error.context,
+        ...childOutcome(outcome, stderrBytes, stderrExcerpt),
+      }));
     };
     const stop = (error: ExternalAdapterError) => {
       if (failure !== null) return;
@@ -356,6 +406,38 @@ function checkedOutputLimit(maxOutputBytes: number): number {
 
 function adapterContext(input: { adapterId: string; operation: AdapterOperation }): Record<string, unknown> {
   return { adapterId: input.adapterId, operation: input.operation };
+}
+
+/** Names WTM's own failure, bounded and flattened the same way adapter stderr is. */
+function failureReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/[\p{Cc}\p{Cf}]+/gu, ' ').trim().slice(0, maxStderrExcerptChars);
+}
+
+function childOutcome(
+  outcome: ExternalAdapterChildOutcome,
+  stderrBytes: number,
+  stderrExcerpt: Buffer,
+): ExternalAdapterChildOutcome {
+  const tail = printableStderrTail(stderrExcerpt);
+  return {
+    ...outcome,
+    stderrBytes,
+    ...(tail === '' ? {} : { stderrTail: tail }),
+  };
+}
+
+/**
+ * Adapter stderr is arbitrary bytes on a channel the protocol calls diagnostic. It reaches a log
+ * line and a test report, so control characters and line breaks are flattened and the result is
+ * bounded; invalid UTF-8 is replaced rather than rejected, because a child that died mid-write is
+ * exactly the case this has to stay readable for.
+ */
+function printableStderrTail(stderrExcerpt: Buffer): string {
+  return new TextDecoder('utf-8').decode(stderrExcerpt)
+    .replace(/[\p{Cc}\p{Cf}]+/gu, ' ')
+    .trim()
+    .slice(-maxStderrExcerptChars);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

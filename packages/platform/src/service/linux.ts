@@ -309,7 +309,24 @@ export async function runSystemctl(argv: readonly string[]): Promise<ServiceComm
       shell: false,
       // No pager, and no colour: this output is parsed and is also reported back inside a JSON
       // error context, where an escape sequence would be noise at best.
-      env: { PATH: '/usr/bin:/bin', LC_ALL: 'C', LANG: 'C', SYSTEMD_COLORS: '0', SYSTEMD_PAGER: '' },
+      //
+      // The bus variables are passed through, and leaving them out was a defect that broke
+      // `systemctl --user` on every Linux host rather than only on the CI runner that exposed it.
+      // `execFile`'s `env` *replaces* the environment, it does not extend it, so the child was
+      // started with exactly the five names below -- and sd-bus resolves the user bus from
+      // `$DBUS_SESSION_BUS_ADDRESS`, then `$XDG_RUNTIME_DIR`, and with neither returns ENOMEDIUM.
+      // A perfectly healthy desktop would have been told its service manager was unreachable.
+      // `HOME` and `XDG_CONFIG_HOME` come along because the unit `enable` looks up lives under
+      // them; passing the bus in while withholding the unit path would trade one failure for a
+      // stranger one.
+      env: {
+        PATH: '/usr/bin:/bin',
+        LC_ALL: 'C',
+        LANG: 'C',
+        SYSTEMD_COLORS: '0',
+        SYSTEMD_PAGER: '',
+        ...inheritedSystemctlEnvironment(),
+      },
     }, (error: ExecException | null, stdout: string, stderr: string) => {
       const exitCode = error === null ? 0
         : typeof error === 'object' && 'code' in error && typeof error.code === 'number' ? error.code : null;
@@ -317,13 +334,43 @@ export async function runSystemctl(argv: readonly string[]): Promise<ServiceComm
         // 5 is systemd's EXIT_NOTINSTALLED: the unit does not exist. `stop` and `disable` answer
         // with it for a unit that is already gone, which is an absence and not a failure -- the
         // same classification `launchctl`'s 113 gets, made in the same place.
-        outcome: exitCode === 0 ? 'success' : exitCode === 5 ? 'not-found' : 'failure',
+        outcome: exitCode === 0 ? 'success'
+          // 5 is systemd's EXIT_NOTINSTALLED (see below). An unreachable bus outranks it: a
+          // manager that never answered has not told us anything about the unit.
+          : isUnreachableManager(stderr) ? 'manager-unreachable'
+          : exitCode === 5 ? 'not-found'
+          : 'failure',
         exitCode,
         stdout: sanitizeCommandOutput(stdout),
         stderr: sanitizeCommandOutput(stderr),
       });
     });
   });
+}
+
+/**
+ * The variables `systemctl --user` needs to find the bus and the unit directory, taken from this
+ * process rather than assumed. Absent names stay absent: passing `DBUS_SESSION_BUS_ADDRESS=""`
+ * is not the same as not passing it, and sd-bus treats the empty string as a configured address
+ * that does not work.
+ */
+export function inheritedSystemctlEnvironment(): Record<string, string> {
+  const inherited: Record<string, string> = {};
+  for (const name of ['DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR', 'HOME', 'XDG_CONFIG_HOME']) {
+    const value = process.env[name];
+    if (value !== undefined && value !== '') inherited[name] = value;
+  }
+  return inherited;
+}
+
+/**
+ * Whether systemctl failed to reach the user manager at all, rather than failing at something it
+ * was asked to do. Matched on stderr because systemd does not spend an exit status on it: a bus
+ * connection failure exits 1, which is also what a dozen ordinary refusals exit with.
+ */
+export function isUnreachableManager(stderr: string): boolean {
+  return /Failed to connect to (?:the )?bus/i.test(stderr)
+    || /Failed to (?:get|connect to) D-?Bus connection/i.test(stderr);
 }
 
 let currentProcessInspection: Promise<ServiceProcessInspection> | undefined;

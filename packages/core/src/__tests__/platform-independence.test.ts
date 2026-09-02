@@ -134,6 +134,20 @@ const reviewedExceptions: readonly ReviewedException[] = [
       'POSIX-versus-Windows process-group semantics, deferred to the Windows increment by spec D7. '
       + 'Pinned to lines mentioning win32 so a `darwin` branch could never hide behind this entry.',
   },
+  {
+    file: 'packages/core/src/plan/adapter-runner.ts',
+    rule: 'procfs',
+    occurrences: 1,
+    requires: '/dev/fd',
+    reason:
+      'A comment, not a read. The adapter loader short-circuits module resolution because the '
+      + 'default resolver calls realpath, which fails for a `/dev/fd` entry whose file is unlinked '
+      + 'on a procfs-backed host -- the finding that cost 25 red tests in the first Linux CI run '
+      + '(F12). The code stays platform-neutral; only the explanation names the filesystem, and '
+      + 'stripping it would leave a short-circuit that reads as an optimisation and invites '
+      + 'removal. Pinned to the single line that also mentions `/dev/fd`, which is the path the '
+      + 'loader genuinely uses, so a real procfs read could not hide behind this entry.',
+  },
 ];
 
 interface Violation {

@@ -194,6 +194,155 @@ to 128 bytes rather than 112 or 120, so that a boundary always falls inside the 
 accidentally run under Bun could never report "nothing in this range was refused".
 
 
+### F9 — Inode identity is a weaker guarantee on Linux, and WTM's TOCTOU defences rest on it
+
+**Found by the first ubuntu run (33648234137). This is the most consequential thing in this
+document, and no amount of reading could have produced it here.**
+
+Six failures across three unrelated subsystems share one mechanism:
+
+| test | what it does | expected | got on Linux |
+|---|---|---|---|
+| `launchd lifecycle > does not remove a plist replaced after uninstall inspection` | `rm(plist)` then `writeFile(plist, 'replacement')` between inspection and removal | `UNSAFE_LAUNCHD_PATH` | resolved — **it removed the replacement** |
+| `…> preserves a concurrent winner created at the final uninstall mutation boundary` | same shape, different boundary | refusal | resolved |
+| `…> preserves a replacement target created at the final changed-definition boundary` | same | refusal | resolved |
+| `…> does not restore from a quarantine swapped after journal validation` | same | refusal | resolved |
+| `resource sandbox guard > preserves the exact parent identity across hooks and rejects a parent swap` | `rm -r` the authorized parent, `mkdir` it again, revalidate | `RESOURCE_PATH_DENIED` | resolved |
+| `safe resource GC > fails closed on a quarantine race…` | quarantine swapped mid-operation | `outcome: failed, phase: prepared` | `outcome: deleted` |
+
+Every one of these asks the same question — *is the object at this path still the object I
+inspected?* — and every one answers it by comparing `(dev, ino, uid)`. `service-lifecycle.ts:2290`
+is the canonical spelling; `guard.ts:347`, `gc.ts:768`, `removal.ts:263` and `materializer.ts:631`
+are the same predicate written again.
+
+**On APFS a deleted inode number is not handed back. On Linux it is, immediately.** So
+delete-then-recreate at the same path produces an object that is, to this predicate, the same
+object. The check does not merely weaken on Linux — for the specific attack it was written to stop,
+which is substituting a file between check and use, it returns the wrong answer.
+
+The blast radius is not six tests. `grep` finds inode-identity comparisons in **14 product files**
+— `service-lifecycle.ts` alone has 57 call sites — and they are concentrated exactly where this
+project put its safety: the destructive-operation core of Increment A, the resource sandbox, the
+GC's quarantine protocol, the adapter trust store, and the service publisher's transactional
+rename dance. These are the mechanisms whose entire purpose is to fail closed under a race.
+
+Three things follow, and they matter more than the fix itself:
+
+1. **This was invisible to every form of verification available before today.** The tests were
+   correct, present, and passing. They were passing because of a filesystem property nobody had
+   written down, on the only platform anyone had run. This is the concrete answer to why C1's exit
+   criterion could not have included "Linux works" — and it is a stronger argument for the C1/C2
+   split than the one the program map gives.
+2. **The tests were right and the product was wrong.** The temptation will be to relax six
+   assertions. They are the assertions that caught this.
+3. **The mechanism must be measured before it is fixed**, the way D5 handled the socket limit. A
+   test that creates a file, records `ino`, deletes it, creates another at the same path and
+   reports whether the number came back turns this paragraph from a well-supported inference into
+   a fact the suite re-checks on every run — on both platforms, since the fix's whole point is that
+   the two behave differently.
+
+Scope note: the *fix* is a change to a safety predicate used in 14 files, which is larger than
+"add a Linux CI job". It is in this increment anyway. Shipping a Linux CI job that is green while
+these defences do not hold on Linux would be the exact false claim this spec opened by rejecting.
+
+### F10 — `plutil` has no Linux equivalent, and that is a legitimate skip
+
+`launchd.test.ts:106` validates the generated plist with `/usr/bin/plutil -lint`. There is no
+Linux tool that validates an Apple property list, and there is no reason to want one: the artifact
+is consumed by launchd, which only exists on macOS.
+
+This is the first case D13 anticipated — "where linux genuinely cannot run something, the spec
+says so in writing rather than the matrix saying it in silence". It skips on non-darwin, and the
+skip names `plutil` as a macOS tool rather than reading as a generic platform guard. Note the
+failure mode it produced: `spawnSync` on a missing binary returns `status: undefined`, so the
+assertion compared `undefined` to `0` rather than reporting that the tool was absent.
+
+### F11 — `systemctl --user` on a GitHub runner
+
+`daemon.test.ts:302` pins that a real `daemon status` either succeeds or reports
+`WTM_DAEMON_UNAVAILABLE`; on Linux it did neither. This is one of the open questions this spec
+listed, arriving as predicted. The answer decides whether the systemd lifecycle can be
+integration-tested in CI at all, or whether this increment gains a written limitation instead of a
+skipped test. Resolved below once the returned code is known.
+
+
+### F12 — `/dev/fd` is procfs on Linux, and Node's resolver calls `realpath`
+
+The 25-test adapter cluster. Root-caused by C2-9 and **reproduced in `node:24.18.0-bookworm`**,
+the CI's exact runtime, rather than argued from documentation.
+
+`adapter-runner.ts` executes the adapter from an **unlinked** private copy, addressed as
+`/dev/fd/<n>` — being anonymous is the security guarantee. Node's ESM resolver calls
+`realpathSync` on every resolved file path:
+
+- **macOS**: `/dev/fd` is the `fdesc` filesystem; `realpath('/dev/fd/3')` returns itself. Works.
+- **Linux**: `/dev/fd` → `/proc/self/fd`, whose entries are magic symlinks that read
+  `"/tmp/…/adapter.mjs (deleted)"` once the file is unlinked. `stat` and `open` on the descriptor
+  still succeed; only `realpath` fails, with ENOENT on a path that has `" (deleted)"` glued to it.
+
+The child then exited 1 with empty stderr, and `onClose` mapped `code !== 0` to the generic
+`External adapter request failed.` — which is why 25 red tests carried no information at all. The
+container run reproduced 26 failures against a clean `bun install`, matching CI exactly.
+
+The fix is two lines: short-circuit the resolve hook for the entry specifier, which bypasses
+`finalizeResolution` and so never calls `realpath`. What is worth recording is that the fix is
+*invisible* — it looks like an optimisation. Without the comment explaining it, the next person to
+tidy this file deletes it and 25 tests go red on a platform they are not running.
+
+That comment then tripped D8's structural guard, because it names `/proc/self/fd` inside `core`.
+It is a reviewed exception, pinned to the single line and verified not to excuse a real procfs
+read: with a probe `readFileSync("/proc/self/status")` added to the same file, the guard still
+names it. The exception is in the guard's own table with its reason, which is the mechanism C1
+built for exactly this.
+
+Two rejected alternatives, recorded so they are not revisited: keeping the copy linked gives up
+the anonymous-descriptor guarantee, and `NODE_OPTIONS=--preserve-symlinks` changes module
+resolution for the entire child.
+
+### F13 — `runSystemctl` handed the child a replacement environment, breaking every Linux host
+
+C2-10, investigating the `daemon status` failure, found something larger than the test.
+
+`packages/platform/src/service/linux.ts` ran `systemctl` with
+`env: { PATH, LC_ALL, LANG, SYSTEMD_COLORS, SYSTEMD_PAGER }`. **`execFile`'s `env` replaces the
+environment rather than extending it**, so the child saw exactly those five names.
+`systemctl --user` resolves the user bus from `$DBUS_SESSION_BUS_ADDRESS`, then
+`$XDG_RUNTIME_DIR`, and with neither returns ENOMEDIUM — *"Failed to connect to bus"*, exit 1.
+
+So this was never a fact about CI runners. **`systemctl --user` could not have worked on a
+perfectly healthy Linux desktop either.** The CI failure was not evidence about the runner; it
+was the first execution of a Linux backend nobody had run, doing what it would always have done.
+This is the plainest possible illustration of why C1's fixture-driven Linux backend was not
+allowed to claim the platform worked.
+
+Two corrections landed:
+
+1. The bus variables (`DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`) and the unit-lookup variables
+   (`HOME`, `XDG_CONFIG_HOME`) pass through from this process. Absent names stay absent — sd-bus
+   reads an empty `DBUS_SESSION_BUS_ADDRESS` as a configured address that does not work, which is
+   a worse answer than no address at all.
+2. **`ServiceCommandOutcome` gains `manager-unreachable`.** systemd does not spend an exit status
+   on a bus failure — it exits 1, like a dozen ordinary refusals — so the runner classifies it from
+   stderr. The runner, not the lifecycle: what a manager's failure *means* is knowledge about that
+   manager, and the runner is already the layer that knows `systemctl` 5 and `launchctl` 113 both
+   mean "no such service". macOS never produces the new value, so its command sequence is
+   byte-identical and `launchd.test.ts` is untouched by this.
+
+   `commandError` — the single funnel every operation's failure passes through — turns it into
+   `LAUNCHD_DOMAIN_UNAVAILABLE`, which is what macOS has reported for the identical condition
+   since before the seam existed. So "no user service manager reachable" is now one coded, exit-4,
+   diagnosable answer on both platforms, where Linux previously said `WTM_DAEMON_REQUEST_FAILED`
+   at exit 1.
+
+This resolves **F11**. It also settles one of the spec's open questions, with a limitation that is
+now written rather than skipped: the systemd *lifecycle* (install → enable → start) still cannot
+be integration-tested on `ubuntu-latest`, because there is no logind user session to accept a
+unit, and `HOME`-isolation cannot help — a running user manager was started with the login `HOME`,
+so a unit under a test's temporary `HOME` is invisible to it. What CI can honestly prove is that
+the CLI reaches the selected backend, drives `systemctl`, and reports an unreachable manager as a
+named condition.
+
+
 ## Decisions
 
 ### D1 — The anchor is told its platform; it does not observe it
