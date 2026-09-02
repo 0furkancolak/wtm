@@ -343,6 +343,36 @@ the CLI reaches the selected backend, drives `systemctl`, and reports an unreach
 named condition.
 
 
+### F14 — A test whose premise was a race nobody had lost yet
+
+Second ubuntu run (33653268251): 33 failures down to one.
+
+`git-runner.integration.test.ts` ran a real `git worktree list` with a **one-millisecond** timeout,
+on the stated reasoning that *"no git reaches `exec` inside a millisecond"*, and asserted the
+failure message ended `(signal SIGTERM)`. On Linux it read `(signal none)`.
+
+The premise was simply false there. The git *finished* inside the millisecond, so the timer fired,
+`kill` landed on a process that had already exited, and `close` reported the natural exit. The
+behaviour the test is named for — that a git which cannot make progress is killed rather than
+waited on — was never exercised on Linux at all.
+
+It was never really exercised on macOS either. It won a race there, every time, until a faster
+machine ran it. A loaded runner could have flipped it at any point.
+
+The fix does not relax the assertion; it makes the premise true. A `git` on `PATH` that `exec`s a
+thirty-second `sleep` cannot exit on its own, so `signal SIGTERM` becomes evidence that the timeout
+is what ended the process rather than a coin that has been landing the same way. Mutation-checked:
+changing the product's `SIGTERM` to `SIGINT` turns it red.
+
+The `exec` in that stub is load-bearing and worth naming — without it the shell survives holding
+the stdio pipes, SIGTERM kills the shell, `sleep` keeps the pipe open, and `close` never fires.
+
+This is the third finding in this increment of the same shape, after F6 (tests that passed because
+a daemon happened to be running) and F9 (a check that passed because of a filesystem's allocation
+policy). A green suite records that nothing *observed* went wrong; it does not record which of its
+premises were being supplied by the machine.
+
+
 ## Decisions
 
 ### D1 — The anchor is told its platform; it does not observe it

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGitWorktreeFixture } from '../../../../testkit/src/git-fixture';
@@ -98,24 +98,57 @@ describe('createGitEnvironment', () => {
 });
 
 describe('runGit timeouts', () => {
+  /**
+   * A `git` on PATH that cannot make progress, standing in for the real ones that cannot: a lock
+   * it will never win, a volume the process may not read, a privacy prompt no background agent can
+   * answer.
+   *
+   * This used to be a one-millisecond timeout on a real `git worktree list`, on the reasoning that
+   * no git reaches `exec` that fast. The first Linux CI run disproved it. On Linux the git
+   * *finished* inside the millisecond, so the timer fired, `kill` landed on an already-exited
+   * process, and `close` reported the natural exit -- `signal none` where the test demanded
+   * `signal SIGTERM`. The behaviour under test was never exercised there, and on a loaded macOS
+   * runner the same race could have gone the other way at any time; it had simply never been run
+   * anywhere that lost it.
+   *
+   * `exec` matters: without it the shell stays alive holding the stdio pipes, so SIGTERM kills the
+   * shell while `sleep` keeps the pipe open and `close` never fires.
+   */
+  async function stalledGitOnPath(): Promise<{ restore: () => Promise<void> }> {
+    const directory = await mkdtemp(join(tmpdir(), 'wtm-stalled-git-'));
+    const executable = join(directory, 'git');
+    await writeFile(executable, '#!/bin/sh\nexec sleep 30\n', { mode: 0o700 });
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${directory}:${previousPath ?? ''}`;
+    return {
+      restore: async () => {
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+        await rm(directory, { recursive: true, force: true });
+      },
+    };
+  }
+
   it('kills a git that outlives its timeout instead of waiting on it forever', async () => {
     const fixture = await createGitWorktreeFixture();
+    const stalled = await stalledGitOnPath();
     try {
-      // No git reaches `exec` inside a millisecond, so this stands in for any git that cannot
-      // make progress: a lock it will never win, a volume the process is not allowed to read,
-      // a privacy prompt no background agent can answer.
       const startedAt = Date.now();
-      const failure = await runGit(fixture.repoPath, ['worktree', 'list'], { timeoutMs: 1 })
+      const failure = await runGit(fixture.repoPath, ['worktree', 'list'], { timeoutMs: 50 })
         .then(() => null, (error: unknown) => error);
 
       expect(failure).toBeInstanceOf(GitCommandError);
       expect((failure as GitCommandError).timedOut).toBe(true);
-      expect((failure as GitCommandError).message).toContain('Timed out after 1ms');
+      // The signal is the claim: this git could not have exited on its own inside thirty seconds,
+      // so reporting SIGTERM is evidence that the timeout is what ended it.
       // Twenty-two of these a pass, none of them naming a repository, is the same as silence.
       expect((failure as GitCommandError).message)
-        .toBe(`Git worktree list in ${fixture.repoPath} failed (signal SIGTERM): Timed out after 1ms`);
-      expect(Date.now() - startedAt).toBeLessThan(4_000);
+        .toBe(`Git worktree list in ${fixture.repoPath} failed (signal SIGTERM): Timed out after 50ms`);
+      // Far below the thirty seconds the child would have taken, and below the two-second
+      // escalation to SIGKILL, so this also pins that SIGTERM alone was enough.
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
     } finally {
+      await stalled.restore();
       await fixture.cleanup();
     }
   });
