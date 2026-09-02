@@ -701,11 +701,20 @@ XDG_RUNTIME_DIR
 - [x] `systemctl --user` lifecycle.
 - [x] XDG directory resolution.
 - [x] Unix socket path policy.
-- [ ] POSIX process group supervision.
+- [x] POSIX process group supervision.
 - [x] Linux process start-time / identity verification.
-- [ ] inotify/fs.watch davranış testleri.
-- [ ] Linux permission / symlink semantics testleri.
-- [ ] ARM64 + x64 binary build pipeline.
+- [x] inotify/fs.watch davranış testleri.
+- [x] Linux permission / symlink semantics testleri.
+- [ ] ARM64 + x64 binary build pipeline. — x64 tamam (`binary:verify` ubuntu bacağında yeşil,
+      `dist/sea/wtm … linux-x64`); **arm64 yok**, Linux CI matrisinde arm64 runner yok.
+
+> **Linux x64 CI yeşil, 2026-09-02** (`33655596273`). Bu kutular gerçek bir çekirdekte koşan
+> testlerle işaretlendi, fixture'larla değil: süreç grubu sonlandırma ve anchor'ın platform
+> port'uyla canlı mutabakatı, `.git` altına sonradan eklenen bir worktree'yi özyinelemeli
+> inotify ile yakalayan reconciliation, ve 17 symlink/izin testi. `sizeof(sun_path)` = 108 ve
+> inode numarası yeniden kullanımı da artık alıntı değil ölçüm.
+>
+> Maddenin kendisi açık kalıyor: Windows yarısı Increment D.
 
 ---
 

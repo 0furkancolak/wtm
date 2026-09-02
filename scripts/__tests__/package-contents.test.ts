@@ -30,6 +30,17 @@ test('the public npm package contains runtime bundles, migrations, docs, license
     expect(bundle).not.toContain(manifestKey);
   const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
   expect(manifest.dependencies.commander).toBe('14.0.2');
+  // `os` is a promise to npm, and it is the one field in this manifest that nothing else checks:
+  // `npm pack` does not enforce it, so a wrong value is silent here and `EBADPLATFORM` for the
+  // person installing. It is pinned to the platforms CI actually runs, which is what makes it a
+  // claim the build can check rather than an intention. Adding a platform here without adding its
+  // job below is the failure this is here to stop.
+  expect(manifest.os).toEqual(['darwin', 'linux']);
+  const ci = Bun.YAML.parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+    jobs: { validate: { strategy: { matrix: { include: { platform: string }[] } } } };
+  };
+  const validated = [...new Set(ci.jobs.validate.strategy.matrix.include.map(({ platform }) => platform))];
+  expect(validated.sort()).toEqual([...manifest.os].sort());
   const thirdParty = readFileSync('THIRD_PARTY_LICENSES.md', 'utf8');
   for (const copyright of [
     'Copyright (c) 2011 TJ Holowaychuk',

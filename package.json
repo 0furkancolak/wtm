@@ -1,7 +1,7 @@
 {
   "name": "worktree-runtime-manager",
   "version": "0.1.0-rc.1",
-  "description": "Local-first runtime and safety manager for Git worktrees on macOS: per-worktree tasks, environments, ports, process supervision, and safe removal.",
+  "description": "Local-first runtime and safety manager for Git worktrees on macOS and Linux: per-worktree tasks, environments, ports, process supervision, and safe removal.",
   "keywords": [
     "git",
     "git-worktree",
@@ -19,6 +19,8 @@
     "task-runner",
     "macos",
     "launchd",
+    "linux",
+    "systemd",
     "daemon",
     "local-first",
     "ai-agents",
@@ -39,7 +41,8 @@
   "private": false,
   "type": "module",
   "os": [
-    "darwin"
+    "darwin",
+    "linux"
   ],
   "engines": {
     "node": ">=24.0.0"

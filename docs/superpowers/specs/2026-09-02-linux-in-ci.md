@@ -373,6 +373,51 @@ policy). A green suite records that nothing *observed* went wrong; it does not r
 premises were being supplied by the machine.
 
 
+### F15 — CI had been red since before C1, and I reported C1 as verified without looking
+
+Third ubuntu run (33655596273): **linux x64 green, both macOS legs red.** Checking whether I had
+just broke macOS, I found something worse.
+
+```
+33655596273  c1eeb70  failure   <- C2, this increment
+33653268251  aa01700  failure
+33648234137  7de7b72  failure
+33553731200  b5991c5  failure   <- C1, reported here as complete and verified
+33529876937  f8b442e  failure
+33424762270  48b4bd4  failure   <- CI first went red here
+33366406006  454a088  success   <- last green run
+```
+
+Two of the three macOS failures at C1 were exactly the tests **F6** later identified as
+host-lucky: `refresh-remotes` and `Commander CLI > routes resolve, analyze, and remove…`. **CI had
+been reporting them for three commits.** F6 presents them as a discovery; they were a discovery
+only in the sense that nobody had read the thing already saying it. The third, `the published
+definition path`, was added *by C1* and was red on the runner from the moment it was pushed.
+
+The verification I reported for C1 — lint, typecheck, build, 1185 pass, a hand-broken structural
+guard, a byte-unchanged `launchd.test.ts` — was accurate and was entirely local. I never opened
+CI. Every claim I made was true of my machine and I let it stand for the project.
+
+This belongs in this spec rather than in a commit message, because it is the same failure the
+increment is about, one level up. F6 is a test that measured the developer's machine; F9 is a
+check that measured one filesystem's allocator; F14 is an assertion that measured a race. This is
+a *person* reporting his own machine as the state of the world. The mechanism that catches the
+first three is a second platform in CI. The mechanism that catches the fourth is reading CI, and
+this increment is the first time I did.
+
+Recorded as a standing rule for the increments after this one: **an increment is not reported
+complete until its CI run is read.** Green locally is a precondition, not evidence.
+
+The remaining macOS failure is now the only one, and it is a real refusal with an unhelpful voice:
+`RESOURCE_PATH_DENIED: The launchd installation path is unsafe.` on a runner whose
+`~/Library/LaunchAgents` chain differs from a developer's. `assertSafeDirectory` checks five
+conditions and or-ed them into one boolean, so neither the directory nor the reason survived. It
+now names both, which decides on the next run whether the refusal is correct (a chain WTM should
+refuse) or whether the rule is stricter than macOS's own defaults — the identical defect C1 found
+and fixed on the Linux side, where demanding 0700 of `~/.config` would have refused every Linux
+box.
+
+
 ## Decisions
 
 ### D1 — The anchor is told its platform; it does not observe it

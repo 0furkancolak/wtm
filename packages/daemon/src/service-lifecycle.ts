@@ -2451,13 +2451,24 @@ async function assertSafeDirectory(path: string, uid: number, ownerOnly = false)
   let stat: Awaited<ReturnType<typeof lstat>>;
   try { stat = await lstat(path); }
   catch (error) { if (isNodeError(error, 'ENOENT')) throw error; throw pathError('Unsafe launchd directory', error); }
-  if (
-    !stat.isDirectory()
-    || stat.isSymbolicLink()
-    || stat.uid !== uid
-    || (stat.mode & 0o022) !== 0
-    || (ownerOnly && (stat.mode & 0o077) !== 0)
-  ) throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'Unsafe launchd directory');
+  // Each condition is named rather than or-ed into one boolean, because the refusal is the only
+  // thing the user gets and "the launchd installation path is unsafe" is not actionable: it does
+  // not say which directory in the chain, nor what about it. That cost a CI round trip on a macOS
+  // runner whose chain differs from a developer's, and it would cost a user far more -- they
+  // cannot add a log line to find out.
+  const unsafe = !stat.isDirectory() ? 'not a directory'
+    : stat.isSymbolicLink() ? 'a symbolic link'
+    : stat.uid !== uid ? `owned by uid ${String(stat.uid)}, not ${String(uid)}`
+    : (stat.mode & 0o022) !== 0 ? 'writable by group or other'
+    : (ownerOnly && (stat.mode & 0o077) !== 0) ? 'readable by group or other, and must be owner-only'
+    : null;
+  if (unsafe !== null) {
+    throw new ServiceLifecycleError(
+      'UNSAFE_LAUNCHD_PATH',
+      `Unsafe launchd directory: ${path} is ${unsafe}`,
+      { path, reason: unsafe, mode: (stat.mode & 0o7777).toString(8), owner: stat.uid },
+    );
+  }
   return { dev: stat.dev, ino: stat.ino, uid: stat.uid, mode: stat.mode };
 }
 
