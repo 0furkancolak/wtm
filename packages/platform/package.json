@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./ipc": "./src/ipc/index.ts",
     "./ports": "./src/ports.ts",
     "./process": "./src/process/index.ts",
     "./service": "./src/service/index.ts",

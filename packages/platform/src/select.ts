@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 import type { Remediation } from '@wtm/protocol';
+import { createUnixSocketPublisher, createWindowsIpcPublisher } from './ipc';
 import { platformPathsFor } from './paths';
 import { socketAddressPolicyFor } from './socket';
 import {
@@ -15,7 +16,7 @@ import {
   createWindowsFileTrustPolicy,
   posixFileTrustPolicy,
 } from './trust';
-import type { FileTrustPolicy, PlatformId, PlatformRuntime } from './ports';
+import type { FileTrustPolicy, IpcServerPublisher, PlatformId, PlatformRuntime } from './ports';
 
 /**
  * The one place in WTM that decides which operating system it is running on.
@@ -79,6 +80,16 @@ const fileTrustPolicies: Readonly<Record<PlatformId, FileTrustPolicy>> = {
   win32: windowsFileTrustPolicy,
 };
 
+/** Stateless, like `posixFileTrustPolicy` above — one instance is shared across every call. */
+const unixSocketPublisher: IpcServerPublisher = createUnixSocketPublisher();
+const windowsIpcPublisher: IpcServerPublisher = createWindowsIpcPublisher();
+
+const ipcPublishers: Readonly<Record<PlatformId, IpcServerPublisher>> = {
+  darwin: unixSocketPublisher,
+  linux: unixSocketPublisher,
+  win32: windowsIpcPublisher,
+};
+
 export interface SelectPlatformRuntimeOptions {
   platform?: NodeJS.Platform | string;
   env?: Readonly<Partial<Record<string, string>>>;
@@ -111,6 +122,7 @@ export function selectPlatformRuntime(options: SelectPlatformRuntimeOptions = {}
     process: processPlatforms[platform](),
     service: serviceBackends[platform],
     fileTrust: fileTrustPolicies[platform],
+    ipc: ipcPublishers[platform],
   };
 }
 

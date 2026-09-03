@@ -1,9 +1,11 @@
-import { randomUUID } from 'node:crypto';
-import { chmod, link, lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
-import { createConnection, createServer, type Server, type Socket } from 'node:net';
-import { dirname, join } from 'node:path';
-import { selectPlatformRuntime } from '@wtm/platform';
-import { assertDaemonSocketPathFits, boundDaemonSocketPath } from '@wtm/platform/socket';
+import { createServer, type Server, type Socket } from 'node:net';
+import {
+  selectPlatformRuntime,
+  type IpcServerPublisher,
+  type PublishedIpcServer,
+  type PublishOptions,
+} from '@wtm/platform';
+import { assertDaemonSocketPathFits } from '@wtm/platform/socket';
 import {
   FrameDecoder,
   FrameSizeError,
@@ -54,22 +56,6 @@ export interface UnixIpcServerOptions {
   afterPrivateSocketQuarantine?: () => Promise<void> | void;
 }
 
-interface SocketIdentity {
-  dev: number;
-  ino: number;
-  uid: number;
-}
-
-interface DirectoryIdentity extends SocketIdentity {
-  uid: number;
-}
-
-interface QuarantinedPath {
-  path: string;
-  identity: SocketIdentity;
-  changedDuringQuarantine: boolean;
-}
-
 interface ConnectionState {
   decoder: FrameDecoder;
   inFlight: number;
@@ -101,6 +87,19 @@ function hostSocketPathLimitBytes(): number {
   return hostLimitBytes;
 }
 
+/**
+ * Which publish protocol actually runs — the moved hardlink/chmod/uid dance on darwin and linux,
+ * a plain `listen()` on win32 (spec `2026-09-03-windows-trust-and-transport-seam.md`, D7). Resolved
+ * lazily for the same reason `hostSocketPathLimitBytes` is: an unsupported platform's refusal
+ * belongs to `assertSupportedRuntime`, not to this module's top level.
+ */
+let hostPublisher: IpcServerPublisher | null = null;
+
+function hostIpcPublisher(): IpcServerPublisher {
+  hostPublisher ??= selectPlatformRuntime().ipc;
+  return hostPublisher;
+}
+
 export class UnixIpcServer {
   readonly #socketPath: string;
   readonly #handler: IpcRequestHandler;
@@ -109,21 +108,13 @@ export class UnixIpcServer {
   readonly #maxInFlightPerConnection: number;
   readonly #maxPendingOutputBytes: number;
   readonly #partialFrameIdleTimeoutMs: number;
-  readonly #beforeSocketChmod: () => Promise<void> | void;
-  readonly #probeExistingSocket: (path: string) => Promise<boolean>;
-  readonly #beforeStaleSocketQuarantine: () => Promise<void> | void;
-  readonly #afterSocketChmod: (path: string) => Promise<void> | void;
-  readonly #beforeOwnedSocketQuarantine: () => Promise<void> | void;
-  readonly #afterPrivateSocketQuarantine: () => Promise<void> | void;
+  readonly #publisher: IpcServerPublisher;
+  readonly #publishOptions: PublishOptions;
   readonly #sockets = new Set<Socket>();
   readonly #preReadySockets = new Set<Socket>();
   readonly #preReadyInput = new Map<Socket, PreReadyInput>();
   #server: Server | null = null;
-  #ownedSocket: SocketIdentity | null = null;
-  #boundSocket: SocketIdentity | null = null;
-  #boundSocketPath: string | null = null;
-  #rememberedBoundSocketPath: string | null = null;
-  #socketParent: DirectoryIdentity | null = null;
+  #published: PublishedIpcServer | null = null;
   #starting: Promise<void> | null = null;
   #closePromise: Promise<void> | null = null;
   readonly #socketPathLimitBytes: number | null;
@@ -148,14 +139,15 @@ export class UnixIpcServer {
       options.partialFrameIdleTimeoutMs ?? 5_000,
       'Partial IPC frame idle timeout',
     );
-    this.#beforeSocketChmod = options.beforeSocketChmod ?? (() => {});
-    this.#probeExistingSocket = options.probeExistingSocket ?? socketAcceptsConnections;
-    this.#beforeStaleSocketQuarantine = options.beforeStaleSocketQuarantine
-      ?? options.beforeStaleSocketUnlink
-      ?? (() => {});
-    this.#afterSocketChmod = options.afterSocketChmod ?? (() => {});
-    this.#beforeOwnedSocketQuarantine = options.beforeOwnedSocketQuarantine ?? (() => {});
-    this.#afterPrivateSocketQuarantine = options.afterPrivateSocketQuarantine ?? (() => {});
+    this.#publisher = hostIpcPublisher();
+    this.#publishOptions = {
+      probeExistingSocket: options.probeExistingSocket,
+      beforeStaleSocketQuarantine: options.beforeStaleSocketQuarantine ?? options.beforeStaleSocketUnlink,
+      beforeSocketChmod: options.beforeSocketChmod,
+      afterSocketChmod: options.afterSocketChmod,
+      beforeOwnedSocketQuarantine: options.beforeOwnedSocketQuarantine,
+      afterPrivateSocketQuarantine: options.afterPrivateSocketQuarantine,
+    };
   }
 
   start(): Promise<void> {
@@ -190,8 +182,7 @@ export class UnixIpcServer {
     let failure: unknown;
     for (const cleanup of [
       () => this.#closeListeningServer(),
-      () => this.#unlinkBoundSocket(),
-      () => this.#unlinkOwnedSocket(),
+      () => this.#unpublish(),
     ]) {
       try {
         await cleanup();
@@ -203,94 +194,41 @@ export class UnixIpcServer {
   }
 
   async #start(): Promise<void> {
-    // Before anything is created, quarantined or bound. A path that cannot fit in a socket
-    // address fails at `listen` with a bare `EINVAL` that names neither the limit nor the
-    // path, and by then the parent directory has already been secured and a stale socket may
-    // already have been displaced -- work undone for a failure that was knowable up front.
+    // Before anything is created or bound. A path that cannot fit in a socket address fails at
+    // `listen` with a bare `EINVAL` that names neither the limit nor the path, and by then the
+    // publisher may already have quarantined a stale occupant -- work undone for a failure that
+    // was knowable up front.
     assertDaemonSocketPathFits(this.#socketPath, this.#socketPathLimitBytes ?? hostSocketPathLimitBytes());
-    const parent = await secureSocketParent(dirname(this.#socketPath));
-    await prepareSocketPath(this.#socketPath, parent, {
-      probe: this.#probeExistingSocket,
-      beforeQuarantine: this.#beforeStaleSocketQuarantine,
-    });
-    const boundPath = boundDaemonSocketPath(this.#socketPath);
-    await prepareSocketPath(boundPath, parent, {
-      probe: socketAcceptsConnections,
-      beforeQuarantine: () => {},
-    });
     const server = createServer((socket) => this.#acceptOrPause(socket));
+    let published: PublishedIpcServer;
     try {
-      await listen(server, boundPath);
-      this.#rememberedBoundSocketPath = boundPath;
-      this.#socketParent = parent;
-      const stat = await lstat(boundPath);
-      const currentUid = process.getuid?.();
-      if (!stat.isSocket() || currentUid === undefined || stat.uid !== currentUid) {
-        throw new Error('Created IPC path is not a current-user Unix socket');
-      }
-      const identity = { dev: stat.dev, ino: stat.ino, uid: stat.uid };
-      this.#boundSocket = identity;
-      this.#boundSocketPath = boundPath;
-      await link(boundPath, this.#socketPath);
-      const published = await lstat(this.#socketPath);
-      if (!matchesSocketIdentity(published, identity)) {
-        throw new Error('Published IPC socket does not match the bound socket');
-      }
-      const linkedPrivate = await lstat(boundPath);
-      if (!matchesSocketIdentity(linkedPrivate, identity)) {
-        throw new Error('Private IPC socket changed during publication');
-      }
-      this.#ownedSocket = identity;
-      const publishedMode = published.mode & 0o777;
-      await this.#unlinkBoundSocket();
-      const privateRemoved = await lstat(this.#socketPath);
-      if (
-        !matchesSocketIdentity(privateRemoved, identity)
-        || (privateRemoved.mode & 0o777) !== publishedMode
-      ) {
-        throw new Error('Published IPC socket changed while removing the private bind entry');
-      }
-      await this.#beforeSocketChmod();
-      const beforeChmod = await lstat(this.#socketPath);
-      if (!matchesSocketIdentity(beforeChmod, identity)) {
-        throw new Error('IPC socket changed before permissions were secured');
-      }
-      await chmod(this.#socketPath, 0o600);
-      await this.#afterSocketChmod(this.#socketPath);
-      await assertDirectoryIdentity(
-        dirname(this.#socketPath),
-        parent,
-        'IPC socket parent changed after permissions were secured',
-      );
-      const secured = await lstat(this.#socketPath);
-      if (!matchesSocketIdentity(secured, identity) || (secured.mode & 0o777) !== 0o600) {
-        throw new Error('IPC socket changed after permissions were secured');
-      }
-      if (this.#state === 'closing') throw new Error('Unix IPC server closed during startup');
-      this.#server = server;
-      this.#ready = true;
-      for (const socket of this.#preReadySockets) {
-        this.#preReadySockets.delete(socket);
-        if (!socket.destroyed) {
-          const input = this.#preReadyInput.get(socket);
-          if (input !== undefined) socket.off('data', input.listener);
-          this.#preReadyInput.delete(socket);
-          this.#activate(socket, input?.chunks ?? []);
-        }
-      }
+      published = await this.#publisher.publish(server, this.#socketPath, this.#publishOptions);
     } catch (error) {
-      if (this.#server === server) this.#server = null;
-      this.#ready = false;
       for (const socket of this.#sockets) socket.destroy();
       this.#sockets.clear();
       this.#preReadySockets.clear();
       this.#preReadyInput.clear();
-      if (server.listening) {
-        try { await this.#closeServerWithPrivatePathShield(server); } catch { /* Preserve the startup failure. */ }
-      }
-      try { await this.#unlinkBoundSocket(); } catch { /* Preserve the startup failure. */ }
-      try { await this.#unlinkOwnedSocket(); } catch { /* Preserve the startup failure. */ }
       throw error;
+    }
+    if (this.#state === 'closing') {
+      try { await published.unpublish(); } catch { /* Preserve the startup failure. */ }
+      for (const socket of this.#sockets) socket.destroy();
+      this.#sockets.clear();
+      this.#preReadySockets.clear();
+      this.#preReadyInput.clear();
+      throw new Error('Unix IPC server closed during startup');
+    }
+    this.#published = published;
+    this.#server = server;
+    this.#ready = true;
+    for (const socket of this.#preReadySockets) {
+      this.#preReadySockets.delete(socket);
+      if (!socket.destroyed) {
+        const input = this.#preReadyInput.get(socket);
+        if (input !== undefined) socket.off('data', input.listener);
+        this.#preReadyInput.delete(socket);
+        this.#activate(socket, input?.chunks ?? []);
+      }
     }
   }
 
@@ -484,126 +422,20 @@ export class UnixIpcServer {
     state.partialTimer.unref();
   }
 
-  async #closeListeningServer(): Promise<void> {
+  #closeListeningServer(): void {
     this.#ready = false;
-    const server = this.#server;
     this.#server = null;
     for (const socket of this.#sockets) socket.destroy();
     this.#sockets.clear();
     this.#preReadySockets.clear();
     this.#preReadyInput.clear();
-    if (server !== null && server.listening) {
-      try {
-        await this.#closeServerWithPrivatePathShield(server);
-      } finally {
-        if (!server.listening) this.#server = null;
-      }
-    }
   }
 
-  async #closeServerWithPrivatePathShield(server: Server): Promise<void> {
-    const path = this.#rememberedBoundSocketPath;
-    const parent = this.#socketParent;
-    if (path === null || parent === null) {
-      await closeServer(server);
-      return;
-    }
-
-    let failure: unknown;
-    let original: QuarantinedPath | null = null;
-    let installed: Awaited<ReturnType<typeof installClosePlaceholder>> | null = null;
-    try {
-      original = await quarantinePathIfExists(path, parent);
-      if (original?.changedDuringQuarantine === true) {
-        failure = new Error('IPC private socket close shield observed a quarantine race');
-      }
-    } catch (error) {
-      failure ??= error;
-    }
-
-    try {
-      await this.#afterPrivateSocketQuarantine();
-    } catch (error) {
-      failure ??= error;
-    }
-
-    try {
-      installed = await installClosePlaceholder(path, parent);
-      if (installed.quarantinedRaces.length > 0) {
-        failure ??= new Error('IPC private socket close shield retained a raced occupant');
-      }
-    } catch (error) {
-      failure ??= error;
-    }
-
-    const closeCompletion = closeServer(server);
-    try {
-      await closeCompletion;
-    } catch (error) {
-      failure ??= error;
-    } finally {
-      this.#rememberedBoundSocketPath = null;
-    }
-
-    try {
-      await assertDirectoryIdentity(
-        dirname(path),
-        parent,
-        `IPC socket parent changed after private socket close shield: ${path}`,
-      );
-      const survivor = await quarantinePathIfExists(path, parent);
-      if (survivor !== null) {
-        if (installed !== null && matchesPathIdentity(survivor.identity, installed.placeholder)) {
-          try {
-            await unlinkVerifiedQuarantine(survivor, parent);
-          } catch (error) {
-            failure ??= error;
-          }
-          failure ??= new Error('IPC private socket close shield placeholder survived server close');
-        } else {
-          failure ??= new Error('IPC private socket close shield retained a post-close occupant');
-        }
-      }
-    } catch (error) {
-      failure ??= error;
-    }
-
-    if (original !== null) {
-      try {
-        const restored = await restoreQuarantinedPathWithoutOverwrite(original, path, parent);
-        if (!restored) {
-          failure ??= new Error('IPC private socket close shield could not restore its quarantined occupant');
-        }
-      } catch (error) {
-        failure ??= error;
-      }
-    }
-
-    if (failure !== undefined) throw failure;
-  }
-
-  async #unlinkOwnedSocket(): Promise<void> {
-    const owned = this.#ownedSocket;
-    const parent = this.#socketParent;
-    this.#ownedSocket = null;
-    this.#socketParent = null;
-    if (owned === null || parent === null) return;
-    await quarantineAndUnlink(this.#socketPath, parent, owned, {
-      beforeQuarantine: this.#beforeOwnedSocketQuarantine,
-      mismatchMessage: 'IPC socket changed while quarantining owned socket',
-    });
-  }
-
-  async #unlinkBoundSocket(): Promise<void> {
-    const path = this.#boundSocketPath;
-    const owned = this.#boundSocket;
-    const parent = this.#socketParent;
-    this.#boundSocketPath = null;
-    this.#boundSocket = null;
-    if (path === null || owned === null || parent === null) return;
-    await quarantineAndUnlink(path, parent, owned, {
-      mismatchMessage: 'Bound IPC socket changed during cleanup',
-    });
+  async #unpublish(): Promise<void> {
+    const published = this.#published;
+    this.#published = null;
+    if (published === null) return;
+    await published.unpublish();
   }
 }
 
@@ -655,344 +487,7 @@ function looseProtocolVersion(value: unknown): { major: number; minor: number } 
   return { major: Number(protocol.major), minor: Number(protocol.minor) };
 }
 
-async function secureSocketParent(path: string): Promise<DirectoryIdentity> {
-  await mkdir(path, { recursive: true, mode: 0o700 });
-  const initial = await lstat(path);
-  const currentUid = process.getuid?.();
-  if (!initial.isDirectory() || initial.isSymbolicLink()) {
-    throw new Error(`IPC socket parent is not a directory: ${path}`);
-  }
-  if (currentUid === undefined || initial.uid !== currentUid) {
-    throw new Error(`IPC socket parent is not owned by the current user: ${path}`);
-  }
-  await chmod(path, 0o700);
-  const secured = await lstat(path);
-  if (
-    !secured.isDirectory()
-    || secured.isSymbolicLink()
-    || secured.uid !== initial.uid
-    || secured.dev !== initial.dev
-    || secured.ino !== initial.ino
-    || (secured.mode & 0o777) !== 0o700
-  ) {
-    throw new Error(`IPC socket parent changed while securing permissions: ${path}`);
-  }
-  return { dev: secured.dev, ino: secured.ino, uid: secured.uid };
-}
-
-async function assertDirectoryIdentity(
-  path: string,
-  expected: DirectoryIdentity,
-  message: string,
-): Promise<void> {
-  const current = await lstat(path);
-  if (
-    !current.isDirectory()
-    || current.isSymbolicLink()
-    || current.uid !== expected.uid
-    || current.dev !== expected.dev
-    || current.ino !== expected.ino
-    || (current.mode & 0o777) !== 0o700
-  ) {
-    throw new Error(message);
-  }
-}
-
-async function prepareSocketPath(
-  path: string,
-  parent: DirectoryIdentity,
-  hooks: {
-    probe: (path: string) => Promise<boolean>;
-    beforeQuarantine: () => Promise<void> | void;
-  },
-): Promise<void> {
-  let initial;
-  try {
-    initial = await lstat(path);
-  } catch (error) {
-    if (isFileError(error, 'ENOENT')) return;
-    throw error;
-  }
-  if (!initial.isSocket()) throw new Error(`IPC path exists and is not a Unix socket: ${path}`);
-  const currentUid = process.getuid?.();
-  if (currentUid === undefined || initial.uid !== currentUid) {
-    throw new Error(`IPC socket is not owned by the current user: ${path}`);
-  }
-  if (await hooks.probe(path)) throw new Error(`IPC socket is already in use: ${path}`);
-  await quarantineAndUnlink(path, parent, {
-    dev: initial.dev,
-    ino: initial.ino,
-    uid: initial.uid,
-  }, {
-    beforeQuarantine: hooks.beforeQuarantine,
-    mismatchMessage: `IPC socket changed while checking stale ownership: ${path}`,
-  });
-}
-
-async function quarantineAndUnlink(
-  path: string,
-  parent: DirectoryIdentity,
-  expected: SocketIdentity,
-  options: {
-    beforeQuarantine?: () => Promise<void> | void;
-    mismatchMessage: string;
-  },
-): Promise<void> {
-  await options.beforeQuarantine?.();
-  await assertDirectoryIdentity(
-    dirname(path),
-    parent,
-    `IPC socket parent changed while quarantining: ${path}`,
-  );
-  const quarantinePath = uniqueSiblingPath(path, 'q');
-  try {
-    await rename(path, quarantinePath);
-  } catch (error) {
-    if (isFileError(error, 'ENOENT')) return;
-    throw error;
-  }
-
-  let candidate;
-  try {
-    candidate = await lstat(quarantinePath);
-  } catch (error) {
-    await restoreQuarantinedPath(quarantinePath, path);
-    throw error;
-  }
-  if (!matchesSocketIdentity(candidate, expected)) {
-    await restoreQuarantinedPath(quarantinePath, path);
-    throw new Error(options.mismatchMessage);
-  }
-  await unlink(quarantinePath);
-}
-
-async function restoreQuarantinedPath(quarantinePath: string, originalPath: string): Promise<void> {
-  try {
-    await link(quarantinePath, originalPath);
-  } catch {
-    // Fail closed: never overwrite a path that appeared while restoring.
-    return;
-  }
-  try {
-    await unlink(quarantinePath);
-  } catch {
-    // The candidate remains reachable from its restored original path.
-  }
-}
-
-function matchesSocketIdentity(
-  stat: Awaited<ReturnType<typeof lstat>>,
-  expected: SocketIdentity,
-): boolean {
-  return stat.isSocket()
-    && stat.uid === expected.uid
-    && stat.dev === expected.dev
-    && stat.ino === expected.ino;
-}
-
-function uniqueSiblingPath(path: string, marker: string): string {
-  return join(dirname(path), `.${marker}${randomUUID().replaceAll('-', '')}`);
-}
-
-async function installClosePlaceholder(
-  path: string,
-  parent: DirectoryIdentity,
-): Promise<{ placeholder: SocketIdentity; quarantinedRaces: QuarantinedPath[] }> {
-  const quarantinedRaces: QuarantinedPath[] = [];
-  for (let attempt = 0; attempt < 16; attempt += 1) {
-    await assertDirectoryIdentity(
-      dirname(path),
-      parent,
-      `IPC socket parent changed while installing private socket close shield: ${path}`,
-    );
-    let handle;
-    try {
-      handle = await open(path, 'wx', 0o600);
-    } catch (error) {
-      if (!isFileError(error, 'EEXIST')) throw error;
-      const raced = await quarantinePathIfExists(path, parent);
-      if (raced !== null) quarantinedRaces.push(raced);
-      continue;
-    }
-
-    let placeholder: SocketIdentity;
-    try {
-      await handle.chmod(0o600);
-      const stat = await handle.stat();
-      const currentUid = process.getuid?.();
-      if (
-        !stat.isFile()
-        || currentUid === undefined
-        || stat.uid !== currentUid
-        || (stat.mode & 0o777) !== 0o600
-      ) {
-        throw new Error('IPC private socket close shield created an invalid placeholder');
-      }
-      placeholder = { dev: stat.dev, ino: stat.ino, uid: stat.uid };
-    } finally {
-      await handle.close();
-    }
-
-    await assertDirectoryIdentity(
-      dirname(path),
-      parent,
-      `IPC socket parent changed after installing private socket close shield: ${path}`,
-    );
-    let published;
-    try {
-      published = await lstat(path);
-    } catch (error) {
-      if (isFileError(error, 'ENOENT')) continue;
-      throw error;
-    }
-    if (
-      published.isFile()
-      && (published.mode & 0o777) === 0o600
-      && matchesPathIdentity(published, placeholder)
-    ) {
-      return { placeholder, quarantinedRaces };
-    }
-    const raced = await quarantinePathIfExists(path, parent);
-    if (raced !== null) quarantinedRaces.push(raced);
-  }
-  throw new Error('IPC private socket close shield could not install its placeholder');
-}
-
-async function quarantinePathIfExists(
-  path: string,
-  parent: DirectoryIdentity,
-): Promise<QuarantinedPath | null> {
-  await assertDirectoryIdentity(
-    dirname(path),
-    parent,
-    `IPC socket parent changed while applying private socket close shield: ${path}`,
-  );
-  let initial;
-  try {
-    initial = await lstat(path);
-  } catch (error) {
-    if (isFileError(error, 'ENOENT')) return null;
-    throw error;
-  }
-  const quarantinePath = uniqueSiblingPath(path, 'q');
-  try {
-    await rename(path, quarantinePath);
-  } catch (error) {
-    if (isFileError(error, 'ENOENT')) return null;
-    throw error;
-  }
-  await assertDirectoryIdentity(
-    dirname(path),
-    parent,
-    `IPC socket parent changed after applying private socket close shield: ${path}`,
-  );
-  const quarantined = await lstat(quarantinePath);
-  return {
-    path: quarantinePath,
-    identity: { dev: quarantined.dev, ino: quarantined.ino, uid: quarantined.uid },
-    changedDuringQuarantine: !matchesPathIdentity(quarantined, initial),
-  };
-}
-
-async function restoreQuarantinedPathWithoutOverwrite(
-  quarantined: QuarantinedPath,
-  originalPath: string,
-  parent: DirectoryIdentity,
-): Promise<boolean> {
-  await assertDirectoryIdentity(
-    dirname(originalPath),
-    parent,
-    `IPC socket parent changed while restoring private socket close shield quarantine: ${originalPath}`,
-  );
-  const candidate = await lstat(quarantined.path);
-  if (!matchesPathIdentity(candidate, quarantined.identity)) {
-    throw new Error('IPC private socket close shield quarantine changed before restoration');
-  }
-  try {
-    await link(quarantined.path, originalPath);
-  } catch (error) {
-    if (isFileError(error, 'EEXIST')) return false;
-    throw error;
-  }
-  const restored = await lstat(originalPath);
-  if (!matchesPathIdentity(restored, quarantined.identity)) {
-    throw new Error('IPC private socket close shield restored an unexpected occupant');
-  }
-  await unlink(quarantined.path);
-  return true;
-}
-
-async function unlinkVerifiedQuarantine(
-  quarantined: QuarantinedPath,
-  parent: DirectoryIdentity,
-): Promise<void> {
-  await assertDirectoryIdentity(
-    dirname(quarantined.path),
-    parent,
-    `IPC socket parent changed while cleaning private socket close shield placeholder: ${quarantined.path}`,
-  );
-  const candidate = await lstat(quarantined.path);
-  if (!matchesPathIdentity(candidate, quarantined.identity)) {
-    throw new Error('IPC private socket close shield placeholder quarantine changed');
-  }
-  await unlink(quarantined.path);
-}
-
-function matchesPathIdentity(
-  stat: Pick<Awaited<ReturnType<typeof lstat>>, 'dev' | 'ino' | 'uid'>,
-  expected: SocketIdentity,
-): boolean {
-  return stat.uid === expected.uid && stat.dev === expected.dev && stat.ino === expected.ino;
-}
-
-async function socketAcceptsConnections(path: string): Promise<boolean> {
-  return await new Promise<boolean>((resolve, reject) => {
-    const socket = createConnection(path);
-    const timer = setTimeout(() => {
-      socket.destroy();
-      reject(new Error(`Timed out while checking existing IPC socket: ${path}`));
-    }, 250);
-    timer.unref();
-    socket.once('connect', () => {
-      clearTimeout(timer);
-      socket.destroy();
-      resolve(true);
-    });
-    socket.once('error', (error) => {
-      clearTimeout(timer);
-      if (isFileError(error, 'ECONNREFUSED') || isFileError(error, 'ENOENT')) resolve(false);
-      else reject(error);
-    });
-  });
-}
-
-async function listen(server: Server, path: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const onError = (error: Error) => {
-      server.off('listening', onListening);
-      reject(error);
-    };
-    const onListening = () => {
-      server.off('error', onError);
-      resolve();
-    };
-    server.once('error', onError);
-    server.once('listening', onListening);
-    server.listen(path);
-  });
-}
-
-function closeServer(server: Server): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    server.close((error) => { if (error === undefined) resolve(); else reject(error); });
-  });
-}
-
 function positiveInteger(value: number, name: string): number {
   if (!Number.isInteger(value) || value < 1) throw new RangeError(`${name} must be a positive integer`);
   return value;
-}
-
-function isFileError(error: unknown, code: string): error is NodeJS.ErrnoException {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
 }

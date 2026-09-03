@@ -2,10 +2,11 @@
 
 ## Status
 
-In progress — 2026-09-03. The D1 half of Increment D in `2026-08-31-v1-stable-program-map.md`
-(Windows split into D1/D2 on this date, for the reason C split into C1/C2). The trust half (D2-D5)
-is done and tested; the transport half (D7's `IpcServerPublisher` extraction) has not been started
-— see Outcome below for exactly what that leaves and does not leave undone.
+Done — 2026-09-03. The D1 half of Increment D in `2026-08-31-v1-stable-program-map.md` (Windows
+split into D1/D2 on this date, for the reason C split into C1/C2). Both halves are now done and
+tested: the trust half (D2-D5) landed first, and D7's `IpcServerPublisher` extraction — the one
+piece the first pass explicitly left undone — landed in a second, focused pass the same day. See
+Outcome below for exactly what each half proves and does not.
 
 ## What this increment is, and what it is not
 
@@ -354,10 +355,10 @@ half-tested.
 
 ## Outcome
 
-Criteria 1-6 and 9 are met. Criterion 7 (`IpcServerPublisher`) was not started — recorded honestly
-as remaining D1 work, not folded into D2, because F1's own finding stands on its own regardless of
-when the extraction happens. Criterion 8 is met at the type level only, as the criterion itself
-allows.
+All nine criteria are met. Criteria 1-6 and 9 were met in the first pass; criterion 7
+(`IpcServerPublisher`) was deliberately left for a second, focused pass rather than rushed into the
+first, and that pass ran the same day. Criterion 8 is met at the type level only, as the criterion
+itself allows.
 
 1. `PlatformId` is `'darwin' | 'linux' | 'win32'` (`packages/platform/src/ports.ts`). Every indexed
    table gained a `win32` entry in the same change: `select.ts`'s `processPlatforms`,
@@ -416,10 +417,31 @@ allows.
    `build`, `package:verify`, and `binary:verify` (`dist/sea/wtm 0.1.0-rc.1, darwin-arm64`, 9/9
    smoke tests) all pass locally.
 
-**Not done, and explicitly not claimed done: `IpcServerPublisher` (D7).** `server.ts`'s
-hardlink-publish/chmod/uid dance was read and cited (F1) but not extracted or moved. This is the
-one piece of the original D1 scope this pass did not reach, not a piece quietly folded into D2 —
-the seam it needs (a publisher port with a `UnixSocketPublisher` implementation that is `server.ts`'s
-existing behaviour moved unchanged) is real, separate work, and touching `server.ts`'s security
-invariants deserves its own focused pass with the same TDD discipline applied here, not a rushed
-addition at the end of an already large one.
+### D7, closed in a second pass the same day
+
+`IpcServerPublisher` (`packages/platform/src/ipc/types.ts`) is extracted: `publish(server, address,
+options)` returns a `PublishedIpcServer` (`{ address, unpublish() }`). `UnixSocketPublisher`
+(`ipc/unix.ts`) is `server.ts`'s entire hardlink/chmod/uid dance — `secureSocketParent`,
+`prepareSocketPath`, the bind→link→verify→chmod→verify sequence, the private-path close shield,
+every quarantine helper — moved into `@wtm/platform`, restructured from `UnixIpcServer` instance
+fields into a closure captured per `publish()` call (a publisher has no server-lifetime identity of
+its own to hang fields off), but not rewritten. `packages/daemon/src/server.ts` shrank from ~1000
+lines to `UnixIpcServer` owning only connection/frame handling and delegating `#start`/`#close` to
+`this.#publisher.publish(...)`/`published.unpublish()`. All 24 of `server.integration.test.ts`'s
+tests, `server-close.scenario.ts`'s five close-shield scenarios, and `socket-path-limit.test.ts`
+pass with zero assertions changed — none of them ever imported the moved internals, only the
+public `UnixIpcServer` class, which is why this extraction is provably behavior-preserving rather
+than merely believed to be.
+
+`createWindowsIpcPublisher` (`ipc/windows.ts`) is the D7-predicted simpler body: `listen({ path:
+address })` with `readableAll`/`writableAll` left at Node's own default, `close()` on `unpublish`.
+Tested (`ipc/__tests__/windows-ipc.test.ts`) against a fake `net.Server` — there is no Windows
+kernel here to bind a real named pipe against, the same position D3's ACL parsing and D6's
+`schtasks` argument vectors were in. Both are wired into `PlatformRuntime.ipc`
+(`ports.ts`/`select.ts`), a new indexed-dispatch entry (darwin/linux share `UnixSocketPublisher`,
+win32 gets `createWindowsIpcPublisher()`), following the same discipline as `fileTrustPolicies`.
+
+Full verification after this pass: `lint`, `typecheck` (all seven package projects), `test` (1286
+pass, 1 skip, 0 fail — four more than the first pass, all new, all in `windows-ipc.test.ts`),
+`test:e2e`, `build`, `package:verify`, and `binary:verify` (`dist/sea/wtm 0.1.0-rc.1, darwin-arm64`,
+9/9 smoke tests) all pass locally.

@@ -736,7 +736,10 @@ NTFS junction/symlink semantics
 
 ##### Windows yapılacaklar
 
-- [ ] IPC için Unix socket yerine Named Pipe backend.
+- [ ] IPC için Unix socket yerine Named Pipe backend. — `IpcServerPublisher` portu ve
+      `UnixSocketPublisher` (server.ts'in hardlink/chmod/uid dansı, davranış değişmeden taşındı)
+      ile Windows `listen()` gövdesi Increment D1'de yazıldı; gerçek bir named pipe'a karşı
+      doğrulanmadı (Increment D2).
 - [ ] Process supervision için Windows Job Objects veya güvenli eşdeğer.
 - [ ] Child process tree cleanup.
 - [ ] PID reuse kontrolü için process creation time.
@@ -762,8 +765,14 @@ NTFS junction/symlink semantics
 > taşındı — hiçbir mevcut testin assertion'ı değişmeden (352→356 test, hepsi yeşil). Windows
 > `ServiceBackend` (Scheduled Task) ve `windowsPlatformPaths` de bu artırımda geldi. Hepsi
 > fixture/sahte runner ile kanıtlandı, gerçek bir Windows kernel'de değil — C1'in Linux için
-> tuttuğu ayrım burada da geçerli. `IpcServerPublisher` (Named Pipe seam'i) bu artırımda
-> başlanmadı; ayrı, odaklı bir geçiş gerektiriyor. Detay: `2026-09-03-windows-trust-and-transport-seam.md`.
+> tuttuğu ayrım burada da geçerli. Detay: `2026-09-03-windows-trust-and-transport-seam.md`.
+>
+> **D7 kapatıldı, 2026-09-03.** `IpcServerPublisher` portu `@wtm/platform`'a eklendi:
+> `UnixSocketPublisher` `server.ts`'in hardlink/chmod/uid dansının birebir taşınmış hali (24
+> entegrasyon testi, hiçbir assertion değişmeden yeşil), Windows gövdesi düz `listen()` —
+> named pipe'ın quarantine edilecek bir "stale" hali olmadığı bulgusuna dayanarak — sahte bir
+> `net.Server`'a karşı test edildi. Gerçek bir named pipe veya ikinci bir Windows hesabına karşı
+> kanıtlanmadı; bu hâlâ Increment D2'nin işi.
 
 #### Windows daemon lifecycle kararı
 

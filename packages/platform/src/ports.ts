@@ -200,6 +200,13 @@ export type {
   ServiceProcessInspector,
 } from './service/types';
 
+/**
+ * The IPC publisher port is declared in `./ipc/types.ts`, alongside its two implementations, for
+ * the same reason the service port is declared beside `service/types.ts` rather than here: the
+ * publish protocol (D7) is a large enough concern to document beside the code that implements it.
+ */
+export type { IpcServerPublisher, PublishedIpcServer, PublishOptions } from './ipc/types';
+
 export interface PlatformRuntime {
   readonly id: PlatformId;
   readonly paths: PlatformPaths;
@@ -207,4 +214,5 @@ export interface PlatformRuntime {
   readonly process: ProcessPlatform;
   readonly service: import('./service/types').ServiceBackend;
   readonly fileTrust: FileTrustPolicy;
+  readonly ipc: import('./ipc/types').IpcServerPublisher;
 }
