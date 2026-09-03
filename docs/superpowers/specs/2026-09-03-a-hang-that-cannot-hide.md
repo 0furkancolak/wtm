@@ -175,8 +175,9 @@ All seven criteria met, with the scope widened by F3's revision:
 6. All seven gates passed locally: `lint`, `typecheck`, 1237 tests (1 skip, 0 fail) in `test`,
    `test:e2e`, `build`, `package:verify`, and `binary:verify` (`dist/sea/wtm 0.1.0-rc.1, darwin-arm64`,
    9/9 smoke tests). `remove-runtime.test.ts` itself: 10/10 in 7.4s.
-7. CI run pending at the time this section is written — read before the increment is announced
-   complete, per its own rule.
+7. Run [33765525602](https://github.com/0furkancolak/wtm/actions/runs/33765525602) on `25eadd6`:
+   all three legs `success`, all seven gates `success` on each, including `Validate darwin arm64`
+   — the leg that stopped for 29m31s on the previous commit and finished this time.
 
 Not fixed, and deliberately: `packages/core/src/runtime/endpoints.ts`'s production port probe
 (`spawnSync(process.execPath, ['-e', probeScript, ...])`) is the same call shape but is runtime
