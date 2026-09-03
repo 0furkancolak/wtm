@@ -17,7 +17,16 @@
  * constructed, exercised and reasoned about from a macOS development machine at all.
  */
 
-export type PlatformId = 'darwin' | 'linux';
+/**
+ * `win32` was added 2026-09-03 (Increment D1) as a *constructible* platform id only: it widens
+ * every indexed-dispatch table in this package (a deliberate type error until each table gets a
+ * `win32` entry, per the comment on `resolvers` in `paths/platform-paths.ts`), so a
+ * `WindowsPlatformRuntime` can be built and exercised from this macOS host the same way C1 built
+ * the Linux one. `supportedPlatforms` in `./select` does **not** include it yet — that flips only
+ * when Increment D2 can back the acceptance with a green Windows CI run, the same rule C1 applied
+ * to Linux.
+ */
+export type PlatformId = 'darwin' | 'linux' | 'win32';
 
 /**
  * Where this platform keeps things.
@@ -88,6 +97,53 @@ export interface ProcessPlatform {
   inspectProcessGroup(pgid: number): Promise<ProcessGroupInspection>;
 }
 
+/**
+ * Answers the one question `@wtm/core` asked itself, inline, 151 times across 11 files before
+ * Increment D1 (spec `2026-09-03-windows-trust-and-transport-seam.md`, D2): does this path belong
+ * only to the current user, and can nobody else write to it? The three predicates are exactly the
+ * three things those call sites checked — no more, no less — so migrating a call site is a
+ * substitution, not a redesign.
+ *
+ * The POSIX implementation is that inline logic, moved rather than rewritten: `stat.uid`, a
+ * caller-chosen mode mask (`0o022` and `0o077` are both real, distinct questions in the code this
+ * replaces — "no group/other *write*" is looser than "no group/other access at all" — so the mask
+ * is the caller's choice, not the port's), and `stat.nlink`. The Windows implementation answers the
+ * same three questions from a `Get-Acl`-shaped owner SID and access-rule list instead.
+ *
+ * Takes the `Stats` already read by the caller rather than a path, because every call site had
+ * already `lstat`-ed the path for its own reasons (symlink rejection, directory-ness) before
+ * checking ownership — a port that re-stated the path would either re-`stat` (a TOCTOU window the
+ * original code did not have) or silently trust a caller's stale read. The one predicate that
+ * cannot be answered from a `Stats` alone — Windows has no owner SID in `fs.Stats`, `uid` is always
+ * `0` there — takes `path` as well, and a POSIX implementation is free to ignore it.
+ */
+export interface FileTrustPolicy {
+  /** `false` also when the current user's own identity cannot be determined at all. */
+  isOwnedByCurrentUser(stat: NodeJsStats, path: string): Promise<boolean>;
+  /** The mask is the caller's question ("no group/other write" vs "no group/other access"). */
+  isWritableOnlyByOwner(stat: NodeJsStats, path: string, mask: OwnerOnlyMask): Promise<boolean>;
+  isNotSharedByHardLink(stat: NodeJsStats): boolean;
+  /** `false` on any platform where per-user file ownership cannot be read at all. */
+  currentIdentityAvailable(): boolean;
+}
+
+/**
+ * `0o022` denies group/other *write*; `0o077` denies group/other *any access*. Both are real,
+ * distinct questions the code this port replaces already asked at different call sites — see
+ * `FileTrustPolicy`'s own doc comment.
+ */
+export type OwnerOnlyMask = 0o022 | 0o077;
+
+/**
+ * `node:fs`'s `Stats`, named locally so this file does not import `node:fs` merely to re-export
+ * its type — every implementation of `FileTrustPolicy` already has its own `Stats` import.
+ */
+export interface NodeJsStats {
+  uid: number;
+  mode: number;
+  nlink: number;
+}
+
 export interface ServiceDefinitionOptions {
   label: string;
   executable: string;
@@ -150,4 +206,5 @@ export interface PlatformRuntime {
   readonly socket: SocketAddressPolicy;
   readonly process: ProcessPlatform;
   readonly service: import('./service/types').ServiceBackend;
+  readonly fileTrust: FileTrustPolicy;
 }

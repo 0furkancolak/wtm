@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { defaultCoreFileTrustPolicy, type FileTrustPolicy } from '../file-trust-policy';
 import { runGit } from '../git/git-runner';
 
 export type ResourceGuardIntent = 'write' | 'delete' | 'publish' | 'symlink-target' | 'read-source';
@@ -17,7 +18,7 @@ export interface ResourceGuardOptions {
   repositoryRoots?: readonly string[];
   gitDirectoryPaths?: readonly string[];
   homeDirectory?: string;
-  currentUid?: number;
+  fileTrust?: FileTrustPolicy;
   git?: GitTrackingInspector;
 }
 
@@ -180,8 +181,8 @@ export async function createResourceGuard(options: ResourceGuardOptions): Promis
   const gitDirectoryPaths = await Promise.all(
     [...configuredGitDirectoryPaths, ...discoveredGitDirectoryPaths].map(canonicalExistingOrResolved),
   );
-  const currentUid = options.currentUid ?? process.getuid?.();
-  if (currentUid === undefined) deny('The current user identity is unavailable.', { sandboxRoot });
+  const fileTrust = options.fileTrust ?? defaultCoreFileTrustPolicy;
+  if (!fileTrust.currentIdentityAvailable()) deny('The current user identity is unavailable.', { sandboxRoot });
   if (
     sandboxRoot === resolve('/')
     || sandboxRoot === homeDirectory
@@ -191,7 +192,7 @@ export async function createResourceGuard(options: ResourceGuardOptions): Promis
     deny('The configured resource sandbox is too broad.', { sandboxRoot });
   }
   const sandboxStat = await lstat(sandboxRoot);
-  assertSafeDirectory(sandboxRoot, sandboxStat, currentUid);
+  await assertSafeDirectory(sandboxRoot, sandboxStat, fileTrust);
   const sandboxIdentity = identity(sandboxStat);
 
   /**
@@ -271,17 +272,20 @@ export async function createResourceGuard(options: ResourceGuardOptions): Promis
       repositoryRoots,
       gitDirectoryPaths,
     });
-    await assertSandboxIdentity(sandboxRoot, sandboxIdentity, currentUid, sandboxPin);
+    await assertSandboxIdentity(sandboxRoot, sandboxIdentity, fileTrust, sandboxPin);
 
-    const leaf = await inspectExistingComponents(sandboxRoot, path, currentUid);
+    const leaf = await inspectExistingComponents(sandboxRoot, path, fileTrust);
     if (!parentOnly && leaf !== undefined && !leaf.isFile() && !leaf.isDirectory()) {
       deny('Special files are not valid resource mutation leaves.', { path });
     }
-    if (!parentOnly && leaf !== undefined && intent !== 'read-source' && leaf.isFile() && leaf.nlink > 1) {
+    if (
+      !parentOnly && leaf !== undefined && intent !== 'read-source' && leaf.isFile()
+      && !fileTrust.isNotSharedByHardLink(leaf)
+    ) {
       deny('A hardlinked resource leaf is not safe to mutate.', { path, links: leaf.nlink });
     }
     await assertNotTracked(path, repositoryRoots, git);
-    const parent = await nearestExistingDirectory(path, sandboxRoot, currentUid);
+    const parent = await nearestExistingDirectory(path, sandboxRoot, fileTrust);
     const parentPin = await pinDirectory(parent.path, identity(parent.stat));
     return {
       path,
@@ -298,7 +302,7 @@ export async function createResourceGuard(options: ResourceGuardOptions): Promis
     if (token.sandbox.dev !== sandboxIdentity.dev || token.sandbox.ino !== sandboxIdentity.ino) {
       deny('The sandbox capability does not belong to this guard.', { path: token.path });
     }
-    await assertSandboxIdentity(sandboxRoot, sandboxIdentity, currentUid, sandboxPin);
+    await assertSandboxIdentity(sandboxRoot, sandboxIdentity, fileTrust, sandboxPin);
     const parent = await lstat(token.parentPath).catch(() => null);
     if (parent !== null && !parent.isDirectory()) {
       deny('A resource parent changed after authorization.', { path: token.path, parent: token.parentPath });
@@ -420,7 +424,7 @@ function assertProtectedBoundaries(
 async function inspectExistingComponents(
   sandboxRoot: string,
   path: string,
-  currentUid: number,
+  fileTrust: FileTrustPolicy,
 ) {
   await assertNoNestedGitMarker(sandboxRoot, path);
   const nested = relative(sandboxRoot, path);
@@ -437,7 +441,7 @@ async function inspectExistingComponents(
       throw error;
     }
     if (stat.isSymbolicLink()) deny('Symbolic links are not permitted in guarded resource paths.', { path, component: current });
-    if (index < parts.length - 1) assertSafeDirectory(current, stat, currentUid);
+    if (index < parts.length - 1) await assertSafeDirectory(current, stat, fileTrust);
     if (stat.isDirectory()) await assertNoNestedGitMarker(current, path);
     if (index === parts.length - 1) leaf = stat;
   }
@@ -452,12 +456,12 @@ async function assertNoNestedGitMarker(directory: string, guardedPath: string): 
   if (present) deny('Nested repository and submodule paths are protected.', { path: guardedPath, repository: directory });
 }
 
-async function nearestExistingDirectory(path: string, sandboxRoot: string, currentUid: number) {
+async function nearestExistingDirectory(path: string, sandboxRoot: string, fileTrust: FileTrustPolicy) {
   let candidate = resolve(path, '..');
   while (contains(sandboxRoot, candidate)) {
     try {
       const stat = await lstat(candidate);
-      assertSafeDirectory(candidate, stat, currentUid);
+      await assertSafeDirectory(candidate, stat, fileTrust);
       return { path: candidate, stat };
     } catch (error) {
       if (!isFileError(error, 'ENOENT')) throw error;
@@ -468,24 +472,31 @@ async function nearestExistingDirectory(path: string, sandboxRoot: string, curre
   deny('No safe existing resource parent was found.', { path });
 }
 
-function assertSafeDirectory(path: string, stat: Awaited<ReturnType<typeof lstat>>, currentUid: number): void {
+async function assertSafeDirectory(
+  path: string,
+  stat: Awaited<ReturnType<typeof lstat>>,
+  fileTrust: FileTrustPolicy,
+): Promise<void> {
   if (!stat.isDirectory() || stat.isSymbolicLink()) deny('A resource parent is not a real directory.', { path });
-  if (stat.uid !== currentUid) deny('A resource parent is not owned by the current user.', { path, uid: stat.uid });
-  const mode = Number(stat.mode);
-  if ((mode & 0o022) !== 0) deny('A resource parent is group/world writable.', { path, mode: mode & 0o777 });
+  if (!(await fileTrust.isOwnedByCurrentUser(stat, path))) {
+    deny('A resource parent is not owned by the current user.', { path, uid: stat.uid });
+  }
+  if (!(await fileTrust.isWritableOnlyByOwner(stat, path, 0o022))) {
+    deny('A resource parent is group/world writable.', { path, mode: Number(stat.mode) & 0o777 });
+  }
 }
 
 async function assertSandboxIdentity(
   root: string,
   expected: PathIdentity,
-  currentUid: number,
+  fileTrust: FileTrustPolicy,
   pin: InodePin,
 ): Promise<void> {
   const stat = await lstat(root).catch(() => null);
   if (stat === null || !sameIdentity(stat, expected) || !await pin.holds(stat)) {
     deny('The configured resource sandbox identity changed.', { root });
   }
-  assertSafeDirectory(root, stat, currentUid);
+  await assertSafeDirectory(root, stat, fileTrust);
 }
 
 async function assertNotTracked(

@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import type { PlatformPathsInput } from '../../ports';
-import { darwinPlatformPaths, linuxPlatformPaths, platformPathsFor } from '../platform-paths';
+import { darwinPlatformPaths, linuxPlatformPaths, platformPathsFor, windowsPlatformPaths } from '../platform-paths';
 
 const macHome = '/Users/ada';
 const linuxHome = '/home/ada';
+const windowsHome = 'C:\\Users\\ada';
 
 /** Every XDG variable this increment knows about, set to a plausible absolute value. */
 const allXdgSet = {
@@ -107,6 +108,56 @@ describe('Linux paths', () => {
 
     expect(paths.socketRoot).toBe('/run/user/501/wtm');
     expect(paths.dataRoot).toBe('/home/ada/.local/state/wtm');
+  });
+});
+
+describe('Windows paths', () => {
+  test('keeps everything under one WTM-owned root, the way macOS does', () => {
+    const paths = windowsPlatformPaths({ home: windowsHome, env: {} });
+
+    expect(paths).toEqual({
+      dataRoot: 'C:\\Users\\ada\\AppData\\Local\\WTM',
+      configPath: 'C:\\Users\\ada\\AppData\\Local\\WTM\\config.toml',
+      logRoot: 'C:\\Users\\ada\\AppData\\Local\\WTM\\logs',
+      socketRoot: 'C:\\Users\\ada\\AppData\\Local\\WTM',
+      serviceRoot: 'C:\\Users\\ada\\AppData\\Local\\WTM\\service',
+    });
+  });
+
+  test('honours LOCALAPPDATA when it is an absolute Windows path', () => {
+    const paths = windowsPlatformPaths({ home: windowsHome, env: { LOCALAPPDATA: 'D:\\Local' } });
+
+    expect(paths.dataRoot).toBe('D:\\Local\\WTM');
+  });
+
+  test('ignores a relative LOCALAPPDATA in favour of the default', () => {
+    const paths = windowsPlatformPaths({ home: windowsHome, env: { LOCALAPPDATA: 'Local' } });
+
+    expect(paths).toEqual(windowsPlatformPaths({ home: windowsHome, env: {} }));
+  });
+
+  test('ignores an empty LOCALAPPDATA, the same as an unset one', () => {
+    const paths = windowsPlatformPaths({ home: windowsHome, env: { LOCALAPPDATA: '' } });
+
+    expect(paths).toEqual(windowsPlatformPaths({ home: windowsHome, env: {} }));
+  });
+
+  test('reads only its arguments, never the ambient process environment', () => {
+    const previous = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = 'C:\\ambient';
+    try {
+      expect(windowsPlatformPaths({ home: windowsHome, env: {} }).dataRoot)
+        .toBe('C:\\Users\\ada\\AppData\\Local\\WTM');
+    } finally {
+      if (previous === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = previous;
+    }
+  });
+
+  test('platformPathsFor dispatches win32 to the Windows resolver', () => {
+    const input = { home: windowsHome, env: {} };
+
+    expect(platformPathsFor('win32', input)).toEqual(windowsPlatformPaths(input));
   });
 });
 

@@ -3,5 +3,6 @@ export * from './paths';
 export * from './socket';
 export * from './process';
 export * from './service';
+export * from './trust';
 export { selectPlatformRuntime, supportedPlatforms, UnsupportedPlatformError } from './select';
 export type { SelectPlatformRuntimeOptions } from './select';

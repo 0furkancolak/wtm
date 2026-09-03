@@ -18,6 +18,7 @@ import {
 } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { defaultCoreFileTrustPolicy, type FileTrustPolicy } from '../file-trust-policy';
 import type { ResourceGuard, ResourcePathAuthorization } from './guard';
 
 export type MaterializationRequest =
@@ -120,6 +121,7 @@ export interface ApplyMaterializationOptions {
   hooks?: MaterializationHooks;
   maxEntries?: number;
   maxDepth?: number;
+  fileTrust?: FileTrustPolicy;
 }
 
 export interface MaterializationResult {
@@ -226,10 +228,11 @@ export async function applyMaterializationPlan(
   }
   const maxEntries = options.maxEntries ?? 10_000;
   const maxDepth = options.maxDepth ?? 64;
+  const fileTrust = options.fileTrust ?? defaultCoreFileTrustPolicy;
   const originalAuthorization = plan.authorization ?? await options.guard.authorize(plan.targetPath, 'publish');
   await options.guard.revalidateParent(originalAuthorization);
   const recoveredMethod = await reconcileOwnedStages(
-    plan, originalAuthorization, options.guard, maxEntries, maxDepth, options.hooks,
+    plan, originalAuthorization, options.guard, maxEntries, maxDepth, fileTrust, options.hooks,
   );
   if (recoveredMethod !== null) {
     return { targetPath: plan.targetPath, policy: plan.policy, method: recoveredMethod };
@@ -283,7 +286,7 @@ export async function applyMaterializationPlan(
         break;
       case 'clone':
         method = await cloneOrCopy(
-          plan, payloadPath, options.clone ?? nodeCloneCapability, { maxEntries, maxDepth }, options.hooks,
+          plan, payloadPath, options.clone ?? nodeCloneCapability, { maxEntries, maxDepth }, fileTrust, options.hooks,
         );
         break;
       case 'symlink':
@@ -362,7 +365,7 @@ export async function applyMaterializationPlan(
     await options.hooks?.afterPublish?.(plan);
     await cleanupOwnedStage(
       plan, originalAuthorization, options.guard, stagePath, { state: 'published', published: publishedEvidence },
-      maxEntries, maxDepth, options.hooks,
+      maxEntries, maxDepth, fileTrust, options.hooks,
     );
     return { targetPath: plan.targetPath, policy: plan.policy, method };
   } catch (error) {
@@ -383,6 +386,7 @@ async function reconcileOwnedStages(
   guard: ResourceGuard,
   maxEntries: number,
   maxDepth: number,
+  fileTrust: FileTrustPolicy,
   hooks?: MaterializationHooks,
 ): Promise<MaterializationResult['method'] | null> {
   let recovered: MaterializationResult['method'] | null = null;
@@ -426,12 +430,12 @@ async function reconcileOwnedStages(
     }
     const stageId = match[1] as string;
     const cleanupPath = join(authorization.parentPath, name);
-    const cleanup = await readExactStageJson(cleanupPath);
+    const cleanup = await readExactStageJson(cleanupPath, true, fileTrust);
     if (!isMatchingCleanupEvidence(cleanup, stageId, plan, authorization)) {
       throw materializationDenied('Exact stage cleanup evidence does not match its plan capability.', { cleanupPath });
     }
     const method = await resumeOwnedStageCleanup(
-      cleanup, cleanupPath, authorization, guard, maxEntries, maxDepth, hooks,
+      cleanup, cleanupPath, authorization, guard, maxEntries, maxDepth, fileTrust, hooks,
     );
     if (method !== null) recovered = method;
     cleanedStageIds.add(stageId);
@@ -449,20 +453,22 @@ async function reconcileOwnedStages(
     if (cleanedStageIds.has(stageId)) continue;
     const stagePath = join(authorization.parentPath, name);
     const stage = await lstatIfExists(stagePath);
-    if (stage === null || !stage.isDirectory() || stage.isSymbolicLink() || Number(stage.uid) !== process.getuid?.()
-      || (Number(stage.mode) & 0o777) !== 0o700) {
+    if (
+      stage === null || !stage.isDirectory() || stage.isSymbolicLink()
+      || !(await isExactlyOwnerOnlyDirectory(stage, stagePath, fileTrust))
+    ) {
       throw materializationDenied('An exact recovery stage is not an owner-only real directory.', { stagePath });
     }
-    const intent = await readExactStageJson(join(stagePath, 'intent.json'));
+    const intent = await readExactStageJson(join(stagePath, 'intent.json'), true, fileTrust);
     if (!isMatchingStageIntent(intent, stageId, plan, authorization)) {
       throw materializationDenied('An exact recovery stage intent does not match its plan capability.', { stagePath });
     }
     await guard.revalidateParent(authorization);
-    const published = await readExactStageJson(join(stagePath, 'published.json'), false);
+    const published = await readExactStageJson(join(stagePath, 'published.json'), false, fileTrust);
     const target = await lstatIfExists(plan.targetPath);
     if (target === null) {
       await cleanupOwnedStage(
-        plan, authorization, guard, stagePath, { state: 'absent' }, maxEntries, maxDepth, hooks,
+        plan, authorization, guard, stagePath, { state: 'absent' }, maxEntries, maxDepth, fileTrust, hooks,
       );
       continue;
     }
@@ -471,7 +477,7 @@ async function reconcileOwnedStages(
       || published.stageId !== stageId
       || !await targetMatchesPublished(target, plan.targetPath, published, { maxEntries, maxDepth })
     ) {
-      const publishing = await readExactStageJson(join(stagePath, 'publishing.json'), false);
+      const publishing = await readExactStageJson(join(stagePath, 'publishing.json'), false, fileTrust);
       if (!isPublishingEvidence(publishing) || publishing.stageId !== stageId) {
         throw materializationDenied('An existing target does not match its exact owned publication evidence.', {
           targetPath: plan.targetPath,
@@ -483,13 +489,14 @@ async function reconcileOwnedStages(
       );
       await cleanupOwnedStage(
         plan, authorization, guard, stagePath, { state: 'published', published: completed },
-        maxEntries, maxDepth, hooks,
+        maxEntries, maxDepth, fileTrust, hooks,
       );
       recovered = completed.method;
       continue;
     }
     await cleanupOwnedStage(
-      plan, authorization, guard, stagePath, { state: 'published', published }, maxEntries, maxDepth, hooks,
+      plan, authorization, guard, stagePath, { state: 'published', published },
+      maxEntries, maxDepth, fileTrust, hooks,
     );
     recovered = published.method;
   }
@@ -504,6 +511,7 @@ async function cleanupOwnedStage(
   outcome: StageCleanupEvidence['outcome'],
   maxEntries: number,
   maxDepth: number,
+  fileTrust: FileTrustPolicy,
   hooks?: MaterializationHooks,
 ): Promise<void> {
   const stageId = basename(stagePath).slice(`.wtm-stage-${plan.recoveryKey}-`.length);
@@ -511,8 +519,7 @@ async function cleanupOwnedStage(
     throw materializationDenied('Owned stage cleanup received an invalid stage capability.', { stagePath });
   }
   const stage = await lstat(stagePath);
-  if (!stage.isDirectory() || stage.isSymbolicLink() || Number(stage.uid) !== process.getuid?.()
-    || (Number(stage.mode) & 0o777) !== 0o700) {
+  if (!stage.isDirectory() || stage.isSymbolicLink() || !(await isExactlyOwnerOnlyDirectory(stage, stagePath, fileTrust))) {
     throw materializationDenied('Owned stage cleanup requires an owner-only real directory.', { stagePath });
   }
   const cleanupPath = join(authorization.parentPath, `.wtm-cleanup-${plan.recoveryKey}-${stageId}.json`);
@@ -528,7 +535,7 @@ async function cleanupOwnedStage(
   await writeExclusiveFile(cleanupPath, JSON.stringify(evidence), 0o600);
   await syncDirectory(authorization.parentPath);
   await resumeOwnedStageCleanup(
-    evidence, cleanupPath, authorization, guard, maxEntries, maxDepth, hooks,
+    evidence, cleanupPath, authorization, guard, maxEntries, maxDepth, fileTrust, hooks,
   );
 }
 
@@ -539,6 +546,7 @@ async function resumeOwnedStageCleanup(
   guard: ResourceGuard | undefined,
   maxEntries: number,
   maxDepth: number,
+  fileTrust: FileTrustPolicy,
   hooks?: MaterializationHooks,
 ): Promise<MaterializationResult['method'] | null> {
   if (guard !== undefined) await guard.revalidateParent(authorization);
@@ -565,18 +573,20 @@ async function resumeOwnedStageCleanup(
     if (!stage.isDirectory() || stage.isSymbolicLink() || !sameNodeIdentity(stage, evidence.stage)) {
       throw materializationDenied('The cleanup-owned stage identity changed.', { stagePath });
     }
-    await removeOwnedStageTree(stagePath, evidence.stage, maxEntries, maxDepth, hooks);
+    await removeOwnedStageTree(stagePath, evidence.stage, maxEntries, maxDepth, fileTrust, hooks);
   }
   await hooks?.afterStageRemovedBeforeCleanupEvidence?.(stagePath);
-  await removeExactCleanupEvidence(cleanupPath);
+  await removeExactCleanupEvidence(cleanupPath, fileTrust);
   await syncDirectory(authorization.parentPath);
   return evidence.outcome.state === 'published' ? evidence.outcome.published.method : null;
 }
 
-async function removeExactCleanupEvidence(path: string): Promise<void> {
+async function removeExactCleanupEvidence(path: string, fileTrust: FileTrustPolicy): Promise<void> {
   const before = await lstat(path);
-  if (!before.isFile() || before.isSymbolicLink() || Number(before.uid) !== process.getuid?.()
-    || Number(before.nlink) !== 1 || (Number(before.mode) & 0o777) !== 0o600 || Number(before.size) > 65_536) {
+  if (
+    !before.isFile() || before.isSymbolicLink() || Number(before.size) > 65_536
+    || !(await isExactlyOwnerOnlyFile(before, path, fileTrust))
+  ) {
     throw materializationDenied('Stage cleanup evidence changed before removal.', { path });
   }
   const final = await lstat(path);
@@ -586,7 +596,7 @@ async function removeExactCleanupEvidence(path: string): Promise<void> {
   await unlink(path);
 }
 
-async function readExactStageJson(path: string, required = true): Promise<unknown> {
+async function readExactStageJson(path: string, required = true, fileTrust = defaultCoreFileTrustPolicy): Promise<unknown> {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch((error) => {
     if (isFileError(error, 'ENOENT')) return null;
     throw materializationDenied('Exact recovery metadata cannot be opened safely.', {
@@ -599,8 +609,10 @@ async function readExactStageJson(path: string, required = true): Promise<unknow
   }
   try {
     const stat = await handle.stat();
-    if (!stat.isFile() || Number(stat.uid) !== process.getuid?.() || Number(stat.nlink) !== 1
-      || (Number(stat.mode) & 0o777) !== 0o600 || Number(stat.size) > 65_536) {
+    if (
+      !stat.isFile() || Number(stat.size) > 65_536
+      || !(await isExactlyOwnerOnlyFile(stat, path, fileTrust))
+    ) {
       throw materializationDenied('Exact recovery metadata is not a bounded owner-only regular file.', { path });
     }
     const buffer = Buffer.alloc(Number(stat.size) + 1);
@@ -840,6 +852,7 @@ async function cloneOrCopy(
   payloadPath: string,
   clone: CloneFileCapability,
   limits: { maxEntries: number; maxDepth: number },
+  fileTrust: FileTrustPolicy,
   hooks?: MaterializationHooks,
 ): Promise<'clone' | 'copy-fallback'> {
   const sourcePath = plan.sourcePath as string;
@@ -866,7 +879,8 @@ async function cloneOrCopy(
     }
     const partial = await lstatIfExists(payloadPath);
     if (partial !== null) {
-      if (!partial.isFile() || partial.isSymbolicLink() || partial.nlink !== 1 || partial.uid !== process.getuid?.()) {
+      const owned = fileTrust.currentIdentityAvailable() && await fileTrust.isOwnedByCurrentUser(partial, payloadPath);
+      if (!partial.isFile() || partial.isSymbolicLink() || !fileTrust.isNotSharedByHardLink(partial) || !owned) {
         throw new ResourceMaterializationError('RESOURCE_CLONE_UNAVAILABLE', 'Unsupported clone left an unsafe partial result.', {
           payloadPath,
         });
@@ -1298,13 +1312,16 @@ async function removeOwnedStageTree(
   expectedRoot: FileIdentity,
   maxEntries: number,
   maxDepth: number,
+  fileTrust: FileTrustPolicy,
   hooks?: MaterializationHooks,
 ): Promise<void> {
   let count = 0;
   const removeEntry = async (candidate: string, depth: number): Promise<void> => {
     if (depth > maxDepth || ++count > maxEntries) throw materializationDenied('Stage cleanup exceeded its traversal bound.', { path });
     const stat = await lstat(candidate);
-    if (stat.uid !== process.getuid?.()) throw materializationDenied('Stage cleanup encountered an unowned entry.', { candidate });
+    if (!fileTrust.currentIdentityAvailable() || !(await fileTrust.isOwnedByCurrentUser(stat, candidate))) {
+      throw materializationDenied('Stage cleanup encountered an unowned entry.', { candidate });
+    }
     if (stat.isSymbolicLink() || stat.isFile()) {
       await hooks?.duringStageCleanup?.(path, relative(path, candidate));
       const final = await lstat(candidate);
@@ -1333,6 +1350,39 @@ function conservativeMode(mode: number, directory: boolean): number {
   if (directory) return 0o700;
   const ownerBits = mode & 0o700;
   return ownerBits === 0 ? 0o600 : ownerBits;
+}
+
+/**
+ * `(mode & 0o777) === 0o700`, decomposed rather than asked directly: `FileTrustPolicy` answers
+ * "no group/other access at all" (`isWritableOnlyByOwner(..., 0o077)`), which is the platform-
+ * varying half of this question, but not "does the owner have exactly `rwx`" — that half has no
+ * Windows analogue (there is no permission bit there to ask) and stays a raw check on the owner
+ * bits, which is specific to how WTM itself creates these directories (`mkdir(path, {mode:
+ * 0o700})`) rather than a general trust question. The two together are exactly the original
+ * equality test: zero group/other bits and the owner bits equal to `0o700`.
+ */
+async function isExactlyOwnerOnlyDirectory(
+  stat: Awaited<ReturnType<typeof lstat>>,
+  path: string,
+  fileTrust: FileTrustPolicy,
+): Promise<boolean> {
+  return fileTrust.currentIdentityAvailable()
+    && await fileTrust.isOwnedByCurrentUser(stat, path)
+    && await fileTrust.isWritableOnlyByOwner(stat, path, 0o077)
+    && (Number(stat.mode) & 0o700) === 0o700;
+}
+
+/** The file-mode counterpart of `isExactlyOwnerOnlyDirectory`, for WTM's `0o600` metadata files. */
+async function isExactlyOwnerOnlyFile(
+  stat: Awaited<ReturnType<typeof lstat>>,
+  path: string,
+  fileTrust: FileTrustPolicy,
+): Promise<boolean> {
+  return fileTrust.currentIdentityAvailable()
+    && await fileTrust.isOwnedByCurrentUser(stat, path)
+    && fileTrust.isNotSharedByHardLink(stat)
+    && await fileTrust.isWritableOnlyByOwner(stat, path, 0o077)
+    && (Number(stat.mode) & 0o700) === 0o600;
 }
 
 function fileIdentity(stat: Awaited<ReturnType<typeof lstat>>): FileIdentity {

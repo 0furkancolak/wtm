@@ -95,6 +95,54 @@ background process vs service wrapper), named pipes, and Job Objects.
 
 Exit: Windows x64 CI green; JSON contract and command names identical across platforms.
 
+> **Split into D1 and D2, 2026-09-03**, for the same reason C split: "provable on this Mac" and
+> "provable only on a Windows kernel" are different claims, and a third finding this scoping pass
+> made means D1 is not a small seam extraction the way C1 was.
+>
+> Reading the code for this split surfaced two things todo.md's Windows section did not name:
+> there is **no IPC abstraction at all** today — `server.ts`/`client.ts` call `net.createServer` /
+> `createConnection` directly, and the daemon socket's security is an atomic hardlink-publish
+> proven by `uid`/`mode`/`nlink`, none of which a named pipe has. And that same `uid`/`mode`/`nlink`
+> trust model is not confined to the platform layer — it is inline in **11 files and 151 call
+> sites inside `@wtm/core` itself** (`guard.ts`, `preparation.ts`, `removal.ts`, `materializer.ts`,
+> `gc.ts`, `adapter-trust.ts`, `private-directory.ts`, others), which is the mechanism `core`'s own
+> resource-safety guarantees are built on. Windows has no POSIX uid; the question of what a
+> directory or file "belongs to only me" *means* on Windows has to be answered before any of those
+> 151 sites can be touched, and the answer chosen is ACL-based, not a documented gap (asked and
+> confirmed, 2026-09-03) — full parity, not a deferred limitation.
+>
+> **D1 — the trust-and-transport seam.** `PlatformId` widened to admit `win32` through the existing
+> indexed-dispatch forcing function (C1's `select.ts`/`platform-paths.ts` tables already fail to
+> compile on an unhandled union member, by design). An `IpcTransport` port extracted around the
+> existing Unix-domain-socket code, with the moved behaviour byte-identical on macOS/Linux — the
+> same non-negotiable C1 D6/D8 held for launchd applies here. A `FileTrustPolicy` port extracted
+> for the three predicates the 151 sites actually ask (owned-by-current-user, not-group-or-world-
+> writable, not-multiply-linked), with the POSIX implementation being today's inline logic moved,
+> not rewritten, and every one of the 11 files migrated to call the port. The Windows
+> implementation of that port — owner-SID and DACL inspection, most plausibly via shelling out to
+> `icacls`/`Get-Acl` the way the process ports already shell out to `ps`/`systemctl` — is written
+> and tested against **fixture command output**, exactly as C1 tested `/proc/stat` parsing without
+> a Linux kernel: this proves the parsing and the decision, and proves nothing about a real NTFS
+> volume. Windows `PlatformPaths` (`%APPDATA%`/`%LOCALAPPDATA%`) and a Windows `ServiceBackend`
+> descriptor (Scheduled Task argument/XML rendering against a fake `schtasks` runner, the same
+> discipline C1 applied to `systemctl`) land here too. `NamedPipeTransport` and Windows process
+> supervision (Job Objects) get their **port shapes** decided in D1 but their real implementations
+> cannot be proven here — there is no fixture equivalent for a live named pipe or a live Job Object
+> the way there is for parsed text, so those bodies are written provisionally and D2 is where they
+> are found right or wrong. **D1 makes no claim that WTM runs on Windows.**
+>
+> **D2 — Windows in CI.** A `windows-latest` job in the CI matrix; `NamedPipeTransport` and the
+> Windows `FileTrustPolicy` proven against a real NTFS volume and a real ACL; real Job Objects
+> replacing D1's provisional process-supervision body; `process-anchor.ts` gaining the Windows
+> reader (today an anchor told `platform: 'win32'` fails identity verification immediately —
+> `ANCHOR_PLATFORM_UNKNOWN`); a real `schtasks`/Task Scheduler lifecycle; the SEA build extended to
+> produce a signed Windows binary (`build-sea.ts` is hard-gated to `darwin`/`linux` today, and its
+> darwin-specific `codesign` step has no Windows analogue — `signtool` does); the Windows binary
+> targets and CI matrix entry; and whatever the first red run finds, which every increment in this
+> program so far has found something by (C1→C2 found the `LaunchAgents` 0755 refusal; C2→C3 found
+> the `SIGTERM`-deaf hang). Exit: Windows x64 CI green; JSON contract and command names identical
+> across platforms.
+
 ### Increment E — Multi-platform release pipeline
 
 Covers items 29, 28, 30, 31, and item 4 (performance release gate parity).

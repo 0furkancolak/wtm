@@ -37,6 +37,17 @@ export {
   systemdUnitLabelFor,
 } from './linux';
 export type { SystemdUnitOptions } from './linux';
+export {
+  isSchedulerUnreachable,
+  renderScheduledTaskXml,
+  runSchtasks,
+  scheduledTaskCommands,
+  scheduledTaskLabelFor,
+  schtasksPath,
+  windowsProcessInspector,
+  windowsServiceBackend,
+} from './windows';
+export type { ScheduledTaskDefinitionOptions } from './windows';
 export type {
   LegacyServiceMigration,
   ManagedDirectory,

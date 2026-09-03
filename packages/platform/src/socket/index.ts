@@ -1,8 +1,13 @@
-export { darwinSocketPathLimitBytes, linuxSocketPathLimitBytes } from './limits';
+export {
+  darwinSocketPathLimitBytes,
+  linuxSocketPathLimitBytes,
+  windowsPipeNameLimitCharacters,
+} from './limits';
 export {
   darwinSocketAddressPolicy,
   linuxSocketAddressPolicy,
   socketAddressPolicyFor,
+  windowsSocketAddressPolicy,
 } from './policy';
 export {
   DaemonSocketPathTooLongError,

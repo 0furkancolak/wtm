@@ -53,3 +53,18 @@ export const darwinSocketPathLimitBytes = 104;
  * out of a header at runtime.
  */
 export const linuxSocketPathLimitBytes = 108;
+
+/**
+ * A Windows named pipe's name, not a `sun_path` — cited, not measured (Increment D1,
+ * `2026-09-03-windows-trust-and-transport-seam.md`, D7/D8), because there is no Windows kernel in
+ * this repository to bind against, the same position C1 was in for 108 before C2.
+ *
+ * Microsoft's own `CreateNamedPipe` reference states the entire pipe name string — including the
+ * mandatory `\\.\pipe\` prefix — may be up to 256 characters. That is a materially different limit
+ * from a `sun_path` in nature as well as size: it is a character count on a name, not a byte count
+ * on a filesystem address, and a named pipe has no bind-then-link step for `boundPathFor` to
+ * derive a private name for (D7's finding: there is nothing to quarantine). `boundPathFor` is
+ * therefore the identity function here, not a placeholder standing in for missing logic — D2 is
+ * where a real Windows host confirms both the number and the identity choice.
+ */
+export const windowsPipeNameLimitCharacters = 256;

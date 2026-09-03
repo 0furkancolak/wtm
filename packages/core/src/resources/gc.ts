@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, link, lstat, mkdir, readdir, rename, rmdir, unlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { defaultCoreFileTrustPolicy, type FileTrustPolicy } from '../file-trust-policy';
 import { pinInode, type InodePin, type ResourceGuard } from './guard';
 
 export interface ResourceSandboxIdentity {
@@ -121,6 +122,7 @@ export interface ApplyGcOptions {
   hooks?: GcHooks;
   maxEntries?: number;
   maxDepth?: number;
+  fileTrust?: FileTrustPolicy;
 }
 
 export interface RecoverGcOptions {
@@ -130,6 +132,7 @@ export interface RecoverGcOptions {
   hooks?: GcHooks;
   maxEntries?: number;
   maxDepth?: number;
+  fileTrust?: FileTrustPolicy;
 }
 
 export type GcItemResult =
@@ -182,7 +185,8 @@ export async function applyGcPlan(plan: GcPlan, options: ApplyGcOptions): Promis
   const items: GcItemResult[] = [];
   const maxEntries = options.maxEntries ?? 10_000;
   const maxDepth = options.maxDepth ?? 64;
-  await assertSandboxIdentity(plan.sandbox);
+  const fileTrust = options.fileTrust ?? defaultCoreFileTrustPolicy;
+  await assertSandboxIdentity(plan.sandbox, fileTrust);
 
   for (const candidate of plan.candidates) {
     let phase: 'validation' | GcJournalPhase = 'validation';
@@ -240,7 +244,7 @@ export async function applyGcPlan(plan: GcPlan, options: ApplyGcOptions): Promis
         leaseToken = undefined;
         continue;
       }
-      assertCandidateIdentity(candidate, current);
+      assertCandidateIdentity(candidate, current, fileTrust);
       pin = await pinInode(candidate.path);
       if (pin === null || !await pin.holds(current)) {
         throw cleanupFailure('A GC candidate could not be held for the duration of its removal.', { path: candidate.path });
@@ -284,7 +288,7 @@ export async function applyGcPlan(plan: GcPlan, options: ApplyGcOptions): Promis
       await options.guard.revalidate(authorization);
       const beforeMove = await lstatIfExists(candidate.path);
       if (beforeMove === null) throw cleanupFailure('GC target disappeared before quarantine.', { path: candidate.path });
-      assertCandidateShape(candidate, beforeMove);
+      assertCandidateShape(candidate, beforeMove, fileTrust);
       // The tuple comparison for this boundary lives inside `holds` and nowhere else, so that
       // breaking the pin turns this red here and not only on the Linux runner.
       if (!await pin.holds(beforeMove)) {
@@ -319,13 +323,13 @@ export async function applyGcPlan(plan: GcPlan, options: ApplyGcOptions): Promis
         await assertExactTwoLinkTopology(candidate, candidate.path, quarantinePath);
         await unlink(candidate.path);
         const quarantined = await lstat(quarantinePath);
-        assertCandidateIdentity(candidate, quarantined);
+        assertCandidateIdentity(candidate, quarantined, fileTrust);
         await options.hooks?.afterFileUnlink?.(candidate, quarantinePath);
       } else {
         await rename(candidate.path, quarantinePath);
       }
       const moved = await lstat(quarantinePath);
-      assertCandidateIdentity(candidate, moved);
+      assertCandidateIdentity(candidate, moved, fileTrust);
       await chmod(quarantinePath, moved.isDirectory() ? 0o700 : 0o600);
       phase = 'quarantined';
       await options.journal.record(journalEntry(operationId, candidate, phase, quarantinePath, containerIdentity));
@@ -337,7 +341,7 @@ export async function applyGcPlan(plan: GcPlan, options: ApplyGcOptions): Promis
 
       phase = 'deleting';
       await options.journal.record(journalEntry(operationId, candidate, phase, quarantinePath, containerIdentity));
-      await deleteExactQuarantine(quarantinePath, candidate, maxEntries, maxDepth, async () => {
+      await deleteExactQuarantine(quarantinePath, candidate, maxEntries, maxDepth, fileTrust, async () => {
         if (!await options.lease?.renew(candidate, leaseToken as string)) {
           throw cleanupFailure('GC cleanup reservation expired during deletion.', { storageObjectId: candidate.storageObjectId });
         }
@@ -392,6 +396,7 @@ export async function recoverGcJournalEntry(
   entry: GcJournalEntry,
   options: RecoverGcOptions,
 ): Promise<GcItemResult> {
+  const fileTrust = options.fileTrust ?? defaultCoreFileTrustPolicy;
   const token = randomUUID();
   const recoveryCandidate = {
     storageObjectId: entry.storageObjectId,
@@ -505,7 +510,7 @@ export async function recoverGcJournalEntry(
           });
         }
       } else {
-        assertCandidateIdentity(recoveryCandidate as GcCandidate, quarantine);
+        assertCandidateIdentity(recoveryCandidate as GcCandidate, quarantine, fileTrust);
         currentEntry = { ...currentEntry, phase: 'deleting' };
         await options.journal.record(currentEntry);
         await deleteExactQuarantine(
@@ -513,6 +518,7 @@ export async function recoverGcJournalEntry(
           recoveryCandidate as GcCandidate,
           options.maxEntries ?? 10_000,
           options.maxDepth ?? 64,
+          fileTrust,
           () => renew('GC recovery reservation expired during deletion.'),
         );
       }
@@ -627,7 +633,7 @@ async function ensureRecoveryContainer(
     }
     const original = await lstatIfExists(entry.originalPath);
     if (original === null) throw cleanupFailure('Prepared GC recovery is missing both original and container.', { containerPath });
-    assertCandidateIdentity(candidate, original);
+    assertCandidateIdentity(candidate, original, options.fileTrust ?? defaultCoreFileTrustPolicy);
     await options.guard.revalidate(authorization);
     await mkdir(containerPath, { mode: 0o700 });
     stat = await lstat(containerPath);
@@ -650,6 +656,7 @@ async function resumeQuarantinePrefix(
   options: RecoverGcOptions,
   renew: (message: string) => Promise<void>,
 ): Promise<GcJournalEntry> {
+  const fileTrust = options.fileTrust ?? defaultCoreFileTrustPolicy;
   const quarantinePath = entry.quarantinePath as string;
   const [original, quarantine] = await Promise.all([
     lstatIfExists(entry.originalPath), lstatIfExists(quarantinePath),
@@ -663,10 +670,10 @@ async function resumeQuarantinePrefix(
     if (candidate.kind !== 'file' || quarantine === null) {
       throw cleanupFailure('Unlinking GC recovery topology is incomplete.', { originalPath: entry.originalPath, quarantinePath });
     }
-    if (original === null) assertCandidateIdentity(candidate, quarantine);
+    if (original === null) assertCandidateIdentity(candidate, quarantine, fileTrust);
     else await assertExactTwoLinkTopology(candidate, entry.originalPath, quarantinePath);
   } else if (original !== null && quarantine === null) {
-    assertCandidateIdentity(candidate, original);
+    assertCandidateIdentity(candidate, original, fileTrust);
     const originalAuthorization = await options.guard.authorize(entry.originalPath, 'delete');
     const quarantineAuthorization = await options.guard.authorize(quarantinePath, 'write');
     await options.guard.revalidate(originalAuthorization);
@@ -685,7 +692,7 @@ async function resumeQuarantinePrefix(
     entry = { ...entry, phase: 'linked', quarantineContainer: container };
     await options.journal.record(entry);
   } else if (original === null && quarantine !== null) {
-    assertCandidateIdentity(candidate, quarantine);
+    assertCandidateIdentity(candidate, quarantine, fileTrust);
   } else {
     throw cleanupFailure('Prepared GC recovery topology is ambiguous.', { originalPath: entry.originalPath, quarantinePath });
   }
@@ -701,7 +708,7 @@ async function resumeQuarantinePrefix(
       await options.guard.revalidateParent(authorization);
       await assertExactTwoLinkTopology(candidate, entry.originalPath, quarantinePath);
       await unlink(entry.originalPath);
-      assertCandidateIdentity(candidate, await lstat(quarantinePath));
+      assertCandidateIdentity(candidate, await lstat(quarantinePath), fileTrust);
       await options.hooks?.afterFileUnlink?.(candidate, quarantinePath);
     } else if (entry.phase !== 'unlinking') {
       throw cleanupFailure('GC file original disappeared before durable unlinking intent.', {
@@ -710,7 +717,7 @@ async function resumeQuarantinePrefix(
     }
   }
   const quarantined = await lstat(quarantinePath);
-  assertCandidateIdentity(candidate, quarantined);
+  assertCandidateIdentity(candidate, quarantined, fileTrust);
   await chmod(quarantinePath, candidate.kind === 'directory' ? 0o700 : 0o600);
   const result: GcJournalEntry = { ...entry, phase: 'quarantined', quarantineContainer: container };
   await options.journal.record(result);
@@ -746,7 +753,19 @@ function isSafeCandidatePath(path: string, sandboxRoot: string): boolean {
   return !nested.split(sep).includes('.git');
 }
 
-async function assertSandboxIdentity(sandbox: ResourceSandboxIdentity): Promise<void> {
+/**
+ * `stat.uid !== sandbox.uid`/`stat.uid !== candidate.uid` throughout this file (here and in the
+ * three functions below) compare against a **previously observed** value recorded on the sandbox
+ * or candidate — a TOCTOU check ("is this still the object I looked at"), not a "does this belong
+ * to the current process's user" question. `FileTrustPolicy` answers the latter; it does not
+ * apply here, and is deliberately not used for these comparisons. This is a real, known
+ * Windows gap rather than an oversight: `fs.Stats.uid` is always `0` there, so a `uid` component
+ * in an identity tuple never discriminates on that platform (`(dev, ino)` alone still does the
+ * TOCTOU work; only the "swapped for a different *user's* object" half of the protection is
+ * unavailable). Recorded, not fixed, in `2026-09-03-windows-trust-and-transport-seam.md`'s
+ * "what this increment does not claim".
+ */
+async function assertSandboxIdentity(sandbox: ResourceSandboxIdentity, fileTrust: FileTrustPolicy): Promise<void> {
   const stat = await lstat(sandbox.root);
   if (
     !stat.isDirectory()
@@ -754,13 +773,17 @@ async function assertSandboxIdentity(sandbox: ResourceSandboxIdentity): Promise<
     || stat.dev !== sandbox.dev
     || stat.ino !== sandbox.ino
     || stat.uid !== sandbox.uid
-    || (stat.mode & 0o022) !== 0
+    || !(await fileTrust.isWritableOnlyByOwner(stat, sandbox.root, 0o022))
   ) {
     throw cleanupFailure('The GC sandbox identity or trust boundary changed.', { root: sandbox.root });
   }
 }
 
-function assertCandidateIdentity(candidate: GcCandidate, stat: Awaited<ReturnType<typeof lstat>>): void {
+function assertCandidateIdentity(
+  candidate: GcCandidate,
+  stat: Awaited<ReturnType<typeof lstat>>,
+  fileTrust: FileTrustPolicy,
+): void {
   const expectedKind = candidate.kind === 'directory' ? stat.isDirectory() : stat.isFile();
   if (
     !expectedKind
@@ -768,7 +791,7 @@ function assertCandidateIdentity(candidate: GcCandidate, stat: Awaited<ReturnTyp
     || stat.dev !== candidate.dev
     || stat.ino !== candidate.ino
     || stat.uid !== candidate.uid
-    || (stat.isFile() && stat.nlink !== 1)
+    || (stat.isFile() && !fileTrust.isNotSharedByHardLink(stat))
   ) {
     throw cleanupFailure('GC candidate identity changed or is unsafe.', { path: candidate.path });
   }
@@ -782,9 +805,16 @@ function assertCandidateIdentity(candidate: GcCandidate, stat: Awaited<ReturnTyp
  * stronger answer than the tuple and the only one that holds on a filesystem that reissues inode
  * numbers.
  */
-function assertCandidateShape(candidate: GcCandidate, stat: Awaited<ReturnType<typeof lstat>>): void {
+function assertCandidateShape(
+  candidate: GcCandidate,
+  stat: Awaited<ReturnType<typeof lstat>>,
+  fileTrust: FileTrustPolicy,
+): void {
   const expectedKind = candidate.kind === 'directory' ? stat.isDirectory() : stat.isFile();
-  if (!expectedKind || stat.isSymbolicLink() || stat.uid !== candidate.uid || (stat.isFile() && stat.nlink !== 1)) {
+  if (
+    !expectedKind || stat.isSymbolicLink() || stat.uid !== candidate.uid
+    || (stat.isFile() && !fileTrust.isNotSharedByHardLink(stat))
+  ) {
     throw cleanupFailure('The GC candidate is no longer a safe removal target.', { path: candidate.path });
   }
 }
@@ -866,6 +896,7 @@ async function deleteExactQuarantine(
   candidate: GcCandidate,
   maxEntries: number,
   maxDepth: number,
+  fileTrust: FileTrustPolicy,
   beforeMutation: () => Promise<void>,
 ): Promise<void> {
   let entries = 0;
@@ -875,9 +906,9 @@ async function deleteExactQuarantine(
     if (stat.uid !== candidate.uid || stat.isSymbolicLink()) {
       throw cleanupFailure('GC quarantine contains an unowned or symbolic-link entry.', { path });
     }
-    if (root) assertCandidateIdentity(candidate, stat);
+    if (root) assertCandidateIdentity(candidate, stat, fileTrust);
     if (stat.isFile()) {
-      if (stat.nlink !== 1) throw cleanupFailure('GC refuses hardlinked files.', { path });
+      if (!fileTrust.isNotSharedByHardLink(stat)) throw cleanupFailure('GC refuses hardlinked files.', { path });
       await beforeMutation();
       await unlink(path);
       return;

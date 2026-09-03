@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { copyFile, lstat, mkdir, realpath, rename, rm, stat, symlink } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { ResourceConfig } from '../config/schema';
+import { defaultCoreFileTrustPolicy, type FileTrustPolicy } from '../file-trust-policy';
 import { runGit } from '../git/git-runner';
 import { resolveTemplate, type TemplateContext } from '../templates/resolve';
 
@@ -23,6 +24,7 @@ export interface ResourcePreparationInput {
   worktreeRoot: string;
   /** A source may be read from here, and from nowhere else. */
   workspaceRoot: string;
+  fileTrust?: FileTrustPolicy;
 }
 
 /** Policies whose object WTM does not own, and therefore never creates. */
@@ -79,10 +81,14 @@ export async function inspectResources(
  */
 export async function prepareResources(input: ResourcePreparationInput): Promise<PreparedResource[]> {
   const worktreeRoot = resolve(input.worktreeRoot);
+  const fileTrust = input.fileTrust ?? defaultCoreFileTrustPolicy;
   const prepared: PreparedResource[] = [];
   for (const [name, config] of entriesOf(input.resources)) {
     const path = targetPath(config, input.context, worktreeRoot);
-    prepared.push({ name, path, policy: config.policy, ...await prepareOne(config, path, worktreeRoot, input) });
+    prepared.push({
+      name, path, policy: config.policy,
+      ...await prepareOne(config, path, worktreeRoot, input, fileTrust),
+    });
   }
   return prepared;
 }
@@ -92,6 +98,7 @@ async function prepareOne(
   path: string,
   worktreeRoot: string,
   input: ResourcePreparationInput,
+  fileTrust: FileTrustPolicy,
 ): Promise<{ state: ResourceState; detail?: string }> {
   const observed = await observe(path, config);
   if (externalPolicies.has(config.policy) || observed.state === 'ready') return observed;
@@ -106,7 +113,7 @@ async function prepareOne(
     }
   }
 
-  const refusal = await refuseTarget(path, worktreeRoot);
+  const refusal = await refuseTarget(path, worktreeRoot, fileTrust);
   if (refusal !== null) return degraded(refusal);
 
   try {
@@ -141,14 +148,13 @@ async function create(config: ResourceConfig, path: string, source: string | nul
 }
 
 /** Why this path may not be written, or `null` when it may. */
-async function refuseTarget(path: string, worktreeRoot: string): Promise<string | null> {
+async function refuseTarget(path: string, worktreeRoot: string, fileTrust: FileTrustPolicy): Promise<string | null> {
   const within = relative(worktreeRoot, path);
   if (within.length === 0 || within.startsWith('..') || isAbsolute(within)) {
     return 'A resource path has to name something inside its own worktree.';
   }
   if (within.split(sep).includes('.git')) return 'Git administrative paths are protected.';
 
-  const uid = process.getuid?.();
   for (const directory of ancestors(worktreeRoot, dirname(path))) {
     let entry;
     try {
@@ -158,8 +164,15 @@ async function refuseTarget(path: string, worktreeRoot: string): Promise<string 
     }
     if (entry.isSymbolicLink()) return `${directory} is a symbolic link, so WTM will not write through it.`;
     if (!entry.isDirectory()) return `${directory} is not a directory.`;
-    if (uid !== undefined && entry.uid !== uid) return `${directory} belongs to another user.`;
-    if ((entry.mode & 0o022) !== 0) return `${directory} is group- or world-writable.`;
+    // Unlike `guard.ts`, an unavailable identity is not refused here — it is treated the same
+    // way this check always has been: skipped, not denied. That asymmetry predates this port and
+    // is preserved rather than reconciled; the port carries the same comparison, not a new policy.
+    if (fileTrust.currentIdentityAvailable() && !(await fileTrust.isOwnedByCurrentUser(entry, directory))) {
+      return `${directory} belongs to another user.`;
+    }
+    if (!(await fileTrust.isWritableOnlyByOwner(entry, directory, 0o022))) {
+      return `${directory} is group- or world-writable.`;
+    }
   }
   if (await tracked(worktreeRoot, within)) return 'Git tracks this path, so WTM will not write over it.';
   return null;

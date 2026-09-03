@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, realpath } from 'node:fs/promises';
 import { basename, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import type { Stats } from 'node:fs';
+import { defaultCoreFileTrustPolicy, type FileTrustPolicy } from '../file-trust-policy';
 
 export interface PrivateDirectory {
   path: string;
@@ -41,10 +42,13 @@ export class PrivateDirectoryError extends Error {
  * returns the identity that callers must revalidate before pathname-sensitive
  * operations. Existing symlinked or permissive paths are never repaired.
  */
-export async function ensurePrivateDirectory(directoryPath: string): Promise<PrivateDirectory> {
+export async function ensurePrivateDirectory(
+  directoryPath: string,
+  fileTrust: FileTrustPolicy = defaultCoreFileTrustPolicy,
+): Promise<PrivateDirectory> {
   if (directoryPath.trim() === '') throw new PrivateDirectoryError();
   const target = resolve(directoryPath);
-  await assertNoSymlinkComponents(target);
+  await assertNoSymlinkComponents(target, fileTrust);
   const components: string[] = [];
   let anchor = target;
 
@@ -54,7 +58,7 @@ export async function ensurePrivateDirectory(directoryPath: string): Promise<Pri
       throw new PrivateDirectoryError();
     });
     if (stat !== undefined) {
-      const established = await inspectPrivateDirectory(anchor, stat);
+      const established = await inspectPrivateDirectory(anchor, fileTrust, stat);
       let current = established.path;
       const identities = [established];
       for (const component of components.reverse()) {
@@ -62,10 +66,10 @@ export async function ensurePrivateDirectory(directoryPath: string): Promise<Pri
         await mkdir(current, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
           if (error.code !== 'EEXIST') throw new PrivateDirectoryError();
         });
-        identities.push(await inspectPrivateDirectory(current));
+        identities.push(await inspectPrivateDirectory(current, fileTrust));
       }
-      await assertNoSymlinkComponents(target);
-      for (const directory of identities) await verifyPrivateDirectory(directory);
+      await assertNoSymlinkComponents(target, fileTrust);
+      for (const directory of identities) await verifyPrivateDirectory(directory, fileTrust);
       return identities.at(-1)!;
     }
     const parent = dirname(anchor);
@@ -76,12 +80,11 @@ export async function ensurePrivateDirectory(directoryPath: string): Promise<Pri
 }
 
 /** Rejects a symlink in any already-existing lexical path component. */
-async function assertNoSymlinkComponents(target: string): Promise<void> {
+async function assertNoSymlinkComponents(target: string, fileTrust: FileTrustPolicy): Promise<void> {
   const root = parse(target).root;
   let current = root;
   let belowPrivateAnchor = false;
-  const currentUserId = process.getuid?.();
-  if (currentUserId === undefined) throw new PrivateDirectoryError();
+  if (!fileTrust.currentIdentityAvailable()) throw new PrivateDirectoryError();
   for (const component of relative(root, target).split(sep).filter(Boolean)) {
     current = join(current, component);
     const stat = await lstat(current).catch((error: NodeJS.ErrnoException) => {
@@ -89,13 +92,14 @@ async function assertNoSymlinkComponents(target: string): Promise<void> {
       throw new PrivateDirectoryError();
     });
     if (stat === undefined) return;
-    if (stat.isSymbolicLink() && (belowPrivateAnchor || stat.uid === currentUserId)) {
+    const ownedByCurrentUser = await fileTrust.isOwnedByCurrentUser(stat, current);
+    if (stat.isSymbolicLink() && (belowPrivateAnchor || ownedByCurrentUser)) {
       throw new PrivateDirectoryError(current, 'is a symbolic link');
     }
     if (belowPrivateAnchor) {
       if (!stat.isDirectory()) throw new PrivateDirectoryError(current, 'is not a directory');
-      if (stat.uid !== currentUserId) throw new PrivateDirectoryError(current, 'belongs to another user');
-      if ((stat.mode & 0o077) !== 0) {
+      if (!ownedByCurrentUser) throw new PrivateDirectoryError(current, 'belongs to another user');
+      if (!(await fileTrust.isWritableOnlyByOwner(stat, current, 0o077))) {
         throw new PrivateDirectoryError(
           current,
           `is readable by others (mode ${(stat.mode & 0o7777).toString(8)}); run chmod 700 on it`,
@@ -105,26 +109,35 @@ async function assertNoSymlinkComponents(target: string): Promise<void> {
     // macOS exposes /var as a root-owned system symlink. System ancestors are
     // outside WTM's authority; once an owned 0700 anchor is reached, every
     // remaining lexical component is required to be a real directory.
-    if (!stat.isSymbolicLink() && stat.isDirectory()
-      && stat.uid === currentUserId && (stat.mode & 0o077) === 0) {
+    if (
+      !stat.isSymbolicLink() && stat.isDirectory() && ownedByCurrentUser
+      && (await fileTrust.isWritableOnlyByOwner(stat, current, 0o077))
+    ) {
       belowPrivateAnchor = true;
     }
   }
 }
 
-export async function verifyPrivateDirectory(directory: PrivateDirectory): Promise<void> {
+export async function verifyPrivateDirectory(
+  directory: PrivateDirectory,
+  fileTrust: FileTrustPolicy = defaultCoreFileTrustPolicy,
+): Promise<void> {
   const stat = await lstat(directory.path).catch(() => {
     throw new PrivateDirectoryError();
   });
-  const current = await inspectPrivateDirectory(directory.path, stat);
+  const current = await inspectPrivateDirectory(directory.path, fileTrust, stat);
   if (!sameDirectory(directory.identity, current.identity)) throw new PrivateDirectoryError();
 }
 
-async function inspectPrivateDirectory(path: string, initial?: Stats): Promise<PrivateDirectory> {
+async function inspectPrivateDirectory(
+  path: string,
+  fileTrust: FileTrustPolicy,
+  initial?: Stats,
+): Promise<PrivateDirectory> {
   const before = initial ?? await lstat(path).catch(() => {
     throw new PrivateDirectoryError(path, 'cannot be read');
   });
-  assertPrivateDirectory(before, path);
+  await assertPrivateDirectory(before, fileTrust, path);
   const canonicalPath = await realpath(path).catch(() => {
     throw new PrivateDirectoryError(path, 'cannot be resolved');
   });
@@ -135,7 +148,7 @@ async function inspectPrivateDirectory(path: string, initial?: Stats): Promise<P
     const opened = await handle.stat().catch(() => {
       throw new PrivateDirectoryError();
     });
-    assertPrivateDirectory(opened);
+    await assertPrivateDirectory(opened, fileTrust);
     const after = await lstat(canonicalPath).catch(() => {
       throw new PrivateDirectoryError();
     });
@@ -151,12 +164,13 @@ async function inspectPrivateDirectory(path: string, initial?: Stats): Promise<P
   }
 }
 
-function assertPrivateDirectory(stat: Stats, path?: string): void {
-  const currentUserId = process.getuid?.();
-  if (currentUserId === undefined) throw new PrivateDirectoryError();
+async function assertPrivateDirectory(stat: Stats, fileTrust: FileTrustPolicy, path?: string): Promise<void> {
+  if (!fileTrust.currentIdentityAvailable()) throw new PrivateDirectoryError();
   if (!stat.isDirectory()) throw new PrivateDirectoryError(path, 'is not a directory');
-  if (stat.uid !== currentUserId) throw new PrivateDirectoryError(path, 'belongs to another user');
-  if ((stat.mode & 0o077) !== 0) {
+  if (!(await fileTrust.isOwnedByCurrentUser(stat, path ?? ''))) {
+    throw new PrivateDirectoryError(path, 'belongs to another user');
+  }
+  if (!(await fileTrust.isWritableOnlyByOwner(stat, path ?? '', 0o077))) {
     throw new PrivateDirectoryError(
       path,
       `is readable by others (mode ${(stat.mode & 0o7777).toString(8)}); run chmod 700 on it`,

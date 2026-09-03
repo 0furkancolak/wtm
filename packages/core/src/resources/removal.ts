@@ -1,6 +1,7 @@
 import { lstat, rm, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { ResourceConfig } from '../config/schema';
+import { defaultCoreFileTrustPolicy, type FileTrustPolicy } from '../file-trust-policy';
 import { runGit } from '../git/git-runner';
 import { resolveTemplate, type TemplateContext } from '../templates/resolve';
 import { ResourcePathGuardError } from './guard';
@@ -33,6 +34,7 @@ export interface WorktreeResourceCleanupInput {
    * A path this cannot render is retained rather than guessed at.
    */
   context?: TemplateContext;
+  fileTrust?: FileTrustPolicy;
 }
 
 /**
@@ -82,6 +84,7 @@ export async function cleanupWorktreeEphemeralResources(
   input: WorktreeResourceCleanupInput,
 ): Promise<WorktreeResourceCleanupResult> {
   const worktreeRoot = resolve(input.worktreeRoot);
+  const fileTrust = input.fileTrust ?? defaultCoreFileTrustPolicy;
   const steps: CleanupStep[] = [];
 
   // Everything is authorized first, and only then is anything deleted: a refusal at the last
@@ -93,7 +96,7 @@ export async function cleanupWorktreeEphemeralResources(
       continue;
     }
 
-    await authorizeTarget(name, path, worktreeRoot);
+    await authorizeTarget(name, path, worktreeRoot, fileTrust);
     const identity = await identityOf(path);
     steps.push(identity === null
       ? { kind: 'settled', outcome: { name, path, policy, disposition: 'already-absent' } }
@@ -198,7 +201,12 @@ async function deleteTarget(step: Extract<CleanupStep, { kind: 'delete' }>): Pro
  * this module must not reach into it. The two must stay in step: they are the same authorization,
  * once for creating a path and once for deleting it.
  */
-async function authorizeTarget(name: string, path: string, worktreeRoot: string): Promise<void> {
+async function authorizeTarget(
+  name: string,
+  path: string,
+  worktreeRoot: string,
+  fileTrust: FileTrustPolicy,
+): Promise<void> {
   const context = { name, path, worktreeRoot };
   const within = relative(worktreeRoot, path);
   if (within.length === 0 || within.startsWith('..') || isAbsolute(within)) {
@@ -206,7 +214,6 @@ async function authorizeTarget(name: string, path: string, worktreeRoot: string)
   }
   if (within.split(sep).includes('.git')) deny('Git administrative paths are protected.', context);
 
-  const uid = process.getuid?.();
   for (const directory of ancestors(worktreeRoot, dirname(path))) {
     let entry;
     try {
@@ -218,8 +225,15 @@ async function authorizeTarget(name: string, path: string, worktreeRoot: string)
       deny(`${directory} is a symbolic link, so WTM will not delete through it.`, context);
     }
     if (!entry.isDirectory()) deny(`${directory} is not a directory.`, context);
-    if (uid !== undefined && entry.uid !== uid) deny(`${directory} belongs to another user.`, context);
-    if ((entry.mode & 0o022) !== 0) deny(`${directory} is group- or world-writable.`, context);
+    // Unavailable identity is skipped, not denied — the same asymmetry `preparation.ts`'s
+    // `refuseTarget` preserves, because the two are "the same authorization" (this function's own
+    // doc comment) and must not silently diverge on this call site alone.
+    if (fileTrust.currentIdentityAvailable() && !(await fileTrust.isOwnedByCurrentUser(entry, directory))) {
+      deny(`${directory} belongs to another user.`, context);
+    }
+    if (!(await fileTrust.isWritableOnlyByOwner(entry, directory, 0o022))) {
+      deny(`${directory} is group- or world-writable.`, context);
+    }
   }
   if (await tracked(worktreeRoot, within)) {
     throw new ResourcePathGuardError(

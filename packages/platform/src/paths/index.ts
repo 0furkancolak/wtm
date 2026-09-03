@@ -1,1 +1,6 @@
-export { darwinPlatformPaths, linuxPlatformPaths, platformPathsFor } from './platform-paths';
+export {
+  darwinPlatformPaths,
+  linuxPlatformPaths,
+  platformPathsFor,
+  windowsPlatformPaths,
+} from './platform-paths';

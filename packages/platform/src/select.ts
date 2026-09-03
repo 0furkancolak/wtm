@@ -3,9 +3,19 @@ import { isAbsolute, resolve } from 'node:path';
 import type { Remediation } from '@wtm/protocol';
 import { platformPathsFor } from './paths';
 import { socketAddressPolicyFor } from './socket';
-import { createDarwinProcessPlatform, createLinuxProcessPlatform } from './process';
-import { darwinServiceBackend, linuxServiceBackend } from './service';
-import type { PlatformId, PlatformRuntime } from './ports';
+import {
+  createDarwinProcessPlatform,
+  createLinuxProcessPlatform,
+  createWindowsProcessPlatform,
+} from './process';
+import { darwinServiceBackend, linuxServiceBackend, windowsServiceBackend } from './service';
+import {
+  createCurrentWindowsUserSidReader,
+  createWindowsAclReader,
+  createWindowsFileTrustPolicy,
+  posixFileTrustPolicy,
+} from './trust';
+import type { FileTrustPolicy, PlatformId, PlatformRuntime } from './ports';
 
 /**
  * The one place in WTM that decides which operating system it is running on.
@@ -43,9 +53,31 @@ export class UnsupportedPlatformError extends Error {
 const processPlatforms = {
   darwin: createDarwinProcessPlatform,
   linux: createLinuxProcessPlatform,
+  win32: createWindowsProcessPlatform,
 } as const;
 
-const serviceBackends = { darwin: darwinServiceBackend, linux: linuxServiceBackend } as const;
+const serviceBackends = {
+  darwin: darwinServiceBackend,
+  linux: linuxServiceBackend,
+  win32: windowsServiceBackend,
+} as const;
+
+/**
+ * Built once, not per `selectPlatformRuntime` call, because it wires two default readers that
+ * each spawn a fresh `powershell.exe`, and every existing port in this package already treats
+ * "spawn per call" as the norm for the platform it actually runs commands on — this is no
+ * different, just not yet exercised anywhere real (D8: `win32` is constructible, not supported).
+ */
+const windowsFileTrustPolicy: FileTrustPolicy = createWindowsFileTrustPolicy({
+  readAcl: createWindowsAclReader(),
+  currentUserSid: createCurrentWindowsUserSidReader(),
+});
+
+const fileTrustPolicies: Readonly<Record<PlatformId, FileTrustPolicy>> = {
+  darwin: posixFileTrustPolicy,
+  linux: posixFileTrustPolicy,
+  win32: windowsFileTrustPolicy,
+};
 
 export interface SelectPlatformRuntimeOptions {
   platform?: NodeJS.Platform | string;
@@ -78,6 +110,7 @@ export function selectPlatformRuntime(options: SelectPlatformRuntimeOptions = {}
     socket: socketAddressPolicyFor(platform),
     process: processPlatforms[platform](),
     service: serviceBackends[platform],
+    fileTrust: fileTrustPolicies[platform],
   };
 }
 

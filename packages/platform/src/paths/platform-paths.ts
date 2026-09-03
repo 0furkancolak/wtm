@@ -16,6 +16,7 @@
  * not surface until C2.
  */
 import { isAbsolute, join } from 'node:path';
+import { isAbsolute as win32IsAbsolute, join as win32Join } from 'node:path/win32';
 import type { PlatformId, PlatformPaths, PlatformPathsInput } from '../ports';
 
 /** The global configuration file's name, on every platform. Only its directory differs. */
@@ -72,12 +73,62 @@ export function linuxPlatformPaths({ home, env }: PlatformPathsInput): PlatformP
 }
 
 /**
+ * Windows, keyed off `%LOCALAPPDATA%` rather than XDG or `~/Library` (Increment D1,
+ * `2026-09-03-windows-trust-and-transport-seam.md`, D5).
+ *
+ * Everything lives under one WTM-owned root, the same shape as macOS and unlike Linux's four
+ * XDG-scattered directories: Windows has no directory-sharing convention comparable to
+ * `~/.config` that WTM would need to fit inside, so there is nothing to gain by splitting the
+ * roots the way the Linux resolver does.
+ *
+ * `env.LOCALAPPDATA` is honoured only when absolute, the same rule the Linux resolver applies to
+ * its XDG variables and for the same reason: an unset or relative value must fall back rather
+ * than be joined onto `home` as if it were one, which would place the socket relative to whatever
+ * directory the service manager happened to start the daemon in. The fallback join
+ * (`home\AppData\Local`) is what `%LOCALAPPDATA%` resolves to by default on every supported
+ * Windows version, so an environment where it is merely unset — not unusual under some service
+ * contexts — still gets the layout a normal interactive session would have.
+ *
+ * Built with `node:path/win32`, not the default `node:path` — unlike the POSIX resolvers above,
+ * whose forward-slash joins are valid on every host this suite runs on regardless of which OS the
+ * test process itself is, a backslashed, drive-lettered Windows path is not something the default
+ * `node:path` (which is `node:path/posix` everywhere except an actual `win32` process) can join or
+ * recognise as absolute. Importing `win32` explicitly is what makes this resolver constructible
+ * and testable from this macOS host at all — the same requirement C1 stated for reading `home`/
+ * `env` as arguments, extended to which flavour of `path` answers "is this absolute."
+ */
+export function windowsPlatformPaths({ home, env }: PlatformPathsInput): PlatformPaths {
+  const localAppData = win32AbsoluteOrNull(env.LOCALAPPDATA) ?? win32Join(home, 'AppData', 'Local');
+  const dataRoot = win32Join(localAppData, 'WTM');
+  return {
+    dataRoot,
+    configPath: win32Join(dataRoot, configFileName),
+    logRoot: win32Join(dataRoot, 'logs'),
+    // Named pipes are not filesystem entries, so there is no XDG-runtime-directory-shaped shorter
+    // root to move this to the way Linux's `socketRoot` moves off `dataRoot` — see D7/D8 of the
+    // Windows seam spec for why the address itself needs no directory at all. Kept alongside
+    // `dataRoot` for interface parity with the other two platforms, not because anything currently
+    // reads it as a directory to create.
+    socketRoot: dataRoot,
+    // The Scheduled Task's staged XML (D6) — entirely WTM-owned, unlike systemd's shared
+    // `~/.config/systemd/user`, so it lives under `dataRoot` rather than beside a
+    // platform-provided service directory Windows has no equivalent of.
+    serviceRoot: win32Join(dataRoot, 'service'),
+  };
+}
+
+function win32AbsoluteOrNull(value: string | undefined): string | null {
+  return value !== undefined && win32IsAbsolute(value) ? value : null;
+}
+
+/**
  * Indexed rather than branched, so that widening `PlatformId` — Windows is a later increment — is
  * a type error here instead of a silent fall-through to the Linux layout.
  */
 const resolvers: Readonly<Record<PlatformId, (input: PlatformPathsInput) => PlatformPaths>> = {
   darwin: darwinPlatformPaths,
   linux: linuxPlatformPaths,
+  win32: windowsPlatformPaths,
 };
 
 export function platformPathsFor(id: PlatformId, input: PlatformPathsInput): PlatformPaths {

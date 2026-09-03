@@ -4,6 +4,7 @@ import { lstat, mkdtemp, open, realpath, rmdir, unlink, type FileHandle } from '
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { Stats } from 'node:fs';
+import { defaultCoreFileTrustPolicy, type FileTrustPolicy } from '../file-trust-policy';
 import type { AdapterTrustInput, AdapterTrustRecord, AdapterTrustStateStore } from '../state/store';
 import { ensurePrivateDirectory, PrivateDirectoryError, verifyPrivateDirectory } from '../state/private-directory';
 
@@ -78,9 +79,10 @@ export function createSqliteAdapterTrustStore(store: AdapterTrustStateStore): Ad
 export async function trustRepositoryAdapter(
   store: AdapterTrustStore,
   input: TrustRepositoryAdapterInput,
+  fileTrust: FileTrustPolicy = defaultCoreFileTrustPolicy,
 ): Promise<AdapterTrustRecord> {
   assertAdapterId(input.adapterId);
-  const identity = await inspectAdapterExecutable(input.executablePath);
+  const identity = await inspectAdapterExecutable(input.executablePath, fileTrust);
   return store.upsert({
     adapterId: input.adapterId,
     canonicalPath: identity.canonicalPath,
@@ -91,9 +93,10 @@ export async function trustRepositoryAdapter(
 export async function verifyTrustedRepositoryAdapter(
   store: AdapterTrustStore,
   input: TrustRepositoryAdapterInput,
+  fileTrust: FileTrustPolicy = defaultCoreFileTrustPolicy,
 ): Promise<AdapterExecutableIdentity> {
   assertAdapterId(input.adapterId);
-  const source = await readSafeAdapterSource(input.executablePath);
+  const source = await readSafeAdapterSource(input.executablePath, fileTrust);
   assertTrusted(store, input.adapterId, source.identity);
   return source.identity;
 }
@@ -106,15 +109,16 @@ export async function verifyTrustedRepositoryAdapter(
 export async function openTrustedAdapterDescriptor(
   store: AdapterTrustStore,
   input: TrustRepositoryAdapterInput,
+  fileTrust: FileTrustPolicy = defaultCoreFileTrustPolicy,
 ): Promise<TrustedAdapterDescriptor> {
   assertAdapterId(input.adapterId);
-  const source = await openSafeAdapterSource(input.executablePath);
+  const source = await openSafeAdapterSource(input.executablePath, fileTrust);
   let sourceClosed = false;
   try {
     assertTrusted(store, input.adapterId, source.identity);
     await source.handle.close();
     sourceClosed = true;
-    const executable = await createAnonymousTrustedAdapter(source.bytes);
+    const executable = await createAnonymousTrustedAdapter(source.bytes, fileTrust);
     let closed = false;
     return {
       childDescriptor: inheritedAdapterDescriptor,
@@ -132,15 +136,18 @@ export async function openTrustedAdapterDescriptor(
   }
 }
 
-export async function inspectAdapterExecutable(executablePath: string): Promise<AdapterExecutableIdentity> {
-  return (await readSafeAdapterSource(executablePath)).identity;
+export async function inspectAdapterExecutable(
+  executablePath: string,
+  fileTrust: FileTrustPolicy = defaultCoreFileTrustPolicy,
+): Promise<AdapterExecutableIdentity> {
+  return (await readSafeAdapterSource(executablePath, fileTrust)).identity;
 }
 
-async function readSafeAdapterSource(executablePath: string): Promise<{
+async function readSafeAdapterSource(executablePath: string, fileTrust: FileTrustPolicy): Promise<{
   bytes: Buffer;
   identity: AdapterExecutableIdentity;
 }> {
-  const source = await openSafeAdapterSource(executablePath);
+  const source = await openSafeAdapterSource(executablePath, fileTrust);
   try {
     return { bytes: source.bytes, identity: source.identity };
   } finally {
@@ -148,7 +155,7 @@ async function readSafeAdapterSource(executablePath: string): Promise<{
   }
 }
 
-async function openSafeAdapterSource(executablePath: string): Promise<{
+async function openSafeAdapterSource(executablePath: string, fileTrust: FileTrustPolicy): Promise<{
   bytes: Buffer;
   identity: AdapterExecutableIdentity;
   handle: FileHandle;
@@ -160,7 +167,7 @@ async function openSafeAdapterSource(executablePath: string): Promise<{
   const before = await lstat(canonicalPath).catch(() => {
     throw new AdapterTrustError('External adapter executable is unavailable.');
   });
-  assertSafeAdapterFile(before);
+  await assertSafeAdapterFile(before, canonicalPath, fileTrust);
 
   const handle = await open(canonicalPath, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => {
     throw new AdapterTrustError('External adapter executable is unavailable.');
@@ -169,7 +176,7 @@ async function openSafeAdapterSource(executablePath: string): Promise<{
     const opened = await handle.stat().catch(() => {
       throw new AdapterTrustError('External adapter executable is unavailable.');
     });
-    assertSafeAdapterFile(opened);
+    await assertSafeAdapterFile(opened, canonicalPath, fileTrust);
     if (!sameFile(before, opened)) {
       throw new AdapterTrustError('External adapter executable changed during verification.');
     }
@@ -221,14 +228,14 @@ async function readBounded(handle: FileHandle, size: number): Promise<Buffer> {
   return bytes;
 }
 
-async function createAnonymousTrustedAdapter(bytes: Buffer): Promise<FileHandle> {
+async function createAnonymousTrustedAdapter(bytes: Buffer, fileTrust: FileTrustPolicy): Promise<FileHandle> {
   let directoryPath: string | undefined;
   let executablePath: string | undefined;
   let writer: FileHandle | undefined;
   let reader: FileHandle | undefined;
   try {
     directoryPath = await mkdtemp(join(tmpdir(), 'wtm-adapter-execution-'));
-    const directory = await ensurePrivateDirectory(directoryPath);
+    const directory = await ensurePrivateDirectory(directoryPath, fileTrust);
     directoryPath = directory.path;
     executablePath = join(directory.path, 'adapter.mjs');
     writer = await open(
@@ -239,26 +246,26 @@ async function createAnonymousTrustedAdapter(bytes: Buffer): Promise<FileHandle>
     await writeAll(writer, bytes);
     await writer.sync();
     const written = await writer.stat();
-    assertPrivateExecutionFile(written, bytes.length);
+    await assertPrivateExecutionFile(written, bytes.length, executablePath, fileTrust);
     await writer.close();
     writer = undefined;
 
-    await verifyPrivateDirectory(directory);
+    await verifyPrivateDirectory(directory, fileTrust);
     reader = await open(executablePath, constants.O_RDONLY | constants.O_NOFOLLOW);
     const opened = await reader.stat();
-    assertPrivateExecutionFile(opened, bytes.length);
+    await assertPrivateExecutionFile(opened, bytes.length, executablePath, fileTrust);
     if (!sameFile(written, opened) || !(await readBounded(reader, bytes.length)).equals(bytes)) {
       throw new AdapterTrustError('External adapter private execution copy is invalid.');
     }
 
-    await verifyPrivateDirectory(directory);
+    await verifyPrivateDirectory(directory, fileTrust);
     await unlink(executablePath);
     executablePath = undefined;
     const unlinked = await reader.stat();
     if (unlinked.nlink !== 0 || unlinked.dev !== opened.dev || unlinked.ino !== opened.ino) {
       throw new AdapterTrustError('External adapter private execution copy is invalid.');
     }
-    await verifyPrivateDirectory(directory);
+    await verifyPrivateDirectory(directory, fileTrust);
     await rmdir(directory.path);
     directoryPath = undefined;
 
@@ -288,18 +295,27 @@ async function writeAll(handle: FileHandle, bytes: Buffer): Promise<void> {
   }
 }
 
-function assertPrivateExecutionFile(stat: Stats, size: number): void {
-  const currentUserId = process.getuid?.();
-  if (
-    !stat.isFile()
-    || currentUserId === undefined
-    || stat.uid !== currentUserId
-    || stat.nlink !== 1
+/**
+ * `(stat.mode & 0o100)`, the owner-execute bit, stays a raw POSIX check rather than going through
+ * `FileTrustPolicy`: it is a rejection specific to *this* file (the private execution copy must
+ * not itself be independently executable — the descriptor it is inherited through is what runs
+ * it), not one of the three ownership/write/hard-link questions the port answers, and Windows has
+ * no comparable permission bit to ask at all.
+ */
+async function assertPrivateExecutionFile(
+  stat: Stats,
+  size: number,
+  path: string,
+  fileTrust: FileTrustPolicy,
+): Promise<void> {
+  const invalid = !stat.isFile()
+    || !fileTrust.currentIdentityAvailable()
+    || !(await fileTrust.isOwnedByCurrentUser(stat, path))
+    || !fileTrust.isNotSharedByHardLink(stat)
     || stat.size !== size
-    || (stat.mode & 0o177) !== 0
-  ) {
-    throw new AdapterTrustError('External adapter private execution copy is invalid.');
-  }
+    || (Number(stat.mode) & 0o100) !== 0
+    || !(await fileTrust.isWritableOnlyByOwner(stat, path, 0o077));
+  if (invalid) throw new AdapterTrustError('External adapter private execution copy is invalid.');
 }
 
 function assertTrusted(store: AdapterTrustStore, adapterId: string, identity: AdapterExecutableIdentity): void {
@@ -310,16 +326,20 @@ function assertTrusted(store: AdapterTrustStore, adapterId: string, identity: Ad
   if (!trusted) throw new AdapterTrustError('Repository-local external adapter is not trusted.');
 }
 
-function assertSafeAdapterFile(stat: Stats): void {
+/**
+ * `(stat.mode & 0o111) === 0`, "not executable by anyone", stays a raw POSIX check: it is the
+ * opposite kind of question from `assertPrivateExecutionFile`'s owner-execute check above (this
+ * file *must* be runnable), still not one the port answers, and still without a Windows analogue.
+ */
+async function assertSafeAdapterFile(stat: Stats, path: string, fileTrust: FileTrustPolicy): Promise<void> {
   if (!stat.isFile()) throw new AdapterTrustError('External adapter executable is invalid.');
-  const currentUserId = process.getuid?.();
-  if (currentUserId === undefined || stat.uid !== currentUserId) {
+  if (!fileTrust.currentIdentityAvailable() || !(await fileTrust.isOwnedByCurrentUser(stat, path))) {
     throw new AdapterTrustError('External adapter executable is not owned by the current user.');
   }
-  if (stat.nlink !== 1 || (stat.mode & 0o022) !== 0) {
+  if (!fileTrust.isNotSharedByHardLink(stat) || !(await fileTrust.isWritableOnlyByOwner(stat, path, 0o022))) {
     throw new AdapterTrustError('External adapter executable has unsafe permissions.');
   }
-  if ((stat.mode & 0o111) === 0) {
+  if ((Number(stat.mode) & 0o111) === 0) {
     throw new AdapterTrustError('External adapter executable is not executable.');
   }
 }

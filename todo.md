@@ -743,13 +743,27 @@ NTFS junction/symlink semantics
 - [ ] Windows path canonicalization.
 - [ ] Drive letter / UNC path desteği.
 - [ ] NTFS junction, symlink ve reparse point güvenliği.
-- [ ] `LOCALAPPDATA` / `APPDATA` tabanlı WTM paths.
-- [ ] Per-user daemon lifecycle stratejisi.
+- [x] `LOCALAPPDATA` / `APPDATA` tabanlı WTM paths. — `windowsPlatformPaths`, `node:path/win32`
+      ile inşa edildi (varsayılan `node:path` bu Mac'te POSIX'tir ve `C:\...` yolunu tanımaz —
+      Increment D1'in kendi bulgusu), env injection ile test edildi.
+- [ ] Per-user daemon lifecycle stratejisi. — karar verildi (per-user Scheduled Task, admin
+      gerektirmiyor) ve `windowsServiceBackend` sahte `schtasks`/`sc.exe` ile test edildi; gerçek
+      Task Scheduler üzerinde doğrulanmadı, Increment D2.
 - [ ] PowerShell uyumlu install/uninstall.
 - [ ] PowerShell completion.
 - [ ] Git Bash kullanımının ayrıca test edilmesi.
 - [ ] Windows ARM64 ileride; ilk hedef Windows x64.
 - [ ] Native Windows CI.
+
+> **Windows trust seam, 2026-09-03 (Increment D1, kısmi).** `FileTrustPolicy` portu —
+> "bu benim mi" / "başkası yazabiliyor mu" / "hardlink ile paylaşılmış mı" — `@wtm/platform`'da
+> POSIX+Windows (ACL, `powershell.exe` `Get-Acl` üzerinden) olarak inşa edildi, ve `@wtm/core`
+> içindeki 151 satırlık dağınık `process.getuid()`/mode-bit/nlink kontrolü 7 dosyada bu porta
+> taşındı — hiçbir mevcut testin assertion'ı değişmeden (352→356 test, hepsi yeşil). Windows
+> `ServiceBackend` (Scheduled Task) ve `windowsPlatformPaths` de bu artırımda geldi. Hepsi
+> fixture/sahte runner ile kanıtlandı, gerçek bir Windows kernel'de değil — C1'in Linux için
+> tuttuğu ayrım burada da geçerli. `IpcServerPublisher` (Named Pipe seam'i) bu artırımda
+> başlanmadı; ayrı, odaklı bir geçiş gerektiriyor. Detay: `2026-09-03-windows-trust-and-transport-seam.md`.
 
 #### Windows daemon lifecycle kararı
 
