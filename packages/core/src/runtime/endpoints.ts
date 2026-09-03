@@ -65,6 +65,14 @@ export function isEndpointAvailable(candidate: EndpointCandidate): boolean {
   const result = spawnSync(process.execPath, ['-e', probeScript, JSON.stringify(candidate)], {
     stdio: 'ignore',
     timeout: 2_000,
+    // `spawnSync`'s `timeout` sends `killSignal` — `SIGTERM` by default — once the deadline
+    // passes and then keeps waiting for the child; a probe that does not exit on `SIGTERM` (an
+    // open handle, a stalled bind) blocks this call forever instead of after 2 seconds. Measured
+    // for the identical hazard in `2026-09-03-a-hang-that-cannot-hide.md` (Increment C3), and
+    // observed here for real: darwin x64 CI run 33774083849 stalled exactly after this probe's
+    // own test, past the job's 30-minute limit, on a commit that touched none of this code.
+    // `SIGKILL` is what turns "at most 2 seconds" from a request into a bound.
+    killSignal: 'SIGKILL',
   });
   return result.status === 0 && result.signal === null && result.error === undefined;
 }
@@ -78,6 +86,8 @@ export function spawnedEndpointProbe(
     const result = spawnSync(executable, [...prefixArgs, JSON.stringify(candidate)], {
       stdio: 'ignore',
       timeout: 2_000,
+      // Same reasoning as `isEndpointAvailable`'s identical option, immediately above.
+      killSignal: 'SIGKILL',
     });
     return result.status === 0 && result.signal === null && result.error === undefined;
   };
