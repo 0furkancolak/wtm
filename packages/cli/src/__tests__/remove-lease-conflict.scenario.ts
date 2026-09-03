@@ -16,6 +16,7 @@ import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listGitWorktrees, SQLiteStateStore } from '@wtm/core';
 import { createGitSafetyFixture } from '../../../testkit/src/git-fixture';
+import { runScenario } from '../../../testkit/src/scenario-child';
 
 interface ChildReport {
   exitCode: number;
@@ -108,10 +109,7 @@ function spawnChild(args: readonly string[], env: Record<string, string>): Promi
 }
 
 function runChildSync(args: readonly string[]): ChildReport {
-  const result = spawnSync('node', ['--import', 'tsx', childPath, ...args], {
-    encoding: 'utf8',
-    timeout: 60_000,
-  });
+  const result = runScenario('node', ['--import', 'tsx', childPath, ...args], { timeoutMs: 60_000 });
   try {
     return JSON.parse(result.stdout) as ChildReport;
   } catch {

@@ -1,9 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { filesystemMigrationAssets } from '../assets';
-import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
+import { runScenario as runScenarioChild } from '../../../../testkit/src/scenario-child';
 
 const migrationFiles = [
   '001-initial.sql',
@@ -20,7 +19,7 @@ const migrationFiles = [
 const scenarioPath = fileURLToPath(new URL('./assets.scenario.ts', import.meta.url));
 
 function runScenario(): Record<string, unknown> {
-  const result = spawnSync('node', ['--import', 'tsx', scenarioPath], { timeout: scenarioTimeoutMs, encoding: 'utf8' });
+  const result = runScenarioChild('node', ['--import', 'tsx', scenarioPath]);
 
   expect(result.status, result.stderr || result.stdout).toBe(0);
   expect(result.stderr).toBe('');

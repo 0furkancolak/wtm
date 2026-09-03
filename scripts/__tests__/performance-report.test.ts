@@ -2,8 +2,7 @@ import { expect, test } from 'bun:test';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { scenarioTimeoutMs } from '../../packages/testkit/src/scenario-child';
+import { runScenario } from '../../packages/testkit/src/scenario-child';
 
 // This drives the whole performance harness — all three scenarios, end to end — and the ordinary
 // suite has already run each of them individually. That duplicate is 45 seconds on a fast machine
@@ -16,7 +15,7 @@ test.skipIf(!performanceSuite)('performance report is machine-readable and recor
   const root = await mkdtemp(join(tmpdir(), 'wtm-perf-report-'));
   try {
     const outputPath = join(root, 'performance.json');
-    const result = spawnSync('node', ['--import', 'tsx', 'scripts/performance-report.ts', outputPath], { timeout: scenarioTimeoutMs, encoding: 'utf8' });
+    const result = runScenario('node', ['--import', 'tsx', 'scripts/performance-report.ts', outputPath]);
     // The script reports a blocked budget by exiting 1, and writes the report either way. What is
     // under test is the report the release reads, not whether the machine running the suite is
     // fast enough — a shared CI runner blocks budgets that the same commit met minutes earlier.

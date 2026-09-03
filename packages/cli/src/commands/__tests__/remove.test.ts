@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
 import { access, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { jsonEnvelopeSchema } from '@wtm/protocol';
@@ -7,7 +6,7 @@ import { listGitWorktrees } from '@wtm/core';
 import type { GitSafetyFixture } from '../../../../testkit/src/git-fixture';
 import { createGitSafetyFixture } from '../../../../testkit/src/git-fixture';
 import { runRemoveCommand } from '../remove';
-import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
+import { runScenario } from '../../../../testkit/src/scenario-child';
 
 const fixtures: GitSafetyFixture[] = [];
 const malformedScenarioPath = fileURLToPath(new URL('./remove-malformed.scenario.ts', import.meta.url));
@@ -182,9 +181,8 @@ describe('runRemoveCommand', () => {
   });
 
   test('maps malformed porcelain to degraded JSON and preserves the worktree', () => {
-    const result = spawnSync('node', ['--import', 'tsx', malformedScenarioPath], { timeout: scenarioTimeoutMs, encoding: 'utf8' });
+    const result = runScenario('node', ['--import', 'tsx', malformedScenarioPath]);
     expect(result.status, result.stderr || result.stdout).toBe(0);
-    expect(result.signal).toBeNull();
     expect(result.stderr).toBe('');
     const scenario = JSON.parse(result.stdout) as Record<string, unknown>;
 

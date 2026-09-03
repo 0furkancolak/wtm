@@ -1,11 +1,11 @@
 import { expect, test } from 'bun:test';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isolatedHomeEnvironment } from '../../../testkit/src/isolated-home';
-import { scenarioTimeoutMs } from '../../../testkit/src/scenario-child';
+import { runScenario, scenarioTimeoutMs } from '../../../testkit/src/scenario-child';
 
 /**
  * The README quick start is the first thing anyone runs, and until this test existed it did not
@@ -39,9 +39,7 @@ test('every command in the README quick start succeeds in a clean workspace', ()
 
     for (const command of rest) {
       expect(command, 'this test can only follow one `cd`, the first line').not.toMatch(/^cd(\s|$)/);
-      const result = spawnSync('/bin/sh', ['-c', command], {
-        cwd: workspace, env: environment, encoding: 'utf8', timeout: scenarioTimeoutMs,
-      });
+      const result = runScenario('/bin/sh', ['-c', command], { cwd: workspace, env: environment });
       expect(result.status, `${command}\n${result.stderr || ''}${result.stdout || ''}`).toBe(0);
     }
   } finally {

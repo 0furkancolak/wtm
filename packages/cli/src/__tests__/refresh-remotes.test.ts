@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
 import { access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,7 +6,7 @@ import { jsonEnvelopeSchema } from '@wtm/protocol';
 import type { JsonEnvelope } from '@wtm/protocol';
 import type { GitSafetyFixture } from '../../../testkit/src/git-fixture';
 import { createGitSafetyFixture } from '../../../testkit/src/git-fixture';
-import { scenarioTimeoutMs } from '../../../testkit/src/scenario-child';
+import { runScenario } from '../../../testkit/src/scenario-child';
 import { runCli } from '../main';
 
 const fixtures: GitSafetyFixture[] = [];
@@ -92,13 +91,9 @@ describe('--refresh-remotes', () => {
   });
 
   test('fetches once per repository rather than once per worktree', () => {
-    const result = spawnSync('node', ['--import', 'tsx', fetchCountScenarioPath], {
-      timeout: scenarioTimeoutMs,
-      encoding: 'utf8',
-    });
+    const result = runScenario('node', ['--import', 'tsx', fetchCountScenarioPath]);
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
-    expect(result.signal).toBeNull();
     expect(JSON.parse(result.stdout)).toEqual({
       repositories: 3,
       worktreesPerRepository: 3,

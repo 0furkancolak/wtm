@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ import type { PlatformRuntime } from '@wtm/platform/ports';
 import { DaemonSocketPathTooLongError, daemonSocketFileName } from '@wtm/platform/socket';
 import { isolatedHomeEnvironment } from '../../../testkit/src/isolated-home';
 import { MemoryManagedProcessStore } from '../../../testkit/src/managed-process-store';
+import { runScenario } from '../../../testkit/src/scenario-child';
 import {
   inspectProcessGroup,
   inspectProcessIdentity,
@@ -27,13 +28,11 @@ describe('production daemon composition', () => {
   test('runs CLI start, ps, and stop through a real temporary socket and SQLite store', () => {
     const isolated = isolatedHome();
     try {
-      const result = spawnSync('node', ['--import', 'tsx', scenarioPath], {
-        encoding: 'utf8',
-        timeout: 20_000,
+      const result = runScenario('node', ['--import', 'tsx', scenarioPath], {
+        timeoutMs: 20_000,
         env: isolated.env,
       });
       expect(result.status, result.stderr || result.stdout).toBe(0);
-      expect(result.signal).toBeNull();
       expect(result.stderr).toBe('');
       expect(JSON.parse(result.stdout)).toEqual({
         startExit: 0,
@@ -58,9 +57,8 @@ describe('production daemon composition', () => {
   test('default CLI client reaches the documented HOME socket without runtime injection', () => {
     const isolated = isolatedHome();
     try {
-      const result = spawnSync('node', ['--import', 'tsx', scenarioPath, 'default-client'], {
-        encoding: 'utf8',
-        timeout: 20_000,
+      const result = runScenario('node', ['--import', 'tsx', scenarioPath, 'default-client'], {
+        timeoutMs: 20_000,
         env: isolated.env,
       });
       expect(result.status, result.stderr || result.stdout).toBe(0);
@@ -113,8 +111,8 @@ describe('production daemon composition', () => {
   test('uses the private custom database parent rather than only the data root', () => {
     const isolated = isolatedHome();
     try {
-      const result = spawnSync('node', ['--import', 'tsx', privateDatabaseScenarioPath], {
-        encoding: 'utf8', timeout: 20_000, env: isolated.env,
+      const result = runScenario('node', ['--import', 'tsx', privateDatabaseScenarioPath], {
+        timeoutMs: 20_000, env: isolated.env,
       });
       expect(result.status, result.stderr || result.stdout).toBe(0);
       expect(result.stderr).toBe('');

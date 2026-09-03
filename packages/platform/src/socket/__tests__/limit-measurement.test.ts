@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
+import { runScenario } from '../../../../testkit/src/scenario-child';
 import type { PlatformId } from '../../ports';
 import { supportedPlatforms } from '../../select';
 import { socketAddressPolicyFor } from '../index';
@@ -72,15 +71,8 @@ let memoized: Report | undefined;
  */
 function measure(): Report {
   if (memoized !== undefined) return memoized;
-  const result = spawnSync('node', ['--import', 'tsx', childPath], {
-    timeout: scenarioTimeoutMs,
-    encoding: 'utf8',
-  });
-  if (result.error !== undefined) {
-    throw new Error(`could not run the measurement child with node: ${String(result.error)}`);
-  }
+  const result = runScenario('node', ['--import', 'tsx', childPath]);
   expect(result.status, result.stderr || result.stdout).toBe(0);
-  expect(result.signal).toBeNull();
   expect(result.stderr).toBe('');
   let report: Report;
   try {

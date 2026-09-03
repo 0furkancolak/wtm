@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { DaemonStateStore } from '@wtm/core';
 import { UnsupportedPlatformError } from '@wtm/platform';
@@ -7,16 +6,13 @@ import { protocolVersion } from '@wtm/protocol';
 import { WtmDaemon, assertSupportedRuntime, watchRetryDelayMs } from '../main';
 import type { IpcRequestHandler } from '../server';
 import type { ReconcileSignal, ReconcilerClock } from '../reconciler-queue';
+import { runScenario as runScenarioChild } from '../../../testkit/src/scenario-child';
 
 const scenarioPath = fileURLToPath(new URL('./main.scenario.ts', import.meta.url));
 
 function runScenario(name: string): Record<string, unknown> {
-  const result = spawnSync('node', ['--import', 'tsx', scenarioPath, name], {
-    encoding: 'utf8',
-    timeout: 15_000,
-  });
+  const result = runScenarioChild('node', ['--import', 'tsx', scenarioPath, name], { timeoutMs: 15_000 });
   expect(result.status, result.stderr || result.stdout).toBe(0);
-  expect(result.signal).toBeNull();
   expect(result.stderr).toBe('');
   return JSON.parse(result.stdout) as Record<string, unknown>;
 }

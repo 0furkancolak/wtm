@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
 import { appendFile, chmod, lstat, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,7 +7,7 @@ import type { AdapterMetadataResponse } from '@wtm/protocol';
 import { createFakeAdapter, type FakeAdapter } from '../../../../testkit/src/fake-adapter';
 import { developmentRuntimeInvocation } from '../../../../testkit/src/runtime-invocation';
 import { createAdapterTrustStore, trustRepositoryAdapter } from '../adapter-trust';
-import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
+import { runScenario } from '../../../../testkit/src/scenario-child';
 import {
   ExternalAdapterError,
   invokeExternalAdapter as invokeAdapterDirectly,
@@ -311,9 +310,8 @@ describe('external adapter bridge', () => {
     const attackerTmp = await mkdtemp(join(tmpdir(), 'wtm-attacker-tmp-'));
 
     try {
-      const result = spawnSync('node', ['--import', 'tsx', descriptorAuditScenarioPath], {
-        timeout: scenarioTimeoutMs,
-        encoding: 'utf8', env: { ...process.env, TMPDIR: attackerTmp },
+      const result = runScenario('node', ['--import', 'tsx', descriptorAuditScenarioPath], {
+        env: { ...process.env, TMPDIR: attackerTmp },
       });
       expect(result.status, result.stderr || result.stdout).toBe(0);
       expect(result.stderr).toBe('');

@@ -1,15 +1,12 @@
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'bun:test';
+import { runScenario } from '../../../testkit/src/scenario-child';
 
 const scenarioPath = fileURLToPath(new URL('./task-resolution.scenario.ts', import.meta.url));
 
 describe('worktree runtime resolution', () => {
   test('resolves one answer for a worktree in a workspace of several repositories', () => {
-    const result = spawnSync('node', ['--import', 'tsx', scenarioPath], {
-      encoding: 'utf8',
-      timeout: 30_000,
-    });
+    const result = runScenario('node', ['--import', 'tsx', scenarioPath], { timeoutMs: 30_000 });
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.stderr).toBe('');
 

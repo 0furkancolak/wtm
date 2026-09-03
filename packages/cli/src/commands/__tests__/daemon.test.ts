@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -25,7 +25,7 @@ import {
 import { exitCodeForError } from '../../exit-codes';
 import { createCli, runCli } from '../../main';
 import { isolatedHomeEnvironment } from '../../../../testkit/src/isolated-home';
-import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
+import { runScenario, scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
 
 const serveScenarioPath = fileURLToPath(new URL('./daemon-serve.scenario.ts', import.meta.url));
 const serveFailureScenarioPath = fileURLToPath(new URL('./daemon-serve-failure.scenario.ts', import.meta.url));
@@ -559,12 +559,10 @@ describe('daemon failure output', () => {
   test('a start failure tells the user what happened without a frame, and keeps the frames in the log', async () => {
     const home = await mkdtemp('/tmp/wtm-daemon-failure-');
     try {
-      const result = spawnSync('node', ['--import', 'tsx', serveFailureScenarioPath], {
+      const result = runScenario('node', ['--import', 'tsx', serveFailureScenarioPath], {
         // `HOME` alone is not isolation: on Linux the ambient `XDG_*` variables survive the spread
         // and send the child's state, config and socket back out to the runner's own directories.
         env: { ...process.env, ...isolatedHomeEnvironment(home) },
-        timeout: scenarioTimeoutMs,
-        encoding: 'utf8',
       });
 
       expect(result.status).not.toBe(0);
@@ -594,10 +592,8 @@ describe('daemon failure output', () => {
     const fixture = await overLongHome();
     const measurement = measureDaemonSocketPath(hostSocketPathFor(fixture.home), hostLimitBytes);
     try {
-      const result = spawnSync('node', ['--import', 'tsx', serveScenarioPath], {
+      const result = runScenario('node', ['--import', 'tsx', serveScenarioPath], {
         env: { ...process.env, ...isolatedHomeEnvironment(fixture.home) },
-        timeout: scenarioTimeoutMs,
-        encoding: 'utf8',
       });
 
       // Exit 2, not 1: the daemon cannot run here until the user changes something.

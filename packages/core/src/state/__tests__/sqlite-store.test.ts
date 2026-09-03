@@ -1,18 +1,13 @@
 import { describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
+import { runScenario as runScenarioChild } from '../../../../testkit/src/scenario-child';
 
 const scenarioPath = fileURLToPath(new URL('./sqlite-store.scenario.ts', import.meta.url));
 
 function runScenario(name: string): Record<string, unknown> {
-  const result = spawnSync('node', ['--import', 'tsx', scenarioPath, name], {
-    timeout: scenarioTimeoutMs,
-    encoding: 'utf8',
-  });
+  const result = runScenarioChild('node', ['--import', 'tsx', scenarioPath, name]);
 
   expect(result.status, result.stderr || result.stdout).toBe(0);
-  expect(result.signal).toBeNull();
   expect(result.stderr).toBe('');
   return JSON.parse(result.stdout) as Record<string, unknown>;
 }

@@ -1,19 +1,19 @@
-import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { runScenario } from './packages/testkit/src/scenario-child';
 
 interface Measurement { status: 'pass' | 'warning' | 'blocker' }
 
-const scale = runScenario('packages/core/src/state/__tests__/workspace-scale.scenario.ts') as {
+const scale = runMeasurement('packages/core/src/state/__tests__/workspace-scale.scenario.ts') as {
   fixture: { repositories: number; worktrees: number; runningTasks: number };
   warmGlobalStatus: Measurement;
   singleRepositoryReconciliation: Measurement;
 };
-const idle = runScenario('packages/daemon/src/__tests__/idle-daemon.scenario.ts') as {
+const idle = runMeasurement('packages/daemon/src/__tests__/idle-daemon.scenario.ts') as {
   cpuP95: Measurement;
   rss: Measurement;
 };
-const sourceEditStorm = runScenario('packages/daemon/src/__tests__/source-edit-storm.scenario.ts') as Measurement & {
+const sourceEditStorm = runMeasurement('packages/daemon/src/__tests__/source-edit-storm.scenario.ts') as Measurement & {
   path: string; edits: number; scheduledSignals: number; adapterDiscoveries: number; adapterSpawns: number;
 };
 const measurements = [scale.warmGlobalStatus, scale.singleRepositoryReconciliation, idle.cpuP95, idle.rss, sourceEditStorm];
@@ -37,10 +37,8 @@ await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o60
 process.stdout.write(`${outputPath}\n`);
 if (report.release.blockers > 0) process.exitCode = 1;
 
-function runScenario(path: string): unknown {
-  // `spawnSync` blocks, so a scenario that never exits stops this script for as long as whatever
-  // is above it will wait — in CI that was forty minutes of a job doing nothing.
-  const result = spawnSync('node', ['--import', 'tsx', path], { timeout: 120_000, encoding: 'utf8' });
+function runMeasurement(path: string): unknown {
+  const result = runScenario('node', ['--import', 'tsx', path]);
   if (result.status !== 0) throw new Error(result.stderr || result.stdout || `Scenario failed: ${path}`);
   return JSON.parse(result.stdout);
 }

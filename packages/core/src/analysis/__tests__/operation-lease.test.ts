@@ -1,7 +1,6 @@
 import { expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
+import { runScenario } from '../../../../testkit/src/scenario-child';
 import {
   defaultOperationLeaseTtlMs,
   RepositoryOperationConflictError,
@@ -505,13 +504,9 @@ test('refuses a lease row whose PID is not a positive integer instead of measuri
 const scenarioPath = fileURLToPath(new URL('./operation-lease.scenario.ts', import.meta.url));
 
 test('takes, journals, releases, refuses and adopts a lease in a real SQLite state store', () => {
-  const result = spawnSync('node', ['--import', 'tsx', scenarioPath, 'sqlite-operation-lease'], {
-    timeout: scenarioTimeoutMs,
-    encoding: 'utf8',
-  });
+  const result = runScenario('node', ['--import', 'tsx', scenarioPath, 'sqlite-operation-lease']);
 
   expect(result.status, result.stderr || result.stdout).toBe(0);
-  expect(result.signal).toBeNull();
   expect(result.stderr).toBe('');
   expect(JSON.parse(result.stdout) as Record<string, unknown>).toEqual({
     bodySawOwnLease: true,

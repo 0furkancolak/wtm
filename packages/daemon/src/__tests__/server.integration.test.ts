@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { chmod, lstat, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { createConnection, createServer, type Socket } from 'node:net';
@@ -15,6 +15,7 @@ import {
   type IpcRequest,
   type JsonEnvelope,
 } from '@wtm/protocol';
+import { runScenario } from '../../../testkit/src/scenario-child';
 
 const serverModule = await import('../server').catch(() => null);
 const clientModule = await import('../../../cli/src/client').catch(() => null);
@@ -76,12 +77,10 @@ function runNodeCloseScenario(
   path: string,
   privatePath: string,
 ): Record<string, unknown> {
-  const result = spawnSync('node', ['--import', 'tsx', closeScenarioScript, scenario, path, privatePath], {
-    encoding: 'utf8',
-    timeout: 10_000,
+  const result = runScenario('node', ['--import', 'tsx', closeScenarioScript, scenario, path, privatePath], {
+    timeoutMs: 10_000,
   });
   expect(result.status, result.stderr || result.stdout).toBe(0);
-  expect(result.signal).toBeNull();
   expect(result.stderr).toBe('');
   return JSON.parse(result.stdout) as Record<string, unknown>;
 }

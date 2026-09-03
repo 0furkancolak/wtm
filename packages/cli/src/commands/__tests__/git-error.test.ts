@@ -1,9 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { GitCommandError, WorktreeAnalysisError } from '@wtm/core';
 import { wtmErrorCodeSchema } from '@wtm/protocol';
-import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
+import { runScenario, scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
 import { toGitSafetyError } from '../git-error';
 
 const driftScenarioPath = fileURLToPath(new URL('./git-error-drift.scenario.ts', import.meta.url));
@@ -12,12 +11,8 @@ describe('toGitSafetyError', () => {
   test('reports a code the schema gained after this file was written under that code', () => {
     // `process.execPath` is the bun binary that runs this suite; the scenario needs Bun's
     // `mock.module`, and needs its own process so the mocked registry cannot outlive it.
-    const result = spawnSync(process.execPath, ['run', driftScenarioPath], {
-      timeout: scenarioTimeoutMs,
-      encoding: 'utf8',
-    });
+    const result = runScenario(process.execPath, ['run', driftScenarioPath]);
     expect(result.status, result.stderr || result.stdout).toBe(0);
-    expect(result.signal).toBeNull();
     const scenario = JSON.parse(result.stdout) as { futureCode: string; reported: { code: string } };
 
     // Not `GIT_REPOSITORY_DEGRADED`: a code the catalogue knows must keep its own exit code.

@@ -1,16 +1,15 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
 import { access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { jsonEnvelopeSchema, type JsonEnvelope } from '@wtm/protocol';
 import type { GitSafetyFixture } from '../../../testkit/src/git-fixture';
 import { createGitSafetyFixture } from '../../../testkit/src/git-fixture';
-import { scenarioTimeoutMs } from '../../../testkit/src/scenario-child';
+import { runScenario, scenarioTimeoutMs } from '../../../testkit/src/scenario-child';
 import { runRemoveCommand } from '../commands/remove';
 import { runCli } from '../main';
 
 /**
- * Every scenario-driven case below blocks on a `spawnSync` bounded by `scenarioTimeoutMs`, so the
+ * Every scenario-driven case below blocks on `runScenario`, bounded by `scenarioTimeoutMs`, so the
  * test budget has to be the larger of the two. Leaving it at the suite default meant a 30 s test
  * wrapped around a 120 s child: on a loaded machine the runner gave up first and reported a
  * timeout for a scenario that was still working.
@@ -27,13 +26,8 @@ afterEach(async () => {
 });
 
 function runLifecycleCase(name: string): Record<string, any> {
-  const result = spawnSync('node', ['--import', 'tsx', lifecycleScenarioPath, name], {
-    timeout: scenarioTimeoutMs,
-    encoding: 'utf8',
-  });
-
+  const result = runScenario('node', ['--import', 'tsx', lifecycleScenarioPath, name]);
   expect(result.status, result.stderr || result.stdout).toBe(0);
-  expect(result.signal).toBeNull();
   return JSON.parse(result.stdout) as Record<string, any>;
 }
 
@@ -144,13 +138,9 @@ describe('runtime-aware wtm remove', () => {
   });
 
   test('lets exactly one of two removing processes hold the repository', () => {
-    const result = spawnSync('node', ['--import', 'tsx', conflictScenarioPath], {
-      timeout: scenarioTimeoutMs,
-      encoding: 'utf8',
-    });
+    const result = runScenario('node', ['--import', 'tsx', conflictScenarioPath]);
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
-    expect(result.signal).toBeNull();
     expect(JSON.parse(result.stdout)).toEqual({
       holderExitCode: 0,
       holderOk: true,
@@ -166,13 +156,9 @@ describe('runtime-aware wtm remove', () => {
   }, scenarioTestTimeoutMs);
 
   test('leaves an adoptable lease when it is killed mid-cleanup, and finishes it under --resume', () => {
-    const result = spawnSync('node', ['--import', 'tsx', resumeScenarioPath], {
-      timeout: scenarioTimeoutMs,
-      encoding: 'utf8',
-    });
+    const result = runScenario('node', ['--import', 'tsx', resumeScenarioPath]);
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
-    expect(result.signal).toBeNull();
     expect(JSON.parse(result.stdout)).toEqual({
       abandonedStage: 'stop-processes',
       abandonedWorktreeIntact: true,

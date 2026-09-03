@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { scenarioTimeoutMs } from '../../../testkit/src/scenario-child';
+import { runScenario, scenarioTimeoutMs } from '../../../testkit/src/scenario-child';
 
 const cliEntry = fileURLToPath(new URL('../bin.ts', import.meta.url));
 
@@ -29,10 +28,10 @@ const throwingStdout = `data:text/javascript,${encodeURIComponent([
 
 describe('CLI entry point', () => {
   test('an unexpected failure escaping runCli is one line, not a trace', () => {
-    const result = spawnSync(
+    const result = runScenario(
       'node',
       ['--import', 'tsx', '--import', throwingStdout, cliEntry, '--version'],
-      { timeout: scenarioTimeoutMs, encoding: 'utf8', input: '' },
+      { input: '' },
     );
 
     expect(result.status).not.toBe(0);
@@ -47,11 +46,7 @@ describe('CLI entry point', () => {
   }, scenarioTimeoutMs);
 
   test('a normal invocation is untouched by the catch-all', () => {
-    const result = spawnSync('node', ['--import', 'tsx', cliEntry, '--version'], {
-      timeout: scenarioTimeoutMs,
-      encoding: 'utf8',
-      input: '',
-    });
+    const result = runScenario('node', ['--import', 'tsx', cliEntry, '--version'], { input: '' });
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe('');

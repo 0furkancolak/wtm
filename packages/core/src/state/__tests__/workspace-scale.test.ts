@@ -1,13 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
+import { runScenario } from '../../../../testkit/src/scenario-child';
 
 const scenarioPath = fileURLToPath(new URL('./workspace-scale.scenario.ts', import.meta.url));
 
 describe('release scale fixture', () => {
   test('generates ten repositories, one hundred worktrees, and three running tasks', () => {
-    const result = spawnSync('node', ['--import', 'tsx', scenarioPath], { timeout: scenarioTimeoutMs, encoding: 'utf8' });
+    const result = runScenario('node', ['--import', 'tsx', scenarioPath]);
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.stderr).toBe('');
     const report = JSON.parse(result.stdout);
