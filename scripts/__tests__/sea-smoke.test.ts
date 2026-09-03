@@ -249,8 +249,14 @@ describe.skipIf(!existsSync(executable))('standalone executable', () => {
   });
 
   test('ships a stripped runtime', () => {
-    // The pinned Node version fixes the runtime size, so the bound only moves when a build regresses.
-    expect(statSync(executable).size).toBeLessThan(110_000_000);
+    // The pinned Node version fixes the runtime size, so the bound only moves when a build
+    // regresses — or when reviewed new functionality lands. Raised 2026-09-03 (Increment D1,
+    // the Windows trust-and-transport seam) after the added FileTrustPolicy/Windows-backend
+    // code pushed the Linux SEA binary to 110,037,760 bytes, just over the previous 110MB bound;
+    // the darwin arm64 binary measured on this host stayed at 97,667,584 bytes. Raised with
+    // headroom rather than nudged to the exact new size, so the next small, legitimate addition
+    // does not immediately retrip it.
+    expect(statSync(executable).size).toBeLessThan(115_000_000);
   });
 
   test('embeds its assets instead of shipping a native SQLite addon', () => {
