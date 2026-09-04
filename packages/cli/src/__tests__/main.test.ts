@@ -96,6 +96,7 @@ describe('Commander CLI', () => {
       'status', 'doctor', 'explain', 'plan', 'env', 'ports',
       'resolve', 'run', 'analyze', 'remove', 'start', 'stop', 'restart', 'ps', 'logs', 'exec',
       'daemon', 'disk', 'gc', 'forget', 'adapter', 'init', 'detect', 'skill',
+      'completion', '__complete',
     ]);
   });
 
