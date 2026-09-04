@@ -1,3 +1,5 @@
+import { sep } from 'node:path';
+
 export interface GitWorktreeRecord {
   path: string;
   head: string | null;
@@ -9,6 +11,22 @@ export interface GitWorktreeRecord {
 }
 
 const decoder = new TextDecoder();
+
+/**
+ * Git's own plumbing commands (`worktree list --porcelain`, `rev-parse --show-toplevel`,
+ * `rev-parse --git-common-dir`, ...) always print paths with forward slashes on stdout, even on
+ * Windows, regardless of what separator the host filesystem actually uses. Node's own path
+ * construction (`path.join`, `mkdtemp`, `path.resolve`, ...) uses backslashes there. Anywhere a
+ * path captured from git's stdout is later compared (`===`, `toEqual`) against or joined with a
+ * Node-native path, that mismatch is silent — so every such path is normalized once, here at the
+ * point it is parsed out of git's output, rather than patched at each downstream comparison site.
+ *
+ * A no-op on darwin/linux by construction: `sep` is already `/` there, so the branch that does the
+ * replacement never runs and the string is returned unchanged.
+ */
+export function toNativeGitPath(path: string): string {
+  return sep === '/' ? path : path.replaceAll('/', sep);
+}
 
 export function parseGitWorktreePorcelain(output: Uint8Array): GitWorktreeRecord[] {
   const records: GitWorktreeRecord[] = [];
@@ -36,7 +54,7 @@ export function parseGitWorktreePorcelain(output: Uint8Array): GitWorktreeRecord
     if (key === 'worktree') {
       finishRecord();
       current = {
-        path: value,
+        path: toNativeGitPath(value),
         head: null,
         branch: null,
         detached: false,

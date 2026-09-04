@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { parseGitWorktreePorcelain } from './worktree-parser';
+import { parseGitWorktreePorcelain, toNativeGitPath } from './worktree-parser';
 import type { GitWorktreeRecord } from './worktree-parser';
 
 export interface GitRepositoryIdentity {
@@ -129,7 +129,7 @@ export async function readGitRepositoryIdentity(repoPath: string): Promise<GitRe
       stderr: 'git rev-parse returned incomplete repository identity',
     });
   }
-  return { commonGitDir, topLevel };
+  return { commonGitDir: toNativeGitPath(commonGitDir), topLevel: toNativeGitPath(topLevel) };
 }
 
 export async function readGitCommonDirectory(repoPath: string): Promise<string> {
@@ -144,7 +144,7 @@ export async function readGitCommonDirectory(repoPath: string): Promise<string> 
       stderr: 'git rev-parse returned an invalid common Git directory',
     });
   }
-  return output;
+  return toNativeGitPath(output);
 }
 
 export async function readGitRemoteOrigin(repoPath: string): Promise<string | null> {
