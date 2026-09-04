@@ -8,8 +8,8 @@
  * a hope about it. Racing two children and asserting the outcome set would pass just as happily
  * when the two never overlapped at all.
  */
-import { spawn, spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -17,6 +17,8 @@ import { fileURLToPath } from 'node:url';
 import { listGitWorktrees, SQLiteStateStore } from '@wtm/core';
 import { createGitSafetyFixture } from '../../../testkit/src/git-fixture';
 import { runScenario } from '../../../testkit/src/scenario-child';
+import { writeExecutableFixture } from '../../../testkit/src/executable-fixture';
+import { resolveRealExecutablePath } from '../../../testkit/src/real-executable';
 
 interface ChildReport {
   exitCode: number;
@@ -124,11 +126,9 @@ function runChildSync(args: readonly string[]): ChildReport {
  * wants it held.
  */
 async function installBlockingGit(directory: string, markerPath: string, releasePath: string): Promise<void> {
-  const realGit = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
+  const realGit = resolveRealExecutablePath('git');
   await mkdir(directory, { recursive: true });
-  const shim = join(directory, 'git');
-  await writeFile(shim, `#!/usr/bin/env node
-const { existsSync, writeFileSync } = require('node:fs');
+  await writeExecutableFixture(join(directory, 'git'), `const { existsSync, writeFileSync } = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const args = process.argv.slice(2);
 if (args.includes('status')) {
@@ -141,8 +141,7 @@ const result = spawnSync(${JSON.stringify(realGit)}, args, { env: process.env, s
 process.stdout.write(result.stdout ?? Buffer.alloc(0));
 process.stderr.write(result.stderr ?? Buffer.alloc(0));
 process.exit(result.status ?? 1);
-`, { flag: 'wx' });
-  await chmod(shim, 0o755);
+`);
 }
 
 async function waitFor(path: string, timeoutMs: number): Promise<void> {

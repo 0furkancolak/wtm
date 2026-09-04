@@ -12,15 +12,18 @@ jobs:
     # signing behave differently on x64. Building only on Apple silicon left the other half of the
     # release unproven until a tag tried to publish it.
     #
-    # The linux leg runs the same list, in the same order, deliberately. Increment C1 wrote a whole
-    # Linux backend that no kernel had ever executed, and the failure mode of that kind of work is
-    # a second green column that proves less than the first: a leg that skipped the standalone
-    # build, or the end-to-end workflow, or the tests that spawn and supervise real processes,
-    # would report the same word for a much weaker claim. Where linux genuinely cannot run
-    # something, the spec says so in writing rather than the matrix saying it in silence.
+    # The linux and win32 legs run the same list, in the same order, deliberately. Increments C1
+    # and D1/D2 each wrote a whole backend that no kernel of its own had ever executed, and the
+    # failure mode of that kind of work is a second (or third) green column that proves less than
+    # the first: a leg that skipped the standalone build, or the end-to-end workflow, or the tests
+    # that spawn and supervise real processes, would report the same word for a much weaker claim.
+    # Where a platform genuinely cannot run something, the spec says so in writing rather than the
+    # matrix saying it in silence — the Windows increment's own spec names the standalone
+    # executable's missing strip and code signing as exactly that kind of documented gap, not a
+    # silently weaker claim.
     #
     # `platform` is in the job name because `arch` alone no longer identifies a leg: x64 now names
-    # both macos-15-intel and ubuntu.
+    # macos-15-intel, ubuntu, and windows-latest all at once.
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -35,6 +38,9 @@ jobs:
           - platform: linux
             arch: x64
             runner: ubuntu-latest
+          - platform: win32
+            arch: x64
+            runner: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

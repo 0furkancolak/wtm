@@ -15,7 +15,11 @@ import type {
 } from '@wtm/core';
 import { selectPlatformRuntime } from '@wtm/platform';
 import type { ProcessPlatform } from '@wtm/platform/ports';
-import { createDarwinProcessPlatform, createLinuxProcessPlatform } from '@wtm/platform/process';
+import {
+  createDarwinProcessPlatform,
+  createLinuxProcessPlatform,
+  createWindowsProcessPlatform,
+} from '@wtm/platform/process';
 import { developmentRuntimeInvocation } from '../../../testkit/src/runtime-invocation';
 import { ManagedLogStore } from '../logs';
 import {
@@ -41,8 +45,33 @@ function createSupervisor(options: ManagedProcessSupervisorOptions): ManagedProc
 function hostProcessBackend(): ProcessPlatform {
   if (process.platform === 'darwin') return createDarwinProcessPlatform();
   if (process.platform === 'linux') return createLinuxProcessPlatform();
+  if (process.platform === 'win32') return createWindowsProcessPlatform();
   throw new Error(`no @wtm/platform process backend for ${process.platform}`);
 }
+
+/**
+ * `process.kill(-pgid, signal)` is the POSIX convention for signaling a whole process group (a
+ * negative pid); it does not mean anything on Windows. Every place in this file that needs to
+ * terminate a fixture's process group goes through this instead, which delegates to the host's own
+ * `signalProcessGroup` (POSIX negates the pgid itself; Windows shells out to `taskkill /T`). Both
+ * backends normalize "already gone" to the same `code: 'ESRCH'` that `isNoSuchProcess` below checks
+ * for, so call sites that already catch and inspect that code keep working unchanged.
+ */
+function hostSignalProcessGroup(pgid: number, signal: NodeJS.Signals): void {
+  hostProcessBackend().signalProcessGroup(pgid, signal);
+}
+
+/**
+ * Stand-ins for `/bin/sleep 30` and `/usr/bin/true`: those are POSIX-only paths that simply do not
+ * exist on Windows, so any test that spawned them outright would fail with ENOENT there. Spawning
+ * Node itself instead needs no shell and no external binary, and Node is the one thing every leg of
+ * this test (darwin/linux/win32) is already guaranteed to have. `process.execPath` is *not* used
+ * here even though it looks more pinned: under `bun test` it resolves to the `bun` binary, not
+ * Node, and `bun -e ''` prints Bun's own help text instead of doing nothing — so this spawns `node`
+ * by name via PATH, the same way every other Node-spawning `argv` in this file already does.
+ */
+const longRunningArgv = ['node', '-e', 'setInterval(() => {}, 1 << 30);'];
+const immediateExitArgv = ['node', '-e', ''];
 
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
@@ -66,7 +95,7 @@ async function setup(gracePeriodMs = 1_000) {
       const identity = await inspectProcessIdentity(record.pid);
       if (identity !== null && identityMatches(record, identity)) {
         try {
-          process.kill(-record.pgid, 'SIGKILL');
+          hostSignalProcessGroup(record.pgid, 'SIGKILL');
           killedGroups.add(record.pgid);
         } catch (error) {
           if (!isNoSuchProcess(error)) throw error;
@@ -280,7 +309,8 @@ describe('the daemon default process readers are this host\'s platform port', ()
   });
 
   test('report a reaped process as absent, not as a failure', async () => {
-    const child = spawn('/usr/bin/true', [], { stdio: 'ignore' });
+    // `/usr/bin/true` doesn't exist on Windows; `immediateExitArgv` is the portable stand-in.
+    const child = spawn(immediateExitArgv[0] as string, immediateExitArgv.slice(1), { stdio: 'ignore' });
     const pid = child.pid as number;
     await new Promise<void>((resolve) => { child.on('exit', () => { resolve(); }); });
     expect(await inspectProcess(pid)).toEqual({ status: 'absent' });
@@ -333,7 +363,7 @@ describe('ManagedProcessSupervisor', () => {
     });
     cleanups.push(async () => {
       const current = await inspectProcessIdentity(actual.pid);
-      if (current !== null && sameIdentity(actual, current)) process.kill(-actual.pgid, 'SIGKILL');
+      if (current !== null && sameIdentity(actual, current)) hostSignalProcessGroup(actual.pgid, 'SIGKILL');
     });
 
     const stopped = await supervisor.stop({ worktreeId: worktree.id, taskName: 'stale' });
@@ -377,13 +407,17 @@ describe('ManagedProcessSupervisor', () => {
         inspections += 1;
         return inspections <= 2 ? await inspectProcess(pid) : { status: 'failed', reason: 'PS_INJECTED' };
       },
-      signalProcessGroup: (pgid, signal) => { killedPgid = pgid; process.kill(-pgid, signal); },
+      signalProcessGroup: (pgid, signal) => { killedPgid = pgid; hostSignalProcessGroup(pgid, signal); },
     });
     cleanups.push(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
     const descendantMarker = join(root, 'create-descendant-launched');
     await expect(supervisor.start({
       worktreeId: 'worktree-1', taskName: 'create-fault',
-      argv: ['/bin/sh', '-c', `printf launched > '${descendantMarker}'; exec sleep 30`],
+      // A shell one-liner (`sh -c 'printf ...; exec sleep 30'`) doesn't exist on Windows; Node does
+      // the same job without a shell — write the marker synchronously, then keep running (in place,
+      // not as a child of this process) until signaled. Spawned as `'node'` by name rather than
+      // `process.execPath`, because under `bun test` the latter is the `bun` binary, not Node.
+      argv: ['node', '-e', `require('fs').writeFileSync(process.argv[1], 'launched'); setInterval(() => {}, 1 << 30);`, descendantMarker],
       cwd: root, env: process.env,
     })).rejects.toMatchObject({ code: 'RUNTIME_START_FAILED' });
 
@@ -409,7 +443,7 @@ describe('ManagedProcessSupervisor', () => {
       if (anchorPid > 0) {
         const identity = await inspectProcessIdentity(anchorPid);
         if (identity !== null && identity.pid === identity.pgid) {
-          try { process.kill(-identity.pgid, 'SIGKILL'); } catch (error) { if (!isNoSuchProcess(error)) throw error; }
+          try { hostSignalProcessGroup(identity.pgid, 'SIGKILL'); } catch (error) { if (!isNoSuchProcess(error)) throw error; }
         }
       }
       await supervisor.close();
@@ -418,7 +452,10 @@ describe('ManagedProcessSupervisor', () => {
     await expect(supervisor.start({
       worktreeId: worktree.id,
       taskName: 'preidentity',
-      argv: ['/bin/sh', '-c', `printf launched > '${marker}'`],
+      // Same portability concern as the `create-fault` case above: no shell, just Node writing the
+      // marker. This one never needs to survive past that write (the anchor refuses to launch it at
+      // all in this scenario), so unlike that case it doesn't also need to keep running afterward.
+      argv: ['node', '-e', `require('fs').writeFileSync(process.argv[1], 'launched');`, marker],
       cwd: root,
       env: process.env,
     })).rejects.toMatchObject({ code: 'RUNTIME_START_FAILED' });
@@ -470,13 +507,15 @@ describe('ManagedProcessSupervisor', () => {
       gracePeriodMs: 100,
       pollIntervalMs: 10,
       inspectProcess: async (pid) => { inspections += 1; return await inspectProcess(pid); },
-      signalProcessGroup: (pgid, signal) => { killedPgid = pgid; process.kill(-pgid, signal); },
+      signalProcessGroup: (pgid, signal) => { killedPgid = pgid; hostSignalProcessGroup(pgid, signal); },
     });
     cleanups.push(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
     const descendantMarker = join(root, 'update-descendant-launched');
     await expect(supervisor.start({
       worktreeId: 'worktree-1', taskName: 'update-fault',
-      argv: ['/bin/sh', '-c', `printf launched > '${descendantMarker}'; exec sleep 30`],
+      // Same portable stand-in as `create-fault` above: writes the marker, then keeps running until
+      // signaled, without depending on a shell or `sleep`.
+      argv: ['node', '-e', `require('fs').writeFileSync(process.argv[1], 'launched'); setInterval(() => {}, 1 << 30);`, descendantMarker],
       cwd: root, env: process.env,
     })).rejects.toMatchObject({ code: 'RUNTIME_START_FAILED' });
 
@@ -511,7 +550,7 @@ describe('ManagedProcessSupervisor', () => {
         const current = await inspectProcessIdentity(record.pid);
         if (current !== null && identityMatches(record, current)) {
           try {
-            process.kill(-record.pgid, 'SIGKILL');
+            hostSignalProcessGroup(record.pgid, 'SIGKILL');
             await waitFor(async () => (await inspectProcessGroup(record.pgid)).status === 'absent', 2_000);
           } catch (error) {
             if (!isNoSuchProcess(error)) throw error;
@@ -525,7 +564,7 @@ describe('ManagedProcessSupervisor', () => {
     await expect(supervisor.start({
       worktreeId: 'worktree-1',
       taskName: 'abort-refusal',
-      argv: ['/usr/bin/true'],
+      argv: immediateExitArgv,
       cwd: root,
       env: process.env,
     })).rejects.toMatchObject({ code: 'RUNTIME_START_FAILED', context: { reason: 'EPERM' } });
@@ -541,7 +580,7 @@ describe('ManagedProcessSupervisor', () => {
     const input = {
       worktreeId: worktree.id,
       taskName: 'restart-race',
-      argv: ['/bin/sleep', '30'],
+      argv: longRunningArgv,
       cwd: root,
       env: process.env,
     };
@@ -618,7 +657,7 @@ describe('ManagedProcessSupervisor', () => {
       for (const record of store.listManagedProcesses()) {
         const identity = await inspectProcessIdentity(record.pid);
         if (identity !== null && identityMatches(record, identity)) {
-          try { process.kill(-record.pgid, 'SIGKILL'); } catch (error) { if (!isNoSuchProcess(error)) throw error; }
+          try { hostSignalProcessGroup(record.pgid, 'SIGKILL'); } catch (error) { if (!isNoSuchProcess(error)) throw error; }
         }
       }
       await supervisor.close();
@@ -698,7 +737,7 @@ describe('ManagedProcessSupervisor', () => {
         await supervisor.stopRecord(started.record);
         await writeFile(`${opened.stdoutPath}.generation`, 'rotating-2-opened-repeat', { mode: 0o600 });
         await supervisor.start({
-          worktreeId: 'worktree-1', taskName, argv: ['/usr/bin/true'], cwd: root, env: process.env,
+          worktreeId: 'worktree-1', taskName, argv: immediateExitArgv, cwd: root, env: process.env,
         });
         expect(await Promise.all([
           opened.stdoutPath, `${opened.stdoutPath}.1`, `${opened.stdoutPath}.2`, `${opened.stdoutPath}.3`,
@@ -728,7 +767,7 @@ describe('ManagedProcessSupervisor', () => {
 
     await expect(supervisor.start({
       worktreeId: 'worktree-1', taskName: 'invalid-recovery',
-      argv: ['/usr/bin/true'], cwd: root, env: process.env,
+      argv: immediateExitArgv, cwd: root, env: process.env,
     })).rejects.toMatchObject({ code: 'RUNTIME_START_FAILED', context: { reason: 'LOG_SETUP_FAILED' } });
     if (retained) expect(await readFile(`${opened.stdoutPath}.1`, 'utf8')).toBe('B2--');
     else expect(await lstat(`${opened.stdoutPath}.1`).then(() => true, () => false)).toBe(false);
@@ -781,7 +820,7 @@ describe('ManagedProcessSupervisor', () => {
     const started = await supervisor.start({
       worktreeId: worktree.id,
       taskName: 'instant',
-      argv: ['/usr/bin/true'],
+      argv: immediateExitArgv,
       cwd: root,
       env: process.env,
     });
@@ -924,7 +963,7 @@ describe('ManagedProcessSupervisor', () => {
     const input = {
       worktreeId: worktree.id,
       taskName: 'crash-running',
-      argv: ['/bin/sleep', '30'],
+      argv: longRunningArgv,
       cwd: root,
       env: process.env,
     };
@@ -952,7 +991,7 @@ describe('ManagedProcessSupervisor', () => {
     const started = await supervisor.start({
       worktreeId: worktree.id,
       taskName: 'other-owner',
-      argv: ['/bin/sleep', '30'],
+      argv: longRunningArgv,
       cwd: root,
       env: process.env,
     });
@@ -973,7 +1012,7 @@ describe('ManagedProcessSupervisor', () => {
 
   test('reclaims only an expired restart lease tied to the exact verified old process', async () => {
     const { root, store, worktree, supervisor } = await setup();
-    const input = { worktreeId: worktree.id, taskName: 'restart-crash', argv: ['/bin/sleep', '30'], cwd: root, env: process.env };
+    const input = { worktreeId: worktree.id, taskName: 'restart-crash', argv: longRunningArgv, cwd: root, env: process.env };
     const started = await supervisor.start(input);
     let now = new Date('2026-08-27T12:00:05.000Z');
     store.forceReservation(worktree.id, input.taskName, 'restart-owner', '2026-08-27T12:00:10.000Z', started.record.id);
@@ -1013,7 +1052,7 @@ describe('ManagedProcessSupervisor', () => {
         stateStore: store, logs: new ManagedLogStore({ root: join(root, 'logs') }),
         now: () => new Date('2026-08-27T12:00:02.000Z'), inspectProcess: async () => inspection,
       });
-      await expect(candidate.start({ worktreeId: 'wt', taskName: 'dev', argv: ['/bin/true'], cwd: root }))
+      await expect(candidate.start({ worktreeId: 'wt', taskName: 'dev', argv: immediateExitArgv, cwd: root }))
         .rejects.toMatchObject({ code: 'RUNTIME_START_FAILED' });
       expect(store.hasManagedProcessStartReservation('wt', 'dev')).toBe(true);
       await candidate.close();
@@ -1023,7 +1062,7 @@ describe('ManagedProcessSupervisor', () => {
 
   test('does not reclaim an expired ordinary start lease from a verified live process', async () => {
     const { root, store, worktree, supervisor } = await setup();
-    const input = { worktreeId: worktree.id, taskName: 'ordinary-lease', argv: ['/bin/sleep', '30'], cwd: root, env: process.env };
+    const input = { worktreeId: worktree.id, taskName: 'ordinary-lease', argv: longRunningArgv, cwd: root, env: process.env };
     await supervisor.start(input);
     store.forceReservation(worktree.id, input.taskName, 'ordinary-owner', '2000-01-01T00:00:00.000Z');
 
@@ -1037,7 +1076,7 @@ describe('ManagedProcessSupervisor', () => {
     const started = await supervisor.start({
       worktreeId: worktree.id,
       taskName: 'crash-after-launch',
-      argv: ['/bin/sleep', '30'],
+      argv: longRunningArgv,
       cwd: root,
       env: process.env,
     });
@@ -1124,7 +1163,7 @@ describe('ManagedProcessSupervisor', () => {
     cleanups.push(async () => {
       const current = await inspectProcessIdentity(started.record.pid);
       if (current !== null && identityMatches(started.record, current)) {
-        try { process.kill(-started.record.pgid, 'SIGKILL'); } catch (error) { if (!isNoSuchProcess(error)) throw error; }
+        try { hostSignalProcessGroup(started.record.pgid, 'SIGKILL'); } catch (error) { if (!isNoSuchProcess(error)) throw error; }
       }
       await recoveredSupervisor.close();
       await rm(root, { recursive: true, force: true });

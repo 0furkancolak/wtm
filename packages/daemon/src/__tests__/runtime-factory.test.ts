@@ -263,7 +263,9 @@ describe('default production runtime paths', () => {
 
   test('a platform with no backend is refused with a coded error, not a bare string', () => {
     const failure = ((): unknown => {
-      try { return defaultProductionRuntimePaths(macHome, { platform: 'win32', env: {} }); }
+      // 'aix' stands in for "anywhere WTM has no backend" — darwin, linux and win32 are all
+      // supported now, so the refusal path needs a platform that genuinely is not.
+      try { return defaultProductionRuntimePaths(macHome, { platform: 'aix', env: {} }); }
       catch (error) { return error; }
     })();
 

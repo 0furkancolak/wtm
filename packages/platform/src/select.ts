@@ -26,7 +26,7 @@ import type { FileTrustPolicy, IpcServerPublisher, PlatformId, PlatformRuntime }
  * and changed when a platform is added, and the reason this increment exists is that WTM had those
  * branches scattered through core, the daemon and the CLI.
  */
-export const supportedPlatforms: readonly PlatformId[] = ['darwin', 'linux'];
+export const supportedPlatforms: readonly PlatformId[] = ['darwin', 'linux', 'win32'];
 
 /**
  * Raised when WTM is started somewhere it has no backend for.
@@ -67,7 +67,7 @@ const serviceBackends = {
  * Built once, not per `selectPlatformRuntime` call, because it wires two default readers that
  * each spawn a fresh `powershell.exe`, and every existing port in this package already treats
  * "spawn per call" as the norm for the platform it actually runs commands on — this is no
- * different, just not yet exercised anywhere real (D8: `win32` is constructible, not supported).
+ * different.
  */
 const windowsFileTrustPolicy: FileTrustPolicy = createWindowsFileTrustPolicy({
   readAcl: createWindowsAclReader(),

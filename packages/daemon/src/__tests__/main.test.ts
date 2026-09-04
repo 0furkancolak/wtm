@@ -163,14 +163,17 @@ describe('WtmDaemon structural reconciliation', () => {
 describe('assertSupportedRuntime', () => {
   const supportedNode = '24.4.1';
 
-  test('accepts both platforms the seam has a backend for', () => {
+  test('accepts every platform the seam has a backend for', () => {
     expect(() => assertSupportedRuntime('darwin', supportedNode)).not.toThrow();
     expect(() => assertSupportedRuntime('linux', supportedNode)).not.toThrow();
+    expect(() => assertSupportedRuntime('win32', supportedNode)).not.toThrow();
   });
 
-  test('refuses Windows with a coded error naming the increment that will decide it', () => {
+  test('refuses a platform with no backend with a coded error, not a bare string', () => {
     const failure = ((): unknown => {
-      try { return assertSupportedRuntime('win32', supportedNode); }
+      // 'aix' stands in for "anywhere WTM has no backend" — darwin, linux and win32 are all
+      // supported now, so the refusal path needs a platform that genuinely is not.
+      try { return assertSupportedRuntime('aix', supportedNode); }
       catch (error) { return error; }
     })();
 
@@ -180,8 +183,7 @@ describe('assertSupportedRuntime', () => {
     const error = failure as UnsupportedPlatformError;
     expect(error.code).toBe('WTM_PLATFORM_UNSUPPORTED');
     expect(error.severity).toBe('error');
-    expect(error.context).toMatchObject({ platform: 'win32' });
-    expect(error.message).toContain('Windows');
+    expect(error.context).toMatchObject({ platform: 'aix' });
     expect(error.message).not.toContain('requires macOS');
   });
 

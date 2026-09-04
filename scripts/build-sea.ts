@@ -51,7 +51,10 @@ export async function buildSea(host: SeaBuildHost): Promise<SeaBuildResult> {
   const version = packageVersion(host.root);
   const outputDirectory = join(host.root, 'dist/sea');
   const workDirectory = join(outputDirectory, '.build');
-  const executable = join(outputDirectory, 'wtm');
+  // Windows refuses to run an extensionless file; the copied runtime has to keep the `.exe` its
+  // own filesystem requires, the same way the injected blob keeps whatever section name its own
+  // object format requires below.
+  const executable = join(outputDirectory, host.platform === 'win32' ? 'wtm.exe' : 'wtm');
   const bundle = join(workDirectory, 'sea-bin.cjs');
   const blob = join(workDirectory, 'wtm.blob');
   const configuration = join(workDirectory, 'sea-config.json');
@@ -69,18 +72,25 @@ export async function buildSea(host: SeaBuildHost): Promise<SeaBuildResult> {
     check(host, host.nodeExecutable, ['--experimental-sea-config', configuration]);
 
     const darwin = host.platform === 'darwin';
+    const windows = host.platform === 'win32';
     host.copyFile(host.nodeExecutable, executable);
     host.chmod(executable, 0o755);
     // The published runtime ships unstripped; its debug and local symbols are ~25 MB of dead
-    // weight. The command is not a platform question — `-x` and `-S` mean discard-local-symbols
+    // weight. The command is not a darwin/linux question — `-x` and `-S` mean discard-local-symbols
     // and strip-debug on GNU binutils exactly as they do on Apple's strip, and /usr/bin/strip is
     // the path on Ubuntu as well as macOS. Its *position* is a darwin question: there, removing
     // the signature first leaves link edit information that no longer fills __LINKEDIT, and on
     // x64 `strip` refuses that layout outright, while stripping a still-signed binary only warns
     // that it invalidates the signature — which is what the next command removes anyway. ELF has
     // no __LINKEDIT and nothing signs it, so on Linux that argument decides nothing and strip is
-    // first only because there is nothing for it to come after.
-    check(host, '/usr/bin/strip', ['-x', '-S', executable]);
+    // first only because there is nothing for it to come after. There is no `/usr/bin/strip` on
+    // Windows, and no GNU-binutils-compatible tool this codebase can assume is on a `windows-latest`
+    // runner's `PATH`; stripping a PE built by Node is not something D1/D2 measured, so the
+    // published Windows runtime keeps its ~25 MB of debug/local symbols rather than risk corrupting
+    // the section postject injects next with an untested tool. A later pass can shrink it once a
+    // real Windows strip equivalent is chosen and proven, the same way this pass proved `taskkill`
+    // rather than guess at it.
+    if (!windows) check(host, '/usr/bin/strip', ['-x', '-S', executable]);
     if (darwin) {
       // The inherited runtime signature does not cover the injected blob. On Linux this is a
       // no-op rather than a substitution: an ELF Node carries no embedded signature, so there is
@@ -177,13 +187,13 @@ export function createSeaBuildHost(): SeaBuildHost {
 }
 
 /**
- * The pipeline knows two operating systems. A third one has to fail here, with its own name in the
- * message, rather than three commands later when `/usr/bin/codesign` is missing or `strip` refuses
- * a format nobody chose to support.
+ * The pipeline knows three operating systems. A fourth one has to fail here, with its own name in
+ * the message, rather than three commands later when `/usr/bin/codesign` is missing or `strip`
+ * refuses a format nobody chose to support.
  */
 function seaBuildPlatform(platform: NodeJS.Platform): PlatformId {
-  if (platform !== 'darwin' && platform !== 'linux') {
-    throw new Error(`Standalone builds support darwin and linux; this host runs ${platform}`);
+  if (platform !== 'darwin' && platform !== 'linux' && platform !== 'win32') {
+    throw new Error(`Standalone builds support darwin, linux and win32; this host runs ${platform}`);
   }
   return platform;
 }

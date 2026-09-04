@@ -112,16 +112,31 @@ describe('Linux paths', () => {
 });
 
 describe('Windows paths', () => {
-  test('keeps everything under one WTM-owned root, the way macOS does', () => {
+  test('keeps data, config, logs and the service root under one WTM-owned root, the way macOS does', () => {
     const paths = windowsPlatformPaths({ home: windowsHome, env: {} });
 
-    expect(paths).toEqual({
-      dataRoot: 'C:\\Users\\ada\\AppData\\Local\\WTM',
-      configPath: 'C:\\Users\\ada\\AppData\\Local\\WTM\\config.toml',
-      logRoot: 'C:\\Users\\ada\\AppData\\Local\\WTM\\logs',
-      socketRoot: 'C:\\Users\\ada\\AppData\\Local\\WTM',
-      serviceRoot: 'C:\\Users\\ada\\AppData\\Local\\WTM\\service',
-    });
+    expect(paths.dataRoot).toBe('C:\\Users\\ada\\AppData\\Local\\WTM');
+    expect(paths.configPath).toBe('C:\\Users\\ada\\AppData\\Local\\WTM\\config.toml');
+    expect(paths.logRoot).toBe('C:\\Users\\ada\\AppData\\Local\\WTM\\logs');
+    expect(paths.serviceRoot).toBe('C:\\Users\\ada\\AppData\\Local\\WTM\\service');
+  });
+
+  test('the socket root is a named-pipe namespace address, not the data directory', () => {
+    // Unlike macOS, `dataRoot` cannot double as `socketRoot`: `net.Server.listen({ path })`
+    // requires the `\\.\pipe\` prefix on Windows, which a plain directory never carries.
+    const paths = windowsPlatformPaths({ home: windowsHome, env: {} });
+
+    expect(paths.socketRoot.startsWith('\\\\.\\pipe\\wtm-')).toBe(true);
+    expect(paths.socketRoot).not.toBe(paths.dataRoot);
+  });
+
+  test('the pipe name is deterministic per data root, and differs when the data root does', () => {
+    const first = windowsPlatformPaths({ home: windowsHome, env: {} });
+    const again = windowsPlatformPaths({ home: windowsHome, env: {} });
+    const otherUser = windowsPlatformPaths({ home: 'C:\\Users\\bea', env: {} });
+
+    expect(again.socketRoot).toBe(first.socketRoot);
+    expect(otherUser.socketRoot).not.toBe(first.socketRoot);
   });
 
   test('honours LOCALAPPDATA when it is an absolute Windows path', () => {

@@ -247,3 +247,46 @@ describe('SEA executable assembly on Linux', () => {
     });
   });
 });
+
+describe('SEA executable assembly on Windows', () => {
+  test('names the executable with the extension Windows requires it to keep', async () => {
+    const { host } = createHost({ platform: 'win32', arch: 'x64' });
+
+    await expect(buildSea(host)).resolves.toEqual({
+      executable: join(root, 'dist/sea/wtm.exe'),
+      version: packageVersion,
+      platform: 'win32',
+      arch: 'x64',
+    });
+  });
+
+  test('assembles with postject alone: no strip, no signing', async () => {
+    const { host, recording } = createHost({ platform: 'win32', arch: 'x64' });
+
+    const result = await buildSea(host);
+
+    // Neither /usr/bin/strip nor /usr/bin/codesign exist on Windows, and this pass does not
+    // claim a Windows equivalent for either — see build-sea.ts's own comment for why.
+    expect(recording.commands.filter(({ command }) => command === '/usr/bin/strip')).toEqual([]);
+    expect(recording.commands.filter(({ command }) => command === '/usr/bin/codesign')).toEqual([]);
+    expect(recording.commands).toEqual([
+      {
+        command: host.nodeExecutable,
+        args: ['--experimental-sea-config', join(root, 'dist/sea/.build/sea-config.json')],
+      },
+      {
+        command: host.nodeExecutable,
+        args: [
+          join(root, 'node_modules/postject/dist/cli.js'),
+          result.executable,
+          'NODE_SEA_BLOB',
+          join(root, 'dist/sea/.build/wtm.blob'),
+          '--sentinel-fuse',
+          'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2',
+        ],
+      },
+    ]);
+    expect(recording.copies).toEqual([{ source: host.nodeExecutable, destination: result.executable }]);
+    expect(recording.modes).toEqual([{ path: result.executable, mode: 0o755 }]);
+  });
+});

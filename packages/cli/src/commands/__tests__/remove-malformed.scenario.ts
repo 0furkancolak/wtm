@@ -1,15 +1,15 @@
-import { execFileSync } from 'node:child_process';
-import { access, chmod, mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import { listGitWorktrees } from '@wtm/core';
 import { createGitSafetyFixture } from '../../../../testkit/src/git-fixture';
+import { writeExecutableFixture } from '../../../../testkit/src/executable-fixture';
+import { resolveRealExecutablePath } from '../../../../testkit/src/real-executable';
 import { runRemoveCommand } from '../remove';
 
 const fixture = await createGitSafetyFixture();
 try {
-  const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+  const realGit = resolveRealExecutablePath('git');
   const fakeDirectory = join(fixture.root, 'fake-bin');
-  const fakeGit = join(fakeDirectory, 'git');
   await mkdir(fakeDirectory, { recursive: true });
   const malformed = [
     '2 R. N... 100644 100644 100644 0123456789012345678901234567890123456789',
@@ -17,8 +17,7 @@ try {
     '? must-not-be-consumed.txt',
     '',
   ].join('\0');
-  const script = `#!/usr/bin/env node
-const { spawnSync } = require('node:child_process');
+  await writeExecutableFixture(join(fakeDirectory, 'git'), `const { spawnSync } = require('node:child_process');
 const args = process.argv.slice(2);
 if (args.includes('status')) {
   process.stdout.write(Buffer.from(${JSON.stringify(malformed)}, 'utf8'));
@@ -28,9 +27,7 @@ const result = spawnSync(${JSON.stringify(realGit)}, args, { env: process.env, s
 process.stdout.write(result.stdout ?? Buffer.alloc(0));
 process.stderr.write(result.stderr ?? Buffer.alloc(0));
 process.exit(result.status ?? 1);
-`;
-  await writeFile(fakeGit, script, { flag: 'wx' });
-  await chmod(fakeGit, 0o755);
+`);
   process.env.PATH = `${fakeDirectory}${delimiter}${process.env.PATH ?? ''}`;
 
   const envelope = await runRemoveCommand({

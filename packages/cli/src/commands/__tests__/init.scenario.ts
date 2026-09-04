@@ -1,7 +1,8 @@
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import { SQLiteStateStore } from '@wtm/core';
 import { createWorkspaceFixture } from '../../../../testkit/src/workspace-fixture';
+import { writeExecutableFixture } from '../../../../testkit/src/executable-fixture';
 import { runInitCommand } from '../init';
 import type { SkillInstaller } from '../skill';
 
@@ -102,10 +103,8 @@ try {
 
 async function installFailingGit(directory: string, repoRoot: string): Promise<void> {
   const executableDirectory = join(directory, 'fake-bin');
-  const executablePath = join(executableDirectory, 'git');
   await mkdir(executableDirectory, { recursive: true });
-  const script = `#!/usr/bin/env node
-const args = process.argv.slice(2);
+  await writeExecutableFixture(join(executableDirectory, 'git'), `const args = process.argv.slice(2);
 if (args.includes('rev-parse')) {
   process.stdout.write(${JSON.stringify(`${join(repoRoot, '.git')}\n${repoRoot}\n`)});
   process.exit(0);
@@ -116,8 +115,6 @@ if (args.includes('worktree')) {
   process.exit(7);
 }
 process.exit(2);
-`;
-  await writeFile(executablePath, script, { flag: 'wx' });
-  await chmod(executablePath, 0o755);
+`);
   process.env.PATH = `${executableDirectory}${delimiter}${process.env.PATH ?? ''}`;
 }

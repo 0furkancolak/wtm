@@ -39,19 +39,22 @@ describe('selectPlatformRuntime', () => {
 
   test('refuses an unsupported platform with an error the envelope can carry', () => {
     let thrown: unknown;
-    try { selectPlatformRuntime({ platform: 'win32', env, home: '/Users/x' }); }
+    // 'aix' stands in for "anywhere WTM has no backend" — darwin, linux and win32 are now all
+    // supported, so the refusal path needs a platform that genuinely is not.
+    try { selectPlatformRuntime({ platform: 'aix', env, home: '/Users/x' }); }
     catch (error) { thrown = error; }
 
     expect(thrown).toBeInstanceOf(UnsupportedPlatformError);
     const error = thrown as UnsupportedPlatformError;
     expect(wtmErrorCodeSchema.options).toContain(error.code);
     expect(error.severity).toBe('error');
-    expect(error.message).toContain('win32');
+    expect(error.message).toContain('aix');
     // The refusal names what WTM does support, so the reader learns the answer and not only the
-    // refusal. Windows is a later increment; saying "requires macOS" would now be false.
+    // refusal.
     expect(error.message).toContain('darwin');
     expect(error.message).toContain('linux');
-    expect(error.context).toEqual({ platform: 'win32', supported: ['darwin', 'linux'] });
+    expect(error.message).toContain('win32');
+    expect(error.context).toEqual({ platform: 'aix', supported: ['darwin', 'linux', 'win32'] });
   });
 
   test('refuses a home that is not absolute, once, on behalf of every port', () => {

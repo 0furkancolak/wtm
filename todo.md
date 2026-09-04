@@ -808,6 +808,24 @@ NTFS junction/symlink semantics
 > rerun aynı adımı 3m44s'de bitirdi — `endpoints.ts`'nin belgelediği bu leg'in kendine özgü,
 > ilgisiz flake geçmişiyle aynı kategori, bu geçişin kodundan bağımsız. Bu pass artık kapalı;
 > Increment D2'nin tamamı için `supportedPlatforms`/gerçek Windows CI leg'i hâlâ açık.
+>
+> **D2, 2. geçiş, 2026-09-04.** `supportedPlatforms` artık `win32`'yi kabul ediyor;
+> `windowsPlatformPaths`'in `socketRoot`'u gerçek bir named-pipe adresine düzeltildi
+> (`\\.\pipe\wtm-<sha256(dataRoot)>` — eski `dataRoot` değeri hiçbir `listen()` çağrısına karşı
+> hiç sınanmamış bir arayüz-parity alanıydı, bu geçişte gerçek bir kusur olduğu bulundu). SEA
+> build'i Windows'u destekliyor (`wtm.exe`, strip Windows'ta bilinçli olarak atlanıyor — gerekçe
+> spec'te). `ci.yml`'e kullanıcının kendi "tam kapsam" kararıyla darwin/linux ile **aynı 7 adımı**
+> koşan bir `windows-latest` leg'i eklendi. `process-supervisor.test.ts` ve testkit
+> (`writeExecutableFixture`, `resolveRealExecutablePath`) artık POSIX-only shebang/`process.kill`
+> varsayımı taşımıyor. `package.json`'ın `os` alanı `ci.yml` matrisiyle mekanik olarak eşleşiyor
+> (`package-contents.test.ts`). Yerelde (bu macOS host) `lint`, `typecheck`, `test` (1310/0),
+> `test:e2e`, `build`, `package:verify`, `binary:verify` hepsi yeşil. Gerçek `windows-latest`
+> koşusu henüz görülmedi — bu geçişin kendi kabul kriteri, spec'in kendi sözüyle "yalnızca gerçek
+> bir CI koşusu destekleyebildiğinde" kapanacak. Bilinçli olarak dışarıda bırakılanlar:
+> `inode-reuse-measurement.test.ts`'nin win32 durumu (NTFS nlink-reuse semantiği ölçülmedi),
+> `quick-start.test.ts`'nin `/bin/sh` bağımlılığı, `service-lifecycle.ts`'nin `getuid` boşluğu
+> (Windows daemon lifecycle kararına bağlı), ve `release-artifacts.ts`/`verify-release.ts`
+> (Increment E'nin işi). Detay: `2026-09-04-windows-ci-leg-and-supported-platform.md`.
 
 #### Windows daemon lifecycle kararı
 

@@ -35,7 +35,7 @@ test('the public npm package contains runtime bundles, migrations, docs, license
   // person installing. It is pinned to the platforms CI actually runs, which is what makes it a
   // claim the build can check rather than an intention. Adding a platform here without adding its
   // job below is the failure this is here to stop.
-  expect(manifest.os).toEqual(['darwin', 'linux']);
+  expect(manifest.os).toEqual(['darwin', 'linux', 'win32']);
   const ci = Bun.YAML.parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
     jobs: { validate: { strategy: { matrix: { include: { platform: string }[] } } } };
   };

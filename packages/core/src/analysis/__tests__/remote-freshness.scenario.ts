@@ -1,7 +1,8 @@
-import { execFileSync } from 'node:child_process';
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import { createGitSafetyFixture } from '../../../../testkit/src/git-fixture';
+import { writeExecutableFixture } from '../../../../testkit/src/executable-fixture';
+import { resolveRealExecutablePath } from '../../../../testkit/src/real-executable';
 import { GitCommandError } from '../../git/git-runner';
 import { refreshRemoteTrackingRefs } from '../remote-persistence';
 import { analyzeWorktree } from '../worktree-analysis';
@@ -14,12 +15,10 @@ import { analyzeWorktree } from '../worktree-analysis';
  */
 const fixture = await createGitSafetyFixture();
 try {
-  const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+  const realGit = resolveRealExecutablePath('git');
   const fakeDirectory = join(fixture.root, 'fake-bin');
-  const fakeGit = join(fakeDirectory, 'git');
   await mkdir(fakeDirectory, { recursive: true });
-  const script = `#!/usr/bin/env node
-const { spawnSync } = require('node:child_process');
+  await writeExecutableFixture(join(fakeDirectory, 'git'), `const { spawnSync } = require('node:child_process');
 const args = process.argv.slice(2);
 if (args.includes('fetch')) {
   process.stderr.write('shim: git fetch is not allowed here\\n');
@@ -29,9 +28,7 @@ const result = spawnSync(${JSON.stringify(realGit)}, args, { env: process.env, s
 process.stdout.write(result.stdout ?? Buffer.alloc(0));
 process.stderr.write(result.stderr ?? Buffer.alloc(0));
 process.exit(result.status ?? 1);
-`;
-  await writeFile(fakeGit, script, { flag: 'wx' });
-  await chmod(fakeGit, 0o755);
+`);
   process.env.PATH = `${fakeDirectory}${delimiter}${process.env.PATH ?? ''}`;
 
   const analysis = await analyzeWorktree({

@@ -386,13 +386,13 @@ describe('platform', () => {
   });
 
   it('is an error only when the platform itself is refused', async () => {
-    const finding = (await findingsOn(() => { throw new UnsupportedPlatformError('win32'); }))
+    const finding = (await findingsOn(() => { throw new UnsupportedPlatformError('aix'); }))
       .find(({ check }) => check === 'platform');
 
     expect(finding).toEqual({
       check: 'platform',
       status: 'error',
-      message: 'WTM has no backend for win32. Supported platforms: darwin, linux.',
+      message: 'WTM has no backend for aix. Supported platforms: darwin, linux, win32.',
       details: { code: 'WTM_PLATFORM_UNSUPPORTED' },
     });
   });
@@ -400,7 +400,7 @@ describe('platform', () => {
   it('never reports a status between pass and error', async () => {
     // `pass` or `error`, and nothing between: there is no partial platform. Either the runtime
     // resolved, in which case every root below it is settled, or it did not, in which case none is.
-    for (const select of [darwinHost, linuxHost, () => { throw new UnsupportedPlatformError('win32'); }]) {
+    for (const select of [darwinHost, linuxHost, () => { throw new UnsupportedPlatformError('aix'); }]) {
       const finding = (await findingsOn(select)).find(({ check }) => check === 'platform');
       expect(finding?.status === 'pass' || finding?.status === 'error').toBe(true);
     }
@@ -429,7 +429,7 @@ describe('platform', () => {
     // There is no `sizeof(sun_path)` for a platform WTM has no backend for. Left out, the
     // envelope back-fills it as `unknown`; invented, it would be macOS's 104 stated as a
     // universal fact, which is the defect this increment exists to remove.
-    const findings = await findingsOn(() => { throw new UnsupportedPlatformError('win32'); });
+    const findings = await findingsOn(() => { throw new UnsupportedPlatformError('aix'); });
 
     expect(findings.map(({ check }) => check)).not.toContain('socket-path');
     expect(findings.find(({ check }) => check === 'platform')?.status).toBe('error');

@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { selectPlatformRuntime } from '../../packages/platform/src/select';
 import { createFakeAdapter, type FakeAdapter } from '../../packages/testkit/src/fake-adapter';
@@ -14,10 +15,26 @@ import { ManagedProcessSupervisor } from '../../packages/daemon/src/process-supe
 import { MemoryManagedProcessStore } from '../../packages/testkit/src/managed-process-store';
 import { seaAssetKeys } from '../build-sea';
 
+const windows = process.platform === 'win32';
 const root = fileURLToPath(new URL('../..', import.meta.url));
-const executable = join(root, 'dist/sea/wtm');
-/** A standalone installation may not have Node, Bun, or any developer tooling on PATH. */
-const systemPath = '/usr/bin:/bin:/usr/sbin:/sbin';
+// `build-sea.ts` keeps the `.exe` extension Windows requires the copied runtime to carry.
+const executable = join(root, `dist/sea/wtm${windows ? '.exe' : ''}`);
+/**
+ * A standalone installation may not have Node, Bun, or any developer tooling on PATH.
+ *
+ * The Windows list is not the POSIX list translated: it names the directories the standalone
+ * executable itself needs on `PATH` to shell out to `powershell.exe` (trust/ACL, named pipes) and
+ * `taskkill.exe`/`schtasks.exe` (process and service supervision) — the Windows analogue of
+ * `/usr/bin`+`/bin` carrying `sh`, `ps`, and the other tools the POSIX backends shell out to.
+ */
+const systemPath = windows
+  ? [
+    `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32`,
+    process.env.SystemRoot ?? 'C:\\Windows',
+    `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0`,
+    `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32\\Wbem`,
+  ].join(';')
+  : '/usr/bin:/bin:/usr/sbin:/sbin';
 const runtimeInvocation = { executable, prefixArgs: [] as readonly string[] };
 const cleanups: Array<() => Promise<void>> = [];
 const adapters: FakeAdapter[] = [];
@@ -30,7 +47,13 @@ afterEach(async () => {
 async function isolatedHome(): Promise<{ home: string; repository: string; temporary: string }> {
   // Every supported platform caps Unix socket paths — 104 bytes on macOS, 108 on Linux — and the
   // daemon's address is built under the home, so the home has to be short on either of them.
-  const home = await mkdtemp('/tmp/wtm-sea-');
+  // macOS caps a Unix socket address at 104 bytes and the daemon's socket lives under `home`, so
+  // POSIX keeps the shortest possible root (`/tmp`) rather than `os.tmpdir()`'s real, much longer
+  // per-user directory (e.g. `/var/folders/.../T`) — swapping it in here silently overflowed that
+  // limit and hung the daemon at bind. Windows has no such path-length-derived socket limit (its
+  // pipe address is a fixed-length hash, independent of `home`) and has no `/tmp`, so it alone uses
+  // `os.tmpdir()`.
+  const home = await mkdtemp(windows ? join(tmpdir(), 'wtm-sea-') : '/tmp/wtm-sea-');
   await chmod(home, 0o700);
   const repository = join(home, 'repository');
   const temporary = join(home, 'tmp');
@@ -73,7 +96,11 @@ function runStandalone(
 }
 
 function git(cwd: string, args: readonly string[]): void {
-  const result = spawnSync('/usr/bin/git', [...args], { cwd, encoding: 'utf8' });
+  // Resolved through PATH rather than a hardcoded absolute path: there is no `/usr/bin/git` on
+  // Windows, and this call inherits the full test-runner environment (no `env` override), so PATH
+  // already has whatever `git` the CI image installed — the same trust `quick-start.test.ts`
+  // already places in a bare `git`.
+  const result = spawnSync('git', [...args], { cwd, encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr || result.stdout);
 }
 
@@ -174,8 +201,14 @@ describe.skipIf(!existsSync(executable))('standalone executable', () => {
     const paths = await isolatedHome();
     const commands = join(paths.home, 'commands');
     await mkdir(commands, { mode: 0o700 });
-    await writeFile(join(commands, 'fixture-task'), '#!/bin/sh\nexec /bin/sleep 30\n');
-    await chmod(join(commands, 'fixture-task'), 0o700);
+    // `ping`, not a shell built-in or `node`, so this keeps working under `standaloneEnvironment`'s
+    // point — a `PATH` with no dev tooling on it — the same way `/bin/sleep` does on POSIX.
+    const fixtureTaskFile = windows ? 'fixture-task.cmd' : 'fixture-task';
+    await writeFile(
+      join(commands, fixtureTaskFile),
+      windows ? '@ping -n 31 127.0.0.1 >nul\r\n' : '#!/bin/sh\nexec /bin/sleep 30\n',
+    );
+    if (!windows) await chmod(join(commands, fixtureTaskFile), 0o700);
     const store = new MemoryManagedProcessStore();
     const supervisor = new ManagedProcessSupervisor({
       stateStore: store,
@@ -188,9 +221,9 @@ describe.skipIf(!existsSync(executable))('standalone executable', () => {
     const started = await supervisor.start({
       worktreeId: 'worktree-1',
       taskName: 'fixture',
-      argv: ['fixture-task'],
+      argv: [fixtureTaskFile],
       cwd: paths.home,
-      env: { PATH: `${commands}:${systemPath}` },
+      env: { PATH: `${commands}${delimiter}${systemPath}` },
     });
 
     expect(started.record.state).toBe('RUNNING');
@@ -209,7 +242,11 @@ describe.skipIf(!existsSync(executable))('standalone executable', () => {
       '',
       '[tasks.hold]',
       'description = "Hold a process for the standalone smoke test."',
-      'run = ["/bin/sleep", "30"]',
+      // A plain argv array, not a shell command line — so the Windows substitute has to be one
+      // real executable plus arguments, not `sleep`-with-redirection. `ping` ships with every
+      // Windows install and, unlike `timeout.exe`, does not refuse a redirected/non-console stdin,
+      // which is exactly the stdio this task's supervised child runs under.
+      windows ? 'run = ["ping", "-n", "31", "127.0.0.1"]' : 'run = ["/bin/sleep", "30"]',
       'cwd = "{worktree.root}"',
       '',
     ].join('\n'));

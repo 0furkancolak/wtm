@@ -1,10 +1,11 @@
-import { execFileSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { SQLiteStateStore } from '@wtm/core';
 import type { GitSafetyFixture } from '../../../testkit/src/git-fixture';
 import { createGitSafetyFixture } from '../../../testkit/src/git-fixture';
+import { writeExecutableFixture } from '../../../testkit/src/executable-fixture';
+import { resolveRealExecutablePath } from '../../../testkit/src/real-executable';
 import { runCli } from '../main';
 
 /**
@@ -93,11 +94,9 @@ async function capture(argv: readonly string[], cwd: string, databasePath: strin
 }
 
 async function installFetchCountingGit(directory: string, logPath: string): Promise<void> {
-  const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+  const realGit = resolveRealExecutablePath('git');
   await mkdir(directory, { recursive: true });
-  const shim = join(directory, 'git');
-  await writeFile(shim, `#!/usr/bin/env node
-const { appendFileSync } = require('node:fs');
+  await writeExecutableFixture(join(directory, 'git'), `const { appendFileSync } = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const args = process.argv.slice(2);
 if (args.includes('fetch')) appendFileSync(${JSON.stringify(logPath)}, args.join(' ') + '\\n');
@@ -105,8 +104,7 @@ const result = spawnSync(${JSON.stringify(realGit)}, args, { env: process.env, s
 process.stdout.write(result.stdout ?? Buffer.alloc(0));
 process.stderr.write(result.stderr ?? Buffer.alloc(0));
 process.exit(result.status ?? 1);
-`, { flag: 'wx' });
-  await chmod(shim, 0o755);
+`);
   process.env.PATH = `${directory}${delimiter}${process.env.PATH ?? ''}`;
 }
 

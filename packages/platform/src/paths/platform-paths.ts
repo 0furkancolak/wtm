@@ -15,6 +15,7 @@
  * to run it. A single ambient read would make the Linux resolver untestable here and the bug would
  * not surface until C2.
  */
+import { createHash } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import { isAbsolute as win32IsAbsolute, join as win32Join } from 'node:path/win32';
 import type { PlatformId, PlatformPaths, PlatformPathsInput } from '../ports';
@@ -104,12 +105,17 @@ export function windowsPlatformPaths({ home, env }: PlatformPathsInput): Platfor
     dataRoot,
     configPath: win32Join(dataRoot, configFileName),
     logRoot: win32Join(dataRoot, 'logs'),
-    // Named pipes are not filesystem entries, so there is no XDG-runtime-directory-shaped shorter
-    // root to move this to the way Linux's `socketRoot` moves off `dataRoot` — see D7/D8 of the
-    // Windows seam spec for why the address itself needs no directory at all. Kept alongside
-    // `dataRoot` for interface parity with the other two platforms, not because anything currently
-    // reads it as a directory to create.
-    socketRoot: dataRoot,
+    // A named pipe is not a filesystem entry, so `socketRoot` cannot be `dataRoot` the way it is
+    // on macOS: `net.Server.listen({ path })` on Windows requires the address to already carry the
+    // `\\.\pipe\` namespace prefix (Node's own docs, "Identifying paths for IPC connections") —
+    // joining it onto an ordinary directory path the way `publishedDaemonSocketPath` does for
+    // every other platform would bind a string libuv rejects, not a pipe. The namespace has no
+    // per-user isolation of its own the way `%LOCALAPPDATA%` or `$XDG_RUNTIME_DIR` do, so the name
+    // is salted with a hash of `dataRoot` — the same per-user value every other root already
+    // derives from — rather than shared globally, which would let two accounts on the same
+    // machine collide on one pipe name (D2 is where this was found; D1 shipped `dataRoot` here
+    // unchanged, untested against a real `listen()` call).
+    socketRoot: win32Join('\\\\.\\pipe', `wtm-${createHash('sha256').update(dataRoot).digest('hex')}`),
     // The Scheduled Task's staged XML (D6) — entirely WTM-owned, unlike systemd's shared
     // `~/.config/systemd/user`, so it lives under `dataRoot` rather than beside a
     // platform-provided service directory Windows has no equivalent of.

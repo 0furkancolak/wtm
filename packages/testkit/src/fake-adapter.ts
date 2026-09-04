@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { writeExecutableFixture } from './executable-fixture';
 
 export type FakeAdapterScenario =
   | { type: 'response'; response: unknown }
@@ -24,8 +25,7 @@ export interface FakeAdapter {
   cleanup(): Promise<void>;
 }
 
-const program = String.raw`#!/usr/bin/env node
-// wtm-adapter-v1: self-contained
+const program = String.raw`// wtm-adapter-v1: self-contained
 import { spawn } from 'node:child_process';
 import { appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -92,17 +92,21 @@ function programFor(root: string, scenario: FakeAdapterScenario): string {
 
 export async function createFakeAdapter(initial: FakeAdapterScenario): Promise<FakeAdapter> {
   const root = await mkdtemp(join(tmpdir(), 'wtm-fake-adapter-'));
-  const executablePath = join(root, 'wtm-adapter-fake.mjs');
+  const basePath = join(root, 'wtm-adapter-fake.mjs');
   const runsPath = join(root, 'runs.log');
-  await writeFile(executablePath, programFor(root, initial), { mode: 0o700 });
-  await chmod(executablePath, 0o700);
+  // `executablePath` is what adapter trust reads and hashes as *source* — never something spawned
+  // by name or by shebang dispatch (invocation goes through a file-descriptor handoff instead, see
+  // `external-adapter.ts`) — so it must stay the file `body` actually landed in even on win32,
+  // where `writeExecutableFixture`'s `path` points at the `.cmd` trampoline instead.
+  const writeOptions = { mode: 0o700, module: 'module', exclusive: false } as const;
+  const executablePath = (await writeExecutableFixture(basePath, programFor(root, initial), writeOptions))
+    .scriptPath;
 
   return {
     root,
     executablePath,
     async setScenario(scenario) {
-      await writeFile(executablePath, programFor(root, scenario), { mode: 0o700 });
-      await chmod(executablePath, 0o700);
+      await writeExecutableFixture(basePath, programFor(root, scenario), writeOptions);
     },
     async runs() {
       return (await readFile(runsPath, 'utf8').catch(() => '')).split('\n').filter(Boolean).length;

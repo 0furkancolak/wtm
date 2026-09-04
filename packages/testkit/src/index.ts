@@ -7,3 +7,6 @@ export type { FakeAdapter, FakeAdapterScenario } from './fake-adapter';
 export { runScenario, scenarioTimeoutMs } from './scenario-child';
 export type { RunScenarioOptions } from './scenario-child';
 export { isolatedHomeEnvironment } from './isolated-home';
+export { writeExecutableFixture } from './executable-fixture';
+export type { ExecutableFixture, ExecutableFixtureOptions } from './executable-fixture';
+export { resolveRealExecutablePath } from './real-executable';
