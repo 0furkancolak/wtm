@@ -11,6 +11,7 @@ const provenance = new Map<string, Provenance>([
   ['repos.api.environment.PORT', { source: '/projects/demo/wtm.toml', line: 31 }],
   ['tasks.test.run', { source: '/projects/demo/wtm.toml', line: 44 }],
   ['resources.env.path', { source: '/projects/demo/wtm.toml', line: 50 }],
+  ['git.allowed_remote_refs', { source: '/projects/demo/wtm.toml', line: 60 }],
 ]);
 
 const config: WtmConfig = {
@@ -22,6 +23,7 @@ const config: WtmConfig = {
     dev: { run: ['make', 'dev'] },
   },
   resources: { env: { path: '.env', policy: 'symlink' } },
+  git: { allowed_remote_refs: ['refs/remotes/upstream/*'] },
 };
 
 function runtime(): WorktreeRuntime {
@@ -138,6 +140,18 @@ describe('explained decisions', () => {
       value: { path: '/projects/demo/api/.env', policy: 'symlink', state: 'ready' },
       provenance: { source: '/projects/demo/wtm.toml', line: 50 },
       reason: 'Declared by [resources], and in place.',
+    });
+  });
+
+  it('surfaces the configured [git] allowed_remote_refs as a config decision, for `wtm explain`', () => {
+    const decision = explain().find(({ key }) => key === 'git.allowed_remote_refs');
+
+    expect(decision).toEqual({
+      kind: 'config',
+      key: 'git.allowed_remote_refs',
+      value: ['refs/remotes/upstream/*'],
+      provenance: { source: '/projects/demo/wtm.toml', line: 60 },
+      reason: 'Declared in /projects/demo/wtm.toml line 60.',
     });
   });
 

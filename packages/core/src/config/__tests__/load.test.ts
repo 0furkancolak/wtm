@@ -32,6 +32,39 @@ describe('resolveWorkspaceConfig', () => {
     });
   });
 
+  it('defaults [git] allowed_remote_refs to the origin remote when nothing configures it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wtm-config-'));
+    directories.push(root);
+    const workspaceRoot = join(root, 'workspace');
+    const globalConfigPath = join(root, 'absent-global.toml');
+    await mkdir(workspaceRoot, { recursive: true });
+
+    const resolved = await resolveWorkspaceConfig({ workspaceRoot, globalConfigPath });
+
+    expect(resolved.value.git?.allowed_remote_refs).toEqual(['refs/remotes/origin/*']);
+    expect(resolved.provenance.get('git.allowed_remote_refs')).toEqual({ source: 'built-in' });
+  });
+
+  it('lets a workspace wtm.toml replace the default allowed_remote_refs list wholesale', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wtm-config-'));
+    directories.push(root);
+    const workspaceRoot = join(root, 'workspace');
+    const globalConfigPath = join(root, 'absent-global.toml');
+    await mkdir(workspaceRoot, { recursive: true });
+    await writeFile(
+      join(workspaceRoot, 'wtm.toml'),
+      '[git]\nallowed_remote_refs = ["refs/remotes/upstream/*"]\n',
+    );
+
+    const resolved = await resolveWorkspaceConfig({ workspaceRoot, globalConfigPath });
+
+    expect(resolved.value.git?.allowed_remote_refs).toEqual(['refs/remotes/upstream/*']);
+    expect(resolved.provenance.get('git.allowed_remote_refs')).toEqual({
+      source: join(workspaceRoot, 'wtm.toml'),
+      line: 2,
+    });
+  });
+
   it('rejects a task that becomes invalid only after config layers are merged', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wtm-config-'));
     directories.push(root);

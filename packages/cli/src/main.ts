@@ -111,7 +111,10 @@ export interface CliDependencies {
   initDatabasePath?: string;
   initUserDataDir?: string;
   analysisDatabasePath?: string;
-  /** The global configuration layer a removal's ephemeral resource cleanup resolves against. */
+  /**
+   * The global configuration layer a removal's ephemeral resource cleanup, and both `analyze`
+   * and `remove`'s `[git] allowed_remote_refs`, resolve against.
+   */
   removalGlobalConfigPath?: string;
   diagnosticsDatabasePath?: string;
   /** The daemon socket to reach, for tests that need a path this host does not have. */
@@ -223,6 +226,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
         refreshRemotes,
         ...(json ? {} : { notify: humanNotice }),
         databasePath: dependencies.analysisDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+        globalConfigPath: dependencies.removalGlobalConfigPath ?? defaultProductionRuntimePaths().globalConfigPath,
       })
       : await dependencies.analyzeRunner(input);
     renderRuntime(envelope, json);
@@ -615,6 +619,7 @@ async function runProductionAnalyze(input: {
   refreshRemotes: boolean;
   notify?: CommandNotifier;
   databasePath: string;
+  globalConfigPath: string;
 }): Promise<JsonEnvelope<unknown>> {
   if (input.selector !== undefined && (input.global || input.all || input.cleanupCandidates)) {
     return analysisFailure(
@@ -689,12 +694,22 @@ async function runProductionAnalyze(input: {
     if ('error' in refresh) return operationFailure('analyze', input.global, refresh.error);
     refreshedAt = refresh.refreshedAt;
   }
+  let allowedRemoteRefsByRepo: Map<string, readonly string[] | undefined>;
+  try {
+    const uniqueRepoPaths = [...new Set(selected.map(({ repoPath }) => repoPath))];
+    allowedRemoteRefsByRepo = new Map(await Promise.all(uniqueRepoPaths.map(async (repoPath) =>
+      [repoPath, await resolveConfiguredAllowedRemoteRefs(repoPath, input.globalConfigPath)] as const)));
+  } catch (error) {
+    return operationFailure('analyze', input.global, toGitSafetyError(error, 'analyze'));
+  }
   const envelopes = await Promise.all(selected.map(({ repoPath, record }) => {
     const refreshed = refreshedAt.get(repoPath);
+    const allowedRemoteRefs = allowedRemoteRefsByRepo.get(repoPath);
     return runAnalyzeCommand({
       repoPath,
       worktreePath: record.path,
       ...(refreshed === undefined ? {} : { remoteRefresh: { refreshedAt: refreshed } }),
+      ...(allowedRemoteRefs === undefined ? {} : { allowedRemoteRefs }),
     });
   }));
   if (!input.global && !input.all && !input.cleanupCandidates) return envelopes[0] as JsonEnvelope<unknown>;
@@ -768,6 +783,12 @@ async function runProductionRemove(input: {
   if ('error' in refresh) return operationFailure('remove', false, refresh.error);
   const refreshed = refresh.refreshedAt.get(repositoryRoot);
   const remoteRefresh = refreshed === undefined ? {} : { remoteRefresh: { refreshedAt: refreshed } };
+  let allowedRemoteRefs: readonly string[] | undefined;
+  try {
+    allowedRemoteRefs = await resolveConfiguredAllowedRemoteRefs(repositoryRoot, input.globalConfigPath);
+  } catch (error) {
+    return operationFailure('remove', false, toGitSafetyError(error, 'remove'));
+  }
   // Read-write, because removal stops processes, releases endpoint leases and reconciles — all
   // of them writes. An absent file means nothing is registered on this machine, and a removal
   // must no more bring a state directory into being by asking than a read does.
@@ -805,6 +826,7 @@ async function runProductionRemove(input: {
       repoPath: repositoryRoot,
       selector,
       ...remoteRefresh,
+      ...(allowedRemoteRefs === undefined ? {} : { allowedRemoteRefs }),
       bindRuntime: (worktreePath) => bindRemovalRuntime({
         store,
         worktreePath,
@@ -1076,6 +1098,24 @@ async function findWorkspaceRoot(from: string): Promise<string | null> {
     if (parent === current) return null;
     current = parent;
   }
+}
+
+/**
+ * The `[git] allowed_remote_refs` this repository's own `wtm.toml` configures, or undefined to
+ * leave the choice to `analyzeRemotePersistence`'s own default.
+ *
+ * `analyze` and `remove` answer a Git safety question directly, the same way for a repository
+ * WTM has never been asked to manage as for one it registered — so the workspace root is found
+ * by walking up from the repository the same way `unregisteredTaskResolution` does, rather than
+ * requiring a registration this call may not have.
+ */
+async function resolveConfiguredAllowedRemoteRefs(
+  repoPath: string,
+  globalConfigPath: string,
+): Promise<readonly string[] | undefined> {
+  const workspaceRoot = await findWorkspaceRoot(repoPath) ?? repoPath;
+  const config = await resolveWorkspaceConfig({ workspaceRoot, repoRoot: repoPath, globalConfigPath });
+  return config.value.git?.allowed_remote_refs;
 }
 
 async function readable(path: string): Promise<boolean> {

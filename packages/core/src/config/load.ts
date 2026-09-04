@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import { parse } from 'smol-toml';
+import { defaultAllowedRemoteRefs } from '../analysis/remote-persistence';
 import { mergeConfigLayers, type ConfigLayer } from './merge';
 import { collectProvenance, type ResolvedConfig } from './provenance';
 import { parseWtmConfig, WtmConfigError, type WtmConfig } from './schema';
@@ -10,6 +11,10 @@ export const builtInConfig: WtmConfig = {
   discovery: { repos: true, worktrees: true, max_depth: 5 },
   prepare: { mode: 'lazy' },
   ports: { strategy: 'stable-dynamic', range: '20000-50000' },
+  // The same default `analyzeRemotePersistence` falls back to when nothing configures it, named
+  // here instead of left implicit so `wtm explain` has a "WTM's own default" to report and a
+  // `[git]` override in `wtm.toml` has a documented value to replace.
+  git: { allowed_remote_refs: [...defaultAllowedRemoteRefs] },
 };
 
 async function loadConfigFile(path: string): Promise<ConfigLayer | undefined> {
