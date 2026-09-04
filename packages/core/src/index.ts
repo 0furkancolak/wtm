@@ -70,7 +70,7 @@ export type {
 export { resolveWorkspaceConfig, builtInConfig } from './config/load';
 export { mergeConfigLayers } from './config/merge';
 export { parseWtmConfig, wtmConfigSchema, WtmConfigError } from './config/schema';
-export type { CorsConfig, PortConfig, PortsConfig, RepoConfig, ResourceConfig, WtmConfig } from './config/schema';
+export type { CorsConfig, GitConfig, PortConfig, PortsConfig, RepoConfig, ResourceConfig, WtmConfig } from './config/schema';
 export { repoEnvironment, resolveRepoScope } from './config/repos';
 export type { RepoScopeInput, ResolvedRepoScope } from './config/repos';
 export type { ResolvedConfig, Provenance } from './config/provenance';

@@ -90,7 +90,13 @@ export function parseNulFormattedRefs(output: Uint8Array): string[] {
     .sort((left, right) => left.localeCompare(right));
 }
 
-function normalizeAllowedRemoteRefs(patterns: readonly string[]): string[] {
+/**
+ * The shape an allowed-remote-ref pattern must have: a `refs/remotes/` ref, with at most a
+ * single trailing wildcard. Exported so the `wtm.toml` config schema rejects a malformed pattern
+ * at load time with the same rule this module enforces at analysis time — one definition of
+ * "valid", not two that can drift apart.
+ */
+export function normalizeAllowedRemoteRefs(patterns: readonly string[]): string[] {
   const unique = [...new Set(patterns)];
   if (unique.length === 0) throw new TypeError('At least one allowed remote-tracking ref is required');
   for (const pattern of unique) {

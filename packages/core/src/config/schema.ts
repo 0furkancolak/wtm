@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { normalizeAllowedRemoteRefs } from '../analysis/remote-persistence';
 
 const commandSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
 
@@ -104,7 +105,30 @@ const portsSchema = z.object({
   }
 });
 
+/**
+ * Which remote-tracking refs count as "this branch is safely persisted elsewhere" for `wtm
+ * remove` and `wtm analyze`. Validated with the exact rule {@link normalizeAllowedRemoteRefs}
+ * enforces at analysis time, so a pattern that would later throw a bare `TypeError` deep inside
+ * `analyzeRemotePersistence` is instead reported here, at config load, as a coded
+ * `WTM_CONFIG_INVALID` naming the offending pattern.
+ */
+const gitSchema = z.object({
+  allowed_remote_refs: z.array(z.string().min(1)).min(1).optional(),
+}).strict().superRefine((git, context) => {
+  if (git.allowed_remote_refs === undefined) return;
+  try {
+    normalizeAllowedRemoteRefs(git.allowed_remote_refs);
+  } catch (error) {
+    context.addIssue({
+      code: 'custom',
+      path: ['allowed_remote_refs'],
+      message: error instanceof Error ? error.message : 'Invalid allowed remote-tracking ref pattern.',
+    });
+  }
+});
+
 export const wtmConfigSchema = z.object({
+  git: gitSchema.optional(),
   version: z.literal(1).optional(),
   workspace: z.object({ name: z.string().min(1).optional() }).strict().optional(),
   discovery: z.object({
@@ -128,6 +152,7 @@ export const wtmConfigSchema = z.object({
 }).strict();
 
 export type PortConfig = z.infer<typeof portSchema>;
+export type GitConfig = z.infer<typeof gitSchema>;
 export type CorsConfig = z.infer<typeof corsSchema>;
 export type RepoConfig = z.infer<typeof repoSchema>;
 export type ResourceConfig = z.infer<typeof resourceSchema>;
