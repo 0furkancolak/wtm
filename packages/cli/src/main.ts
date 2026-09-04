@@ -563,6 +563,7 @@ function defaultPortableSkillInstaller(fallbackWorkspaceRoot: string): SkillInst
         localSkills: join(request.workspaceRoot ?? fallbackWorkspaceRoot, '.agents', 'skills'),
         globalAnchor: homedir(),
         globalSkills: join(homedir(), '.agents', 'skills'),
+        fileTrust: hostPlatformRuntime().fileTrust,
       }).install(request);
     },
   };
