@@ -1,8 +1,16 @@
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path/posix';
 import type { Remediation } from '@wtm/protocol';
 
 /**
  * Where the daemon's Unix socket lives, how long it may be, and who says so.
+ *
+ * Unix domain sockets are a macOS/Linux concept — Windows has no `sun_path` and no equivalent
+ * here at all (D2's named-pipe address lives in `platformPathsFor`'s `windowsPlatformPaths`
+ * instead). `join`/`dirname`/`basename` are pinned to `node:path/posix` rather than the default
+ * for exactly the reason `platform-paths.ts` and the service backends already needed it: a real
+ * `windows-latest` leg runs this file's own tests too, and the default import is `node:path/win32`
+ * there, which would turn every `/`-joined socket path in this module's own fixtures into a
+ * backslashed one no `sun_path` measurement or test expectation means to describe.
  *
  * The path used to be spelled out in three places — the CLI's `defaultDaemonSocketPath`, and
  * twice inside the daemon's runtime factory — and nothing measured any of them. Under a deep
