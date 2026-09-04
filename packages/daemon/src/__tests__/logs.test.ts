@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { lstat, mkdtemp, open, readFile, rename, rm, symlink, link, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createWindowsFileTrustPolicy } from '@wtm/platform';
 import { ManagedLogStore } from '../logs';
 
 const roots: string[] = [];
@@ -399,5 +400,46 @@ describe('ManagedLogStore', () => {
     await expect(logs.rotate([opened.stdoutPath])).rejects.toThrow('Unsafe managed log directory');
     expect(await readFile(join(outside, 'stdout.log'), 'utf8')).toBe('external');
     expect(await lstat(join(outside, 'stdout.log.1')).then(() => true, () => false)).toBe(false);
+  });
+
+  test('rejects a managed log directory an injected Windows-shaped FileTrustPolicy says is not mine', async () => {
+    const logRoot = await root();
+    const ownerSid = 'S-1-5-21-1-2-3-1001';
+    const otherSid = 'S-1-5-21-1-2-3-1002';
+    // No real Windows host is exercised here, the same way `windows.test.ts` fixture-tests the
+    // port's own decision logic on this macOS host: `readAcl` reports the log root as owned by a
+    // different SID than the current one, which is a real ACL a Windows `Get-Acl` could return.
+    const fileTrust = createWindowsFileTrustPolicy({
+      readAcl: async () => ({ ownerSid: otherSid, accessRules: [] }),
+      currentUserSid: async () => ownerSid,
+    });
+    const logs = new ManagedLogStore({ root: logRoot, fileTrust });
+
+    await expect(logs.open('worktree-1', 'dev')).rejects.toThrow('Unsafe managed log directory');
+  });
+
+  test('opens and writes managed logs under a well-formed Windows ACL the old exact-0o700 mode check would have refused unconditionally', async () => {
+    const logRoot = await root();
+    const ownerSid = 'S-1-5-21-1-2-3-1001';
+    // `fs.Stats.mode` never reports a POSIX-style 0o700 on Windows, so the pre-fix
+    // `(stat.mode & 0o777) !== 0o700` check in `directoryIdentity` threw for every directory this
+    // store ever created there, regardless of the ACL. An ACL granting only the owner full control
+    // is precisely the safe case that check could never recognise; asserting `open` now succeeds
+    // and actually writes bytes is the proof the directory check is answered from the ACL, not the
+    // (meaningless, on Windows) POSIX mode bits.
+    const fileTrust = createWindowsFileTrustPolicy({
+      readAcl: async () => ({
+        ownerSid,
+        accessRules: [{ identitySid: ownerSid, fileSystemRights: 'FullControl', accessControlType: 'Allow' }],
+      }),
+      currentUserSid: async () => ownerSid,
+    });
+    const logs = new ManagedLogStore({ root: logRoot, fileTrust });
+
+    const opened = await logs.open('worktree-1', 'dev');
+    await opened.stdout.write('hello\n');
+    await opened.close();
+
+    expect(await readFile(opened.stdoutPath, 'utf8')).toBe('hello\n');
   });
 });

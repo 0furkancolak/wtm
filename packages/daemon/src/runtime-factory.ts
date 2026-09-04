@@ -152,6 +152,11 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
   }
   const logs = new ManagedLogStore({
     root: paths.logRoot,
+    // The same reason `supervisor` below is handed `platformRuntime.process` rather than reading
+    // the host itself: the composition root already chose a platform, and a log store answering
+    // its own directory-safety questions from a different one is the class of drift this seam
+    // exists to remove.
+    fileTrust: platformRuntime.fileTrust,
     ...(options.onError === undefined ? {} : { onError: options.onError }),
   });
   const supervisor = new ManagedProcessSupervisor({
