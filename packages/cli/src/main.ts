@@ -1,5 +1,5 @@
 import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
-import { constants as fsConstants, existsSync } from 'node:fs';
+import { constants as fsConstants, existsSync, readdirSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { access } from 'node:fs/promises';
 import { constants, homedir } from 'node:os';
@@ -16,6 +16,7 @@ import type { PlatformRuntime } from '@wtm/platform/ports';
 import type { AdapterTrustStore } from '@wtm/core';
 import {
   containsPath,
+  GitCommandError,
   listGitWorktrees,
   refreshRemoteTrackingRefs,
   resolveWorkspaceConfig,
@@ -1030,7 +1031,12 @@ async function productionTaskResolution(
 async function unregisteredTaskResolution(
   input: { cwd: string; taskName: string },
 ): Promise<TaskResolutionInput> {
-  const topology = await listGitWorktrees(input.cwd);
+  let topology: GitWorktreeRecord[];
+  try {
+    topology = await listGitWorktrees(input.cwd);
+  } catch (error) {
+    throw workspaceRootNotRepositoryError(input.cwd, error);
+  }
   const worktree = topology.find(({ path }) => containsPath(path, input.cwd)) ?? topology[0];
   if (worktree === undefined) {
     return { config: {}, taskName: input.taskName, isMain: true, context: { env: process.env } };
@@ -1065,6 +1071,47 @@ async function unregisteredTaskResolution(
       env: process.env,
     },
   };
+}
+
+/**
+ * Turns "`cwd` is not a Git repository" into `WTM_WORKSPACE_NOT_FOUND`, for exactly the layout
+ * README's multi-repo example describes: a workspace root that holds several repositories as
+ * subdirectories without being one itself. `git worktree list` fails that case with exit 128,
+ * before it ever produces the porcelain output this function's caller wants, and its stderr is
+ * git's own -- locale-dependent, so a Turkish install reports "ölümcül", never "fatal". Only the
+ * exit code is read; nothing here branches on what git printed. Any other failure (a corrupted
+ * repository, a timeout) is not this condition and is returned unchanged for the caller to throw.
+ */
+function workspaceRootNotRepositoryError(cwd: string, error: unknown): unknown {
+  if (!(error instanceof GitCommandError) || error.exitCode !== 128) return error;
+  const repositories = discoverableRepositories(cwd);
+  const guidance = repositories.length === 0
+    ? 'No Git repositories were found in its immediate subdirectories.'
+    : `Repositories found here: ${repositories.join(', ')}.`;
+  return new DaemonRegistrationError(
+    `${cwd} is not a Git repository. This looks like a multi-repo workspace root; cd into one of `
+    + `its repositories and run this command there. ${guidance}`,
+    { cwd, discoveredRepositories: repositories },
+  );
+}
+
+/**
+ * The immediate subdirectories of `root` that are themselves Git repositories, so a person
+ * standing in the wrong place is told where the right place is instead of just that this is not
+ * it. Code-unit order rather than `localeCompare`, so the list this ships in a message is the
+ * same on every machine regardless of the reader's locale -- the same discipline this function
+ * exists to apply to the error itself.
+ */
+function discoverableRepositories(root: string): string[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, '.git')))
+      .map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+  return entries.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
 }
 
 /** The nearest enclosing directory holding a `wtm.toml`, which is what `wtm init` writes. */

@@ -29,7 +29,7 @@ async function capture(argv: readonly string[], dependencies: CliDependencies) {
     envelope: JSON.parse(output) as {
       ok: boolean;
       data: Record<string, any> | null;
-      errors: Array<{ code: string }>;
+      errors: Array<{ code: string; message: string; context?: Record<string, unknown> }>;
     },
   };
 }
@@ -69,6 +69,48 @@ async function foregroundRun() {
   return [exitCode, envelope.ok, envelope.data?.['task']?.argv, envelope.data?.['exitCode']];
 }
 
+/**
+ * README's multi-repo layout: a workspace root that holds several repositories as
+ * subdirectories without being one itself. `resolve` used to run `git worktree list` against
+ * that root directly and leak git's own -- locale-dependent -- "not a git repository" stderr
+ * under the wrong error code, `WTM_CONFIG_INVALID` (todo.md item 43). The assertions below are
+ * on WTM's own fixed English text, never on git's, so they hold regardless of which locale the
+ * git binary that produced the exit-128 failure happens to be running in.
+ */
+async function multiRepoRootResolve() {
+  const root = await temporaryRoot();
+  git(root, 'init', '-q', '-b', 'main', 'api');
+  git(root, 'init', '-q', '-b', 'main', 'web');
+  const { exitCode, envelope } = await capture(['resolve', 'dev', '--json'], { cwd: root });
+  const error = envelope.errors[0];
+  const message = error?.message ?? '';
+  return [
+    exitCode,
+    envelope.ok,
+    error?.code,
+    message.startsWith(`${root} is not a Git repository.`),
+    // Git's own English fatal text for this condition contains "fatal" and "not a git
+    // repository" verbatim; their absence here is what shows the message is WTM's fixed text
+    // rather than an interpolation of whatever git printed.
+    message.toLowerCase().includes('fatal'),
+    'stderr' in (error?.context ?? {}),
+    error?.context?.['discoveredRepositories'],
+  ];
+}
+
+/** The same condition reached through `run`, with nothing underneath to suggest cd'ing into. */
+async function multiRepoRootRunWithoutRepositories() {
+  const root = await temporaryRoot();
+  const { exitCode, envelope } = await capture(['run', 'dev', '--json'], { cwd: root });
+  const error = envelope.errors[0];
+  return [
+    exitCode,
+    envelope.ok,
+    error?.code,
+    error?.message.includes('No Git repositories were found in its immediate subdirectories.'),
+  ];
+}
+
 async function scopedHelp() {
   const describe = async (argv: readonly string[]) => {
     let output = '';
@@ -84,6 +126,8 @@ try {
     registeredStatus: await registeredStatus(),
     uninitializedStatus: await uninitializedStatus(),
     foregroundRun: await foregroundRun(),
+    multiRepoRootResolve: await multiRepoRootResolve(),
+    multiRepoRootRunWithoutRepositories: await multiRepoRootRunWithoutRepositories(),
     scopedHelp: await scopedHelp(),
   }));
 } finally {

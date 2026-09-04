@@ -68,6 +68,10 @@ function runtimeErrorCode(error: unknown, command: 'resolve' | 'run'): WtmErrorC
       || error.code === 'WTM_TEMPLATE_UNRESOLVED'
       || error.code === 'RUNTIME_PORT_UNAVAILABLE'
       || error.code === 'RUNTIME_START_FAILED'
+      // Standing outside every worktree WTM knows about -- including a multi-repo workspace
+      // root that is not itself a Git repository -- is not a configuration defect, so it must
+      // survive this mapping rather than being folded into `WTM_CONFIG_INVALID`.
+      || error.code === 'WTM_WORKSPACE_NOT_FOUND'
     ) return error.code;
   }
   return command === 'run' ? 'RUNTIME_START_FAILED' : 'WTM_CONFIG_INVALID';
