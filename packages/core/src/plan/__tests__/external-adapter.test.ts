@@ -14,11 +14,16 @@ import {
   type ExternalAdapterCleanupState,
   type ExternalAdapterInvocation,
 } from '../external-adapter';
+import { trustedFileTrustPolicy } from './file-trust-fixture';
 
 const adapters: FakeAdapter[] = [];
 
 function invokeExternalAdapter(input: ExternalAdapterInvocation): Promise<unknown> {
-  return invokeAdapterDirectly({ runtimeInvocation: developmentRuntimeInvocation(), ...input });
+  return invokeAdapterDirectly({
+    runtimeInvocation: developmentRuntimeInvocation(),
+    fileTrust: trustedFileTrustPolicy(),
+    ...input,
+  });
 }
 const descriptorAuditScenarioPath = fileURLToPath(new URL('./descriptor-audit.scenario.ts', import.meta.url));
 
@@ -46,7 +51,9 @@ describe('external adapter bridge', () => {
       adapter: { id: 'fake', name: 'Fake', version: '1.0.0', kind: 'custom', provides: [] },
     });
     const trust = createAdapterTrustStore();
-    await trustRepositoryAdapter(trust, { adapterId: 'fake', executablePath: adapter.executablePath });
+    await trustRepositoryAdapter(
+      trust, { adapterId: 'fake', executablePath: adapter.executablePath }, trustedFileTrustPolicy(),
+    );
 
     expect(await adapterFailure(invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
@@ -63,7 +70,9 @@ describe('external adapter bridge', () => {
       adapter: { id: 'fake', name: 'Fake', version: '1.0.0', kind: 'custom', provides: [] },
     });
     const trust = createAdapterTrustStore();
-    await trustRepositoryAdapter(trust, { adapterId: 'fake', executablePath: adapter.executablePath });
+    await trustRepositoryAdapter(
+      trust, { adapterId: 'fake', executablePath: adapter.executablePath }, trustedFileTrustPolicy(),
+    );
 
     expect(await adapterFailure(invokeExternalAdapter({
       adapterId: 'fake', executablePath: adapter.executablePath, repositoryRoot: adapter.root,
@@ -336,7 +345,7 @@ describe('external adapter bridge', () => {
     const trust = createAdapterTrustStore();
 
     try {
-      await trustRepositoryAdapter(trust, { adapterId: 'fake', executablePath });
+      await trustRepositoryAdapter(trust, { adapterId: 'fake', executablePath }, trustedFileTrustPolicy());
       expect(await invokeExternalAdapter({
         adapterId: 'fake', executablePath, repositoryRoot: root,
         operation: 'metadata', trust,
@@ -614,7 +623,9 @@ async function fakeAdapter(response: unknown): Promise<FakeAdapter> {
 
 async function trusted(adapter: FakeAdapter) {
   const trust = createAdapterTrustStore();
-  await trustRepositoryAdapter(trust, { adapterId: 'fake', executablePath: adapter.executablePath });
+  await trustRepositoryAdapter(
+    trust, { adapterId: 'fake', executablePath: adapter.executablePath }, trustedFileTrustPolicy(),
+  );
   return trust;
 }
 
@@ -634,7 +645,9 @@ async function declaredAdapter(body: string, hashbang = '#!/usr/bin/env node'): 
 
 async function trustedScript(adapter: DeclaredAdapter) {
   const trust = createAdapterTrustStore();
-  await trustRepositoryAdapter(trust, { adapterId: 'fake', executablePath: adapter.executablePath });
+  await trustRepositoryAdapter(
+    trust, { adapterId: 'fake', executablePath: adapter.executablePath }, trustedFileTrustPolicy(),
+  );
   return trust;
 }
 

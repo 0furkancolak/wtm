@@ -17,6 +17,7 @@ import {
   openTrustedAdapterDescriptor,
   type TrustedAdapterDescriptor,
 } from './adapter-trust';
+import { defaultCoreFileTrustPolicy, type FileTrustPolicy } from '../file-trust-policy';
 
 const defaultTimeoutMs: Readonly<Record<AdapterOperation, number>> = {
   metadata: 1_000,
@@ -43,6 +44,9 @@ export interface ExternalAdapterInvocation {
   maxOutputBytes?: number;
   runtimeInvocation?: RuntimeInvocation;
   hooks?: ExternalAdapterHooks;
+  /** Defaults to `defaultCoreFileTrustPolicy` (POSIX-only); composition roots on other platforms
+   * inject their own port implementation the same way `trustRepositoryAdapter` already does. */
+  fileTrust?: FileTrustPolicy;
 }
 
 export interface RuntimeInvocation {
@@ -117,7 +121,7 @@ export async function invokeExternalAdapter(input: ExternalAdapterInvocation): P
     const descriptor = await openTrustedAdapterDescriptor(input.trust, {
       adapterId: input.adapterId,
       executablePath: input.executablePath,
-    });
+    }, input.fileTrust ?? defaultCoreFileTrustPolicy);
     try {
       await input.hooks?.afterVerification?.();
       await input.hooks?.beforeSpawn?.();

@@ -3,6 +3,7 @@ import { createFakeAdapter } from '../../../../testkit/src/fake-adapter';
 import { developmentRuntimeInvocation } from '../../../../testkit/src/runtime-invocation';
 import { createAdapterTrustStore, trustRepositoryAdapter } from '../adapter-trust';
 import { invokeExternalAdapter } from '../external-adapter';
+import { trustedFileTrustPolicy } from './file-trust-fixture';
 
 const response = {
   protocol: { major: 1, minor: 0 },
@@ -11,7 +12,9 @@ const response = {
 const adapter = await createFakeAdapter({ type: 'response', response });
 const trust = createAdapterTrustStore();
 try {
-  await trustRepositoryAdapter(trust, { adapterId: 'fake', executablePath: adapter.executablePath });
+  await trustRepositoryAdapter(
+    trust, { adapterId: 'fake', executablePath: adapter.executablePath }, trustedFileTrustPolicy(),
+  );
   let afterVerificationRan = false;
   let snapshotArtifactSeen = false;
   const actual = await invokeExternalAdapter({
@@ -25,6 +28,7 @@ try {
       },
     },
     runtimeInvocation: developmentRuntimeInvocation(),
+    fileTrust: trustedFileTrustPolicy(),
   });
   process.stdout.write(`${JSON.stringify({ afterVerificationRan, snapshotArtifactSeen, response: actual })}\n`);
 } finally {

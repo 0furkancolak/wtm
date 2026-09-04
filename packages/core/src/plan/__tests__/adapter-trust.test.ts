@@ -3,6 +3,7 @@ import { chmod, realpath, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createFakeAdapter, type FakeAdapter } from '../../../../testkit/src/fake-adapter';
 import { createAdapterTrustStore, trustRepositoryAdapter } from '../adapter-trust';
+import { trustedFileTrustPolicy } from './file-trust-fixture';
 
 const adapters: FakeAdapter[] = [];
 
@@ -17,7 +18,9 @@ test('keeps adapter ID, canonical path, SHA-256, and trusted time in the injecte
   await symlink(adapter.executablePath, alias);
 
   const store = createAdapterTrustStore();
-  const record = await trustRepositoryAdapter(store, { adapterId: 'fake', executablePath: alias });
+  const record = await trustRepositoryAdapter(
+    store, { adapterId: 'fake', executablePath: alias }, trustedFileTrustPolicy(),
+  );
 
   expect(record).toMatchObject({
     adapterId: 'fake',
@@ -35,7 +38,7 @@ test('refuses to trust a regular file that is not executable', async () => {
 
   await expect(trustRepositoryAdapter(createAdapterTrustStore(), {
     adapterId: 'fake', executablePath: adapter.executablePath,
-  })).rejects.toThrow('External adapter executable is not executable.');
+  }, trustedFileTrustPolicy())).rejects.toThrow('External adapter executable is not executable.');
 });
 
 test('records the exact single-file declaration while execution-time resolution guards sibling modules', async () => {
@@ -52,7 +55,7 @@ test('records the exact single-file declaration while execution-time resolution 
 
   await expect(trustRepositoryAdapter(createAdapterTrustStore(), {
     adapterId: 'fake', executablePath: adapter.executablePath,
-  })).resolves.toMatchObject({ adapterId: 'fake' });
+  }, trustedFileTrustPolicy())).resolves.toMatchObject({ adapterId: 'fake' });
 });
 
 test('rejects a non-exact Node 24 hashbang declaration', async () => {
@@ -67,5 +70,5 @@ test('rejects a non-exact Node 24 hashbang declaration', async () => {
 
   await expect(trustRepositoryAdapter(createAdapterTrustStore(), {
     adapterId: 'fake', executablePath: adapter.executablePath,
-  })).rejects.toThrow('External adapter executable format is unsupported.');
+  }, trustedFileTrustPolicy())).rejects.toThrow('External adapter executable format is unsupported.');
 });

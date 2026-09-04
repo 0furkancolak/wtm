@@ -3,6 +3,7 @@ import { createFakeAdapter, type FakeAdapter } from '../../../../testkit/src/fak
 import { developmentRuntimeInvocation } from '../../../../testkit/src/runtime-invocation';
 import { createAdapterTrustStore, trustRepositoryAdapter } from '../adapter-trust';
 import { invokeExternalAdapter } from '../external-adapter';
+import { trustedFileTrustPolicy } from './file-trust-fixture';
 
 const adapters: FakeAdapter[] = [];
 
@@ -19,7 +20,9 @@ describe('guarded adapter child runtime invocation', () => {
     const adapter = await createFakeAdapter({ type: 'response', response });
     adapters.push(adapter);
     const trust = createAdapterTrustStore();
-    await trustRepositoryAdapter(trust, { adapterId: 'fake', executablePath: adapter.executablePath });
+    await trustRepositoryAdapter(
+      trust, { adapterId: 'fake', executablePath: adapter.executablePath }, trustedFileTrustPolicy(),
+    );
 
     const originalPath = process.env.PATH;
     process.env.PATH = '';
@@ -31,6 +34,7 @@ describe('guarded adapter child runtime invocation', () => {
         operation: 'metadata',
         trust,
         runtimeInvocation: developmentRuntimeInvocation(),
+        fileTrust: trustedFileTrustPolicy(),
       })).toEqual(response);
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
