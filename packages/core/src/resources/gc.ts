@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, link, lstat, mkdir, readdir, rename, rmdir, unlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import {
+  withRepositoryOperationLease,
+  type ProcessStartTimeReader,
+  type RepositoryOperationLeaseStore,
+} from '../analysis/operation-lease';
 import { defaultCoreFileTrustPolicy, type FileTrustPolicy } from '../file-trust-policy';
 import { pinInode, type InodePin, type ResourceGuard } from './guard';
 
@@ -114,6 +119,24 @@ export interface GcHooks {
   beforeContainerCleanup?(containerPath: string): Promise<void> | void;
 }
 
+/**
+ * How `applyGcPlan`'s destructive path serializes against the other operations that can destroy
+ * repository state — `remove`, and in the future `repair`.
+ *
+ * A GC plan is scoped to one resource sandbox, which lives under a workspace rather than under
+ * any one repository (`packages/cli/src/commands/resource-production.ts` builds it from
+ * `<workspaceRoot>/.resources`), so there is no single repository a plan is inherently "for". The
+ * caller — the one place that still knows which repositories share this workspace — names them
+ * here, and every one of them is held for the apply so that a `remove` or a future `repair` on
+ * any of them cannot race this GC. A workspace with no registered repository has nothing to
+ * protect, and `repositoryIds` is simply empty then.
+ */
+export interface GcRepositoryLeaseInput {
+  store: RepositoryOperationLeaseStore;
+  readProcessStartTime: ProcessStartTimeReader;
+  repositoryIds: readonly string[];
+}
+
 export interface ApplyGcOptions {
   guard: ResourceGuard;
   apply?: boolean;
@@ -123,6 +146,8 @@ export interface ApplyGcOptions {
   maxEntries?: number;
   maxDepth?: number;
   fileTrust?: FileTrustPolicy;
+  /** Omitting this runs the apply without repository-operation serialization. Dry runs never need it. */
+  repositoryLease?: GcRepositoryLeaseInput;
 }
 
 export interface RecoverGcOptions {
@@ -188,6 +213,25 @@ export async function applyGcPlan(plan: GcPlan, options: ApplyGcOptions): Promis
   const fileTrust = options.fileTrust ?? defaultCoreFileTrustPolicy;
   await assertSandboxIdentity(plan.sandbox, fileTrust);
 
+  const runCandidates = (): Promise<void> =>
+    applyGcCandidates(plan, options, dryRun, items, maxEntries, maxDepth, fileTrust);
+  if (!dryRun && options.repositoryLease !== undefined && options.repositoryLease.repositoryIds.length > 0) {
+    await withRepositoryGcLeases(options.repositoryLease, runCandidates);
+  } else {
+    await runCandidates();
+  }
+  return { dryRun, items };
+}
+
+async function applyGcCandidates(
+  plan: GcPlan,
+  options: ApplyGcOptions,
+  dryRun: boolean,
+  items: GcItemResult[],
+  maxEntries: number,
+  maxDepth: number,
+  fileTrust: FileTrustPolicy,
+): Promise<void> {
   for (const candidate of plan.candidates) {
     let phase: 'validation' | GcJournalPhase = 'validation';
     let quarantinePath: string | undefined;
@@ -387,7 +431,34 @@ export async function applyGcPlan(plan: GcPlan, options: ApplyGcOptions): Promis
       await pin?.close();
     }
   }
-  return { dryRun, items };
+}
+
+/**
+ * Holds every repository this GC's workspace registers, one nested lease at a time, so a run that
+ * needs more than one behaves like a run that needs one: either all of them are held before
+ * `body` starts, or none are, and a colliding `remove`/`repair`/`gc` on any single one refuses the
+ * whole apply rather than leaving it holding a partial set.
+ */
+async function withRepositoryGcLeases(lease: GcRepositoryLeaseInput, body: () => Promise<void>): Promise<void> {
+  await acquireGcLeases(lease, [...lease.repositoryIds], body);
+}
+
+async function acquireGcLeases(
+  lease: GcRepositoryLeaseInput,
+  remaining: readonly string[],
+  body: () => Promise<void>,
+): Promise<void> {
+  const [repositoryId, ...rest] = remaining;
+  if (repositoryId === undefined) {
+    await body();
+    return;
+  }
+  await withRepositoryOperationLease({
+    store: lease.store,
+    readProcessStartTime: lease.readProcessStartTime,
+    repositoryId,
+    operation: 'gc',
+  }, () => acquireGcLeases(lease, rest, body));
 }
 
 export const executeGcPlan = applyGcPlan;
