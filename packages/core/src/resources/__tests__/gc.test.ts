@@ -13,6 +13,7 @@ import {
   type GcLeaseCoordinator,
   type ResourceSandboxIdentity,
 } from '../gc';
+import { createFakeFileTrust } from './file-trust-fixture';
 
 const roots: string[] = [];
 
@@ -32,11 +33,13 @@ async function fixture() {
     id: 'sandbox-1', root: sandboxRoot, generation: 'generation-1',
     dev: sandboxStat.dev, ino: sandboxStat.ino, uid: sandboxStat.uid,
   };
+  const fileTrust = createFakeFileTrust();
   const guard = await createResourceGuard({
     sandboxRoot, workspaceRoot, repositoryRoots: [workspaceRoot],
     git: { async isTracked() { return false; } },
+    fileTrust,
   });
-  return { root, workspaceRoot, sandboxRoot, sandbox, guard };
+  return { root, workspaceRoot, sandboxRoot, sandbox, guard, fileTrust };
 }
 
 async function evidence(
@@ -113,12 +116,12 @@ describe('safe resource GC', () => {
   });
 
   test('defaults to dry-run, performs identical guards, and writes no lease/journal/filesystem state', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'stale');
     await writeFile(target, 'stale');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
     const coordination = memoryCoordination();
-    const result = await applyGcPlan(plan, { guard, lease: coordination.lease, journal: coordination.journal });
+    const result = await applyGcPlan(plan, { guard, fileTrust, lease: coordination.lease, journal: coordination.journal });
     expect(result.dryRun).toBe(true);
     expect(result.items).toEqual([{ storageObjectId: 'object-stale', path: target, outcome: 'would-delete' }]);
     expect(await readFile(target, 'utf8')).toBe('stale');
@@ -127,41 +130,41 @@ describe('safe resource GC', () => {
   });
 
   test('quarantines exact identity, journals every phase, and repeated apply is idempotent', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'stale');
     await mkdir(target, { mode: 0o700 });
     await writeFile(join(target, 'data'), 'data');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
     const coordination = memoryCoordination();
     const first = await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
     });
     expect(first.items[0]?.outcome).toBe('deleted');
     expect(coordination.phases).toEqual(['prepared', 'prepared', 'quarantined', 'deleting', 'deleted', 'finalized']);
     expect(await lstat(target).catch(() => null)).toBeNull();
 
     const second = await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
     });
     expect(second.items[0]?.outcome).toBe('already-absent');
   });
 
   test('leases and finalizes an already-absent apply candidate instead of leaving stale state', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'absent');
     await writeFile(target, 'old');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
     await rm(target);
     const coordination = memoryCoordination();
     const result = await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
     });
     expect(result.items[0]?.outcome).toBe('already-absent');
     expect(coordination.phases).toEqual(['prepared', 'finalized']);
   });
 
   test('rechecks an absent candidate immediately before finalization and preserves a late occupant', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'absent-race');
     await writeFile(target, 'old');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
@@ -171,7 +174,7 @@ describe('safe resource GC', () => {
       async beforeAbsentFinalize() { await writeFile(target, 'winner', { flag: 'wx' }); },
     } as GcHooks & { beforeAbsentFinalize(): Promise<void> };
     const result = await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal, hooks,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal, hooks,
     });
     expect(result.items[0]).toMatchObject({ outcome: 'failed', phase: 'prepared' });
     expect(await readFile(target, 'utf8')).toBe('winner');
@@ -179,7 +182,7 @@ describe('safe resource GC', () => {
   });
 
   test('replays prepared absent finalization before an impossible removed-object lease acquisition', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'prepared-absent-crash');
     await writeFile(target, 'old');
     const candidate = await evidence(sandbox, target);
@@ -206,7 +209,7 @@ describe('safe resource GC', () => {
     };
 
     const recovered = await recoverGcJournalEntry(entry, {
-      guard, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
 
     expect(recovered.outcome, JSON.stringify(recovered)).toBe('already-absent');
@@ -215,40 +218,40 @@ describe('safe resource GC', () => {
   });
 
   test('fails before quarantine when the exact cleanup reservation cannot be renewed', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'expired');
     await writeFile(target, 'old');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
     const coordination = memoryCoordination();
     coordination.lease.renew = async () => false;
     const result = await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
     });
     expect(result.items[0]).toMatchObject({ outcome: 'failed', phase: 'prepared' });
     expect(await readFile(target, 'utf8')).toBe('old');
   });
 
   test('preserves an original-path replacement created after quarantine', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'stale');
     await writeFile(target, 'old');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
     const coordination = memoryCoordination();
     await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
       hooks: { async afterQuarantine() { await writeFile(target, 'replacement', { flag: 'wx' }); } },
     });
     expect(await readFile(target, 'utf8')).toBe('replacement');
   });
 
   test('fails closed on a quarantine race and preserves structured recovery evidence', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'stale');
     await writeFile(target, 'old');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
     const coordination = memoryCoordination();
     const result = await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
       hooks: {
         async beforeQuarantine() {
           await rm(target);
@@ -270,14 +273,14 @@ describe('safe resource GC', () => {
   test.each(['file', 'directory', 'symlink'] as const)(
     'preserves a foreign %s winner created at the exact quarantine path before the final move',
     async (winnerKind) => {
-      const { root, sandbox, sandboxRoot, guard } = await fixture();
+      const { root, sandbox, sandboxRoot, guard, fileTrust } = await fixture();
       const target = join(sandboxRoot, 'winner-race');
       await writeFile(target, 'owned');
       const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
       const coordination = memoryCoordination();
       let winnerPath = '';
       const result = await applyGcPlan(plan, {
-        guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+        guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
         hooks: {
           async beforeQuarantine() {
             winnerPath = coordination.entries.at(-1)?.quarantinePath ?? '';
@@ -296,13 +299,13 @@ describe('safe resource GC', () => {
   );
 
   test('recovers a crash-left exact quarantine without touching a replacement original', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'stale');
     await writeFile(target, 'old');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
     const coordination = memoryCoordination();
     const interrupted = await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
       hooks: { async afterQuarantine() { throw new Error('simulated crash'); } },
     });
     const quarantinePath = interrupted.items[0] && 'quarantinePath' in interrupted.items[0]
@@ -313,7 +316,7 @@ describe('safe resource GC', () => {
     const entry = coordination.entries.findLast((item) => item.phase === 'quarantined');
     expect(entry).toBeDefined();
     const recovered = await recoverGcJournalEntry(entry as NonNullable<typeof entry>, {
-      guard, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
     expect(recovered.outcome, JSON.stringify(recovered)).toBe('deleted');
     expect(await readFile(target, 'utf8')).toBe('replacement');
@@ -322,7 +325,7 @@ describe('safe resource GC', () => {
   });
 
   test('recovers an exact two-link file quarantine after crashing before original unlink', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'link-prefix-crash');
     await writeFile(target, 'owned');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
@@ -331,7 +334,7 @@ describe('safe resource GC', () => {
       async afterFileLink() { throw new Error('crash after link'); },
     } as GcHooks & { afterFileLink(): Promise<void> };
     const interrupted = await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal, hooks,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal, hooks,
     });
     expect(interrupted.items[0]).toMatchObject({ outcome: 'failed', phase: 'linked' });
     const entry = coordination.entries.findLast((item) => item.phase === 'linked');
@@ -341,7 +344,7 @@ describe('safe resource GC', () => {
     expect({ same: original.dev === quarantine.dev && original.ino === quarantine.ino, links: original.nlink })
       .toEqual({ same: true, links: 2 });
     const recovered = await recoverGcJournalEntry(entry as NonNullable<typeof entry>, {
-      guard, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
     expect(recovered.outcome, JSON.stringify(recovered)).toBe('deleted');
     expect(await lstat(target).catch(() => null)).toBeNull();
@@ -349,13 +352,13 @@ describe('safe resource GC', () => {
   });
 
   test('recovers only an explicitly unlinking file topology after crashing after original unlink', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'post-unlink-crash');
     await writeFile(target, 'owned');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
     const coordination = memoryCoordination();
     const result = await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
       hooks: { async afterFileUnlink() { throw new Error('crash after exact original unlink'); } },
     });
     expect(result.items[0]).toMatchObject({ outcome: 'failed', phase: 'unlinking' });
@@ -364,7 +367,7 @@ describe('safe resource GC', () => {
     expect(await lstat(target).catch(() => null)).toBeNull();
     expect((await lstat(quarantinePath)).nlink).toBe(1);
     const recovered = await recoverGcJournalEntry(entry as NonNullable<typeof entry>, {
-      guard, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
     expect(recovered.outcome).toBe('deleted');
     expect(await lstat(quarantinePath).catch(() => null)).toBeNull();
@@ -372,7 +375,7 @@ describe('safe resource GC', () => {
 
   test('fails closed on missing or extra links in a linked recovery topology', async () => {
     for (const topology of ['missing-original', 'extra-link'] as const) {
-      const { sandbox, sandboxRoot, guard } = await fixture();
+      const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
       const target = join(sandboxRoot, `linked-${topology}`);
       await writeFile(target, 'owned');
       const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
@@ -384,41 +387,41 @@ describe('safe resource GC', () => {
           throw new Error('crash with invalid topology');
         },
       } as GcHooks & { afterFileLink(candidate: GcEvidence, quarantinePath: string): Promise<void> };
-      await applyGcPlan(plan, { guard, apply: true, lease: coordination.lease, journal: coordination.journal, hooks });
+      await applyGcPlan(plan, { guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal, hooks });
       const entry = coordination.entries.findLast((item) => item.phase === 'linked');
       const recovered = await recoverGcJournalEntry(entry as NonNullable<typeof entry>, {
-        guard, lease: coordination.lease, journal: coordination.journal,
+        guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
       });
       expect(recovered).toMatchObject({ outcome: 'failed', phase: 'linked' });
     }
   });
 
   test('resumes a prepared empty container and removes only its exact recorded inode', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'prepared-container');
     await writeFile(target, 'owned');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
     const coordination = memoryCoordination();
     await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
       hooks: { async afterContainerCreated() { throw new Error('crash after container'); } },
     });
     const entry = coordination.entries.findLast((item) => item.phase === 'prepared' && item.quarantineContainer !== null);
     const recovered = await recoverGcJournalEntry(entry as NonNullable<typeof entry>, {
-      guard, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
     expect(recovered.outcome).toBe('deleted');
     expect(await lstat(entry?.quarantineContainer?.path as string).catch(() => null)).toBeNull();
   });
 
   test('preserves a swapped quarantine container and retries a crash during exact finalized cleanup', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const swappedTarget = join(sandboxRoot, 'swapped-container');
     await writeFile(swappedTarget, 'owned');
     const swappedPlan = buildGcPlan({ sandbox, records: [await evidence(sandbox, swappedTarget)], now: '2026-08-28T01:00:00.000Z' });
     const swappedCoordination = memoryCoordination();
     await applyGcPlan(swappedPlan, {
-      guard, apply: true, lease: swappedCoordination.lease, journal: swappedCoordination.journal,
+      guard, fileTrust, apply: true, lease: swappedCoordination.lease, journal: swappedCoordination.journal,
       hooks: { async afterQuarantine() { throw new Error('crash after quarantine'); } },
     });
     const swappedEntry = swappedCoordination.entries.findLast((item) => item.phase === 'quarantined');
@@ -427,7 +430,7 @@ describe('safe resource GC', () => {
     await rename(containerPath, movedContainer);
     await mkdir(containerPath, { mode: 0o700 });
     const swappedRecovery = await recoverGcJournalEntry(swappedEntry as NonNullable<typeof swappedEntry>, {
-      guard, lease: swappedCoordination.lease, journal: swappedCoordination.journal,
+      guard, fileTrust, lease: swappedCoordination.lease, journal: swappedCoordination.journal,
     });
     expect(swappedRecovery.outcome).toBe('failed');
     expect(await lstat(containerPath)).toBeDefined();
@@ -438,35 +441,35 @@ describe('safe resource GC', () => {
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
     const coordination = memoryCoordination();
     await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
       hooks: { async beforeContainerCleanup() { throw new Error('crash during cleanup'); } },
     });
     const finalized = coordination.entries.findLast((item) => item.phase === 'finalized');
     const firstRecovery = await recoverGcJournalEntry(finalized as NonNullable<typeof finalized>, {
-      guard, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
       hooks: { async beforeContainerCleanup() { throw new Error('repeat cleanup crash'); } },
     });
     expect(firstRecovery.outcome).toBe('failed');
     expect(await lstat(finalized?.quarantineContainer?.path as string)).toBeDefined();
     const secondRecovery = await recoverGcJournalEntry(finalized as NonNullable<typeof finalized>, {
-      guard, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
     expect(secondRecovery.outcome).toBe('already-absent');
     expect(await lstat(finalized?.quarantineContainer?.path as string).catch(() => null)).toBeNull();
     const repeatedRecovery = await recoverGcJournalEntry(finalized as NonNullable<typeof finalized>, {
-      guard, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
     expect(repeatedRecovery.outcome).toBe('already-absent');
   });
 
   test('cleans a finalized recorded container when the original path holds an unrelated replacement', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'finalized-replacement');
     await writeFile(target, 'old');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
     const coordination = memoryCoordination();
     const interrupted = await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
       hooks: {
         async afterQuarantine() { await writeFile(target, 'replacement', { flag: 'wx' }); },
         async beforeContainerCleanup() { throw new Error('crash after atomic finalization'); },
@@ -479,7 +482,7 @@ describe('safe resource GC', () => {
     expect(await lstat(finalized?.quarantineContainer?.path as string)).toBeDefined();
 
     const recovered = await recoverGcJournalEntry(finalized as NonNullable<typeof finalized>, {
-      guard, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
 
     expect(recovered.outcome, JSON.stringify(recovered)).toBe('already-absent');
@@ -487,7 +490,7 @@ describe('safe resource GC', () => {
     expect(await lstat(finalized?.quarantineContainer?.path as string).catch(() => null)).toBeNull();
 
     const repeatedRecovery = await recoverGcJournalEntry(finalized as NonNullable<typeof finalized>, {
-      guard, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
 
     expect(repeatedRecovery.outcome, JSON.stringify(repeatedRecovery)).toBe('already-absent');
@@ -495,7 +498,7 @@ describe('safe resource GC', () => {
   });
 
   test('stops recursive apply deletion before the next mutation when lease renewal is lost', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'slow-tree');
     await mkdir(target);
     for (let index = 0; index < 8; index += 1) await writeFile(join(target, `${index}.txt`), String(index));
@@ -504,7 +507,7 @@ describe('safe resource GC', () => {
     let renewals = 0;
     coordination.lease.renew = async () => ++renewals < 3;
     const result = await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
     });
     expect(result.items[0]).toMatchObject({ outcome: 'failed', phase: 'deleting' });
     const quarantinePath = coordination.entries.findLast((entry) => entry.phase === 'deleting')?.quarantinePath as string;
@@ -512,27 +515,27 @@ describe('safe resource GC', () => {
   });
 
   test('renews during recovery deletion and leaves exact quarantine evidence when ownership is lost', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'recovery-heartbeat');
     await mkdir(target);
     for (let index = 0; index < 4; index += 1) await writeFile(join(target, `${index}.txt`), String(index));
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
     const coordination = memoryCoordination();
     await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
       hooks: { async afterQuarantine() { throw new Error('crash before delete'); } },
     });
     const entry = coordination.entries.findLast((item) => item.phase === 'quarantined');
     coordination.lease.renew = async () => false;
     const recovered = await recoverGcJournalEntry(entry as NonNullable<typeof entry>, {
-      guard, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
     expect(recovered).toMatchObject({ outcome: 'failed', phase: 'deleting' });
     expect(await lstat(entry?.quarantinePath as string)).toBeDefined();
   });
 
   test('recovers the all-absent legacy deleting prefix without recorded container identity', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'legacy-deleting-crash');
     await writeFile(target, 'old');
     const candidate = await evidence(sandbox, target);
@@ -555,7 +558,7 @@ describe('safe resource GC', () => {
     };
 
     const recovered = await recoverGcJournalEntry(entry, {
-      guard, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
 
     expect(recovered.outcome, JSON.stringify(recovered)).toBe('deleted');
@@ -563,7 +566,7 @@ describe('safe resource GC', () => {
   });
 
   test('rejects legacy deleting replay outside the quarantine trust boundary', async () => {
-    const { root, sandbox, sandboxRoot, guard } = await fixture();
+    const { root, sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'unsafe-legacy-deleting-crash');
     await writeFile(target, 'old');
     const candidate = await evidence(sandbox, target);
@@ -585,7 +588,7 @@ describe('safe resource GC', () => {
     };
 
     const recovered = await recoverGcJournalEntry(entry, {
-      guard, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
 
     expect(recovered).toMatchObject({
@@ -597,7 +600,7 @@ describe('safe resource GC', () => {
   });
 
   test('rejects all-absent deleting evidence with a modern recorded container identity', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'modern-deleting-crash');
     await writeFile(target, 'old');
     const candidate = await evidence(sandbox, target);
@@ -630,7 +633,7 @@ describe('safe resource GC', () => {
     };
 
     const recovered = await recoverGcJournalEntry(entry, {
-      guard, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
 
     expect(recovered).toMatchObject({ outcome: 'failed', phase: 'deleting' });
@@ -638,13 +641,13 @@ describe('safe resource GC', () => {
   });
 
   test('finalizes an exact quarantined journal when deletion completed before the deleted phase was recorded', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'delete-crash');
     await writeFile(target, 'old');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-08-28T01:00:00.000Z' });
     const coordination = memoryCoordination();
     const interrupted = await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
       hooks: { async afterQuarantine() { throw new Error('crash before delete'); } },
     });
     const quarantinePath = interrupted.items[0] && 'quarantinePath' in interrupted.items[0]
@@ -653,7 +656,7 @@ describe('safe resource GC', () => {
     const entry = coordination.entries.findLast((item) => item.phase === 'quarantined');
     await rm(quarantinePath as string);
     const recovered = await recoverGcJournalEntry(entry as NonNullable<typeof entry>, {
-      guard, lease: coordination.lease, journal: coordination.journal,
+      guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
     expect(recovered.outcome).toBe('deleted');
     expect(coordination.phases.slice(-2)).toEqual(['deleted', 'finalized']);

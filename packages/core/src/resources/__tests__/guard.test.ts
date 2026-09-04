@@ -9,6 +9,7 @@ import {
   createResourceGuard,
   type GitTrackingInspector,
 } from '../guard';
+import { createFakeFileTrust } from './file-trust-fixture';
 
 const roots: string[] = [];
 
@@ -30,6 +31,7 @@ async function fixture(tracked: readonly string[] = []) {
       return trackedSet.has(candidate);
     },
   };
+  const fileTrust = createFakeFileTrust();
   const guard = await createResourceGuard({
     sandboxRoot,
     workspaceRoot,
@@ -37,8 +39,9 @@ async function fixture(tracked: readonly string[] = []) {
     gitDirectoryPaths: [join(workspaceRoot, '.git'), join(root, 'external.git')],
     homeDirectory: homedir(),
     git,
+    fileTrust,
   });
-  return { root, workspaceRoot, sandboxRoot, guard };
+  return { root, workspaceRoot, sandboxRoot, guard, fileTrust };
 }
 
 describe('resource sandbox guard', () => {
@@ -107,6 +110,7 @@ describe('resource sandbox guard', () => {
           return tracked.some((path) => path === candidate || path.startsWith(`${candidate}/`));
         },
       },
+      fileTrust: createFakeFileTrust(),
     });
     await expect(guard.authorize(join(sandboxRoot, 'missing[1].txt'), 'delete')).rejects.toMatchObject({
       code: 'RESOURCE_TRACKED_FILE_PROTECTED',
@@ -128,7 +132,12 @@ describe('resource sandbox guard', () => {
       '-C', workspaceRoot, 'update-index', '--add', '--cacheinfo',
       `160000,${'1'.repeat(40)},.wtm-resources/vendor`,
     ], { stdio: 'ignore' });
-    const guard = await createResourceGuard({ sandboxRoot, workspaceRoot, repositoryRoots: [workspaceRoot] });
+    const guard = await createResourceGuard({
+      sandboxRoot,
+      workspaceRoot,
+      repositoryRoots: [workspaceRoot],
+      fileTrust: createFakeFileTrust(),
+    });
     await expect(guard.authorize(join(sandboxRoot, 'vendor', 'missing', 'cache'), 'delete')).rejects.toMatchObject({
       code: 'RESOURCE_TRACKED_FILE_PROTECTED',
     });
@@ -142,6 +151,7 @@ describe('resource sandbox guard', () => {
       workspaceRoot,
       repositoryRoots: [workspaceRoot],
       git: { async isTracked() { return tracked; } },
+      fileTrust: createFakeFileTrust(),
     });
     const token = await guard.authorize(join(sandboxRoot, 'candidate'), 'delete');
     tracked = true;
@@ -164,14 +174,19 @@ describe('resource sandbox guard', () => {
   });
 
   test('rejects a hardlinked mutation leaf and unsafe writable parents', async () => {
-    const { guard, sandboxRoot } = await fixture();
+    const { guard, sandboxRoot, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'owned');
     const alias = join(sandboxRoot, 'alias');
     await writeFile(target, 'data');
     await link(target, alias);
     await expect(guard.authorize(target, 'delete')).rejects.toMatchObject({ code: 'RESOURCE_PATH_DENIED' });
 
+    // `chmod` documents the scenario being modelled -- a sandbox root that became group/world
+    // writable -- but the fake `FileTrustPolicy` never reads real mode bits (see
+    // `file-trust-fixture.ts`), so the rejection is driven by the explicit `denyOwnerOnlyWrite`
+    // marker, the same signal a real Windows ACL read would produce for this directory.
     await chmod(sandboxRoot, 0o777);
+    await fileTrust.denyOwnerOnlyWrite(sandboxRoot);
     await expect(guard.authorize(join(sandboxRoot, 'next'), 'write')).rejects.toMatchObject({
       code: 'RESOURCE_PATH_DENIED',
     });

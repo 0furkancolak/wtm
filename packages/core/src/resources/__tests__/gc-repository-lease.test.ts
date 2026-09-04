@@ -25,6 +25,7 @@ import {
   type GcLeaseCoordinator,
   type ResourceSandboxIdentity,
 } from '../gc';
+import { createFakeFileTrust } from './file-trust-fixture';
 
 const roots: string[] = [];
 
@@ -44,11 +45,13 @@ async function fixture() {
     id: 'sandbox-1', root: sandboxRoot, generation: 'generation-1',
     dev: sandboxStat.dev, ino: sandboxStat.ino, uid: sandboxStat.uid,
   };
+  const fileTrust = createFakeFileTrust();
   const guard = await createResourceGuard({
     sandboxRoot, workspaceRoot, repositoryRoots: [workspaceRoot],
     git: { async isTracked() { return false; } },
+    fileTrust,
   });
-  return { sandbox, sandboxRoot, guard };
+  return { sandbox, sandboxRoot, guard, fileTrust };
 }
 
 async function evidence(sandbox: ResourceSandboxIdentity, path: string): Promise<GcEvidence> {
@@ -155,7 +158,7 @@ const readProcessStartTime: ProcessStartTimeReader = async () => 'Mon Sep  1 09:
 
 describe('applyGcPlan repository-operation-lease wiring', () => {
   test('refuses a second "gc" on the same repository while the first apply is still running', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'absent');
     await writeFile(target, 'old');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-09-01T00:00:00.000Z' });
@@ -176,7 +179,7 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
     };
 
     const result = await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal, hooks,
+      guard, apply: true, lease: coordination.lease, journal: coordination.journal, hooks, fileTrust,
       repositoryLease: { store, readProcessStartTime, repositoryIds: ['repository-1'] },
     });
 
@@ -188,7 +191,7 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
   });
 
   test('releases the repository lease once apply finishes, so the next gc can take it', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'absent');
     await writeFile(target, 'old');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-09-01T00:00:00.000Z' });
@@ -197,7 +200,7 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
     const store = createFakeRepositoryLeaseStore();
 
     await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, apply: true, lease: coordination.lease, journal: coordination.journal, fileTrust,
       repositoryLease: { store, readProcessStartTime, repositoryIds: ['repository-1'] },
     });
 
@@ -210,7 +213,7 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
   });
 
   test('a dry run never touches the repository lease store', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'stale');
     await writeFile(target, 'stale');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-09-01T00:00:00.000Z' });
@@ -219,6 +222,7 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
 
     const result = await applyGcPlan(plan, {
       guard,
+      fileTrust,
       repositoryLease: {
         store, readProcessStartTime: async (pid) => { readerCalls += 1; return readProcessStartTime(pid); },
         repositoryIds: ['repository-1'],
@@ -232,7 +236,7 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
   });
 
   test('an empty repository list applies without ever acquiring a lease', async () => {
-    const { sandbox, sandboxRoot, guard } = await fixture();
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
     const target = join(sandboxRoot, 'stale');
     await writeFile(target, 'stale');
     const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-09-01T00:00:00.000Z' });
@@ -240,7 +244,7 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
     const store = createFakeRepositoryLeaseStore();
 
     const result = await applyGcPlan(plan, {
-      guard, apply: true, lease: coordination.lease, journal: coordination.journal,
+      guard, apply: true, lease: coordination.lease, journal: coordination.journal, fileTrust,
       repositoryLease: { store, readProcessStartTime, repositoryIds: [] },
     });
 

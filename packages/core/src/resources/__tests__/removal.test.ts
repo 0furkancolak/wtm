@@ -6,6 +6,14 @@ import { createGitSafetyFixture } from '../../../../testkit/src/git-fixture';
 import type { ResourceConfig } from '../../config/schema';
 import { ResourcePathGuardError } from '../guard';
 import { cleanupWorktreeEphemeralResources } from '../removal';
+import { createFakeFileTrust } from './file-trust-fixture';
+
+/**
+ * Shared across every test below: none of them exercise a deliberately untrusted scenario, so one
+ * default-trusted fixture (see `file-trust-fixture.ts`) is all any of them need, and none of them
+ * ever call its `deny*` methods, so there is nothing for one test to leak into another.
+ */
+const fileTrust = createFakeFileTrust();
 
 const fixtures: GitSafetyFixture[] = [];
 
@@ -37,6 +45,7 @@ test('deletes an isolated directory so the worktree Git sees is clean again', as
   const result = await cleanupWorktreeEphemeralResources({
     worktreeRoot: fixture.linkedWorktreePath,
     resources: declare({ cache: { path: '.wtm-cache', policy: 'isolated' } }),
+    fileTrust,
   });
 
   expect(result.collected).toBe(1);
@@ -57,6 +66,7 @@ test('retains a shared resource with its reason and leaves it on disk', async ()
   const result = await cleanupWorktreeEphemeralResources({
     worktreeRoot: fixture.linkedWorktreePath,
     resources: declare({ node_modules: { path: 'node_modules', policy: 'shared' } }),
+    fileTrust,
   });
 
   expect(result.collected).toBe(0);
@@ -76,6 +86,7 @@ test('unlinks a symlink resource without touching what it points at', async () =
   const result = await cleanupWorktreeEphemeralResources({
     worktreeRoot: fixture.linkedWorktreePath,
     resources: declare({ env: { path: '.env', policy: 'symlink', source: '{main.root}/.env' } }),
+    fileTrust,
   });
 
   expect(result.collected).toBe(1);
@@ -91,6 +102,7 @@ test('running twice succeeds, the second run reporting the target already absent
   const input = {
     worktreeRoot: fixture.linkedWorktreePath,
     resources: declare({ cache: { path: '.wtm-cache', policy: 'isolated' } }),
+    fileTrust,
   };
 
   const first = await cleanupWorktreeEphemeralResources(input);
@@ -117,6 +129,7 @@ test('refuses a path that resolves outside the worktree and deletes nothing at a
       cache: { path: '.wtm-cache', policy: 'isolated' },
       escape: { path: '../escape', policy: 'isolated' },
     }),
+    fileTrust,
   }).catch((error: unknown) => error);
 
   expect(failure).toBeInstanceOf(ResourcePathGuardError);
@@ -137,6 +150,7 @@ test('refuses a path with a .git component and deletes nothing at all', async ()
       cache: { path: '.wtm-cache', policy: 'isolated' },
       hook: { path: '.git/wtm', policy: 'ephemeral' },
     }),
+    fileTrust,
   }).catch((error: unknown) => error);
 
   expect(failure).toBeInstanceOf(ResourcePathGuardError);
@@ -153,6 +167,7 @@ test('refuses a Git-tracked file declared as a resource, and the file survives',
   const failure = await cleanupWorktreeEphemeralResources({
     worktreeRoot: fixture.linkedWorktreePath,
     resources: declare({ source: { path: 'feature.txt', policy: 'copy', source: '{main.root}/feature.txt' } }),
+    fileTrust,
   }).catch((error: unknown) => error);
 
   expect(failure).toBeInstanceOf(ResourcePathGuardError);
@@ -179,6 +194,7 @@ test('reports every retained resource in the shape the removal report carries', 
       store: { path: externalPath, policy: 'external' },
       logs: { path: 'logs', policy: 'ignore' },
     }),
+    fileTrust,
   });
 
   expect(result.collected).toBe(1);

@@ -4,7 +4,9 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symli
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TemplateContext } from '../../templates/resolve';
+import type { FileTrustPolicy } from '../../file-trust-policy';
 import { inspectResources, prepareResources } from '../preparation';
+import { createFakeFileTrust } from './file-trust-fixture';
 
 const roots: string[] = [];
 
@@ -49,11 +51,12 @@ async function workspace(): Promise<Place> {
   };
 }
 
-const declare = (place: Place, resources: object) => ({
+const declare = (place: Place, resources: object, fileTrust: FileTrustPolicy = createFakeFileTrust()) => ({
   resources: resources as never,
   context: place.context,
   worktreeRoot: place.worktree,
   workspaceRoot: place.root,
+  fileTrust,
 });
 
 const link = { path: '.env', policy: 'symlink', source: '{main.root}/.env' } as const;
@@ -165,12 +168,19 @@ describe('prepareResources', () => {
   test('a world-writable directory on the way is refused', async () => {
     const place = await workspace();
     await writeFile(join(place.main, '.env'), 'A=1\n');
-    await mkdir(join(place.worktree, 'shared'));
-    await chmod(join(place.worktree, 'shared'), 0o777);
+    const shared = join(place.worktree, 'shared');
+    await mkdir(shared);
+    // `chmod` documents the scenario -- a directory that became group/world writable -- but the
+    // fake `FileTrustPolicy` never reads real mode bits (see `file-trust-fixture.ts`), so the
+    // rejection below is driven by the explicit `denyOwnerOnlyWrite` marker, the same signal a
+    // real Windows ACL read would produce for this directory.
+    await chmod(shared, 0o777);
+    const fileTrust = createFakeFileTrust();
+    await fileTrust.denyOwnerOnlyWrite(shared);
 
     const [prepared] = await prepareResources(declare(place, {
       env: { path: 'shared/.env', policy: 'symlink', source: '{main.root}/.env' },
-    }));
+    }, fileTrust));
 
     expect(prepared?.state).toBe('degraded');
     expect(prepared?.detail).toContain('world-writable');
