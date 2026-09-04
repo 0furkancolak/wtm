@@ -7,12 +7,20 @@ function stat(overrides: Partial<NodeJsStats>): NodeJsStats {
 }
 
 describe('posixFileTrustPolicy', () => {
-  test('isOwnedByCurrentUser is true only when stat.uid matches the real current uid', async () => {
-    const currentUid = process.getuid?.();
-    if (currentUid === undefined) throw new Error('this suite requires process.getuid()');
-    await expect(posixFileTrustPolicy.isOwnedByCurrentUser(stat({ uid: currentUid }), '/x')).resolves.toBe(true);
-    await expect(posixFileTrustPolicy.isOwnedByCurrentUser(stat({ uid: currentUid + 1 }), '/x')).resolves.toBe(false);
-  });
+  // `process.getuid()` is undefined on Windows: there is no real uid for this test to compare
+  // stat.uid against, and `posixFileTrustPolicy` is the POSIX (darwin/linux) backend anyway —
+  // the same reasoning `darwin-process.test.ts`'s "against this machine" block and
+  // `launchd.test.ts`'s plutil check use for a test whose premise needs a capability this host
+  // may not have.
+  test.skipIf(process.getuid === undefined)(
+    'isOwnedByCurrentUser is true only when stat.uid matches the real current uid',
+    async () => {
+      const currentUid = process.getuid?.();
+      if (currentUid === undefined) throw new Error('this suite requires process.getuid()');
+      await expect(posixFileTrustPolicy.isOwnedByCurrentUser(stat({ uid: currentUid }), '/x')).resolves.toBe(true);
+      await expect(posixFileTrustPolicy.isOwnedByCurrentUser(stat({ uid: currentUid + 1 }), '/x')).resolves.toBe(false);
+    },
+  );
 
   test('isWritableOnlyByOwner applies exactly the mask it is given, not a fixed one', async () => {
     // 0o022: no group/other *write*. Group-read-only (0o740) still satisfies it.

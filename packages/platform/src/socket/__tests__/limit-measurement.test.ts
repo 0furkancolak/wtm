@@ -84,7 +84,11 @@ function measure(): Report {
   return report;
 }
 
-describe('sizeof(sun_path), measured on this host', () => {
+// `sizeof(sun_path)` is a POSIX kernel fact; Windows has no Unix domain socket to measure (the
+// daemon addresses it over a named pipe there instead), and `hostPlatform()` above would only
+// throw for a host this suite has no measurement for. Skip the whole sweep on win32 rather than
+// let that throw stand in for a real gate.
+(process.platform !== 'win32' ? describe : describe.skip)('sizeof(sun_path), measured on this host', () => {
   test('the sweep ran under Node, whose limit is the platform\'s, and not under Bun, whose is its own', () => {
     const report = measure();
 

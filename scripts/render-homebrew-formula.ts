@@ -30,7 +30,13 @@ export function renderHomebrewFormula(input: HomebrewFormulaInput): string {
     ARM64_SHA256: digest(input, 'arm64Sha256'),
     X64_SHA256: digest(input, 'x64Sha256'),
   };
+  // The template is a checked-out git file, and without a repository-wide `.gitattributes`
+  // pinning line endings, a host whose git converts on checkout (an actual win32 host's default)
+  // hands this `\r\n`. The rendered formula is a build artifact, not a copy of whatever bytes
+  // checkout happened to produce, so it is normalized to `\n` the same way regardless of host —
+  // the same reasoning as this repository's repo-relative identifiers always reading `/`-joined.
   const rendered = readFileSync(templatePath, 'utf8')
+    .replace(/\r\n/g, '\n')
     .replaceAll(/\{\{([A-Z0-9_]+)\}\}/g, (placeholder, name: string) => substitutions[name] ?? placeholder);
   const leftover = /\{\{[A-Z0-9_]+\}\}/.exec(rendered);
   if (leftover !== null) throw new Error(`formula template has an unknown placeholder ${leftover[0]}`);

@@ -157,14 +157,25 @@ interface Violation {
   text: string;
 }
 
+/**
+ * A repository-relative file identifier is a logical name, not a filesystem path — it is
+ * compared against the literal, forward-slash exception list below and printed in a violation
+ * report, so it must read the same on every host. `path.relative`/`path.join` disagree: they use
+ * the host separator, which is a backslash on an actual win32 host. Without this normalization
+ * every already-reviewed exception below stops matching on Windows and reappears as "new".
+ */
+function toPosixPath(value: string): string {
+  return sep === '/' ? value : value.split(sep).join('/');
+}
+
 /** This file names every forbidden literal in order to forbid it, so it cannot scan itself. */
-const selfPath = relative(repositoryRoot, fileURLToPath(import.meta.url));
+const selfPath = toPosixPath(relative(repositoryRoot, fileURLToPath(import.meta.url)));
 
 async function scannedFiles(): Promise<string[]> {
   const found: string[] = [];
   for (const root of scannedRoots) await collect(join(repositoryRoot, root), found);
   return found
-    .map((path) => relative(repositoryRoot, path))
+    .map((path) => toPosixPath(relative(repositoryRoot, path)))
     .filter((path) => path !== selfPath)
     .sort();
 }
@@ -218,10 +229,12 @@ test('the guard actually looks at the packages it claims to', async () => {
   // roots, and to have read comments rather than only code.
   expect(files.length).toBeGreaterThan(50);
   for (const root of scannedRoots) {
-    expect(files.some((file) => file.startsWith(`${root}${sep}`))).toBe(true);
+    // `scannedFiles()` always reports forward-slash identifiers (see `toPosixPath`), regardless
+    // of the host's own separator, so the check here is against a literal, not `sep`.
+    expect(files.some((file) => file.startsWith(`${root}/`))).toBe(true);
   }
-  expect(files).toContain(join('packages', 'core', 'src', 'analysis', 'operation-lease.ts'));
-  expect(files).toContain(join('packages', 'protocol', 'src', 'errors.ts'));
+  expect(files).toContain('packages/core/src/analysis/operation-lease.ts');
+  expect(files).toContain('packages/protocol/src/errors.ts');
   expect(files).not.toContain(selfPath);
 });
 

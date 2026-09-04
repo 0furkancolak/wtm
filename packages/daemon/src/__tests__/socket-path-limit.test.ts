@@ -71,7 +71,13 @@ async function missing(path: string): Promise<boolean> {
   catch { return true; }
 }
 
-describe('daemon socket path preflight', () => {
+// `socket-path.ts` measures a Unix domain socket's `sun_path` byte limit, a POSIX-only concept.
+// Windows addresses the daemon over a named pipe instead (see `windowsPlatformPaths.socketRoot`
+// in `packages/platform/src/paths/platform-paths.ts`), so there is no `sun_path` limit for this
+// suite to preflight against, and `UnixIpcServer`/`createProductionDaemon` are not the code path
+// a Windows host runs. Only the tests below that actually bind on this host are gated; the
+// cross-platform derivation check further down injects its platforms and needs no gate.
+(process.platform !== 'win32' ? describe : describe.skip)('daemon socket path preflight', () => {
   test('the IPC server refuses a path past the limit before it binds anything', async () => {
     const directory = await directoryForSocketBytes(hostLimitBytes + 1);
     const socketPath = join(directory, daemonSocketFileName);
@@ -120,12 +126,15 @@ describe('daemon socket path preflight', () => {
     expect((failure as DaemonSocketPathTooLongError).code).toBe('WTM_SOCKET_PATH_TOO_LONG');
     expect(await missing(dataRoot)).toBe(true);
   });
+});
 
+describe('daemon socket path derivation', () => {
   test('the factory derives the socket path from the shared definition, on either platform', () => {
     // Named platforms rather than this host. The claim — that the socket path is
     // `publishedDaemonSocketPath` applied to whatever the platform calls its socket root — is as
     // true of the platform this suite is not running on, and asking the host would have made the
-    // expected value follow the answer instead of pinning it.
+    // expected value follow the answer instead of pinning it. Unlike the preflight tests above,
+    // nothing here binds a real socket, so it runs on every host, Windows included.
     //
     // Linux is the leg with teeth. Its socket root is not its data root, so a factory that went
     // back to `join(dataRoot, daemonSocketFileName)` would still satisfy the macOS line above.

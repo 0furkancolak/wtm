@@ -142,9 +142,13 @@ describe('SEA executable assembly', () => {
     const stripped = indexOf(({ command }) => command === '/usr/bin/strip');
     expect(recording.commands[stripped])
       .toEqual({ command: '/usr/bin/strip', args: ['-x', '-S', result.executable] });
+    // `args[0]` here is a real filesystem path built with `join`, which uses the host's own
+    // separator — a backslash on an actual win32 host — so the suffix compared against has to
+    // use `join` too, rather than a forward-slash literal that would only ever match on POSIX.
+    const postjectCli = join('node_modules', 'postject', 'dist', 'cli.js');
     expect(stripped).toBeLessThan(indexOf(({ args }) => args[0] === '--remove-signature'));
     expect(indexOf(({ args }) => args[0] === '--remove-signature'))
-      .toBeLessThan(indexOf(({ args }) => args[0]?.endsWith('postject/dist/cli.js') === true));
+      .toBeLessThan(indexOf(({ args }) => args[0]?.endsWith(postjectCli) === true));
   });
 
   test('re-signs under one identifier, so macOS knows every build as the same program', async () => {

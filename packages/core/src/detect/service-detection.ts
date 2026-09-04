@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises';
-import { basename, join, relative } from 'node:path';
+import { basename, join, relative, sep } from 'node:path';
+import { join as joinPosix } from 'node:path/posix';
 import { corsVariablePattern } from '../runtime/cors';
 import { readComposeFile, type ComposeService } from './compose';
 import { readEnvDeclarations, type EnvDeclaration } from './declarations';
@@ -112,13 +113,16 @@ interface LinkCandidate {
 
 async function readRepository(workspaceRoot: string, repository: DetectionRepository): Promise<RepositoryDraft> {
   const root = repository.root;
-  const path = relative(workspaceRoot, root) || '.';
+  // A repository-relative identifier is a logical name, not a filesystem path: it is reported,
+  // compared, and matched in `wtm.toml`, so it always reads the same regardless of host, the
+  // same way git always reports `/`-separated worktree paths.
+  const path = toPosixPath(relative(workspaceRoot, root)) || '.';
   const declarations = await readEnvDeclarations(root);
   const manifest = await readPackageManifest(root);
   const compose = await readComposeFile(root);
   const makefilePort = await readMakefilePort(root);
 
-  const evidence = (file: string, detail: string): DetectionEvidence => ({ file: join(path, file), detail });
+  const evidence = (file: string, detail: string): DetectionEvidence => ({ file: joinPosix(path, file), detail });
   const composeSelf = compose?.services.find((service) => service.name === basename(root));
   const port = detectPort({
     declarations,
@@ -389,6 +393,11 @@ function numericValue(value: string | null | undefined): number | null {
   if (value === undefined || value === null || !/^\d{1,5}$/.test(value)) return null;
   const port = Number(value);
   return port >= 1 && port <= 65_535 ? port : null;
+}
+
+/** `path.relative`/`path.join` use the host separator; a repo-relative identifier never should. */
+function toPosixPath(value: string): string {
+  return sep === '/' ? value : value.split(sep).join('/');
 }
 
 async function readTextFile(path: string, maxBytes: number): Promise<string | null> {
