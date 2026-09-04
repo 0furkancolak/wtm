@@ -740,9 +740,18 @@ NTFS junction/symlink semantics
       `UnixSocketPublisher` (server.ts'in hardlink/chmod/uid dansı, davranış değişmeden taşındı)
       ile Windows `listen()` gövdesi Increment D1'de yazıldı; gerçek bir named pipe'a karşı
       doğrulanmadı (Increment D2).
-- [ ] Process supervision için Windows Job Objects veya güvenli eşdeğer.
-- [ ] Child process tree cleanup.
-- [ ] PID reuse kontrolü için process creation time.
+- [ ] Process supervision için Windows Job Objects veya güvenli eşdeğer. — güvenli eşdeğer seçildi
+      ve yazıldı: `ProcessPlatform` artık gerçek bir Windows gövdesine sahip
+      (`Get-CimInstance Win32_Process` ile kimlik/ağaç okuma, `taskkill /T /F` ile sonlandırma),
+      17 fixture testiyle kanıtlandı. Gerçek bir Windows kernel'e karşı doğrulanmadı, `win32`
+      `supportedPlatforms`'a hâlâ dahil değil — Increment D2 kapanmadan önce kalan iş. Detay:
+      `2026-09-04-windows-process-supervision.md`.
+- [ ] Child process tree cleanup. — `taskkill /PID <pgid> /T /F` yazıldı (yukarıdaki madde), kök
+      süreç ölmüşken yetim alt süreçleri de bulacak şekilde (Windows ölü parent'ın
+      `ParentProcessId`'ini temizlemiyor); gerçek bir ağaçta doğrulanmadı.
+- [ ] PID reuse kontrolü için process creation time. — `ProcessPlatform.readStartTime` Windows'ta
+      `CreationDate` (round-trip ISO) okuyor; ağaç yürüyüşü de aynı alanla parent pid yeniden
+      kullanımına karşı korunuyor (yukarıdaki madde). Gerçek bir Windows'ta ölçülmedi.
 - [ ] Windows path canonicalization.
 - [ ] Drive letter / UNC path desteği.
 - [ ] NTFS junction, symlink ve reparse point güvenliği.
@@ -773,6 +782,24 @@ NTFS junction/symlink semantics
 > named pipe'ın quarantine edilecek bir "stale" hali olmadığı bulgusuna dayanarak — sahte bir
 > `net.Server`'a karşı test edildi. Gerçek bir named pipe veya ikinci bir Windows hesabına karşı
 > kanıtlanmadı; bu hâlâ Increment D2'nin işi.
+>
+> **D2, 1. geçiş, 2026-09-04.** `ProcessPlatform` artık dördüncü bir metoda sahip:
+> `signalProcessGroup(pgid, signal)` — daha önce hiç port'a bağlı değildi, supervisor'ın kendi
+> varsayılanı doğrudan `process.kill(-pgid, signal)` çağırıyordu ve `runtime-factory.ts` bunu hiç
+> enjekte etmiyordu (gerçek bir POSIX-only sızıntı, bu geçişte kapatıldı). Windows gövdesi:
+> kimlik ve ağaç okuma `Get-CimInstance Win32_Process` ile, sonlandırma `taskkill /PID <pgid> /T
+> /F` ile — Job Object değil, `todo.md`'nin kendi "güvenli eşdeğer" izniyle seçildi, çünkü bir Job
+> Object handle'ı daemon restart sonrası tekrar sorulabilecek kalıcı bir kimlik değil. `pgid`
+> Windows'ta kernel'in tuttuğu bir şey değil; bu proje zaten her platformda `pgid === pid`
+> (lider kendi kendinin grubu) invaryantını uyguluyor, Windows bunu istismar ediyor: "grup"
+> o pid'den başlayan canlı süreç ağacı. Kök süreç ölmüşken yetim alt süreçlerin hâlâ
+> bulunabildiği ayrıca doğrulandı (Windows ölü parent'ın `ParentProcessId`'ini temizlemiyor).
+> Anchor'ın kendi inline Windows reader'ı da yazıldı (`process-anchor.ts`, `@wtm/platform`
+> import edemediği için zorunlu kopya, darwin/linux'un yanına) ve platform portuyla aynı
+> fixture JSON üzerinden aynı sonucu verdiğini kanıtlayan 3 yeni test eklendi. Toplam 20 yeni
+> test, hepsi yeşil (1306/1307). Hiçbiri gerçek bir Windows kernel'e karşı çalışmadı;
+> `supportedPlatforms` hâlâ `win32`'yi reddediyor ve Windows CI leg'i hâlâ yok — ikisi de
+> kasıtlı olarak bu geçişin dışında bırakıldı. Detay: `2026-09-04-windows-process-supervision.md`.
 
 #### Windows daemon lifecycle kararı
 

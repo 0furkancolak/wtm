@@ -416,6 +416,7 @@ describe('the production factory supervises through the runtime process port', (
         readStartTime: async () => null,
         inspectProcess: async (pid) => { inspected.push(pid); return { status: 'absent' }; },
         inspectProcessGroup: async (pgid) => { inspectedGroups.push(pgid); return { status: 'absent' }; },
+        signalProcessGroup: () => {},
       },
     };
     const dataRoot = mkdtempSync('/tmp/wtm-port-');

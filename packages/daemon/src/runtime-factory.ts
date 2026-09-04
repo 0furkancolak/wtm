@@ -172,6 +172,7 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     platform: platformRuntime.id,
     inspectProcess: async (pid) => await platformRuntime.process.inspectProcess(pid),
     inspectProcessGroup: async (pgid) => await platformRuntime.process.inspectProcessGroup(pgid),
+    signalProcessGroup: (pgid, signal) => { platformRuntime.process.signalProcessGroup(pgid, signal); },
     ...(options.gracePeriodMs === undefined ? {} : { gracePeriodMs: options.gracePeriodMs }),
     ...(options.pollIntervalMs === undefined ? {} : { pollIntervalMs: options.pollIntervalMs }),
     ...(options.onError === undefined ? {} : { onError: options.onError }),

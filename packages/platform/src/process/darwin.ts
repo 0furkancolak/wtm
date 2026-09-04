@@ -127,7 +127,17 @@ export function createDarwinProcessPlatform(
     return pids.length === 0 ? { status: 'absent' } : { status: 'present', pids };
   }
 
-  return { readStartTime, inspectProcess, inspectProcessGroup };
+  /**
+   * Moved verbatim from `ManagedProcessSupervisor`'s own default (`process-supervisor.ts`): a
+   * negative pid targets the whole POSIX process group. `process.kill` throws synchronously with
+   * `code: 'ESRCH'` when nothing answers to that pgid any more, which is the contract the port
+   * documents and every call site already relies on.
+   */
+  function signalProcessGroup(pgid: number, signal: NodeJS.Signals): void {
+    process.kill(-pgid, signal);
+  }
+
+  return { readStartTime, inspectProcess, inspectProcessGroup, signalProcessGroup };
 }
 
 function stableEnvironment(): NodeJS.ProcessEnv { return { ...process.env, LC_ALL: 'C', LANG: 'C' }; }

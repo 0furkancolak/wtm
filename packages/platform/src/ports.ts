@@ -95,6 +95,15 @@ export interface ProcessPlatform {
   readStartTime(pid: number): Promise<string | null>;
   inspectProcess(pid: number): Promise<ProcessInspection>;
   inspectProcessGroup(pgid: number): Promise<ProcessGroupInspection>;
+  /**
+   * Delivers `signal` to every member of the group, synchronously — matching `process.kill`'s own
+   * contract, which either succeeds or throws before returning, never later. Throws an error whose
+   * `code` is `'ESRCH'` when the group is already gone (spec `2026-09-04-windows-process-supervision.md`,
+   * D2): `ManagedProcessSupervisor` already distinguishes "already gone" from every other failure by
+   * that one code, and giving a Windows implementation the same shape means the call sites that
+   * make that distinction do not need a platform branch of their own.
+   */
+  signalProcessGroup(pgid: number, signal: NodeJS.Signals): void;
 }
 
 /**

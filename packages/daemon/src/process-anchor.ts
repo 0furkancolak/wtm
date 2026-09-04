@@ -39,6 +39,18 @@ export interface AnchorReaderSpec {
    * captured one, which is the only way the Linux reader can be exercised from a macOS machine.
    */
   procRoot?: string;
+  /**
+   * Only the compiled-in-a-test path sets this. There is no captured-directory equivalent for a
+   * single PowerShell command's JSON output the way `procRoot` gives the Linux reader one, so a
+   * test substitutes the command itself. `compileAnchorReaders` hands `spec` to the compiled
+   * function directly rather than through `JSON.stringify`/`JSON.parse` (unlike the real anchor's
+   * `WTM_ANCHOR_SPEC` environment variable, which only ever carries `platform`), so a function
+   * value survives here in a way it could not on the production path.
+   */
+  windowsQueryRunner?: (
+    script: string,
+    callback: (error: unknown, stdout: string | null, selfPid?: number) => void,
+  ) => void;
 }
 
 /**
@@ -226,8 +238,128 @@ function createAnchorReaders(spec) {
     }
   };
 
+  // windowsProcessFieldsSelect/windowsOneProcessScript/windowsAllProcessesScript/
+  // parseWindowsProcessList, from platform/src/process/windows.ts. CreationDate is asked for in
+  // round-trip ('o') format for the same reason the port asks for it that way: PowerShell's default
+  // ConvertTo-Json serialization of a DateTime is the ambiguous '/Date(...)/ ' shape, not a string
+  // this code would want to parse.
+  function windowsProcessFieldsSelect() {
+    return "@{n='ProcessId';e={$_.ProcessId}}, @{n='ParentProcessId';e={$_.ParentProcessId}}, "
+      + "@{n='CreationDate';e={ if ($_.CreationDate) { $_.CreationDate.ToString('o') } else { '' } }}, "
+      + "@{n='Name';e={$_.Name}}, @{n='CommandLine';e={$_.CommandLine}}";
+  }
+  function windowsOneProcessScript(pid) {
+    return "$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process -Filter 'ProcessId=" + pid + "' | "
+      + 'Select-Object ' + windowsProcessFieldsSelect() + ' | ConvertTo-Json -Compress';
+  }
+  function windowsAllProcessesScript() {
+    return "$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | "
+      + 'Select-Object ' + windowsProcessFieldsSelect() + ' | ConvertTo-Json -Compress';
+  }
+  function parseWindowsProcessList(stdout) {
+    const trimmed = stdout.trim();
+    if (trimmed.length === 0) return [];
+    let parsed;
+    try { parsed = JSON.parse(trimmed); } catch (error) { return null; }
+    const entries = Array.isArray(parsed) ? parsed : [parsed];
+    const records = [];
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object') continue;
+      if (typeof entry.ProcessId !== 'number' || typeof entry.ParentProcessId !== 'number') continue;
+      if (typeof entry.CreationDate !== 'string' || typeof entry.Name !== 'string') continue;
+      records.push({
+        ProcessId: entry.ProcessId,
+        ParentProcessId: entry.ParentProcessId,
+        CreationDate: entry.CreationDate,
+        Name: entry.Name,
+        CommandLine: typeof entry.CommandLine === 'string' ? entry.CommandLine : ''
+      });
+    }
+    return records;
+  }
+
+  /**
+   * Only the compiled-in-a-test path sets spec.windowsQueryRunner (see AnchorReaderSpec's own doc
+   * comment); a real anchor spawns powershell.exe for real and reports its own pid back as the
+   * third callback argument. readGroupMembers needs that pid — see its own comment below — and
+   * readIdentity ignores it, since asking about its own pid is the point there, not something to
+   * exclude.
+   */
+  function runWindowsQuery(script, callback) {
+    if (typeof spec.windowsQueryRunner === 'function') return spec.windowsQueryRunner(script, callback);
+    const child = childProcess.execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf8', timeout: 5000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024
+    }, function (error, stdout) {
+      callback(error, error ? null : stdout, child.pid);
+    });
+  }
+
+  // walkWindowsTree, from platform/src/process/windows.ts's inspectProcessGroup: walked from the
+  // direct children of pgid rather than from pgid's own record, and not gated on that record
+  // existing, because the root can have already exited while its children linger as orphans (D2:
+  // Windows never clears a dead parent's declared ParentProcessId). selfPid drops the transient
+  // powershell.exe this very query spawned — when the anchor asks about its own tree, that process
+  // is briefly a real child of the anchor and the snapshot necessarily catches it mid-execution, the
+  // same reason the darwin reader above excludes its own ps child.
+  function walkWindowsTree(records, pgid, selfPid) {
+    const byPid = {};
+    for (const record of records) byPid[record.ProcessId] = record;
+    const childrenByParent = {};
+    for (const record of records) {
+      if (record.ProcessId === record.ParentProcessId || record.ProcessId === selfPid) continue;
+      const list = childrenByParent[record.ParentProcessId] || (childrenByParent[record.ParentProcessId] = []);
+      list.push(record);
+    }
+    const root = byPid[pgid];
+    const pids = root ? [pgid] : [];
+    const queue = [];
+    const rootCreationDate = root ? root.CreationDate : '';
+    for (const child of (childrenByParent[pgid] || [])) {
+      if (child.CreationDate !== '' && rootCreationDate !== '' && child.CreationDate < rootCreationDate) continue;
+      pids.push(child.ProcessId);
+      queue.push(child);
+    }
+    while (queue.length > 0) {
+      const parent = queue.shift();
+      const children = childrenByParent[parent.ProcessId] || [];
+      for (const child of children) {
+        if (child.CreationDate !== '' && parent.CreationDate !== '' && child.CreationDate < parent.CreationDate) continue;
+        pids.push(child.ProcessId);
+        queue.push(child);
+      }
+    }
+    return pids;
+  }
+
+  const windows = {
+    readIdentity(callback) {
+      runWindowsQuery(windowsOneProcessScript(process.pid), function (error, stdout) {
+        if (error) return callback(error, null);
+        const records = parseWindowsProcessList(stdout);
+        if (records === null) return callback(new Error('POWERSHELL_PARSE_FAILED'), null);
+        const match = records.find(function (record) { return record.ProcessId === process.pid; });
+        if (!match) return callback(new Error('ANCHOR_SELF_NOT_FOUND'), null);
+        callback(null, {
+          pid: process.pid,
+          pgid: process.pid,
+          processStartTime: match.CreationDate,
+          commandFingerprint: commandFingerprint(match.Name, match.CommandLine)
+        });
+      });
+    },
+    readGroupMembers(pgid, callback) {
+      runWindowsQuery(windowsAllProcessesScript(), function (error, stdout, selfPid) {
+        if (error) return callback(error, null);
+        const records = parseWindowsProcessList(stdout);
+        if (records === null) return callback(new Error('POWERSHELL_PARSE_FAILED'), null);
+        callback(null, walkWindowsTree(records, pgid, selfPid));
+      });
+    }
+  };
+
   if (spec.platform === 'darwin') return darwin;
   if (spec.platform === 'linux') return linux;
+  if (spec.platform === 'win32') return windows;
   // The supervisor always names one. A missing or unknown value is not a reason to fall back on
   // asking the machine — asking is exactly what D1 forbids — so the anchor fails to identify
   // itself, which the supervisor already reads as ANCHOR_HANDSHAKE_INVALID and rolls back.

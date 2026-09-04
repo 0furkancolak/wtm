@@ -176,7 +176,15 @@ export function createLinuxProcessPlatform(
     return pids.length === 0 ? { status: 'absent' } : { status: 'present', pids };
   }
 
-  return { readStartTime, inspectProcess, inspectProcessGroup };
+  /**
+   * Moved verbatim from `ManagedProcessSupervisor`'s own default: Linux process groups are POSIX
+   * process groups like macOS's, so the same negative-pid signal reaches every member.
+   */
+  function signalProcessGroup(pgid: number, signal: NodeJS.Signals): void {
+    process.kill(-pgid, signal);
+  }
+
+  return { readStartTime, inspectProcess, inspectProcessGroup, signalProcessGroup };
 }
 
 /**

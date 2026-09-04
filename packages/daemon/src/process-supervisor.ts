@@ -166,7 +166,7 @@ export class ManagedProcessSupervisor {
     this.#pollIntervalMs = positiveInteger(options.pollIntervalMs ?? 25, 'Process poll interval');
     this.#inspectProcess = options.inspectProcess ?? inspectProcess;
     this.#inspectGroup = options.inspectProcessGroup ?? inspectProcessGroup;
-    this.#signalGroup = options.signalProcessGroup ?? ((pgid, signal) => process.kill(-pgid, signal));
+    this.#signalGroup = options.signalProcessGroup ?? signalProcessGroup;
     this.#now = options.now ?? (() => new Date());
     this.#onError = options.onError ?? (() => {});
     this.#anchorIgnoresAbort = options.anchorIgnoresAbort ?? false;
@@ -664,6 +664,10 @@ export async function inspectProcessIdentity(pid: number): Promise<ProcessIdenti
 
 export async function inspectProcessGroup(pgid: number): Promise<ProcessGroupInspection> {
   return await hostProcessPlatform().inspectProcessGroup(pgid);
+}
+
+export function signalProcessGroup(pgid: number, signal: NodeJS.Signals): void {
+  hostProcessPlatform().signalProcessGroup(pgid, signal);
 }
 
 function identityMatches(record: ManagedProcessRecord, identity: ProcessIdentity): boolean {

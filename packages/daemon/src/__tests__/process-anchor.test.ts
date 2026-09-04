@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { selectPlatformRuntime } from '@wtm/platform';
 import type { ObservedProcessIdentity, PlatformId, ProcessInspection } from '@wtm/platform/ports';
-import { createLinuxProcessPlatform } from '@wtm/platform/process';
+import { createLinuxProcessPlatform, createWindowsProcessPlatform } from '@wtm/platform/process';
 import { developmentRuntimeInvocation } from '../../../testkit/src/runtime-invocation';
 import {
   bootTime, groupStats, initStat, parenthesisedCommCmdline, parenthesisedCommComm,
@@ -181,6 +181,84 @@ describe('the anchor reads a process exactly as the platform port reads it', () 
 
     expect(await readGroupMembers(compileAnchorReaders({ platform: 'linux', procRoot }), 6))
       .toEqual([6, 8, 9, 10]);
+  });
+});
+
+/**
+ * D2 (`2026-09-04-windows-process-supervision.md`). There is no live Windows process to read here
+ * and no captured-directory fixture the way `/proc` gives the Linux reader one — the anchor's own
+ * `spec.windowsQueryRunner` test seam substitutes the command instead, and both sides of the drift
+ * check are fed the exact same captured `Get-CimInstance` JSON.
+ */
+function windowsRecord(overrides: Partial<{
+  ProcessId: number; ParentProcessId: number; CreationDate: string; Name: string; CommandLine: string;
+}> = {}): Record<string, unknown> {
+  return {
+    ProcessId: 4321,
+    ParentProcessId: 10,
+    CreationDate: '2026-09-04T08:00:00.0000000-07:00',
+    Name: 'wtm.exe',
+    CommandLine: 'wtm.exe __wtm_internal_anchor cafebabe',
+    ...overrides,
+  };
+}
+
+function windowsJson(...records: Array<Record<string, unknown>>): string {
+  return records.length === 1 ? JSON.stringify(records[0]) : JSON.stringify(records);
+}
+
+describe('the anchor reads a Windows process exactly as the platform port reads it', () => {
+  test('agrees with the platform port about a live process', async () => {
+    const json = windowsJson(windowsRecord({ ProcessId: process.pid }));
+    const port = createWindowsProcessPlatform({ runQuery: async () => ({ stdout: json }) });
+    const readers = compileAnchorReaders({
+      platform: 'win32',
+      windowsQueryRunner: (_script, callback) => { callback(null, json); },
+    });
+
+    const portIdentity = presentIdentity(await port.inspectProcess(process.pid));
+    const anchorIdentity = await readIdentity(readers);
+
+    expect(anchorIdentity).toEqual(portIdentity);
+  });
+
+  test('agrees with the platform port about group membership, orphan included', async () => {
+    const root = windowsRecord({ ProcessId: 100, ParentProcessId: 4 });
+    const child = windowsRecord({
+      ProcessId: 101, ParentProcessId: 100, CreationDate: '2026-09-04T08:00:01.0000000-07:00', Name: 'node.exe',
+    });
+    const orphanGrandchild = windowsRecord({
+      ProcessId: 102, ParentProcessId: 101, CreationDate: '2026-09-04T08:00:02.0000000-07:00', Name: 'child.exe',
+    });
+    const json = windowsJson(root, child, orphanGrandchild);
+    const port = createWindowsProcessPlatform({ runQuery: async () => ({ stdout: json }) });
+    const readers = compileAnchorReaders({
+      platform: 'win32',
+      windowsQueryRunner: (_script, callback) => { callback(null, json); },
+    });
+
+    const portInspection = await port.inspectProcessGroup(100);
+    const anchorMembers = await readGroupMembers(readers, 100);
+
+    expect(portInspection).toEqual({ status: 'present', pids: [100, 101, 102] });
+    expect(anchorMembers).toEqual([100, 101, 102]);
+  });
+
+  test('excludes the transient query process from its own tree', async () => {
+    const root = windowsRecord({ ProcessId: process.pid, ParentProcessId: 4 });
+    const child = windowsRecord({ ProcessId: process.pid + 1, ParentProcessId: process.pid, Name: 'task.exe' });
+    // The powershell.exe this very query would have spawned in production, briefly a real child of
+    // the anchor by the time the snapshot was taken — not a member of the tree the anchor supervises.
+    const transientQuery = windowsRecord({
+      ProcessId: 99_999, ParentProcessId: process.pid, Name: 'powershell.exe',
+    });
+    const json = windowsJson(root, child, transientQuery);
+    const readers = compileAnchorReaders({
+      platform: 'win32',
+      windowsQueryRunner: (_script, callback) => { callback(null, json, 99_999); },
+    });
+
+    expect(await readGroupMembers(readers, process.pid)).toEqual([process.pid, process.pid + 1]);
   });
 });
 
