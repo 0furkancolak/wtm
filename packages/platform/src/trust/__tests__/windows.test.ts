@@ -48,6 +48,13 @@ describe('createWindowsFileTrustPolicy', () => {
     await expect(policy.isOwnedByCurrentUser(stat(), 'C:\\x')).resolves.toBe(false);
   });
 
+  test('isOwnedByCurrentUser accepts a trusted principal as owner, not just the current user', async () => {
+    for (const trustedSid of windowsTrustedPrincipalSids) {
+      const policy = policyWith({ ownerSid: trustedSid, accessRules: [] });
+      await expect(policy.isOwnedByCurrentUser(stat(), 'C:\\x')).resolves.toBe(true);
+    }
+  });
+
   test('0o077 (no access at all): an extra Allow rule for any non-trusted principal fails it, even read-only', async () => {
     const policy = policyWith({
       ownerSid,

@@ -11,7 +11,7 @@
  * increment's premise is that the two backends differ only where the platforms do.
  */
 import { execFile, type ExecException } from 'node:child_process';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path/posix';
 import { linuxPlatformPaths } from '../paths';
 import { createLinuxProcessPlatform } from '../process';
 import type { ServiceDefinitionOptions } from '../ports';

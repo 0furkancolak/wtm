@@ -50,12 +50,11 @@ import type {
 } from './types';
 
 /**
- * `text.ts`'s shared `assertAbsolutePath` calls the default `node:path`'s `isAbsolute`, which is
- * `node:path/posix` on every host except an actual `win32` process — it would reject every real
- * Windows path (`C:\...`) on this macOS development machine. This is the win32-aware equivalent,
- * local to this file rather than added to the shared one: `text.ts` is imported by the darwin and
- * linux backends too, and POSIX paths tested on a POSIX host is exactly the case the shared
- * function is already correct for.
+ * `text.ts`'s shared `assertAbsolutePath` now pins `node:path/posix` explicitly (D2, after a real
+ * `windows-latest` leg proved the opposite direction of this file's own original concern: darwin
+ * and linux's POSIX paths broken by running on an actual Windows host, not Windows paths broken by
+ * running on a POSIX one). That makes it permanently wrong for this backend's own `C:\...` paths,
+ * so this is the win32-aware equivalent, local to this file rather than added to the shared one.
  */
 function assertAbsoluteWindowsPath(path: string, label: string): void {
   assertPrintableValue(path, label);

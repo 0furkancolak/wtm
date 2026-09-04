@@ -6,8 +6,16 @@
  * control character that one renderer rejects and the other escapes is a difference nobody
  * intended. The names lost their `Xml` spelling in the move: the rule was never about XML, it is
  * about what may appear in a file another program parses.
+ *
+ * Both sharing backends -- darwin and linux -- only ever hand this POSIX paths, so `isAbsolute`
+ * and `resolve` are pinned to `node:path/posix` rather than the default, which is `win32` on an
+ * actual Windows host. A real `windows-latest` leg (D2) is what caught the default import: it made
+ * `darwin.ts`'s own launchd tests fail the moment they ran there, since a POSIX `HOME` like
+ * `/Users/A & B` does not round-trip through `win32.resolve`. `./windows.ts` keeps its own
+ * win32-pinned `assertAbsoluteWindowsPath` rather than sharing this one, for the same reason in
+ * reverse.
  */
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path/posix';
 import { configurationError } from './errors';
 
 /** What is retained of a service manager's own output when it is reported back to a user. */

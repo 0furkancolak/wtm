@@ -79,7 +79,16 @@ export function createWindowsFileTrustPolicy(options: WindowsFileTrustPolicyOpti
   async function isOwnedByCurrentUser(_stat: NodeJsStats, path: string): Promise<boolean> {
     const [acl, currentSid] = await Promise.all([readAcl(path), currentUserSid()]);
     if (acl === undefined || currentSid === null) return false;
-    return acl.ownerSid === currentSid;
+    if (acl.ownerSid === currentSid) return true;
+    // A directory the current process itself just created can still come back owned by
+    // `S-1-5-32-544` (Administrators) rather than the process's own SID: Windows assigns
+    // ownership of objects an administrator creates to the Administrators group by default,
+    // and GitHub's `windows-latest` runners run exactly this way. A real CI run surfaced this
+    // (D2) -- every unit fixture here had only ever asserted a *named user* owner, which this
+    // never is on that host. The same trusted-principal carve-out `isWritableOnlyByOwner`
+    // already applies to access rules belongs on ownership too, for the same reason `root`
+    // is implicitly trusted by a POSIX mode check: a well-known SID is not a security gap.
+    return windowsTrustedPrincipalSids.includes(acl.ownerSid);
   }
 
   /**

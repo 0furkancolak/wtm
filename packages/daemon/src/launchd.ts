@@ -29,7 +29,7 @@
  * can observe. It goes when the test does, in C2.
  */
 import { homedir } from 'node:os';
-import { dirname } from 'node:path';
+import { dirname } from 'node:path/posix';
 import {
   ServiceLifecycleError,
   darwinServiceBackend,

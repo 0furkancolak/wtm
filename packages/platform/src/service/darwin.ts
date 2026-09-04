@@ -14,7 +14,7 @@
 import { execFile, type ExecException } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path/posix';
 import { darwinPlatformPaths } from '../paths';
 import type { ServiceDefinitionOptions } from '../ports';
 import { ServiceLifecycleError, configurationError } from './errors';

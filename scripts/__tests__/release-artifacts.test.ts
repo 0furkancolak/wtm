@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildReleaseArtifacts,
@@ -46,7 +46,7 @@ describe('release archive assembly', () => {
     const result = await buildReleaseArtifacts(host);
 
     expect(releaseArchiveFiles).toEqual(['wtm', 'LICENSE', 'NOTICE', 'THIRD_PARTY_LICENSES.md']);
-    expect(recording.copies.map(({ destination }) => destination.split('/').at(-1)))
+    expect(recording.copies.map(({ destination }) => basename(destination)))
       .toEqual([...releaseArchiveFiles]);
     expect(recording.modes).toContainEqual({
       path: join(root, 'dist/release/.stage/wtm'),
