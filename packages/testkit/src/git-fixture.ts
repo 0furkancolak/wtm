@@ -4,6 +4,29 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 
+let isolatedGlobalConfigPath: Promise<string> | null = null;
+
+/**
+ * A real, empty-of-user-config file to point `GIT_CONFIG_GLOBAL` at, memoized process-wide.
+ *
+ * The isolation this replaces pointed `GIT_CONFIG_GLOBAL` at `/dev/null` — nonexistent on
+ * Windows, where git cannot open it as a config file at all. A real file fixes that, and having
+ * one gives isolation a second job: git refuses to operate in a repository whose ownership looks
+ * "dubious" (`safe.directory`) unless that directory is allow-listed, and a temp directory a test
+ * just created can trip that check depending on the host's account/mount setup — confirmed by a
+ * real `windows-latest` CI run, where every fixture-created repository failed this way. Writing
+ * `[safe] directory = *` here allow-lists every path for the isolated environment these fixtures
+ * already run git under, without touching the real user's own global config on any platform.
+ */
+async function isolatedGlobalConfig(): Promise<string> {
+  isolatedGlobalConfigPath ??= (async () => {
+    const path = join(await realpath(tmpdir()), 'wtm-testkit-isolated.gitconfig');
+    await writeFile(path, '[safe]\n\tdirectory = *\n');
+    return path;
+  })();
+  return isolatedGlobalConfigPath;
+}
+
 const execFileAsync = promisify(execFile);
 const gitRepositoryRoutingVariables = [
   'GIT_DIR',
@@ -57,7 +80,7 @@ export async function createGitWorktreeFixture(): Promise<GitWorktreeFixture> {
   const cleanup = () => rm(directory, { recursive: true, force: true });
 
   try {
-    await execFileAsync('git', ['init', '--initial-branch=main', repoPath], { env: isolatedGitEnvironment() });
+    await execFileAsync('git', ['init', '--initial-branch=main', repoPath], { env: await isolatedGitEnvironment() });
     await git(repoPath, ['config', 'user.name', 'WTM Test']);
     await git(repoPath, ['config', 'user.email', 'wtm-test@example.invalid']);
     await writeFile(join(repoPath, 'README.md'), 'fixture\n');
@@ -91,9 +114,9 @@ export async function createGitSafetyFixture(): Promise<GitSafetyFixture> {
 
   try {
     await execFileAsync('git', ['init', '--bare', '--initial-branch=main', remotePath], {
-      env: isolatedGitEnvironment(),
+      env: await isolatedGitEnvironment(),
     });
-    await execFileAsync('git', ['init', '--initial-branch=main', repoPath], { env: isolatedGitEnvironment() });
+    await execFileAsync('git', ['init', '--initial-branch=main', repoPath], { env: await isolatedGitEnvironment() });
     await git(repoPath, ['config', 'user.name', 'WTM Test']);
     await git(repoPath, ['config', 'user.email', 'wtm-test@example.invalid']);
     await writeFile(join(repoPath, 'README.md'), 'main fixture\n');
@@ -142,7 +165,7 @@ async function runFixtureGit(
   expectedExitCodes: readonly number[] = [0],
 ): Promise<GitResult> {
   try {
-    const result = await execFileAsync('git', ['-C', repoPath, ...args], { env: isolatedGitEnvironment() });
+    const result = await execFileAsync('git', ['-C', repoPath, ...args], { env: await isolatedGitEnvironment() });
     return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
   } catch (error) {
     if (!isExecFileError(error) || !expectedExitCodes.includes(error.code)) throw error;
@@ -160,14 +183,14 @@ function isExecFileError(error: unknown): error is Error & { code: number; stdou
     && typeof error.stderr === 'string';
 }
 
-function git(repoPath: string, args: string[]) {
-  return execFileAsync('git', ['-C', repoPath, ...args], { env: isolatedGitEnvironment() });
+async function git(repoPath: string, args: string[]) {
+  return execFileAsync('git', ['-C', repoPath, ...args], { env: await isolatedGitEnvironment() });
 }
 
-function isolatedGitEnvironment(): NodeJS.ProcessEnv {
+async function isolatedGitEnvironment(): Promise<NodeJS.ProcessEnv> {
   const environment: NodeJS.ProcessEnv = {
     ...process.env,
-    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_GLOBAL: await isolatedGlobalConfig(),
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_TERMINAL_PROMPT: '0',
   };
