@@ -800,6 +800,14 @@ NTFS junction/symlink semantics
 > test, hepsi yeşil (1306/1307). Hiçbiri gerçek bir Windows kernel'e karşı çalışmadı;
 > `supportedPlatforms` hâlâ `win32`'yi reddediyor ve Windows CI leg'i hâlâ yok — ikisi de
 > kasıtlı olarak bu geçişin dışında bırakıldı. Detay: `2026-09-04-windows-process-supervision.md`.
+>
+> **CI doğrulaması, 2026-09-04.** Run `33846848105`: üç mevcut leg de (darwin arm64, darwin x64,
+> linux x64) yeşil, aynı 1306/1 sayımıyla. İlk denemede `darwin x64` 30 dakikalık job limitine
+> takılıp iptal oldu, ama log takılmanın bu geçişin hiç dokunmadığı `init.test.ts`'te olduğunu
+> gösterdi (`windows.ts`/`process-anchor.ts`/`process-supervisor.ts` import edilmiyor); düz bir
+> rerun aynı adımı 3m44s'de bitirdi — `endpoints.ts`'nin belgelediği bu leg'in kendine özgü,
+> ilgisiz flake geçmişiyle aynı kategori, bu geçişin kodundan bağımsız. Bu pass artık kapalı;
+> Increment D2'nin tamamı için `supportedPlatforms`/gerçek Windows CI leg'i hâlâ açık.
 
 #### Windows daemon lifecycle kararı
 

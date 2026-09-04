@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — 2026-09-04. The first pass of Increment D2 in `2026-08-31-v1-stable-program-map.md`
+Closed — 2026-09-04. The first pass of Increment D2 in `2026-08-31-v1-stable-program-map.md`
 (D1/D2 split, `2026-09-03-windows-trust-and-transport-seam.md`). D1 left the Windows
 `ProcessPlatform` a named, visible TODO (its own D8) because process identity and process-group
 liveness have no fixture equivalent — no captured text this file could parse the way `Get-Acl` JSON
@@ -204,7 +204,20 @@ projects), and `test` (1306 pass, 1 skip, 0 fail — 20 more than D1's closing c
 this pass's own test files) pass locally; `test:e2e`, `build`, `package:verify`, and `binary:verify`
 are unaffected by this pass's scope and were re-run to confirm.
 
-**What remains before D2 can close**: flipping `supportedPlatforms` to accept `win32`, standing up a
+CI run `33846848105` (commit `51c2480`) confirms criterion 6 beyond this one macOS host: all three
+existing legs — `darwin arm64`, `darwin x64`, `linux x64` — passed the same seven steps this pass's
+own local run did, with the same 1306-pass/1-skip/0-fail count. The first attempt's `darwin x64` leg
+stalled for the job's full 30 minutes and was cancelled, but the log shows the stall inside
+`packages/cli/src/commands/__tests__/init.test.ts` — a file this pass never touches and that imports
+none of `windows.ts`, `process-anchor.ts`, or `process-supervisor.ts` — after which a plain rerun of
+just that job passed its slow `test` step in 3m44s, matching every other run's timing. That leg has a
+documented history of unrelated stalls independent of the commit under test (`endpoints.ts`'s own
+comment on run `33774083849`); this is a second instance of the same category, not a fact about this
+pass's code, and a separate investigation into the underlying `spawnSync`-vs-inherited-stdio hazard has
+been spun off on its own rather than folded into this spec.
+
+**What remains before Increment D2 as a whole can close** (this pass is done; the increment is not):
+flipping `supportedPlatforms` to accept `win32`, standing up a
 real `windows-latest` CI leg, and fixing whatever that leg is the first to find — almost certainly
 including things well outside this pass's scope (path handling, packaging, the SEA build for `.exe`).
 D1's own rule for when a platform's acceptance may flip — "only when a real CI run can back it" —
