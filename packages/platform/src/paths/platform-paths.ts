@@ -16,7 +16,7 @@
  * not surface until C2.
  */
 import { createHash } from 'node:crypto';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join } from 'node:path/posix';
 import { isAbsolute as win32IsAbsolute, join as win32Join } from 'node:path/win32';
 import type { PlatformId, PlatformPaths, PlatformPathsInput } from '../ports';
 
@@ -90,13 +90,15 @@ export function linuxPlatformPaths({ home, env }: PlatformPathsInput): PlatformP
  * Windows version, so an environment where it is merely unset — not unusual under some service
  * contexts — still gets the layout a normal interactive session would have.
  *
- * Built with `node:path/win32`, not the default `node:path` — unlike the POSIX resolvers above,
- * whose forward-slash joins are valid on every host this suite runs on regardless of which OS the
- * test process itself is, a backslashed, drive-lettered Windows path is not something the default
- * `node:path` (which is `node:path/posix` everywhere except an actual `win32` process) can join or
- * recognise as absolute. Importing `win32` explicitly is what makes this resolver constructible
- * and testable from this macOS host at all — the same requirement C1 stated for reading `home`/
- * `env` as arguments, extended to which flavour of `path` answers "is this absolute."
+ * Built with `node:path/win32`, the same way the two POSIX resolvers above are built with
+ * `node:path/posix` rather than the default `node:path` — whose behaviour follows whatever host
+ * process happens to be running it, `win32` on an actual Windows CI runner included. A real
+ * `windows-latest` leg (Increment D2) is exactly what surfaced this: the default import made the
+ * POSIX resolvers emit backslashed paths the moment their own tests ran on that leg, once it
+ * existed to run them at all. Pinning every resolver to its own flavour explicitly is what makes
+ * all three constructible and testable from any one host — the same requirement C1 stated for
+ * reading `home`/`env` as arguments, extended to which flavour of `path` answers "is this
+ * absolute."
  */
 export function windowsPlatformPaths({ home, env }: PlatformPathsInput): PlatformPaths {
   const localAppData = win32AbsoluteOrNull(env.LOCALAPPDATA) ?? win32Join(home, 'AppData', 'Local');
