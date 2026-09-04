@@ -15,6 +15,8 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { createWindowsFileTrustPolicy } from '@wtm/platform';
+import type { FileTrustPolicy } from '@wtm/platform/ports';
 import {
   canonicalSkillPathForModule,
   createFilesystemSkillInstaller,
@@ -303,6 +305,77 @@ describe('Agent Skill command', () => {
       'Agent Skill destination contains an unsafe path component.',
     );
     expect(await exists(join(outside, 'SKILL.md'))).toBe(false);
+  });
+
+  test('refuses installation when the injected FileTrustPolicy cannot determine the current identity', async () => {
+    const root = await temporaryRoot();
+    const localSkills = join(root, 'skills');
+    const noIdentity: FileTrustPolicy = {
+      isOwnedByCurrentUser: async () => false,
+      isWritableOnlyByOwner: async () => false,
+      isNotSharedByHardLink: () => false,
+      currentIdentityAvailable: () => false,
+    };
+    const installer = createFilesystemSkillInstaller({
+      localAnchor: root,
+      localSkills,
+      globalAnchor: root,
+      globalSkills: join(root, 'global'),
+      fileTrust: noIdentity,
+    });
+
+    await expect(runSkillInstallCommand({ scope: 'local', installer })).rejects.toThrow(
+      'Agent Skill destination contains an unsafe path component.',
+    );
+    expect(await exists(join(localSkills, 'wtm', 'SKILL.md'))).toBe(false);
+  });
+
+  test('installs through a Windows-shaped ACL FileTrustPolicy that is genuinely consulted for every check', async () => {
+    const root = await temporaryRoot();
+    const localSkills = join(root, 'skills');
+    const ownerSid = 'S-1-5-21-1-2-3-1001';
+    let aclReads = 0;
+    const windowsFileTrust = createWindowsFileTrustPolicy({
+      readAcl: async () => {
+        aclReads += 1;
+        return { ownerSid, accessRules: [] };
+      },
+      currentUserSid: async () => ownerSid,
+    });
+    const installer = createFilesystemSkillInstaller({
+      localAnchor: root,
+      localSkills,
+      globalAnchor: root,
+      globalSkills: join(root, 'global'),
+      fileTrust: windowsFileTrust,
+    });
+
+    const result = await runSkillInstallCommand({ scope: 'local', installer });
+
+    expect(result).toEqual({ scope: 'local', path: join(localSkills, 'wtm', 'SKILL.md') });
+    expect(await readFile(result.path, 'utf8')).toBe(await readFile(canonicalSkillPath, 'utf8'));
+    expect(aclReads).toBeGreaterThan(0);
+  });
+
+  test('rejects installation when a Windows-shaped ACL FileTrustPolicy denies ownership of the anchor', async () => {
+    const root = await temporaryRoot();
+    const localSkills = join(root, 'skills');
+    const windowsFileTrust = createWindowsFileTrustPolicy({
+      readAcl: async () => ({ ownerSid: 'S-1-5-21-1-2-3-9999', accessRules: [] }),
+      currentUserSid: async () => 'S-1-5-21-1-2-3-1001',
+    });
+    const installer = createFilesystemSkillInstaller({
+      localAnchor: root,
+      localSkills,
+      globalAnchor: root,
+      globalSkills: join(root, 'global'),
+      fileTrust: windowsFileTrust,
+    });
+
+    await expect(runSkillInstallCommand({ scope: 'local', installer })).rejects.toThrow(
+      'Agent Skill destination contains an unsafe path component.',
+    );
+    expect(await exists(join(localSkills, 'wtm', 'SKILL.md'))).toBe(false);
   });
 });
 

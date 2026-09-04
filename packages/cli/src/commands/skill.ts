@@ -3,6 +3,8 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { posixFileTrustPolicy } from '@wtm/platform';
+import type { FileTrustPolicy } from '@wtm/platform/ports';
 import { skillAssets, type SkillAssetProvider } from '../assets';
 
 export { canonicalSkillPathForModule } from '../assets';
@@ -26,6 +28,14 @@ export interface FilesystemSkillLocations {
   globalAnchor: string;
   globalSkills: string;
   hooks?: FilesystemSkillInstallerHooks;
+  /**
+   * Defaults to the POSIX policy, matching this installer's behaviour before `FileTrustPolicy`
+   * existed — darwin and linux callers need not change. A real caller on Windows must supply the
+   * ACL-backed policy (`PlatformRuntime.fileTrust`); without it, ownership can never be verified
+   * there and every install is refused, which is the correct, safe default rather than a silent
+   * skip.
+   */
+  fileTrust?: FileTrustPolicy;
 }
 
 export interface FilesystemSkillInstallerHookContext {
@@ -53,6 +63,7 @@ export async function readCanonicalSkill(provider: SkillAssetProvider = skillAss
 }
 
 export function createFilesystemSkillInstaller(locations: FilesystemSkillLocations): SkillInstaller {
+  const fileTrust = locations.fileTrust ?? posixFileTrustPolicy;
   return {
     async install(request) {
       assertSafeSkillName(request.name);
@@ -65,39 +76,39 @@ export function createFilesystemSkillInstaller(locations: FilesystemSkillLocatio
       const anchor = request.scope === 'global' ? locations.globalAnchor : locations.localAnchor;
       const targetDirectory = join(skillRoot, request.name);
       const targetPath = join(targetDirectory, 'SKILL.md');
-      const identities = await ensureSafeDirectoryTree(anchor, targetDirectory);
+      const identities = await ensureSafeDirectoryTree(anchor, targetDirectory, fileTrust);
       const temporaryPath = join(targetDirectory, `.${basename(targetPath)}.${randomUUID()}.tmp`);
       const hookContext = { targetDirectory, targetPath, temporaryPath };
-      const targetEvidence = await inspectTarget(targetPath);
+      const targetEvidence = await inspectTarget(targetPath, fileTrust);
       let temporaryHandle: FileHandle | undefined;
       let temporaryIdentity: FileIdentity | undefined;
       let published = false;
       let failure: { error: unknown } | undefined;
       try {
         await locations.hooks?.beforeTemporaryOpen?.(hookContext);
-        await verifyDirectoryTree(identities);
-        await verifyTarget(targetPath, targetEvidence);
+        await verifyDirectoryTree(identities, fileTrust);
+        await verifyTarget(targetPath, targetEvidence, fileTrust);
         temporaryHandle = await open(
           temporaryPath,
           constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
           0o600,
         );
-        temporaryIdentity = await auditTemporary(temporaryHandle, temporaryPath, canonicalBytes, 0o600, false);
+        temporaryIdentity = await auditTemporary(temporaryHandle, temporaryPath, canonicalBytes, 0o600, false, fileTrust);
         await writeExact(temporaryHandle, canonicalBytes);
         await temporaryHandle.sync();
         await locations.hooks?.afterTemporarySync?.(hookContext);
-        temporaryIdentity = await auditTemporary(temporaryHandle, temporaryPath, canonicalBytes, 0o600, true);
+        temporaryIdentity = await auditTemporary(temporaryHandle, temporaryPath, canonicalBytes, 0o600, true, fileTrust);
         await temporaryHandle.chmod(0o644);
         await temporaryHandle.sync();
-        temporaryIdentity = await auditTemporary(temporaryHandle, temporaryPath, canonicalBytes, 0o644, true);
-        await verifyDirectoryTree(identities);
-        await verifyTarget(targetPath, targetEvidence);
+        temporaryIdentity = await auditTemporary(temporaryHandle, temporaryPath, canonicalBytes, 0o644, true, fileTrust);
+        await verifyDirectoryTree(identities, fileTrust);
+        await verifyTarget(targetPath, targetEvidence, fileTrust);
         await locations.hooks?.beforePublication?.(hookContext);
-        await verifyDirectoryTree(identities);
-        await verifyTarget(targetPath, targetEvidence);
-        temporaryIdentity = await auditTemporary(temporaryHandle, temporaryPath, canonicalBytes, 0o644, true);
+        await verifyDirectoryTree(identities, fileTrust);
+        await verifyTarget(targetPath, targetEvidence, fileTrust);
+        temporaryIdentity = await auditTemporary(temporaryHandle, temporaryPath, canonicalBytes, 0o644, true, fileTrust);
         await rename(temporaryPath, targetPath);
-        await auditPublished(temporaryHandle, targetPath, temporaryIdentity, canonicalBytes);
+        await auditPublished(temporaryHandle, targetPath, temporaryIdentity, canonicalBytes, fileTrust);
         published = true;
       } catch (error) {
         failure = { error };
@@ -108,7 +119,7 @@ export function createFilesystemSkillInstaller(locations: FilesystemSkillLocatio
         failure ??= { error };
       }
       if (!published && temporaryIdentity !== undefined) {
-        await cleanupExactTemporary(temporaryPath, temporaryIdentity, identities);
+        await cleanupExactTemporary(temporaryPath, temporaryIdentity, identities, fileTrust);
       }
       if (failure !== undefined) throw failure.error;
       return { path: targetPath };
@@ -132,49 +143,59 @@ type TargetEvidence = { state: 'absent' } | { state: 'present'; identity: FileId
 
 const MAX_SKILL_BYTES = 64 * 1024;
 
-async function ensureSafeDirectoryTree(anchorInput: string, targetInput: string): Promise<DirectoryIdentity[]> {
+async function ensureSafeDirectoryTree(
+  anchorInput: string,
+  targetInput: string,
+  fileTrust: FileTrustPolicy,
+): Promise<DirectoryIdentity[]> {
   const anchor = resolve(anchorInput);
   const target = resolve(targetInput);
   const targetRelative = relative(anchor, target);
   if (targetRelative === '..' || targetRelative.startsWith(`..${sep}`) || isAbsolute(targetRelative)) {
     throw unsafeDestination();
   }
-  const identities = [await directoryIdentity(anchor)];
+  const identities = [await directoryIdentity(anchor, fileTrust)];
   let current = anchor;
   for (const component of targetRelative.split(sep).filter((value) => value.length > 0)) {
-    await verifyDirectoryTree(identities);
+    await verifyDirectoryTree(identities, fileTrust);
     current = join(current, component);
     try {
       await mkdir(current, { mode: 0o755 });
     } catch (error) {
       if (!isAlreadyExists(error)) throw error;
     }
-    identities.push(await directoryIdentity(current));
+    identities.push(await directoryIdentity(current, fileTrust));
   }
   return identities;
 }
 
-async function verifyDirectoryTree(identities: readonly DirectoryIdentity[]): Promise<void> {
+async function verifyDirectoryTree(identities: readonly DirectoryIdentity[], fileTrust: FileTrustPolicy): Promise<void> {
   for (const expected of identities) {
-    const actual = await directoryIdentity(expected.path);
+    const actual = await directoryIdentity(expected.path, fileTrust);
     if (actual.dev !== expected.dev || actual.ino !== expected.ino) throw unsafeDestination();
   }
 }
 
-async function directoryIdentity(path: string): Promise<DirectoryIdentity> {
+async function directoryIdentity(path: string, fileTrust: FileTrustPolicy): Promise<DirectoryIdentity> {
   let stat;
   try {
     stat = await lstat(path);
   } catch {
     throw unsafeDestination();
   }
-  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== currentUid() || (stat.mode & 0o022) !== 0) {
+  if (
+    !stat.isDirectory()
+    || stat.isSymbolicLink()
+    || !fileTrust.currentIdentityAvailable()
+    || !(await fileTrust.isOwnedByCurrentUser(stat, path))
+    || !(await fileTrust.isWritableOnlyByOwner(stat, path, 0o022))
+  ) {
     throw unsafeDestination();
   }
   return { path, dev: stat.dev, ino: stat.ino };
 }
 
-async function inspectTarget(path: string): Promise<TargetEvidence> {
+async function inspectTarget(path: string, fileTrust: FileTrustPolicy): Promise<TargetEvidence> {
   let stat;
   try {
     stat = await lstat(path);
@@ -182,13 +203,19 @@ async function inspectTarget(path: string): Promise<TargetEvidence> {
     if (isMissingFile(error)) return { state: 'absent' };
     throw error;
   }
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== currentUid() || stat.nlink !== 1
-    || (stat.mode & 0o022) !== 0) throw unsafeTarget();
+  if (
+    !stat.isFile()
+    || stat.isSymbolicLink()
+    || !fileTrust.currentIdentityAvailable()
+    || !(await fileTrust.isOwnedByCurrentUser(stat, path))
+    || !fileTrust.isNotSharedByHardLink(stat)
+    || !(await fileTrust.isWritableOnlyByOwner(stat, path, 0o022))
+  ) throw unsafeTarget();
   return { state: 'present', identity: identityOf(stat) };
 }
 
-async function verifyTarget(path: string, evidence: TargetEvidence): Promise<void> {
-  const current = await inspectTarget(path);
+async function verifyTarget(path: string, evidence: TargetEvidence, fileTrust: FileTrustPolicy): Promise<void> {
+  const current = await inspectTarget(path, fileTrust);
   if (evidence.state !== current.state) throw unsafeTarget();
   if (evidence.state === 'present' && current.state === 'present'
     && !sameIdentity(evidence.identity, current.identity)) throw unsafeTarget();
@@ -203,17 +230,39 @@ async function writeExact(handle: FileHandle, bytes: Buffer): Promise<void> {
   }
 }
 
+/**
+ * `expectedMode` is always the exact mode this installer itself just set (`open(..., 0o600)`, then
+ * `chmod(0o644)` before publication) — not an arbitrary value a caller chooses. Before
+ * `FileTrustPolicy` existed, this was one raw `(mode & 0o777) !== expectedMode` equality; on
+ * Windows that comparison can never pass at all, because Node synthesises `Stats.mode` there from
+ * the read-only attribute alone (`0o666`/`0o444`), never from `0o600`/`0o644` — an unconditional
+ * equality would refuse every install, the same unconditional refusal this migration exists to
+ * remove elsewhere. What the equality actually meant to ask, at each of its two call sites, is one
+ * of the port's own two named questions: "no group/other access at all" while the copy is still
+ * private (`0o600`, mask `0o077`), and "no group/other *write*" once it is world-readable (`0o644`,
+ * mask `0o022`) — exactly the distinction `FileTrustPolicy`'s doc comment already draws.
+ */
+function ownerOnlyMaskFor(expectedMode: 0o600 | 0o644): 0o022 | 0o077 {
+  return expectedMode === 0o600 ? 0o077 : 0o022;
+}
+
 async function auditTemporary(
   handle: FileHandle,
   path: string,
   expectedBytes: Buffer,
-  expectedMode: number,
+  expectedMode: 0o600 | 0o644,
   expectContent: boolean,
+  fileTrust: FileTrustPolicy,
 ): Promise<FileIdentity> {
   const descriptorStat = await handle.stat();
-  if (!descriptorStat.isFile() || descriptorStat.uid !== currentUid() || descriptorStat.nlink !== 1
-    || (descriptorStat.mode & 0o777) !== expectedMode
-    || descriptorStat.size !== (expectContent ? expectedBytes.byteLength : 0)) throw unsafeTemporary();
+  if (
+    !descriptorStat.isFile()
+    || !fileTrust.currentIdentityAvailable()
+    || !(await fileTrust.isOwnedByCurrentUser(descriptorStat, path))
+    || !fileTrust.isNotSharedByHardLink(descriptorStat)
+    || !(await fileTrust.isWritableOnlyByOwner(descriptorStat, path, ownerOnlyMaskFor(expectedMode)))
+    || descriptorStat.size !== (expectContent ? expectedBytes.byteLength : 0)
+  ) throw unsafeTemporary();
   const pathStat = await lstat(path).catch(() => null);
   if (pathStat === null || !pathStat.isFile() || pathStat.isSymbolicLink()
     || !sameIdentity(identityOf(descriptorStat), identityOf(pathStat))) throw unsafeTemporary();
@@ -230,25 +279,40 @@ async function auditPublished(
   path: string,
   identity: FileIdentity,
   expectedBytes: Buffer,
+  fileTrust: FileTrustPolicy,
 ): Promise<void> {
   const descriptorStat = await handle.stat();
   const pathStat = await lstat(path).catch(() => null);
-  if (pathStat === null || !pathStat.isFile() || pathStat.isSymbolicLink()
-    || pathStat.uid !== currentUid() || pathStat.nlink !== 1 || (pathStat.mode & 0o777) !== 0o644
+  if (
+    pathStat === null
+    || !pathStat.isFile()
+    || pathStat.isSymbolicLink()
+    || !fileTrust.currentIdentityAvailable()
+    || !(await fileTrust.isOwnedByCurrentUser(pathStat, path))
+    || !fileTrust.isNotSharedByHardLink(pathStat)
+    || !(await fileTrust.isWritableOnlyByOwner(pathStat, path, 0o022))
     || pathStat.size !== expectedBytes.byteLength || !sameIdentity(identity, identityOf(pathStat))
-    || !sameIdentity(identityOf(descriptorStat), identityOf(pathStat))) throw unsafeTarget();
+    || !sameIdentity(identityOf(descriptorStat), identityOf(pathStat))
+  ) throw unsafeTarget();
 }
 
 async function cleanupExactTemporary(
   path: string,
   identity: FileIdentity,
   directories: readonly DirectoryIdentity[],
+  fileTrust: FileTrustPolicy,
 ): Promise<void> {
   try {
-    await verifyDirectoryTree(directories);
+    await verifyDirectoryTree(directories, fileTrust);
     const stat = await lstat(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== currentUid() || stat.nlink !== 1
-      || !sameIdentity(identity, identityOf(stat))) return;
+    if (
+      !stat.isFile()
+      || stat.isSymbolicLink()
+      || !fileTrust.currentIdentityAvailable()
+      || !(await fileTrust.isOwnedByCurrentUser(stat, path))
+      || !fileTrust.isNotSharedByHardLink(stat)
+      || !sameIdentity(identity, identityOf(stat))
+    ) return;
     await rm(path);
   } catch {
     // Preserve missing, replaced, linked, or no-longer-anchored candidates.
@@ -261,12 +325,6 @@ function identityOf(stat: { dev: number; ino: number; uid: number }): FileIdenti
 
 function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {
   return left.dev === right.dev && left.ino === right.ino && left.uid === right.uid;
-}
-
-function currentUid(): number {
-  const uid = process.getuid?.();
-  if (uid === undefined) throw new Error('Filesystem Agent Skill installation requires POSIX ownership checks.');
-  return uid;
 }
 
 function assertSafeSkillName(name: string): void {
