@@ -1,4 +1,4 @@
-import { constants } from 'node:fs';
+import { constants, type Stats } from 'node:fs';
 import {
   chmod,
   lstat,
@@ -10,15 +10,34 @@ import {
   type FileHandle,
 } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { selectPlatformRuntime } from '@wtm/platform';
+import type { FileTrustPolicy } from '@wtm/platform/ports';
 
 const defaultRotationBytes = 20 * 1024 * 1024;
 const defaultRetainedFiles = 3;
+
+/**
+ * The default `FileTrustPolicy`, for a caller who does not inject one — every current caller of
+ * `ManagedLogStore`, until a composition root threads its own `PlatformRuntime.fileTrust` through.
+ * Resolved on first use rather than at import, mirroring `process-supervisor.ts`'s own
+ * `hostPlatformRuntime`: a module-level `selectPlatformRuntime()` would make merely importing this
+ * file throw on a platform WTM has no backend for, a refusal a caller could no longer catch and
+ * report as an envelope.
+ */
+let selectedFileTrust: FileTrustPolicy | null = null;
+
+function hostFileTrustPolicy(): FileTrustPolicy {
+  selectedFileTrust ??= selectPlatformRuntime().fileTrust;
+  return selectedFileTrust;
+}
 
 export interface ManagedLogStoreOptions {
   root: string;
   rotationBytes?: number;
   retainedFiles?: number;
   rotationCheckMs?: number;
+  /** Defaults to the host platform's own policy — see `hostFileTrustPolicy` above. */
+  fileTrust?: FileTrustPolicy;
   onError?: (error: unknown) => void;
   raceHook?: (
     phase: 'after-open' | 'after-read-open' | 'before-rotate-operation' | 'during-cursor-read'
@@ -65,6 +84,7 @@ export class ManagedLogStore {
   readonly #rotationBytes: number;
   readonly #retainedFiles: number;
   readonly #raceHook: NonNullable<ManagedLogStoreOptions['raceHook']>;
+  readonly #fileTrust: FileTrustPolicy;
 
   constructor(options: ManagedLogStoreOptions) {
     if (!isAbsolute(options.root)) throw new TypeError('Managed log root must be absolute');
@@ -73,6 +93,7 @@ export class ManagedLogStore {
     this.#retainedFiles = positiveInteger(options.retainedFiles ?? defaultRetainedFiles, 'Retained log count');
     positiveInteger(options.rotationCheckMs ?? 250, 'Log rotation check interval');
     this.#raceHook = options.raceHook ?? (() => {});
+    this.#fileTrust = options.fileTrust ?? hostFileTrustPolicy();
   }
 
   async open(worktreeId: string, taskName: string): Promise<OpenedManagedLogs> {
@@ -84,11 +105,11 @@ export class ManagedLogStore {
     await opened.close();
     const launchMarkerPath = join(resolve(opened.stdoutPath, '..'), 'launch.json');
     const directory = resolve(launchMarkerPath, '..');
-    const parent = await directoryIdentity(directory);
-    if (await safeLogStat(launchMarkerPath) !== null) {
-      await assertDirectoryIdentity(directory, parent);
+    const parent = await directoryIdentity(directory, this.#fileTrust);
+    if (await safeLogStat(launchMarkerPath, this.#fileTrust) !== null) {
+      await assertDirectoryIdentity(directory, parent, this.#fileTrust);
       await rm(launchMarkerPath);
-      await assertDirectoryIdentity(directory, parent);
+      await assertDirectoryIdentity(directory, parent, this.#fileTrust);
     }
     return {
       root: this.#root,
@@ -103,10 +124,10 @@ export class ManagedLogStore {
   async #open(worktreeId: string, taskName: string, rotateBeforeOpen: boolean): Promise<OpenedManagedLogs> {
     assertSafeIdentifier(worktreeId);
     assertSafeIdentifier(taskName);
-    await secureDirectory(this.#root);
+    await secureDirectory(this.#root, this.#fileTrust);
     const directory = join(this.#root, worktreeId, taskName);
-    await secureChildDirectory(this.#root, join(this.#root, worktreeId));
-    await secureChildDirectory(join(this.#root, worktreeId), directory);
+    await secureChildDirectory(this.#root, join(this.#root, worktreeId), this.#fileTrust);
+    await secureChildDirectory(join(this.#root, worktreeId), directory, this.#fileTrust);
     const stdoutPath = join(directory, 'stdout.log');
     const stderrPath = join(directory, 'stderr.log');
     if (rotateBeforeOpen) {
@@ -114,15 +135,15 @@ export class ManagedLogStore {
       await this.#rotateIfNeeded(stderrPath);
     }
 
-    const parentIdentity = await directoryIdentity(directory);
-    const stdout = await openSafeLog(stdoutPath);
+    const parentIdentity = await directoryIdentity(directory, this.#fileTrust);
+    const stdout = await openSafeLog(stdoutPath, this.#fileTrust);
     let stderr: FileHandle;
     try {
       await this.#raceHook('after-open', stdoutPath);
-      await assertDirectoryIdentity(directory, parentIdentity);
-      stderr = await openSafeLog(stderrPath);
+      await assertDirectoryIdentity(directory, parentIdentity, this.#fileTrust);
+      stderr = await openSafeLog(stderrPath, this.#fileTrust);
       await this.#raceHook('after-open', stderrPath);
-      await assertDirectoryIdentity(directory, parentIdentity);
+      await assertDirectoryIdentity(directory, parentIdentity, this.#fileTrust);
     } catch (error) {
       await stdout.close();
       throw error;
@@ -158,13 +179,13 @@ export class ManagedLogStore {
       || stdoutParts[2] !== 'stdout.log' || stderrParts[2] !== 'stderr.log'
     ) throw new Error('Unsafe managed log recovery path');
     const directory = resolve(stdout, '..');
-    await assertSecureDirectoryChain(this.#root, directory);
-    const parent = await directoryIdentity(directory);
+    await assertSecureDirectoryChain(this.#root, directory, this.#fileTrust);
+    const parent = await directoryIdentity(directory, this.#fileTrust);
     for (const path of [stdout, stderr]) {
       const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
-        await assertSafeFileHandle(handle);
-        await assertDirectoryIdentity(directory, parent);
+        await assertSafeFileHandle(handle, path, this.#fileTrust);
+        await assertDirectoryIdentity(directory, parent, this.#fileTrust);
       } finally {
         await handle.close();
       }
@@ -175,18 +196,18 @@ export class ManagedLogStore {
     const stdout = resolve(stdoutPath);
     assertContained(this.#root, stdout);
     const directory = resolve(stdout, '..');
-    await assertSecureDirectoryChain(this.#root, directory);
-    const parent = await directoryIdentity(directory);
+    await assertSecureDirectoryChain(this.#root, directory, this.#fileTrust);
+    const parent = await directoryIdentity(directory, this.#fileTrust);
     const marker = join(directory, 'launch.json');
     let handle: FileHandle;
-    try { handle = await openExistingSafeLog(marker); }
+    try { handle = await openExistingSafeLog(marker, this.#fileTrust); }
     catch (error) { if (isMissing(error)) return false; throw error; }
     try {
       const stat = await handle.stat();
       if (stat.size > 128) return false;
       const buffer = Buffer.alloc(stat.size);
       const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
-      await assertDirectoryIdentity(directory, parent);
+      await assertDirectoryIdentity(directory, parent, this.#fileTrust);
       const value = JSON.parse(buffer.subarray(0, bytesRead).toString('utf8')) as unknown;
       return typeof value === 'object' && value !== null && !Array.isArray(value)
         && 'pid' in value && value.pid === pid;
@@ -210,13 +231,13 @@ export class ManagedLogStore {
     const targetPath = await realpath(absolute);
     assertContained(rootPath, targetPath);
     const directory = resolve(absolute, '..');
-    await assertSecureDirectoryChain(this.#root, directory);
-    const parentIdentity = await directoryIdentity(directory);
+    await assertSecureDirectoryChain(this.#root, directory, this.#fileTrust);
+    const parentIdentity = await directoryIdentity(directory, this.#fileTrust);
     const handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       await this.#raceHook('after-read-open', absolute);
-      await assertDirectoryIdentity(directory, parentIdentity);
-      await assertSafeFileHandle(handle);
+      await assertDirectoryIdentity(directory, parentIdentity, this.#fileTrust);
+      await assertSafeFileHandle(handle, absolute, this.#fileTrust);
       const stat = await handle.stat();
       const length = Math.min(stat.size, maxBytes);
       const buffer = Buffer.alloc(length);
@@ -238,14 +259,14 @@ export class ManagedLogStore {
     assertContained(this.#root, absolute);
     const directory = resolve(absolute, '..');
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await assertSecureDirectoryChain(this.#root, directory);
-      const parentIdentity = await directoryIdentity(directory);
-      const before = await readGenerationMarker(absolute);
+      await assertSecureDirectoryChain(this.#root, directory, this.#fileTrust);
+      const parentIdentity = await directoryIdentity(directory, this.#fileTrust);
+      const before = await readGenerationMarker(absolute, this.#fileTrust);
       await this.#raceHook('after-generation-read', absolute);
       let result: ManagedLogCursorRead;
       try {
         const rotation = before.startsWith('rotating-')
-          ? await resolveRotationSnapshot(absolute, before, cursor?.generation)
+          ? await resolveRotationSnapshot(absolute, before, cursor?.generation, this.#fileTrust)
           : null;
         result = rotation !== null && cursor !== undefined
           ? await this.#readRotatingCursor(absolute, cursor, maxBytes, parentIdentity)
@@ -261,14 +282,14 @@ export class ManagedLogStore {
             rotation?.currentPath ?? absolute,
           );
       } catch (error) {
-        const afterFailure = await readGenerationMarker(absolute);
-        await assertDirectoryIdentity(directory, parentIdentity);
+        const afterFailure = await readGenerationMarker(absolute, this.#fileTrust);
+        await assertDirectoryIdentity(directory, parentIdentity, this.#fileTrust);
         if (before !== afterFailure || isMissing(error)) { await shortYield(); continue; }
         throw error;
       }
       await this.#raceHook('during-cursor-read', absolute);
-      const after = await readGenerationMarker(absolute);
-      await assertDirectoryIdentity(directory, parentIdentity);
+      const after = await readGenerationMarker(absolute, this.#fileTrust);
+      await assertDirectoryIdentity(directory, parentIdentity, this.#fileTrust);
       if (before === after) return result;
       await shortYield();
     }
@@ -285,7 +306,7 @@ export class ManagedLogStore {
       const candidate = suffix === 0 ? path : `${path}.${suffix}`;
       let handle: FileHandle;
       await this.#raceHook('before-cursor-segment-open', candidate);
-      try { handle = await openExistingSafeLog(candidate); }
+      try { handle = await openExistingSafeLog(candidate, this.#fileTrust); }
       catch (error) { if (isMissing(error)) continue; throw error; }
       try {
         const stat = await handle.stat();
@@ -296,7 +317,7 @@ export class ManagedLogStore {
         const { bytesRead } = length === 0
           ? { bytesRead: 0 }
           : await handle.read(buffer, 0, length, cursor.offset);
-        await assertDirectoryIdentity(resolve(path, '..'), parentIdentity);
+        await assertDirectoryIdentity(resolve(path, '..'), parentIdentity, this.#fileTrust);
         const content = buffer.subarray(0, bytesRead);
         const emittedBytes = completeUtf8PrefixLength(content);
         return {
@@ -336,12 +357,12 @@ export class ManagedLogStore {
     let source = difference === 0 ? currentPath : `${path}.${difference}`;
     let handle: FileHandle;
     await this.#raceHook('before-cursor-segment-open', source);
-    try { handle = await openExistingSafeLog(source); }
+    try { handle = await openExistingSafeLog(source, this.#fileTrust); }
     catch (error) {
       if (!isMissing(error)) throw error;
       difference = 0;
       source = currentPath;
-      handle = await openExistingSafeLog(source);
+      handle = await openExistingSafeLog(source, this.#fileTrust);
       truncated = true;
     }
     let stat = await handle.stat();
@@ -355,7 +376,7 @@ export class ManagedLogStore {
       await handle.close();
       difference = 0;
       source = currentPath;
-      handle = await openExistingSafeLog(source);
+      handle = await openExistingSafeLog(source, this.#fileTrust);
       stat = await handle.stat();
       position = Math.max(0, stat.size - maxBytes);
     }
@@ -377,12 +398,12 @@ export class ManagedLogStore {
         await handle.close();
         difference -= 1;
         source = difference === 0 ? currentPath : `${path}.${difference}`;
-        handle = await openExistingSafeLog(source);
+        handle = await openExistingSafeLog(source, this.#fileTrust);
         stat = await handle.stat();
         position = 0;
         rotated = true;
       }
-      await assertDirectoryIdentity(resolve(path, '..'), parentIdentity);
+      await assertDirectoryIdentity(resolve(path, '..'), parentIdentity, this.#fileTrust);
       const content = Buffer.concat(chunks);
       const emittedBytes = completeUtf8PrefixLength(content);
       const withheldBytes = content.byteLength - emittedBytes;
@@ -413,56 +434,67 @@ export class ManagedLogStore {
 
   async #rotateIfNeeded(path: string): Promise<void> {
     const directory = resolve(path, '..');
-    await assertSecureDirectoryChain(this.#root, directory);
-    const parent = await directoryIdentity(directory);
+    await assertSecureDirectoryChain(this.#root, directory, this.#fileTrust);
+    const parent = await directoryIdentity(directory, this.#fileTrust);
     await this.#raceHook('before-rotate-operation', path);
-    await assertSecureDirectoryChain(this.#root, directory);
-    await assertDirectoryIdentity(directory, parent);
-    const stat = await safeLogStat(path);
+    await assertSecureDirectoryChain(this.#root, directory, this.#fileTrust);
+    await assertDirectoryIdentity(directory, parent, this.#fileTrust);
+    const stat = await safeLogStat(path, this.#fileTrust);
     if (stat === null || stat.size < this.#rotationBytes) return;
 
-    await assertDirectoryIdentity(directory, parent);
+    await assertDirectoryIdentity(directory, parent, this.#fileTrust);
     await this.#shiftGenerations(path, directory, parent);
-    await assertDirectoryIdentity(directory, parent);
+    await assertDirectoryIdentity(directory, parent, this.#fileTrust);
     await rename(path, `${path}.1`);
-    await assertDirectoryIdentity(directory, parent);
+    await assertDirectoryIdentity(directory, parent, this.#fileTrust);
   }
 
   async #shiftGenerations(path: string, directory: string, parent: DirectoryIdentity): Promise<void> {
     const oldest = `${path}.${this.#retainedFiles}`;
-    if (await safeLogStat(oldest) !== null) {
-      await assertDirectoryIdentity(directory, parent);
+    if (await safeLogStat(oldest, this.#fileTrust) !== null) {
+      await assertDirectoryIdentity(directory, parent, this.#fileTrust);
       await rm(oldest);
-      await assertDirectoryIdentity(directory, parent);
+      await assertDirectoryIdentity(directory, parent, this.#fileTrust);
     }
     for (let generation = this.#retainedFiles - 1; generation >= 1; generation -= 1) {
       const source = `${path}.${generation}`;
-      if (await safeLogStat(source) !== null) {
-        await assertDirectoryIdentity(directory, parent);
+      if (await safeLogStat(source, this.#fileTrust) !== null) {
+        await assertDirectoryIdentity(directory, parent, this.#fileTrust);
         await rename(source, `${path}.${generation + 1}`);
-        await assertDirectoryIdentity(directory, parent);
+        await assertDirectoryIdentity(directory, parent, this.#fileTrust);
       }
     }
   }
 }
 
-async function secureDirectory(path: string): Promise<void> {
+/**
+ * `secureDirectory`, `secureChildDirectory` and `directoryIdentity` used to reimplement "is this
+ * directory mine" as `process.getuid?.()` compared against `stat.uid` — a no-op on Windows, where
+ * `process.getuid` does not exist, which is why an unowned or shared directory was never refused
+ * there. `isOwnedByCurrentUser` is the same question asked through the port, and
+ * `!fileTrust.currentIdentityAvailable()` failing closed (rather than the old `uid === undefined`
+ * silently skipping the check) is what makes a Windows `FileTrustPolicy` actually run this at all.
+ */
+async function isOwnedDirectory(stat: Stats, path: string, fileTrust: FileTrustPolicy): Promise<boolean> {
+  if (!stat.isDirectory() || stat.isSymbolicLink() || !fileTrust.currentIdentityAvailable()) return false;
+  return fileTrust.isOwnedByCurrentUser(stat, path);
+}
+
+async function secureDirectory(path: string, fileTrust: FileTrustPolicy): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   const stat = await lstat(path);
-  const uid = process.getuid?.();
-  if (!stat.isDirectory() || stat.isSymbolicLink() || (uid !== undefined && stat.uid !== uid)) {
+  if (!(await isOwnedDirectory(stat, path, fileTrust))) {
     throw new Error('Unsafe managed log directory');
   }
   await chmod(path, 0o700);
 }
 
-async function secureChildDirectory(parent: string, path: string): Promise<void> {
-  const parentBefore = await directoryIdentity(parent);
+async function secureChildDirectory(parent: string, path: string, fileTrust: FileTrustPolicy): Promise<void> {
+  const parentBefore = await directoryIdentity(parent, fileTrust);
   try { await mkdir(path, { mode: 0o700 }); } catch (error) { if (!isExists(error)) throw error; }
-  await assertDirectoryIdentity(parent, parentBefore);
+  await assertDirectoryIdentity(parent, parentBefore, fileTrust);
   const stat = await lstat(path);
-  const uid = process.getuid?.();
-  if (!stat.isDirectory() || stat.isSymbolicLink() || (uid !== undefined && stat.uid !== uid)) {
+  if (!(await isOwnedDirectory(stat, path, fileTrust))) {
     throw new Error('Unsafe managed log directory');
   }
   await chmod(path, 0o700);
@@ -470,44 +502,52 @@ async function secureChildDirectory(parent: string, path: string): Promise<void>
 
 interface DirectoryIdentity { dev: number; ino: number; uid: number }
 
-async function directoryIdentity(path: string): Promise<DirectoryIdentity> {
+/**
+ * `directoryIdentity` is called after `secureDirectory`/`secureChildDirectory` have already
+ * `chmod`-ed the directory to exactly `0o700`, so unlike those two it also re-asks the mode
+ * question — as `isWritableOnlyByOwner(stat, path, 0o077)`, "no group/other access at all", the
+ * same mask `assertPrivateDirectory` (`@wtm/core`'s directory-shaped analogue, migrated in the
+ * same Windows-trust increment) uses rather than a raw `(stat.mode & 0o777) !== 0o700` equality:
+ * that equality was the check unconditionally false on Windows (`fs.Stats.mode` there never
+ * reflects a POSIX `chmod`), and the port's mask asks the same "did anyone loosen this since I
+ * secured it" question in a way a Windows `Get-Acl` read can actually answer.
+ */
+async function directoryIdentity(path: string, fileTrust: FileTrustPolicy): Promise<DirectoryIdentity> {
   const stat = await lstat(path);
-  const uid = process.getuid?.();
-  if (
-    !stat.isDirectory()
-    || stat.isSymbolicLink()
-    || (stat.mode & 0o777) !== 0o700
-    || (uid !== undefined && stat.uid !== uid)
-  ) {
-    throw new Error('Unsafe managed log directory');
-  }
+  const unsafe = !(await isOwnedDirectory(stat, path, fileTrust))
+    || !(await fileTrust.isWritableOnlyByOwner(stat, path, 0o077));
+  if (unsafe) throw new Error('Unsafe managed log directory');
   return { dev: stat.dev, ino: stat.ino, uid: stat.uid };
 }
 
-async function assertSecureDirectoryChain(root: string, directory: string): Promise<void> {
+async function assertSecureDirectoryChain(root: string, directory: string, fileTrust: FileTrustPolicy): Promise<void> {
   const rootPath = resolve(root);
   const target = resolve(directory);
   assertContained(rootPath, target);
-  await directoryIdentity(rootPath);
+  await directoryIdentity(rootPath, fileTrust);
   const child = relative(rootPath, target);
   if (child === '') return;
   let current = rootPath;
   for (const part of child.split(sep)) {
     current = join(current, part);
-    await directoryIdentity(current);
+    await directoryIdentity(current, fileTrust);
   }
 }
 
-async function assertDirectoryIdentity(path: string, expected: DirectoryIdentity): Promise<void> {
-  const current = await directoryIdentity(path);
+async function assertDirectoryIdentity(
+  path: string,
+  expected: DirectoryIdentity,
+  fileTrust: FileTrustPolicy,
+): Promise<void> {
+  const current = await directoryIdentity(path, fileTrust);
   if (current.dev !== expected.dev || current.ino !== expected.ino || current.uid !== expected.uid) {
     throw new Error('Managed log directory identity changed');
   }
 }
 
-async function openSafeLog(path: string): Promise<FileHandle> {
-  const existing = await safeLogStat(path);
-  if (existing !== null && (!existing.isFile() || existing.isSymbolicLink() || existing.nlink !== 1)) {
+async function openSafeLog(path: string, fileTrust: FileTrustPolicy): Promise<FileHandle> {
+  const existing = await safeLogStat(path, fileTrust);
+  if (existing !== null && (!existing.isFile() || existing.isSymbolicLink() || !fileTrust.isNotSharedByHardLink(existing))) {
     throw new Error('Unsafe managed log target');
   }
   let handle: FileHandle;
@@ -521,7 +561,7 @@ async function openSafeLog(path: string): Promise<FileHandle> {
     throw new Error('Unsafe managed log target', { cause: error });
   }
   try {
-    await assertSafeFileHandle(handle);
+    await assertSafeFileHandle(handle, path, fileTrust);
     await handle.chmod(0o600);
     return handle;
   } catch (error) {
@@ -530,10 +570,10 @@ async function openSafeLog(path: string): Promise<FileHandle> {
   }
 }
 
-async function openExistingSafeLog(path: string): Promise<FileHandle> {
+async function openExistingSafeLog(path: string, fileTrust: FileTrustPolicy): Promise<FileHandle> {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    await assertSafeFileHandle(handle);
+    await assertSafeFileHandle(handle, path, fileTrust);
     return handle;
   } catch (error) {
     await handle.close();
@@ -541,16 +581,15 @@ async function openExistingSafeLog(path: string): Promise<FileHandle> {
   }
 }
 
-async function safeLogStat(path: string): Promise<Awaited<ReturnType<typeof lstat>> | null> {
+async function safeLogStat(path: string, fileTrust: FileTrustPolicy): Promise<Stats | null> {
   try {
     const stat = await lstat(path);
-    const uid = process.getuid?.();
-    if (
-      !stat.isFile()
+    const unsafe = !stat.isFile()
       || stat.isSymbolicLink()
-      || stat.nlink !== 1
-      || (uid !== undefined && stat.uid !== uid)
-    ) throw new Error('Unsafe managed log target');
+      || !fileTrust.isNotSharedByHardLink(stat)
+      || !fileTrust.currentIdentityAvailable()
+      || !(await fileTrust.isOwnedByCurrentUser(stat, path));
+    if (unsafe) throw new Error('Unsafe managed log target');
     return stat;
   } catch (error) {
     if (isMissing(error)) return null;
@@ -558,10 +597,10 @@ async function safeLogStat(path: string): Promise<Awaited<ReturnType<typeof lsta
   }
 }
 
-async function readGenerationMarker(path: string): Promise<string> {
+async function readGenerationMarker(path: string, fileTrust: FileTrustPolicy): Promise<string> {
   const marker = `${path}.generation`;
   let handle: FileHandle;
-  try { handle = await openExistingSafeLog(marker); }
+  try { handle = await openExistingSafeLog(marker, fileTrust); }
   catch (error) { if (isMissing(error)) return '0'; throw error; }
   try {
     const stat = await handle.stat();
@@ -580,6 +619,7 @@ async function resolveRotationSnapshot(
   path: string,
   marker: string,
   cursorGeneration: string | undefined,
+  fileTrust: FileTrustPolicy,
 ): Promise<{ generation: number; currentPath: string }> {
   const structured = /^rotating-(\d+)-(marker|closed|shifted|archived|opened)-[A-Za-z0-9-]+$/.exec(marker);
   let generation: number;
@@ -592,14 +632,14 @@ async function resolveRotationSnapshot(
     // A cursor supplies it exactly. For an initial tail, zero is the only
     // generation that can be proven from the legacy marker itself.
     generation = cursorGeneration === undefined ? 0 : parseGeneration(cursorGeneration);
-    const current = await safeLogStat(path);
-    const first = await safeLogStat(`${path}.1`);
+    const current = await safeLogStat(path, fileTrust);
+    const first = await safeLogStat(`${path}.1`, fileTrust);
     archived = first !== null && (current === null || current.size === 0);
   }
   let currentPath = archived ? `${path}.1` : path;
-  if (await safeLogStat(currentPath) === null) {
+  if (await safeLogStat(currentPath, fileTrust) === null) {
     const fallback = currentPath === path ? `${path}.1` : path;
-    if (await safeLogStat(fallback) === null) throw new Error('Managed log rotation has no readable segment');
+    if (await safeLogStat(fallback, fileTrust) === null) throw new Error('Managed log rotation has no readable segment');
     currentPath = fallback;
   }
   return { generation, currentPath };
@@ -629,12 +669,13 @@ function completeUtf8PrefixLength(buffer: Buffer): number {
   return buffer.byteLength - lead < expected ? lead : buffer.byteLength;
 }
 
-async function assertSafeFileHandle(handle: FileHandle): Promise<void> {
+async function assertSafeFileHandle(handle: FileHandle, path: string, fileTrust: FileTrustPolicy): Promise<void> {
   const stat = await handle.stat();
-  const uid = process.getuid?.();
-  if (!stat.isFile() || stat.nlink !== 1 || (uid !== undefined && stat.uid !== uid)) {
-    throw new Error('Unsafe managed log target');
-  }
+  const unsafe = !stat.isFile()
+    || !fileTrust.isNotSharedByHardLink(stat)
+    || !fileTrust.currentIdentityAvailable()
+    || !(await fileTrust.isOwnedByCurrentUser(stat, path));
+  if (unsafe) throw new Error('Unsafe managed log target');
 }
 
 function assertSafeIdentifier(value: string): void {
