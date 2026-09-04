@@ -19,6 +19,7 @@ const scenarioTestTimeoutMs = scenarioTimeoutMs + 30_000;
 const fixtures: GitSafetyFixture[] = [];
 const lifecycleScenarioPath = fileURLToPath(new URL('./remove-runtime.scenario.ts', import.meta.url));
 const conflictScenarioPath = fileURLToPath(new URL('./remove-lease-conflict.scenario.ts', import.meta.url));
+const daemonConflictScenarioPath = fileURLToPath(new URL('./daemon-lease-conflict.scenario.ts', import.meta.url));
 const resumeScenarioPath = fileURLToPath(new URL('./remove-resume.scenario.ts', import.meta.url));
 
 afterEach(async () => {
@@ -152,6 +153,23 @@ describe('runtime-aware wtm remove', () => {
       contenderAbandoned: false,
       contenderOperation: 'remove',
       contenderWorktreeIntact: true,
+    });
+  }, scenarioTestTimeoutMs);
+
+  test('refuses the daemon\'s own lease acquisition while a CLI remove holds the repository', () => {
+    const result = runScenario('node', ['--import', 'tsx', daemonConflictScenarioPath]);
+
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      cliExitCode: 0,
+      cliOk: true,
+      cliWorktreeGone: true,
+      daemonOutcome: 'conflict',
+      daemonCode: 'WTM_OPERATION_CONFLICT',
+      // A live holder, so there is nothing to adopt.
+      daemonAbandoned: false,
+      daemonRepositoryId: expect.any(String),
+      daemonOperation: 'remove',
     });
   }, scenarioTestTimeoutMs);
 

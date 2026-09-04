@@ -9,8 +9,11 @@ import {
   type GcEvidence,
   type GcJournal,
   type GcLeaseCoordinator,
+  type GcRepositoryLeaseInput,
+  type ProcessStartTimeReader,
   type ResourceGcEvidenceRecord,
   type ResourceSandboxIdentity,
+  type WorkspaceRecord,
 } from '@wtm/core';
 import type { JsonEnvelope, WtmError } from '@wtm/protocol';
 import { inspectRuntimeResources, resolveWorktreeRuntime } from '@wtm/daemon';
@@ -111,20 +114,38 @@ export async function runProductionGcCommand(input: {
   cwd: string;
   apply: boolean;
   globalConfigPath?: string;
+  /**
+   * How the repository operation lease learns whether a colliding holder is still alive. Required
+   * only in the sense that a live `--apply` run cannot serialize against `remove`/`repair` without
+   * it; a dry run never reads it, since planning never takes the lease.
+   */
+  readProcessStartTime?: ProcessStartTimeReader;
 }): Promise<JsonEnvelope<GcCommandResult | null>> {
   if (!existsSync(input.databasePath)) return unavailableResourceEnvelope('gc');
   const store = new SQLiteStateStore(input.databasePath, { readonly: !input.apply });
   try {
     const now = new Date();
-    const records = await localRecords(store.listResourceGcEvidence(now.toISOString()), store.listWorkspaces(), input.cwd);
+    const workspaces = store.listWorkspaces();
+    const records = await localRecords(store.listResourceGcEvidence(now.toISOString()), workspaces, input.cwd);
     const sandboxes = sandboxIdentities(records);
     const repositories = store.listRepositories();
     const worktrees = store.listWorktrees();
-    const workspaces = store.listWorkspaces();
     const items: GcCommandResult['items'] = [];
     const errors: WtmError[] = [];
     let planned = 0;
     let excluded = 0;
+
+    // A GC plan is scoped to a resource sandbox, not to a repository — `.resources` sits under
+    // the workspace and today's single-repository-per-workspace world means this is usually one
+    // id, but every repository the target workspace registers is named, so a future multi-repo
+    // workspace is still fully covered without this changing. A workspace with none registered
+    // (a bare resources cache) has nothing a `remove`/`repair` could race, so no lease is taken.
+    const repositoryIds = input.apply && input.readProcessStartTime !== undefined
+      ? await repositoryIdsForLocalWorkspace(store, workspaces, input.cwd)
+      : [];
+    const repositoryLease: GcRepositoryLeaseInput | undefined = repositoryIds.length === 0
+      ? undefined
+      : { store, readProcessStartTime: input.readProcessStartTime as ProcessStartTimeReader, repositoryIds };
 
     for (const sandbox of sandboxes) {
       const repositoryRoots = [...new Set([
@@ -183,6 +204,7 @@ export async function runProductionGcCommand(input: {
           apply: true,
           lease,
           journal,
+          ...(repositoryLease === undefined ? {} : { repositoryLease }),
         } : {}),
       });
       planned += envelope.data?.planned ?? 0;
@@ -312,21 +334,53 @@ function chooseWorkspaceRoot(sandboxRoot: string, registered: readonly string[])
   return selected;
 }
 
-async function localRecords(
-  records: readonly ResourceGcEvidenceRecord[],
-  workspaces: readonly { root: string }[],
+/**
+ * The registered workspace that contains `cwd`, and the resolved roots of every workspace this
+ * store knows — the shared groundwork `localRecords` and the repository-lease scoping below both
+ * need, computed once so a caller wanting both never resolves the same paths twice.
+ */
+async function resolveLocalWorkspace(
+  workspaces: readonly WorkspaceRecord[],
   cwd: string,
-): Promise<ResourceGcEvidenceRecord[]> {
+): Promise<{ id: string; root: string; workspaceRoots: readonly string[] } | undefined> {
   const resolvedCwd = await realpath(cwd).catch(() => resolve(cwd));
   const workspaceRoots = await Promise.all(workspaces.map(async (item) =>
     realpath(item.root).catch(() => resolve(item.root))));
-  const workspace = mostSpecificWorkspace(workspaceRoots, resolvedCwd);
-  if (workspace === undefined) return [];
+  const matchedRoot = mostSpecificWorkspace(workspaceRoots, resolvedCwd);
+  if (matchedRoot === undefined) return undefined;
+  const workspace = workspaces[workspaceRoots.indexOf(matchedRoot)];
+  if (workspace === undefined) return undefined;
+  return { id: workspace.id, root: matchedRoot, workspaceRoots };
+}
+
+async function localRecords(
+  records: readonly ResourceGcEvidenceRecord[],
+  workspaces: readonly WorkspaceRecord[],
+  cwd: string,
+): Promise<ResourceGcEvidenceRecord[]> {
+  const local = await resolveLocalWorkspace(workspaces, cwd);
+  if (local === undefined) return [];
   const membership = await Promise.all(records.map(async (record) => {
     const sandboxRoot = await realpath(record.sandboxRoot).catch(() => resolve(record.sandboxRoot));
-    return mostSpecificWorkspace(workspaceRoots, sandboxRoot) === workspace;
+    return mostSpecificWorkspace(local.workspaceRoots, sandboxRoot) === local.root;
   }));
   return records.filter((_record, index) => membership[index] === true);
+}
+
+/**
+ * The repositories a `gc --apply` on this workspace must serialize against, so that two runs (or
+ * a run and a `remove`/`repair`) racing the same repository refuse rather than corrupt anything.
+ * Empty when `cwd` names no registered workspace, or that workspace has no repository yet — a
+ * plan with nothing registered to protect needs no lease to protect it.
+ */
+async function repositoryIdsForLocalWorkspace(
+  store: SQLiteStateStore,
+  workspaces: readonly WorkspaceRecord[],
+  cwd: string,
+): Promise<string[]> {
+  const local = await resolveLocalWorkspace(workspaces, cwd);
+  if (local === undefined) return [];
+  return store.listRepositories(local.id).map((repository) => repository.id);
 }
 
 function mostSpecificWorkspace(workspaceRoots: readonly string[], candidate: string): string | undefined {

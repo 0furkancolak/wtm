@@ -216,6 +216,7 @@ export type {
   GcJournalPhase,
   GcLeaseCoordinator,
   GcPlan,
+  GcRepositoryLeaseInput,
   ResourceSandboxIdentity,
   RecoverGcOptions,
 } from './resources/gc';

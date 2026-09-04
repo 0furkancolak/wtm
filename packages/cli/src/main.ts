@@ -404,6 +404,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
         globalConfigPath: defaultProductionRuntimePaths().globalConfigPath,
         cwd,
         apply,
+        readProcessStartTime: (pid) => hostPlatformRuntime().process.readStartTime(pid),
       })
       : await dependencies.gcRunner({ cwd, apply });
     renderRuntime(envelope, runtimeJson(program, options));
