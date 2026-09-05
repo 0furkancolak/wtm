@@ -57,7 +57,23 @@ jobs:
         with:
           # The standalone build refuses any runtime but the pinned one, and this job builds it.
           node-version: 24.18.0
-      - run: bun install --frozen-lockfile
+      # win32 has hit this three times with three different underlying messages (ENOTEMPTY once,
+      # ENOENT twice), always at the same spot: better-sqlite3 has no Windows prebuild for this
+      # bun/Node ABI, so its install script shells out to a nested `bun x node-gyp rebuild`, and
+      # node-gyp's own header download needs bun's package cache to resolve `tar` -- a second bun
+      # process racing the outer install's own cache writes. This is a real bug in bun's Windows
+      # cache/rename handling under that nested concurrency, not our code or generic CI noise, and
+      # not something this repo can fix at its source; `shell: bash` (Git Bash ships on
+      # windows-latest) keeps one retry loop working the same on every leg.
+      - name: bun install --frozen-lockfile
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            bun install --frozen-lockfile && exit 0
+            echo "bun install failed (attempt $attempt/3), retrying..." >&2
+            sleep 5
+          done
+          exit 1
       - run: bun run lint
       - run: bun run typecheck
       # A per-test timeout catches a hang; it is not an assertion about speed. The slowest
