@@ -87,6 +87,7 @@ import {
 import { configureProductMetadata } from './product';
 import { withAdapterTasks } from '@wtm/daemon/adapter-tasks';
 import { createStateDiagnosticDataSource } from './state-diagnostics';
+import { renderCompletionScript, validateCompletionKind, type CompletionDataKind } from './commands/completion';
 
 export interface CliDependencies {
   dataSource?: DiagnosticDataSource;
@@ -124,6 +125,10 @@ export interface CliDependencies {
   analyzeRunner?: (input: { repoPath: string; selector?: string; refreshRemotes?: boolean }) => Promise<JsonEnvelope<unknown>>;
   removeRunner?: (input: { repoPath: string; selector: string; refreshRemotes?: boolean; resume?: boolean }) => Promise<JsonEnvelope<unknown>>;
   forgetRunner?: (input: { cwd: string; selector?: string; force: boolean }) => Promise<JsonEnvelope<unknown>>;
+  /** What `wtm __complete <kind>` prints, one candidate per line — injectable so tests never need a real Git checkout or state database. */
+  completionDataRunner?: (input: { kind: CompletionDataKind; cwd: string }) => Promise<readonly string[]>;
+  /** The state database `wtm __complete` reads registered worktrees and workspace names from. */
+  completionDatabasePath?: string;
 }
 
 export interface RuntimeInvocation {
@@ -553,8 +558,56 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     renderRuntime(envelope, runtimeJson(program, options));
   });
 
+  const completion = program.command('completion <shell>')
+    .description('Print a shell completion script (bash, zsh, fish) to stdout.');
+  completion.action(async (shell: string) => {
+    const result = renderCompletionScript({
+      shell,
+      binaryName: program.name(),
+      // Excludes `__complete` by name rather than by Commander's `hidden` flag: that flag is
+      // read off a private field with no public type, and a script that suggests its own
+      // internal plumbing as a command a person could run is a worse failure than one extra
+      // string here if a second hidden command is ever added.
+      commands: program.commands
+        .map((command) => command.name())
+        .filter((name) => name !== hiddenCompletionDataCommand),
+    });
+    if (!result.ok) {
+      stderr(`[${result.error.code}] ${result.error.message}\n`);
+      hooks.setExitCode?.(exitCodeForError(result.error.code));
+      return;
+    }
+    stdout(result.script);
+  });
+
+  const completionData = program.command(`${hiddenCompletionDataCommand} <kind>`, { hidden: true })
+    .description('Internal: print dynamic shell-completion candidates for `wtm completion`, one per line.');
+  completionData.action(async (kind: string) => {
+    const validated = validateCompletionKind(kind);
+    if (!validated.ok) {
+      stderr(`[${validated.error.code}] ${validated.error.message}\n`);
+      hooks.setExitCode?.(exitCodeForError(validated.error.code));
+      return;
+    }
+    const values = dependencies.completionDataRunner === undefined
+      ? await productionCompletionData(
+        validated.kind,
+        cwd,
+        dependencies.completionDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+      )
+      : await dependencies.completionDataRunner({ kind: validated.kind, cwd });
+    for (const value of values) stdout(`${value}\n`);
+  });
+
   return program;
 }
+
+/**
+ * The one internal command `wtm completion`'s generated scripts shell back into for dynamic
+ * values, named the way kubectl's and Cobra's own hidden completion command are: unmistakably
+ * not something a person would type on purpose.
+ */
+const hiddenCompletionDataCommand = '__complete';
 
 function defaultPortableSkillInstaller(fallbackWorkspaceRoot: string): SkillInstaller {
   return {
@@ -1136,6 +1189,108 @@ function discoverableRepositories(root: string): string[] {
     return [];
   }
   return entries.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+}
+
+/** What `wtm __complete <kind>` prints for the shell completion scripts `wtm completion` generates. */
+async function productionCompletionData(
+  kind: CompletionDataKind,
+  cwd: string,
+  databasePath: string,
+): Promise<readonly string[]> {
+  if (kind === 'tasks') return await productionTaskNames(cwd, databasePath);
+  if (kind === 'worktrees') return await productionWorktreeSelectors(cwd, databasePath);
+  return await productionRepoSelectors(databasePath);
+}
+
+/**
+ * Every task name `resolve`/`run`/`start` would accept for `cwd` right now.
+ *
+ * There is no command that answers this on success — `task-resolver.ts` builds the same list
+ * only to name it inside an "Unknown task" error's `context.knownTasks` — so this composes the
+ * same resolution `productionTaskResolution` uses rather than re-deriving it, with one
+ * deliberate difference: `allocate: false`. A shell pressing Tab must never take an endpoint
+ * lease as a side effect of asking what tasks exist, which is exactly what `resolveWorktreeRuntime`
+ * does by default and exactly what `wtm plan` already refuses for the same reason.
+ */
+async function productionTaskNames(cwd: string, databasePath: string): Promise<string[]> {
+  const globalConfigPath = defaultProductionRuntimePaths().globalConfigPath;
+  const store = openStateStore(databasePath);
+  if (store !== null) {
+    try {
+      const runtime = await resolveWorktreeRuntime({ store, cwd, globalConfigPath, allocate: false });
+      return Object.keys(runtime.config.tasks ?? {}).sort(compareNames);
+    } catch {
+      // Not registered here, not a repository, or a config error — none of it is worth
+      // reporting to a shell that only wanted candidates to show.
+      return [];
+    } finally {
+      store.close();
+    }
+  }
+  try {
+    const topology = await listGitWorktrees(cwd);
+    const worktree = topology.find(({ path }) => containsPath(path, cwd)) ?? topology[0];
+    if (worktree === undefined) return [];
+    const mainRoot = topology[0]?.path ?? worktree.path;
+    const workspaceRoot = await findWorkspaceRoot(cwd) ?? worktree.path;
+    const config = await resolveWorkspaceConfig({ workspaceRoot, repoRoot: worktree.path, globalConfigPath });
+    const numericId = Math.max(1, topology.findIndex(({ path }) => path === worktree.path) + 1);
+    const withAdapters = await withAdapterTasks(config.value, {
+      workspace: { root: workspaceRoot },
+      repository: { root: worktree.path, mainRoot },
+      worktree: { root: worktree.path, id: numericId, branch: worktree.branch ?? null },
+    });
+    return Object.keys(withAdapters.tasks ?? {}).sort(compareNames);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Every worktree selector `analyze`/`remove` would accept for the repository containing `cwd`:
+ * each linked worktree's branch name, plus its WTM numeric id where one is registered.
+ */
+async function productionWorktreeSelectors(cwd: string, databasePath: string): Promise<string[]> {
+  let topology: GitWorktreeRecord[];
+  try {
+    topology = await listGitWorktrees(cwd);
+  } catch {
+    return [];
+  }
+  const repositoryRoot = containingWorktreeRoot(topology, cwd);
+  if (repositoryRoot === undefined) return [];
+  const selectors = new Set<string>();
+  for (const record of topology) {
+    const branch = branchName(record.branch);
+    if (branch.length > 0) selectors.add(branch);
+  }
+  const store = openStateStore(databasePath);
+  if (store !== null) {
+    try {
+      const repository = store.listRepositories().find(({ mainRoot }) => mainRoot === repositoryRoot);
+      if (repository !== undefined) {
+        for (const worktree of store.listWorktrees(repository.id)) selectors.add(String(worktree.numericId));
+      }
+    } finally {
+      store.close();
+    }
+  }
+  return [...selectors].sort(compareNames);
+}
+
+/** Every registered workspace name `forget` would accept as a selector. */
+async function productionRepoSelectors(databasePath: string): Promise<string[]> {
+  const store = openStateStore(databasePath);
+  if (store === null) return [];
+  try {
+    return [...new Set(store.listWorkspaces().map(({ name }) => name))].sort(compareNames);
+  } finally {
+    store.close();
+  }
+}
+
+function compareNames(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /** The nearest enclosing directory holding a `wtm.toml`, which is what `wtm init` writes. */
