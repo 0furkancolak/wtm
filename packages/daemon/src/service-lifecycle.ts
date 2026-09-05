@@ -33,10 +33,25 @@ import {
 } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import {
+  dirname as posixDirname,
+  isAbsolute as posixIsAbsolute,
+  join as posixJoin,
+  relative as posixRelative,
+  resolve as posixResolve,
+  sep as posixSep,
+} from 'node:path/posix';
+import {
+  dirname as win32Dirname,
+  isAbsolute as win32IsAbsolute,
+  join as win32Join,
+  relative as win32Relative,
+  resolve as win32Resolve,
+  sep as win32Sep,
+} from 'node:path/win32';
 import {
   ServiceLifecycleError,
-  assertAbsolutePath,
+  assertPrintableValue,
   configurationError,
   pathError,
   sanitizeCommandOutput,
@@ -68,6 +83,69 @@ import type {
   ServiceProcessInspector,
 } from '@wtm/platform/service';
 
+/**
+ * The path-manipulation flavour a backend-produced string is written in.
+ *
+ * Every path this file touches after `servicePathsFor` -- the home, the service directory, the
+ * definition path, every managed filename built from them -- came out of a `ServiceBackend`
+ * (`darwin.ts`/`linux.ts` pinned to `node:path/posix`, `windows.ts` to `node:path/win32`, per their
+ * own module comments), never out of the real host this process happens to run on. The default
+ * `node:path` disagrees: it is `node:path/win32` on an actual Windows host and `node:path/posix`
+ * everywhere else, regardless of which backend is active. That distinction is invisible wherever
+ * the composition root hands this file the backend matching the real host -- the two always agree
+ * by construction there -- and it is exactly what `launchd.test.ts` deliberately defeats, running
+ * `darwinServiceBackend`'s POSIX-shaped paths through this file on hosts, Windows CI included, that
+ * are not macOS. `resolve('/Users/test')` under `node:path/win32` treats the leading `/` as
+ * drive-relative and rewrites it with backslashes and the process's own drive letter; the backend's
+ * own `assertAbsolutePath` then rejects that rewritten value under POSIX rules, which is the exact
+ * `launchd home must be absolute` this file threw on a real `windows-latest` leg. Resolving the
+ * flavour from `backend.id` -- captured once, in `servicePathsFor`, and carried on `ServicePaths`/
+ * `ServiceScope` from there -- rather than from `process.platform` is what makes this file agree
+ * with whichever backend it was actually handed, on any host.
+ */
+interface ServicePathOperations {
+  resolve(...segments: string[]): string;
+  isAbsolute(path: string): boolean;
+  dirname(path: string): string;
+  join(...segments: string[]): string;
+  relative(from: string, to: string): string;
+  sep: string;
+}
+
+const posixPathOperations: ServicePathOperations = {
+  resolve: posixResolve,
+  isAbsolute: posixIsAbsolute,
+  dirname: posixDirname,
+  join: posixJoin,
+  relative: posixRelative,
+  sep: posixSep,
+};
+
+const win32PathOperations: ServicePathOperations = {
+  resolve: win32Resolve,
+  isAbsolute: win32IsAbsolute,
+  dirname: win32Dirname,
+  join: win32Join,
+  relative: win32Relative,
+  sep: win32Sep,
+};
+
+function pathOperationsFor(platform: ServiceBackend['id']): ServicePathOperations {
+  return platform === 'win32' ? win32PathOperations : posixPathOperations;
+}
+
+/**
+ * The win32-aware twin of `@wtm/platform/service`'s `assertAbsolutePath`, which is pinned to POSIX
+ * (see `text.ts`) because darwin and linux only ever hand it POSIX paths. `windows.ts` keeps the
+ * same local duplicate for the same reason (`assertAbsoluteWindowsPath`) rather than exporting a
+ * shared, platform-aware version: the check is three lines, and the alternative is a shared helper
+ * whose whole body is a single indirection over `pathOps`, which does not pay for the coupling.
+ */
+function assertBackendAbsolutePath(pathOps: ServicePathOperations, value: string, label: string): void {
+  assertPrintableValue(value, label);
+  if (!pathOps.isAbsolute(value)) throw configurationError(`${label} must be absolute`);
+}
+
 const maxManagedDefinitionBytes = 64 * 1024;
 const maxTransactionMetadataBytes = 16 * 1024;
 const maxOwnerPredecessors = 8;
@@ -81,6 +159,14 @@ const maxOwnerPredecessors = 8;
  * nothing to do with.
  */
 export interface ServicePaths {
+  /**
+   * Which backend produced every other field here, and therefore which `node:path` flavour they
+   * are written in -- POSIX for darwin/linux, win32 for windows. Every path-manipulation call this
+   * file makes on a backend-produced string looks this up rather than asking `process.platform`,
+   * which is what lets `darwinServiceBackend` be driven with POSIX paths from a real Windows host,
+   * exactly what `launchd.test.ts` does. See the `ServicePathOperations` comment above.
+   */
+  platform: ServiceBackend['id'];
   home: string;
   /** The label this HOME publishes under; every managed filename is built from it. */
   label: string;
@@ -115,6 +201,8 @@ export interface ServicePaths {
 
 /** What a managed-file helper needs to know: what it may not escape, and what it is publishing into. */
 export interface ServiceScope {
+  /** See `ServicePaths.platform`. `ServicePaths` satisfies this interface structurally. */
+  platform: ServiceBackend['id'];
   root: string;
   serviceDirectory: string;
   serviceDirectoryOwnerOnly: boolean;
@@ -207,8 +295,9 @@ export function servicePathsFor(
   backend: ServiceBackend,
   input: { home: string; env?: Readonly<Partial<Record<string, string>>> },
 ): ServicePaths {
-  assertAbsolutePath(input.home, `${backend.managerName} home`);
-  const home = resolve(input.home);
+  const pathOps = pathOperationsFor(backend.id);
+  assertBackendAbsolutePath(pathOps, input.home, `${backend.managerName} home`);
+  const home = pathOps.resolve(input.home);
   const platformPaths = backend.resolvePaths({ home, env: input.env ?? {} });
   const label = backend.labelFor(home);
   const serviceDirectory = platformPaths.serviceRoot;
@@ -222,11 +311,12 @@ export function servicePathsFor(
   // one every check below applies. Asserting it here rather than trusting it keeps a backend from
   // publishing into a directory the lifecycle then vouches for under different terms.
   const definitionDirectory = plan.definition.at(-1);
-  if (definitionDirectory === undefined || resolve(definitionDirectory.path) !== resolve(serviceDirectory)) {
+  if (definitionDirectory === undefined || pathOps.resolve(definitionDirectory.path) !== pathOps.resolve(serviceDirectory)) {
     throw configurationError(`${backend.managerName} directory plan must end at the service directory`);
   }
   const migration = backend.legacyMigration;
   return {
+    platform: backend.id,
     home,
     label,
     root: plan.root,
@@ -242,8 +332,8 @@ export function servicePathsFor(
     installDirectories: plan.install,
     dataRoot: platformPaths.dataRoot,
     logRoot: platformPaths.logRoot,
-    stdoutPath: join(platformPaths.logRoot, 'daemon.log'),
-    stderrPath: join(platformPaths.logRoot, 'daemon.error.log'),
+    stdoutPath: pathOps.join(platformPaths.logRoot, 'daemon.log'),
+    stderrPath: pathOps.join(platformPaths.logRoot, 'daemon.error.log'),
   };
 }
 
@@ -553,7 +643,7 @@ export function createServiceLifecycle(options: ServiceLifecycleOptions): Servic
   return {
     install: async () => {
       assertPlatform();
-      await ensureManagedDirectories(paths.root, paths.installDirectories, ownerUid);
+      await ensureManagedDirectories(paths.root, paths.installDirectories, ownerUid, paths.platform);
       return await withServiceOperationLock(paths, ownerUid, processInspector, lockPollAttempts, options.transactionHook, options.metadataReadHook, async (transaction) => {
         const legacy = await takeOverLegacyLabel(transaction);
         const result = await publishDerivedInstall(transaction);
@@ -564,7 +654,7 @@ export function createServiceLifecycle(options: ServiceLifecycleOptions): Servic
 
     uninstall: async () => {
       assertPlatform();
-      await ensureManagedDirectories(paths.root, paths.definitionDirectories, ownerUid);
+      await ensureManagedDirectories(paths.root, paths.definitionDirectories, ownerUid, paths.platform);
       return await withServiceOperationLock(paths, ownerUid, processInspector, lockPollAttempts, options.transactionHook, options.metadataReadHook, async (transaction) => {
         // A service published under the previous label is this HOME's service under an older
         // name. Uninstall is exactly the request to remove it, so it is booted out and deleted
@@ -705,13 +795,14 @@ async function sweepLegacyLabelArtifacts(
   if (names.length === 0) return;
   const parent = await assertSafeDirectory(paths.serviceDirectory, uid, paths.serviceDirectoryOwnerOnly);
   await assertLegacyLockAbandoned(paths, uid, inspector);
+  const pathOps = pathOperationsFor(paths.platform);
   for (const name of names) {
-    const path = join(paths.serviceDirectory, name);
-    assertContained(paths.serviceDirectory, path);
+    const path = pathOps.join(paths.serviceDirectory, name);
+    assertContained(paths.serviceDirectory, path, paths.platform);
     await transaction.assertOwned();
     const identity = await readOwnedIdentity(path, uid, [1, 2]).catch(() => null);
     if (identity === null) continue;
-    await removeExactFile(path, identity, uid, [1, 2]);
+    await removeExactFile(path, identity, uid, [1, 2], paths.platform);
   }
   await assertDirectoryIdentity(paths.serviceDirectory, parent, uid, paths.serviceDirectoryOwnerOnly);
 }
@@ -727,7 +818,7 @@ async function assertLegacyLockAbandoned(
   inspector: ServiceProcessInspector,
 ): Promise<void> {
   if (paths.legacyLabel === null) return;
-  const lockPath = join(paths.serviceDirectory, `.${paths.legacyLabel}.operation-lock`);
+  const lockPath = pathOperationsFor(paths.platform).join(paths.serviceDirectory, `.${paths.legacyLabel}.operation-lock`);
   let snapshot: { content: string; identity: FileIdentity } | null;
   try { snapshot = await readOwnedFile(lockPath, uid, [1, 2]); }
   catch { return; }
@@ -759,10 +850,12 @@ async function ensureManagedDirectories(
   root: string,
   directories: readonly ManagedDirectory[],
   uid: number,
+  platform: ServiceBackend['id'],
 ): Promise<void> {
   await assertSafeDirectory(root, uid);
+  const pathOps = pathOperationsFor(platform);
   for (const directory of directories) {
-    await ensureSafeChildDirectory(dirname(directory.path), directory.path, uid, directory.ownerOnly);
+    await ensureSafeChildDirectory(pathOps.dirname(directory.path), directory.path, uid, directory.ownerOnly, platform);
   }
 }
 
@@ -775,8 +868,9 @@ async function withServiceOperationLock<T>(
   metadataReadHook: ServiceLifecycleOptions['metadataReadHook'],
   operation: (transaction: ServiceTransaction) => Promise<T>,
 ): Promise<T> {
-  const lockPath = join(paths.serviceDirectory, `.${paths.label}.operation-lock`);
-  const journalPath = join(paths.serviceDirectory, `.${paths.label}.transaction`);
+  const pathOps = pathOperationsFor(paths.platform);
+  const lockPath = pathOps.join(paths.serviceDirectory, `.${paths.label}.operation-lock`);
+  const journalPath = pathOps.join(paths.serviceDirectory, `.${paths.label}.transaction`);
   const parent = await assertSafeDirectory(paths.serviceDirectory, uid, paths.serviceDirectoryOwnerOnly);
   const currentOwner = await inspector.current();
   const baseOwner: LockOwnerMetadata = {
@@ -811,7 +905,7 @@ async function withServiceOperationLock<T>(
       await link(candidate, lockPath);
       await syncDirectory(paths.serviceDirectory);
       await runTransactionHook(transaction, 'lock-linked');
-      await removeExactFile(candidate, baseCandidateIdentity, uid, [2]);
+      await removeExactFile(candidate, baseCandidateIdentity, uid, [2], paths.platform);
       const lock = await readOwnedFile(lockPath, uid, [1], maxTransactionMetadataBytes, metadataReadHook);
       if (lock === null || lock.content !== baseContent) throw transactionPathError('lock publication changed');
       owner = baseOwner;
@@ -820,7 +914,7 @@ async function withServiceOperationLock<T>(
       break;
     } catch (error) {
       if (isTransactionInterruption(error)) throw error;
-      await removeExactFileIfPresent(candidate, baseCandidateIdentity, uid, [1, 2]);
+      await removeExactFileIfPresent(candidate, baseCandidateIdentity, uid, [1, 2], paths.platform);
       if (!isNodeError(error, 'EEXIST')) throw error;
       await assertDirectoryIdentity(paths.serviceDirectory, parent, uid, paths.serviceDirectoryOwnerOnly);
       let existingStat: Awaited<ReturnType<typeof lstat>>;
@@ -875,7 +969,7 @@ async function withServiceOperationLock<T>(
         reclaim = observed.state === 'dead'
           || (observed.state === 'live' && observed.startIdentity !== existingOwner.startIdentity);
         if (reclaim && existing.identity.nlink === 2) {
-          await removeExactFile(ownerCompanionPath as string, existing.identity, uid, [2]);
+          await removeExactFile(ownerCompanionPath as string, existing.identity, uid, [2], paths.platform);
           continue;
         }
       }
@@ -898,7 +992,7 @@ async function withServiceOperationLock<T>(
         );
         if (unchanged === null || !sameInode(existingIdentity as FileIdentity, unchanged.identity)
           || unchanged.content !== existingContent) {
-          await removeExactFileIfPresent(candidate, successorIdentity, uid, [1]);
+          await removeExactFileIfPresent(candidate, successorIdentity, uid, [1], paths.platform);
           busyAttempts += 1;
           continue;
         }
@@ -929,7 +1023,7 @@ async function withServiceOperationLock<T>(
         try {
           await link(candidate, claimPath);
         } catch (error) {
-          await removeExactFile(candidate, successorIdentity, uid, [1]);
+          await removeExactFile(candidate, successorIdentity, uid, [1], paths.platform);
           if (!isNodeError(error, 'EEXIST')) throw error;
           const claimBusy = await resolveExistingSuccessorClaim(
             transaction,
@@ -967,8 +1061,8 @@ async function withServiceOperationLock<T>(
         );
         if (exactPredecessor === null || !sameInode(existingIdentity as FileIdentity, exactPredecessor.identity)
           || exactPredecessor.content !== existingContent) {
-          await removeExactFile(claimPath, successorIdentity, uid, [2]);
-          await removeExactFile(candidate, successorIdentity, uid, [1]);
+          await removeExactFile(claimPath, successorIdentity, uid, [2], paths.platform);
+          await removeExactFile(candidate, successorIdentity, uid, [1], paths.platform);
           throw transactionPathError('stale owner changed before replacement');
         }
         await runTransactionHook(transaction, 'takeover-claim-owned');
@@ -1051,11 +1145,11 @@ async function withServiceOperationLock<T>(
       await assertDirectoryIdentity(paths.serviceDirectory, parent, uid, paths.serviceDirectoryOwnerOnly);
       await transaction.assertOwned();
       if (lockClaimPath !== undefined) {
-        await removeExactFile(lockClaimPath, lockIdentity as FileIdentity, uid, [2]);
+        await removeExactFile(lockClaimPath, lockIdentity as FileIdentity, uid, [2], paths.platform);
         lockClaimPath = undefined;
         await transaction.assertOwned();
       }
-      await removeExactFile(lockPath, lockIdentity as FileIdentity, uid, [1]);
+      await removeExactFile(lockPath, lockIdentity as FileIdentity, uid, [1], paths.platform);
       await assertDirectoryIdentity(paths.serviceDirectory, parent, uid, paths.serviceDirectoryOwnerOnly);
     }
   }
@@ -1188,8 +1282,14 @@ async function resolveExistingSuccessorClaim(
   return false;
 }
 
-async function ensureSafeChildDirectory(parent: string, path: string, uid: number, ownerOnly: boolean): Promise<void> {
-  assertContained(parent, path);
+async function ensureSafeChildDirectory(
+  parent: string,
+  path: string,
+  uid: number,
+  ownerOnly: boolean,
+  platform: ServiceBackend['id'],
+): Promise<void> {
+  assertContained(parent, path, platform);
   const parentIdentity = await assertSafeDirectory(parent, uid);
   try { await mkdir(path, { mode: 0o700 }); }
   catch (error) { if (!isNodeError(error, 'EEXIST')) throw pathError('Could not create a safe launchd directory', error); }
@@ -1237,8 +1337,8 @@ interface TransactionJournal {
 interface JournalFileSnapshot extends FileSnapshot { journal: TransactionJournal }
 
 async function readSafeManagedFile(scope: ServiceScope, path: string, uid: number): Promise<FileSnapshot | null> {
-  assertContained(scope.root, path);
-  const directory = resolve(path, '..');
+  assertContained(scope.root, path, scope.platform);
+  const directory = pathOperationsFor(scope.platform).resolve(path, '..');
   const chain = await assertSafeExistingDirectoryChain(scope, directory, uid);
   if (chain === null) return null;
   let handle: FileHandle;
@@ -1266,8 +1366,9 @@ async function publishSafeManagedFile(
   hook?: ServiceLifecycleOptions['publicationHook'],
   transaction?: ServiceTransaction,
 ): Promise<FileIdentity> {
-  assertContained(scope.root, path);
-  const directory = resolve(path, '..');
+  const pathOps = pathOperationsFor(scope.platform);
+  assertContained(scope.root, path, scope.platform);
+  const directory = pathOps.resolve(path, '..');
   const parent = await assertSafeDirectory(directory, uid, scope.serviceDirectoryOwnerOnly);
   const existing = await readSafeManagedFile(scope, path, uid);
   const suffix = transaction?.id ?? crypto.randomUUID();
@@ -1291,8 +1392,8 @@ async function publishSafeManagedFile(
       await transaction.assertOwned();
       await writeTransactionJournal(transaction, {
         version: 1, transactionId: transaction.id, operation: 'publish', phase: 'preparing',
-        temporary: temporary.split(sep).at(-1) as string,
-        quarantine: quarantine.split(sep).at(-1) as string,
+        temporary: temporary.split(pathOps.sep).at(-1) as string,
+        quarantine: quarantine.split(pathOps.sep).at(-1) as string,
         original: existing?.identity ?? null, replacement: null, expected,
       });
       await runTransactionHook(transaction, 'publish-prepared');
@@ -1319,8 +1420,8 @@ async function publishSafeManagedFile(
       await transaction.assertOwned();
       await writeTransactionJournal(transaction, {
         version: 1, transactionId: transaction.id, operation: 'publish', phase: 'prepared',
-        temporary: temporary.split(sep).at(-1) as string,
-        quarantine: quarantine.split(sep).at(-1) as string,
+        temporary: temporary.split(pathOps.sep).at(-1) as string,
+        quarantine: quarantine.split(pathOps.sep).at(-1) as string,
         original: existing?.identity ?? null, replacement: temporaryStat, expected,
       });
       await runTransactionHook(transaction, 'temporary-created');
@@ -1354,8 +1455,8 @@ async function publishSafeManagedFile(
       if (transaction !== undefined) {
         await writeTransactionJournal(transaction, {
           version: 1, transactionId: transaction.id, operation: 'publish', phase: 'old-quarantined',
-          temporary: temporary.split(sep).at(-1) as string,
-          quarantine: quarantine.split(sep).at(-1) as string,
+          temporary: temporary.split(pathOps.sep).at(-1) as string,
+          quarantine: quarantine.split(pathOps.sep).at(-1) as string,
           original: moved.identity, replacement: temporaryStat, expected,
         });
         await runTransactionHook(transaction, 'old-quarantined');
@@ -1410,7 +1511,7 @@ async function publishSafeManagedFile(
       || linkedTarget.content !== linkedTemporary.content) {
       if (linkedTemporary !== null && linkedTarget !== null
         && sameInode(linkedTemporary.identity, linkedTarget.identity)) {
-        await removeExactFile(path, linkedTarget.identity, uid, [2]);
+        await removeExactFile(path, linkedTarget.identity, uid, [2], scope.platform);
       }
       ownedTemporary = undefined;
       throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd linked temporary changed identity');
@@ -1419,14 +1520,14 @@ async function publishSafeManagedFile(
       const linked = linkedTarget.identity;
       await writeTransactionJournal(transaction, {
         version: 1, transactionId: transaction.id, operation: 'publish', phase: 'new-linked',
-        temporary: temporary.split(sep).at(-1) as string,
-        quarantine: quarantine.split(sep).at(-1) as string,
+        temporary: temporary.split(pathOps.sep).at(-1) as string,
+        quarantine: quarantine.split(pathOps.sep).at(-1) as string,
         original: existing?.identity ?? null, replacement: linked, expected,
       });
       await runTransactionHook(transaction, 'new-linked');
     }
     await transaction?.assertOwned();
-    await removeExactFile(temporary, temporaryStat, uid, [2]);
+    await removeExactFile(temporary, temporaryStat, uid, [2], scope.platform);
     ownedTemporary = undefined;
     const published = await readSafeManagedFile(scope, path, uid);
     if (published === null) throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd plist publication disappeared');
@@ -1434,8 +1535,8 @@ async function publishSafeManagedFile(
     if (transaction !== undefined) {
       await writeTransactionJournal(transaction, {
         version: 1, transactionId: transaction.id, operation: 'publish', phase: 'temporary-unlinked',
-        temporary: temporary.split(sep).at(-1) as string,
-        quarantine: quarantine.split(sep).at(-1) as string,
+        temporary: temporary.split(pathOps.sep).at(-1) as string,
+        quarantine: quarantine.split(pathOps.sep).at(-1) as string,
         original: existing?.identity ?? null, replacement: published.identity, expected,
       });
       await runTransactionHook(transaction, 'temporary-unlinked');
@@ -1468,7 +1569,7 @@ async function publishSafeManagedFile(
         quarantined = undefined;
       }
       if (ownedTemporary !== undefined) {
-        try { await removeExactFile(temporary, ownedTemporary, uid, [1, 2]); }
+        try { await removeExactFile(temporary, ownedTemporary, uid, [1, 2], scope.platform); }
         catch (cleanupError) {
           if (!isNodeError(cleanupError, 'ENOENT')) {
             throw new ServiceLifecycleError(
@@ -1508,8 +1609,9 @@ async function removeSafeManagedFile(
     await pin?.close();
     throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd plist changed before removal');
   }
+  const pathOps = pathOperationsFor(scope.platform);
   try {
-    const directory = resolve(path, '..');
+    const directory = pathOps.resolve(path, '..');
     const parent = await assertSafeDirectory(directory, uid, scope.serviceDirectoryOwnerOnly);
     await hook?.('before-remove', path);
     let before = await readSafeManagedFile(scope, path, uid);
@@ -1528,7 +1630,7 @@ async function removeSafeManagedFile(
       await transaction.assertOwned();
       await writeTransactionJournal(transaction, {
         version: 1, transactionId: transaction.id, operation: 'remove', phase: 'prepared',
-        temporary: null, quarantine: quarantine.split(sep).at(-1) as string,
+        temporary: null, quarantine: quarantine.split(pathOps.sep).at(-1) as string,
         original: snapshot.identity, replacement: null, expected: null,
       });
       await runTransactionHook(transaction, 'removal-prepared');
@@ -1548,7 +1650,7 @@ async function removeSafeManagedFile(
     if (transaction !== undefined) {
       await writeTransactionJournal(transaction, {
         version: 1, transactionId: transaction.id, operation: 'remove', phase: 'removal-quarantined',
-        temporary: null, quarantine: quarantine.split(sep).at(-1) as string,
+        temporary: null, quarantine: quarantine.split(pathOps.sep).at(-1) as string,
         original: moved.identity, replacement: null, expected: null,
       });
       await runTransactionHook(transaction, 'removal-quarantined');
@@ -1558,7 +1660,7 @@ async function removeSafeManagedFile(
     if (transaction !== undefined) {
       await writeTransactionJournal(transaction, {
         version: 1, transactionId: transaction.id, operation: 'remove', phase: 'removal-cleaned',
-        temporary: null, quarantine: quarantine.split(sep).at(-1) as string,
+        temporary: null, quarantine: quarantine.split(pathOps.sep).at(-1) as string,
         original: moved.identity, replacement: null, expected: null,
       });
       await runTransactionHook(transaction, 'removal-cleaned');
@@ -1606,13 +1708,14 @@ async function restoreQuarantinedFile(
   parent: DirectoryIdentity,
   expected: FileIdentity,
 ): Promise<boolean> {
-  await assertDirectoryIdentity(resolve(path, '..'), parent, uid, scope.serviceDirectoryOwnerOnly);
+  const pathOps = pathOperationsFor(scope.platform);
+  await assertDirectoryIdentity(pathOps.resolve(path, '..'), parent, uid, scope.serviceDirectoryOwnerOnly);
   const moved = await readSafeManagedFile(scope, quarantine, uid);
   if (moved === null || !sameFileIdentity(expected, moved.identity)) return false;
   try { await link(quarantine, path); }
   catch (error) { if (isNodeError(error, 'EEXIST')) return false; throw error; }
   await rm(quarantine);
-  await assertDirectoryIdentity(resolve(path, '..'), parent, uid, scope.serviceDirectoryOwnerOnly);
+  await assertDirectoryIdentity(pathOps.resolve(path, '..'), parent, uid, scope.serviceDirectoryOwnerOnly);
   const restored = await readSafeManagedFile(scope, path, uid);
   return restored !== null && sameFileIdentity(expected, restored.identity);
 }
@@ -1624,13 +1727,14 @@ async function removeOwnedSibling(
   parent: DirectoryIdentity,
   expected: FileIdentity,
 ): Promise<void> {
-  await assertDirectoryIdentity(resolve(path, '..'), parent, uid, scope.serviceDirectoryOwnerOnly);
+  const pathOps = pathOperationsFor(scope.platform);
+  await assertDirectoryIdentity(pathOps.resolve(path, '..'), parent, uid, scope.serviceDirectoryOwnerOnly);
   const current = await readSafeManagedFile(scope, path, uid);
   if (current === null || !sameFileIdentity(expected, current.identity)) {
     throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd owned temporary identity changed');
   }
   await rm(path);
-  await assertDirectoryIdentity(resolve(path, '..'), parent, uid, scope.serviceDirectoryOwnerOnly);
+  await assertDirectoryIdentity(pathOps.resolve(path, '..'), parent, uid, scope.serviceDirectoryOwnerOnly);
 }
 
 function rollbackConflict(): ServiceLifecycleError {
@@ -1783,7 +1887,7 @@ async function reconcilePredecessorJournalTemporary(
       throw transactionPathError('duplicate journal temporary changed before removal');
     }
     const links = sameInode(exactFixed.identity, exactTemporary.identity) ? [2] : [1];
-    await removeExactFile(temporaryPath, exactTemporary.identity, transaction.uid, links);
+    await removeExactFile(temporaryPath, exactTemporary.identity, transaction.uid, links, transaction.paths.platform);
     await runTransactionHook(transaction, 'journal-temporary-removed');
     const stable = await readOwnedFile(
       transaction.journalPath,
@@ -1859,7 +1963,7 @@ async function reconcilePredecessorJournalTemporary(
     || !sameInode(temporary.identity, finalTemporary.identity)) {
     throw transactionPathError('adopted journal temporary changed before stabilization');
   }
-  await removeExactFile(temporaryPath, finalTemporary.identity, transaction.uid, [2]);
+  await removeExactFile(temporaryPath, finalTemporary.identity, transaction.uid, [2], transaction.paths.platform);
   const stable = await readOwnedFile(
     transaction.journalPath,
     transaction.uid,
@@ -1946,7 +2050,7 @@ function parseValidatedJournal(
 function journalTemporaryPath(transaction: ServiceTransaction, transactionId: string): string {
   if (!validTransactionId(transactionId)) throw transactionPathError('journal temporary transaction ID is invalid');
   const path = `${transaction.journalPath}.tmp-${transactionId}`;
-  assertContained(transaction.paths.serviceDirectory, path);
+  assertContained(transaction.paths.serviceDirectory, path, transaction.paths.platform);
   return path;
 }
 
@@ -1970,8 +2074,9 @@ async function recoverInterruptedTransaction(
   }
   validateJournal({ ...transaction, id: journal.transactionId }, journal);
   const target = transaction.paths.definitionPath;
-  const temporary = journal.temporary === null ? null : join(transaction.paths.serviceDirectory, journal.temporary);
-  const quarantine = journal.quarantine === null ? null : join(transaction.paths.serviceDirectory, journal.quarantine);
+  const pathOps = pathOperationsFor(transaction.paths.platform);
+  const temporary = journal.temporary === null ? null : pathOps.join(transaction.paths.serviceDirectory, journal.temporary);
+  const quarantine = journal.quarantine === null ? null : pathOps.join(transaction.paths.serviceDirectory, journal.quarantine);
   let targetIdentity = await readOwnedIdentity(target, transaction.uid, [1, 2]);
   let temporaryIdentity = temporary === null ? null : await readOwnedIdentity(temporary, transaction.uid, [1, 2]);
   const quarantineIdentity = quarantine === null ? null : await readOwnedIdentity(quarantine, transaction.uid, [1, 2]);
@@ -2006,7 +2111,7 @@ async function recoverInterruptedTransaction(
         );
         if (temporarySnapshot === null) {
           await transaction.assertOwned();
-          await removeExactFile(transaction.journalPath, snapshot.identity, transaction.uid, [1]);
+          await removeExactFile(transaction.journalPath, snapshot.identity, transaction.uid, [1], transaction.paths.platform);
           return;
         }
         if (!sameExpectedContent(journal.expected, temporarySnapshot.content)) {
@@ -2036,7 +2141,7 @@ async function recoverInterruptedTransaction(
         if (temporaryIdentity !== null) {
           if (!sameInode(targetIdentity, temporaryIdentity)) throw transactionPathError('published temp identity mismatch');
           await transaction.assertOwned();
-          await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [2]);
+          await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [2], transaction.paths.platform);
         }
         const stable = await readOwnedIdentity(target, transaction.uid, [1]);
         if (stable === null || !sameInode(journal.replacement, stable)) throw transactionPathError('published target did not stabilize');
@@ -2045,7 +2150,7 @@ async function recoverInterruptedTransaction(
             throw transactionPathError('replacement quarantine identity mismatch');
           }
           await transaction.assertOwned();
-          await removeExactFile(quarantine as string, quarantineIdentity, transaction.uid, [1]);
+          await removeExactFile(quarantine as string, quarantineIdentity, transaction.uid, [1], transaction.paths.platform);
         }
       } else if (targetIdentity === null) {
         if (quarantineIdentity !== null) {
@@ -2072,13 +2177,13 @@ async function recoverInterruptedTransaction(
             || !sameInode(journal.original, linkedTarget)
             || !sameInode(linkedQuarantine, linkedTarget)) {
             if (linkedQuarantine !== null && linkedTarget !== null && sameInode(linkedQuarantine, linkedTarget)) {
-              await removeExactFile(target, linkedTarget, transaction.uid, [2]);
+              await removeExactFile(target, linkedTarget, transaction.uid, [2], transaction.paths.platform);
             }
             throw transactionPathError('restore quarantine changed during link');
           }
           await runTransactionHook(transaction, 'restore-linked');
           await transaction.assertOwned();
-          await removeExactFile(quarantine as string, journal.original, transaction.uid, [2]);
+          await removeExactFile(quarantine as string, journal.original, transaction.uid, [2], transaction.paths.platform);
           const restored = await readOwnedIdentity(target, transaction.uid, [1]);
           if (restored === null || !sameInode(journal.original, restored)) throw transactionPathError('old definition restore failed');
         } else if (journal.original !== null) {
@@ -2086,30 +2191,30 @@ async function recoverInterruptedTransaction(
         }
         if (temporaryIdentity !== null) {
           await transaction.assertOwned();
-          await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [1]);
+          await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [1], transaction.paths.platform);
         }
       } else if (quarantineIdentity !== null && journal.original !== null
         && sameInode(journal.original, targetIdentity) && sameInode(targetIdentity, quarantineIdentity)
         && targetIdentity.nlink === 2 && quarantineIdentity.nlink === 2) {
         await transaction.assertOwned();
-        await removeExactFile(quarantine as string, quarantineIdentity, transaction.uid, [2]);
+        await removeExactFile(quarantine as string, quarantineIdentity, transaction.uid, [2], transaction.paths.platform);
         const stable = await readOwnedIdentity(target, transaction.uid, [1]);
         if (stable === null || !sameInode(journal.original, stable)) throw transactionPathError('restored target did not stabilize');
         if (temporaryIdentity !== null) {
           await transaction.assertOwned();
-          await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [1]);
+          await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [1], transaction.paths.platform);
         }
       } else {
         if (temporaryIdentity !== null) {
           await transaction.assertOwned();
-          await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [1]);
+          await removeExactFile(temporary as string, temporaryIdentity, transaction.uid, [1], transaction.paths.platform);
         }
         if (quarantineIdentity !== null) {
           if (journal.original === null || !sameInode(journal.original, quarantineIdentity)) {
             throw transactionPathError('concurrent-winner quarantine mismatch');
           }
           await transaction.assertOwned();
-          await removeExactFile(quarantine as string, quarantineIdentity, transaction.uid, [1]);
+          await removeExactFile(quarantine as string, quarantineIdentity, transaction.uid, [1], transaction.paths.platform);
         }
       }
     } else {
@@ -2117,13 +2222,13 @@ async function recoverInterruptedTransaction(
       if (quarantineIdentity !== null) {
         if (!sameInode(journal.original, quarantineIdentity)) throw transactionPathError('removal quarantine identity mismatch');
         await transaction.assertOwned();
-        await removeExactFile(quarantine as string, quarantineIdentity, transaction.uid, [1]);
+        await removeExactFile(quarantine as string, quarantineIdentity, transaction.uid, [1], transaction.paths.platform);
       } else if (targetIdentity !== null && !sameInode(journal.original, targetIdentity)) {
         // A concurrent winner is preserved; the exact removal object is already absent.
       }
     }
     await transaction.assertOwned();
-    await removeExactFile(transaction.journalPath, snapshot.identity, transaction.uid, [1]);
+    await removeExactFile(transaction.journalPath, snapshot.identity, transaction.uid, [1], transaction.paths.platform);
   } finally {
     await quarantinePin?.close();
   }
@@ -2143,7 +2248,7 @@ async function removeJournalIfOwned(transaction: ServiceTransaction): Promise<vo
   catch (error) { throw transactionPathError('transaction journal is invalid', error); }
   if (journal.transactionId !== transaction.id) throw transactionPathError('transaction journal changed owners');
   validateJournal(transaction, journal);
-  await removeExactFile(transaction.journalPath, snapshot.identity, transaction.uid, [1]);
+  await removeExactFile(transaction.journalPath, snapshot.identity, transaction.uid, [1], transaction.paths.platform);
 }
 
 function validateJournal(transaction: ServiceTransaction, journal: TransactionJournal): void {
@@ -2155,7 +2260,7 @@ function validateJournal(transaction: ServiceTransaction, journal: TransactionJo
     ? ['preparing', 'prepared', 'old-quarantined', 'new-linked', 'temporary-unlinked'].includes(journal.phase)
     : ['prepared', 'removal-quarantined', 'removal-cleaned'].includes(journal.phase);
   if (!phaseAllowed) throw transactionPathError('transaction journal phase is invalid');
-  const targetName = transaction.paths.definitionPath.split(sep).at(-1) as string;
+  const targetName = transaction.paths.definitionPath.split(pathOperationsFor(transaction.paths.platform).sep).at(-1) as string;
   const expectedTemporary = `${targetName}.tmp-${transaction.id}`;
   const expectedQuarantine = `${targetName}.${journal.operation === 'publish' ? 'replaced' : 'removed'}-${transaction.id}`;
   if ((journal.temporary !== null && journal.temporary !== expectedTemporary)
@@ -2349,11 +2454,17 @@ function assertOwnedFileStat(
   return { dev: Number(stat.dev), ino: Number(stat.ino), uid: stat.uid, mode, nlink };
 }
 
-async function removeExactFile(path: string, expected: FileIdentity, uid: number, links: readonly number[]): Promise<void> {
+async function removeExactFile(
+  path: string,
+  expected: FileIdentity,
+  uid: number,
+  links: readonly number[],
+  platform: ServiceBackend['id'],
+): Promise<void> {
   const current = await readOwnedIdentity(path, uid, links);
   if (current === null || !sameInode(expected, current)) throw transactionPathError('transaction artifact identity changed');
   await rm(path);
-  await syncDirectory(resolve(path, '..'));
+  await syncDirectory(pathOperationsFor(platform).resolve(path, '..'));
 }
 
 async function removeExactFileIfPresent(
@@ -2361,11 +2472,12 @@ async function removeExactFileIfPresent(
   expected: FileIdentity,
   uid: number,
   links: readonly number[],
+  platform: ServiceBackend['id'],
 ): Promise<void> {
   const current = await readOwnedIdentity(path, uid, links);
   if (current === null) return;
   if (!sameInode(expected, current)) throw transactionPathError('transaction artifact identity changed');
-  await removeExactFile(path, expected, uid, links);
+  await removeExactFile(path, expected, uid, links, platform);
 }
 
 function sameInode(left: FileIdentity, right: FileIdentity): boolean {
@@ -2426,14 +2538,15 @@ async function assertSafeExistingDirectoryChain(
   directory: string,
   uid: number,
 ): Promise<DirectoryIdentity | null> {
-  assertContained(scope.root, directory);
+  assertContained(scope.root, directory, scope.platform);
   try { await assertSafeDirectory(scope.root, uid); }
   catch (error) { if (isNodeError(error, 'ENOENT')) return null; throw error; }
-  const child = relative(scope.root, directory);
-  let current = resolve(scope.root);
+  const pathOps = pathOperationsFor(scope.platform);
+  const child = pathOps.relative(scope.root, directory);
+  let current = pathOps.resolve(scope.root);
   if (child !== '') {
-    for (const part of child.split(sep)) {
-      current = join(current, part);
+    for (const part of child.split(pathOps.sep)) {
+      current = pathOps.join(current, part);
       try { await assertSafeDirectory(current, uid); }
       catch (error) { if (isNodeError(error, 'ENOENT')) return null; throw error; }
     }
@@ -2443,7 +2556,7 @@ async function assertSafeExistingDirectoryChain(
   // identity rather than by suffix is what lets a systemd unit directory reach the same check
   // without it learning a second filename -- and lets that backend answer `false`, because a
   // directory shared with `systemctl enable` is 0755 everywhere and is not WTM's to tighten.
-  const definitionDirectory = resolve(directory) === resolve(scope.serviceDirectory);
+  const definitionDirectory = pathOps.resolve(directory) === pathOps.resolve(scope.serviceDirectory);
   return await assertSafeDirectory(directory, uid, definitionDirectory && scope.serviceDirectoryOwnerOnly);
 }
 
@@ -2511,11 +2624,12 @@ function sameOptionalIdentity(left: FileIdentity | undefined, right: FileIdentit
   return left.dev === right.dev && left.ino === right.ino && left.uid === right.uid && right.nlink === 1;
 }
 
-function assertContained(root: string, target: string): void {
-  const absoluteRoot = resolve(root);
-  const absoluteTarget = resolve(target);
-  const child = relative(absoluteRoot, absoluteTarget);
-  if (child === '' || (!child.startsWith(`..${sep}`) && child !== '..' && !isAbsolute(child))) return;
+function assertContained(root: string, target: string, platform: ServiceBackend['id']): void {
+  const pathOps = pathOperationsFor(platform);
+  const absoluteRoot = pathOps.resolve(root);
+  const absoluteTarget = pathOps.resolve(target);
+  const child = pathOps.relative(absoluteRoot, absoluteTarget);
+  if (child === '' || (!child.startsWith(`..${pathOps.sep}`) && child !== '..' && !pathOps.isAbsolute(child))) return;
   throw new ServiceLifecycleError('UNSAFE_LAUNCHD_PATH', 'launchd path escapes the configured home');
 }
 
