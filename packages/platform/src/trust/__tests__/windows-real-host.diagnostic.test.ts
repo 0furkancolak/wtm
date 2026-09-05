@@ -10,18 +10,18 @@ import { createWindowsFileTrustPolicy, windowsTrustedPrincipalSids } from '../wi
 const execFileAsync = promisify(execFile);
 
 /**
- * Round three: the retry (a7549ac) and the `PSModuleAnalysisCachePath=NUL` fix (090b46b) both
- * landed on a real `windows-latest` leg without changing the failure count or shape at all, which
- * means neither guess actually reached the real cause. This probes the exact same question the
- * first diagnostic (in git history) was deleted for answering too early: does `Get-Acl` still
- * throw `CouldNotAutoloadMatchingModule` under the NUL fix, or does it now succeed and return an
- * owner SID this policy simply does not recognise as trusted? Runs the real reader several times
- * in a loop (not once) because the earlier hypothesis was that contention needs concurrent
- * processes to reproduce -- a lone sequential probe in its own describe block proves nothing about
- * that even if it happens to pass. Delete this file once that question has a real answer.
+ * Round four: three real `windows-latest` legs in a row -- the retry (a7549ac), the
+ * `PSModuleAnalysisCachePath=NUL` fix (090b46b), and this file's own round-three evidence -- have
+ * now shown the failure is not transient and not concurrency-dependent at all: five *sequential*
+ * `readAcl` calls, the very first things this test does with nothing else running, all failed
+ * identically with `CouldNotAutoloadMatchingModule`. That rules out every contention-based
+ * hypothesis this investigation has tried so far. What is left to check is whether the module
+ * genuinely cannot load on this runner at all -- a broken `PSModulePath`, a missing module
+ * directory, or a runner-image-level regression -- which this probes directly rather than
+ * guessing a fourth fix. Delete this file once that question has a real answer.
  */
 (process.platform === 'win32' ? describe : describe.skip)('real Windows ACL read, diagnostic', () => {
-  test('reports what Get-Acl and WindowsIdentity actually say, across several sequential and concurrent attempts', async () => {
+  test('reports why Microsoft.PowerShell.Security will not load at all on this host', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'wtm-acl-diagnostic-'));
     try {
       const readAcl = createWindowsAclReader();
@@ -32,19 +32,26 @@ const execFileAsync = promisify(execFile);
       console.error('[wtm-acl-diagnostic] currentUserSid:', JSON.stringify(sid));
       console.error('[wtm-acl-diagnostic] trustedPrincipalSids:', JSON.stringify(windowsTrustedPrincipalSids));
 
-      // Sequential attempts through the real, NUL-cache-fixed reader: does it fail every time, or
-      // only sometimes? A consistent failure points at ownership, not autoload contention.
-      for (let i = 0; i < 5; i += 1) {
-        const acl = await readAcl(directory);
-        console.error(`[wtm-acl-diagnostic] sequential readAcl attempt ${i}:`, JSON.stringify(acl));
+      const acl = await readAcl(directory);
+      console.error('[wtm-acl-diagnostic] readAcl:', JSON.stringify(acl));
+
+      async function probe(label: string, command: string): Promise<void> {
+        try {
+          const result = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', timeout: 5000 });
+          console.error(`[wtm-acl-diagnostic] ${label} stdout:`, JSON.stringify(result.stdout));
+          console.error(`[wtm-acl-diagnostic] ${label} stderr:`, JSON.stringify(result.stderr));
+        } catch (error) {
+          console.error(`[wtm-acl-diagnostic] ${label} THREW:`, String(error));
+          console.error(`[wtm-acl-diagnostic] ${label} THREW stdout/stderr:`, JSON.stringify((error as { stdout?: string; stderr?: string }).stdout), JSON.stringify((error as { stdout?: string; stderr?: string }).stderr));
+        }
       }
 
-      // Concurrent attempts: the failure mode this session's whole investigation has assumed needs
-      // many powershell.exe processes racing at once. Reproduce that directly, in-process.
-      const concurrent = await Promise.all(Array.from({ length: 8 }, (_, i) => readAcl(directory)
-        .then((result) => ({ i, result }))
-        .catch((error: unknown) => ({ i, error: String(error) }))));
-      for (const outcome of concurrent) console.error('[wtm-acl-diagnostic] concurrent readAcl:', JSON.stringify(outcome));
+      await probe('PSVersionTable', '$PSVersionTable | ConvertTo-Json -Compress');
+      await probe('PSModulePath', '$env:PSModulePath');
+      await probe('Get-Module -ListAvailable Security', "Get-Module -ListAvailable -Name Microsoft.PowerShell.Security | ConvertTo-Json -Compress");
+      await probe('module directory listing', "Get-ChildItem -Path (\"$PSHOME\\Modules\\Microsoft.PowerShell.Security\") -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name");
+      await probe('explicit Import-Module -Force -Verbose', 'Import-Module Microsoft.PowerShell.Security -Force -Verbose 4>&1 | Out-String');
+      await probe('Import-Module by explicit full path', "Import-Module -Name \"$PSHOME\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1\" -Force -Verbose 4>&1 | Out-String");
 
       // The rawest possible powershell.exe invocation, bypassing every layer of this port, with
       // stderr and the thrown error surfaced instead of swallowed.
