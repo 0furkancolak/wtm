@@ -174,7 +174,16 @@ describe('launchd commands', () => {
   });
 });
 
-describe('launchd lifecycle', () => {
+// `fakeHome()` below is a real, actually-existing directory this suite performs real mkdir/chmod/
+// rename/symlink/link operations against, so it cannot be a literal POSIX string the way "launchd
+// plist"/"launchd commands" above use -- it has to be a real path the host filesystem will accept.
+// On an actual Windows host that path is inescapably Windows-shaped (a drive letter, backslashes),
+// which `darwinServiceBackend`'s now-permanent POSIX pin (this file's own `assertBackendAbsolutePath`
+// in `service-lifecycle.ts`) correctly refuses as "not absolute" -- there is no path-flavor fix left
+// to make here, since a real Windows path and a POSIX-absolute path are mutually exclusive shapes.
+// This suite is testing real macOS file-lifecycle semantics on a real filesystem, the same category
+// as `posix.test.ts`'s uid comparison, and needs a real POSIX host to mean anything.
+(process.platform !== 'win32' ? describe : describe.skip)('launchd lifecycle', () => {
   test('installs atomically below an isolated home without invoking a real user agent', async () => {
     const home = await fakeHome();
     const calls: string[][] = [];
@@ -2301,7 +2310,8 @@ describe('launchd lifecycle', () => {
   });
 });
 
-describe('launchd label isolation and legacy migration', () => {
+// Same reasoning as "launchd lifecycle" above: fakeHome() needs a real, host-native directory.
+(process.platform !== 'win32' ? describe : describe.skip)('launchd label isolation and legacy migration', () => {
   test('two HOMEs under one uid never report each other’s launchd agent', async () => {
     const domain = fakeLaunchdDomain();
     const first = await fakeHome();

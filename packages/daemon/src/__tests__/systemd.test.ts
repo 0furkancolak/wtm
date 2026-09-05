@@ -53,7 +53,17 @@ function lifecycle(home: string, manager: FakeSystemd, overrides: Partial<Servic
   });
 }
 
-describe('systemd lifecycle', () => {
+// `fakeHome()` below is a real, actually-existing directory this suite performs real mkdir/chmod/
+// symlink operations against, so it cannot be a literal POSIX string the way a fixed path would be
+// -- it has to be a real path the host filesystem will accept. On an actual Windows host that path
+// is inescapably Windows-shaped (a drive letter, backslashes), which `linuxServiceBackend`'s
+// now-permanent POSIX pin (this file's own `assertBackendAbsolutePath` in `service-lifecycle.ts`)
+// correctly refuses as "not absolute" -- there is no path-flavor fix left to make here, since a real
+// Windows path and a POSIX-absolute path are mutually exclusive shapes. This suite is testing real
+// Linux file-lifecycle semantics on a real filesystem, the same category as `launchd.test.ts`'s
+// "launchd lifecycle" describe and `posix.test.ts`'s uid comparison, and needs a real POSIX host to
+// mean anything.
+(process.platform !== 'win32' ? describe : describe.skip)('systemd lifecycle', () => {
   test('publishes a user unit, reloads, enables and starts it', async () => {
     const home = await fakeHome();
     const manager = fakeSystemd(paths(home).serviceDirectory);
@@ -379,7 +389,9 @@ describe('an unreachable user manager', () => {
   // *operation* had failed, which sends them to debug a service nothing ever got to ask about.
   // macOS has reported the same condition as `LAUNCHD_DOMAIN_UNAVAILABLE` since before the seam
   // existed; this is Linux saying it in the same words.
-  test('is reported as a domain that is unavailable, not as a command that failed', async () => {
+  // Unlike the two tests below, this one calls `fakeHome()` for a real lifecycle() invocation, so
+  // it carries the same real-POSIX-path requirement as the "systemd lifecycle" describe above.
+  test.skipIf(process.platform === 'win32')('is reported as a domain that is unavailable, not as a command that failed', async () => {
     const home = await fakeHome();
     // A manager that answers nothing: every verb comes back as an unreachable bus, which is what
     // `runSystemctl` now classifies from stderr because systemd exits 1 for it.
