@@ -95,7 +95,10 @@ Mevcut process-local `Map` mutex ayrı CLI process'leri veya daemon ile CLI aras
 - [x] Lease acquisition için transactional / `BEGIN IMMEDIATE` yaklaşımı kullan.
 - [x] Expired/stale lease recovery ekle.
 - [x] PID reuse riskine karşı process identity doğrulaması yap.
-- [ ] `remove`, `gc`, destructive cleanup ve ileride `repair` gibi operasyonlarda aynı mekanizmayı kullan.
+- [~] `remove`, `gc`, destructive cleanup ve ileride `repair` gibi operasyonlarda aynı mekanizmayı
+      kullan. — `remove` (`remove-worktree.ts`) ve `gc --apply` (`resources/gc.ts`) ikisi de
+      `withRepositoryOperationLease`'i kullanıyor; `repair` diye ayrı bir komut henüz yok, o yüzden
+      hâlâ implement edilmemiş. `RepositoryOperation` tipi zaten `'remove' | 'gc' | 'repair'`.
 - [x] Lock conflict için stable JSON error code ekle.
 
 #### Önerilen hata kodu
@@ -107,7 +110,11 @@ WTM_OPERATION_CONFLICT
 #### Kabul kriterleri
 
 - [x] İki terminal aynı repository üzerinde destructive işlem başlatamıyor.
-- [ ] CLI ve daemon aynı repository üzerinde çakışan destructive işlem yapamıyor.
+- [~] CLI ve daemon aynı repository üzerinde çakışan destructive işlem yapamıyor. — kısmen: lease
+      anahtarı `{repository_id, operation}`, yani `remove-runtime.test.ts`'teki
+      `daemon-lease-conflict.scenario.ts` CLI'nin bir `remove`'unun daemon'un kendi `remove`'unu
+      gerçekten engellediğini kanıtlıyor (`WTM_OPERATION_CONFLICT`), ama farklı operasyonlar
+      (CLI `remove` + daemon `gc` gibi) birbirini engellemiyor — bu hâlâ açık.
 - [x] Crash olmuş process'in lease'i sonsuza kadar kalmıyor.
 
 ---
@@ -474,7 +481,7 @@ tutmuyor.
 
 ---
 
-### [ ] 43. Çok depolu workspace kökünde `resolve` ham `git` hatası basıyor
+### [x] 43. Çok depolu workspace kökünde `resolve` ham `git` hatası basıyor
 
 Increment B sırasında quick start testi yazılırken bulundu. README'nin açıkça desteklediği layout —
 kendisi Git deposu olmayan, altında birden çok repo tutan bir workspace kökü — o kökte çalıştırılınca
@@ -494,17 +501,28 @@ Bu 39. maddenin aynı sınıfı: kullanıcıya giden bir hata, alt katmanın ham
 
 #### Yapılacaklar
 
-- [ ] Workspace kökünün kendisi bir depo olmadığı durumu, `git` çağrılmadan önce tanı.
-- [ ] `WTM_WORKSPACE_NOT_FOUND` ile, hangi depoya `cd` edileceğini söyleyen bir mesaj üret.
-- [ ] Kullanıcıya giden hiçbir mesajın locale'e bağlı `git` metni taşımadığını doğrulayan test ekle.
-- [ ] Aynı yolu `run`, `start` ve `env` için de kontrol et.
+- [~] Workspace kökünün kendisi bir depo olmadığı durumu, `git` çağrılmadan önce tanı. —
+      literal olarak değil: `git worktree list` hâlâ çağrılıyor, `workspaceRootNotRepositoryError`
+      (`packages/cli/src/main.ts`) exit code 128'i sonradan yakalayıp çeviriyor. Kullanıcıya giden
+      çıktı için sonuç aynı (hiçbir ham `git` metni sızmıyor), bu yüzden aşağıdaki kabul kriterleri
+      karşılanıyor; bu madde yalnızca yaklaşımın "önce tanı" değil "yakala ve çevir" olduğunu not
+      düşüyor.
+- [x] `WTM_WORKSPACE_NOT_FOUND` ile, hangi depoya `cd` edileceğini söyleyen bir mesaj üret. —
+      `discoverableRepositories` bulunan repoları listeliyor.
+- [x] Kullanıcıya giden hiçbir mesajın locale'e bağlı `git` metni taşımadığını doğrulayan test ekle. —
+      `production-commands.scenario.ts`'teki `multiRepoRootResolve`/`multiRepoRootRunWithoutRepositories`,
+      mesajın `'fatal'` içermediğini ve `error.context`'te `stderr` olmadığını doğruluyor.
+- [x] Aynı yolu `run`, `start` ve `env` için de kontrol et. — `run`, `resolve` ile aynı yolu
+      (`unregisteredTaskResolution`) kullanıyor, aynı düzeltmeyi otomatik alıyor. `start` daemon'a
+      `requestRuntimeCommand` ile gidiyor, `env` kayıtlı workspace'lere bakıyor — ikisi de
+      kaydedilmemiş bir dizin için hiç `git` çağırmıyor, dolayısıyla bu kusura hiç maruz kalmıyorlardı.
 
 #### Kabul kriterleri
 
-- [ ] Çok depolu kökte `resolve` ne yapılacağını söylüyor.
-- [ ] Hiçbir kullanıcı çıktısında çevrilmiş `git` hata metni görünmüyor.
+- [x] Çok depolu kökte `resolve` ne yapılacağını söylüyor.
+- [x] Hiçbir kullanıcı çıktısında çevrilmiş `git` hata metni görünmüyor.
 
-**Geçici çözüm:** README quick start'ı bir depoya `cd` etmeyi söylüyor.
+**Çözüldü:** `b5395ae` — `WTM_WORKSPACE_NOT_FOUND` artık bulunan repoları listeleyerek üretiliyor.
 
 ---
 
