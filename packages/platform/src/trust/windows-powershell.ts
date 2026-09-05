@@ -20,13 +20,47 @@ const powershellTimeoutMs = 5_000;
 
 export type PowershellRunner = (args: readonly string[]) => Promise<{ stdout: string }>;
 
-const defaultRunPowershell: PowershellRunner = async (args) =>
+/**
+ * Windows PowerShell 5.1's module autoloader is not safe under concurrent invocation: a real
+ * `windows-latest` CI leg observed `Get-Acl` fail outright with `CouldNotAutoloadMatchingModule`
+ * for `Microsoft.PowerShell.Security` -- a module that is always present -- because many
+ * `powershell.exe` processes starting at once race on the module analysis cache PowerShell keeps
+ * between them (a documented class of failure, e.g. PowerShell/PowerShell#18681). The failure is
+ * transient: the exact same command against the exact same path succeeds moments later. `wtm`
+ * calls this reader from file-trust checks that can genuinely run concurrently in production too
+ * (several `wtm` processes on one busy host), not only under a test runner's own parallelism, so
+ * tolerating the race belongs here rather than being test-only scaffolding.
+ */
+function isTransientModuleLoadFailure(error: unknown): boolean {
+  const stderr = error !== null && typeof error === 'object' && 'stderr' in error ? String((error as { stderr?: unknown }).stderr ?? '') : '';
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('CouldNotAutoloadMatchingModule') || stderr.includes('CouldNotAutoloadMatchingModule')
+    || message.includes('module could not be loaded') || stderr.includes('module could not be loaded');
+}
+
+const moduleLoadRetryAttempts = 3;
+const moduleLoadRetryDelayMs = 150;
+
+export function withModuleLoadRetry(run: PowershellRunner): PowershellRunner {
+  return async (args) => {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await run(args);
+      } catch (error) {
+        if (attempt >= moduleLoadRetryAttempts || !isTransientModuleLoadFailure(error)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, moduleLoadRetryDelayMs));
+      }
+    }
+  };
+}
+
+const defaultRunPowershell: PowershellRunner = withModuleLoadRetry(async (args) =>
   await execFileAsync('powershell.exe', [...args], {
     encoding: 'utf8',
     timeout: powershellTimeoutMs,
     killSignal: 'SIGKILL',
     maxBuffer: 1024 * 1024,
-  });
+  }));
 
 interface RawAccessRule {
   Sid?: unknown;
