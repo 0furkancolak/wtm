@@ -16,7 +16,13 @@ import type { CurrentWindowsUserSidReader, WindowsAccessRule, WindowsAclReader, 
 
 const execFileAsync = promisify(execFile);
 
-const powershellTimeoutMs = 5_000;
+// A cold `powershell.exe` genuinely costs on the order of a second to start and import
+// `Microsoft.PowerShell.Security` (measured on a real `windows-latest` runner while diagnosing
+// 1d6bcd1) -- under CI-level contention (many of these processes starting at once) that can spike
+// well past a couple of seconds without the call actually being stuck. 5s cut two of those spikes
+// off mid-flight on a real leg and surfaced as a false "Unsafe managed log directory". 15s stays a
+// bounded wait, honoring C3's hang-prevention intent, while giving real contention room to clear.
+const powershellTimeoutMs = 15_000;
 
 export type PowershellRunner = (args: readonly string[]) => Promise<{ stdout: string }>;
 

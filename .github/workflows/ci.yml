@@ -7,7 +7,14 @@ permissions:
 jobs:
   validate:
     name: Validate ${{ matrix.platform }} ${{ matrix.arch }}
-    timeout-minutes: 30
+    # win32 gets more room than the other three legs: its file-trust checks shell out to a real
+    # powershell.exe per call (`@wtm/platform`'s windows-powershell.ts), and a cold PowerShell 5.1
+    # process genuinely costs on the order of a second to start and import
+    # Microsoft.PowerShell.Security -- there is no equivalent per-call cost on POSIX, where the
+    # same check is a plain `fs.stat`. This was invisible before 1d6bcd1: every one of those calls
+    # was failing near-instantly on a module-resolution bug, so the suite looked fast for the wrong
+    # reason. 30 minutes measured that bug's absence, not this platform's real cost.
+    timeout-minutes: ${{ matrix.platform == 'win32' && 60 || 30 }}
     # The release ships an executable per architecture, and they do not fail together: linking and
     # signing behave differently on x64. Building only on Apple silicon left the other half of the
     # release unproven until a tag tried to publish it.
