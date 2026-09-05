@@ -15,6 +15,7 @@ import {
   type ExternalAdapterInvocation,
 } from '../external-adapter';
 import { trustedFileTrustPolicy } from './file-trust-fixture';
+import { isWindowsTestHost } from '../../../../testkit/src/platform';
 
 const adapters: FakeAdapter[] = [];
 
@@ -31,7 +32,14 @@ afterEach(async () => {
   await Promise.all(adapters.splice(0).map((adapter) => adapter.cleanup()));
 });
 
-describe('external adapter bridge', () => {
+// External adapter execution is a real OS process running a real executable file, gated by
+// checks (`assertSafeAdapterFile`'s `(stat.mode & 0o111) === 0`, `adapter-trust.ts`) that are
+// raw POSIX permission-bit reads with no Windows analogue by design (see that file's own doc
+// comments) -- and `external-adapter.ts`'s own `assertDescriptorExecutionSupported` already
+// refuses to run an adapter descriptor on win32 unconditionally, before any of this suite's
+// fixtures matter. This whole suite is a POSIX-execution-semantics suite, the same way
+// `posix.test.ts`'s uid comparison or `inode-reuse-measurement.test.ts`'s NTFS question are.
+(isWindowsTestHost ? describe.skip : describe)('external adapter bridge', () => {
   test('does not execute a repository-local adapter before exact trust is recorded', async () => {
     const adapter = await fakeAdapter(metadataResponse());
 

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { createFakeAdapter, type FakeAdapter } from '../../../../testkit/src/fake-adapter';
 import { createAdapterTrustStore, trustRepositoryAdapter } from '../adapter-trust';
 import { trustedFileTrustPolicy } from './file-trust-fixture';
+import { isWindowsTestHost } from '../../../../testkit/src/platform';
 
 const adapters: FakeAdapter[] = [];
 
@@ -11,7 +12,14 @@ afterEach(async () => {
   await Promise.all(adapters.splice(0).map((adapter) => adapter.cleanup()));
 });
 
-test('keeps adapter ID, canonical path, SHA-256, and trusted time in the injected memory store', async () => {
+// These three (not the "refuses to trust" one below, which holds on every host) trust a real
+// executable fixture and expect the trust to succeed -- something that needs adapter-trust.ts's
+// raw `(stat.mode & 0o111) === 0` owner-execute check to see a real POSIX execute bit, which
+// Windows has no analogue for (see that file's own doc comment). `external-adapter.ts`'s own
+// `assertDescriptorExecutionSupported` already refuses adapter execution on win32 unconditionally
+// in production, so this is a POSIX-execution-semantics test, the same way `posix.test.ts`'s uid
+// comparison is.
+test.skipIf(isWindowsTestHost)('keeps adapter ID, canonical path, SHA-256, and trusted time in the injected memory store', async () => {
   const adapter = await createFakeAdapter({ type: 'response', response: {} });
   adapters.push(adapter);
   const alias = join(adapter.root, 'adapter-alias');
@@ -41,7 +49,7 @@ test('refuses to trust a regular file that is not executable', async () => {
   }, trustedFileTrustPolicy())).rejects.toThrow('External adapter executable is not executable.');
 });
 
-test('records the exact single-file declaration while execution-time resolution guards sibling modules', async () => {
+test.skipIf(isWindowsTestHost)('records the exact single-file declaration while execution-time resolution guards sibling modules', async () => {
   const adapter = await createFakeAdapter({ type: 'response', response: {} });
   adapters.push(adapter);
   await writeFile(adapter.executablePath, [
@@ -58,7 +66,7 @@ test('records the exact single-file declaration while execution-time resolution 
   }, trustedFileTrustPolicy())).resolves.toMatchObject({ adapterId: 'fake' });
 });
 
-test('rejects a non-exact Node 24 hashbang declaration', async () => {
+test.skipIf(isWindowsTestHost)('rejects a non-exact Node 24 hashbang declaration', async () => {
   const adapter = await createFakeAdapter({ type: 'response', response: {} });
   adapters.push(adapter);
   await writeFile(adapter.executablePath, [

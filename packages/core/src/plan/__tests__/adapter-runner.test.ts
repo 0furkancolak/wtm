@@ -4,6 +4,7 @@ import { developmentRuntimeInvocation } from '../../../../testkit/src/runtime-in
 import { createAdapterTrustStore, trustRepositoryAdapter } from '../adapter-trust';
 import { invokeExternalAdapter } from '../external-adapter';
 import { trustedFileTrustPolicy } from './file-trust-fixture';
+import { isWindowsTestHost } from '../../../../testkit/src/platform';
 
 const adapters: FakeAdapter[] = [];
 
@@ -11,7 +12,10 @@ afterEach(async () => {
   await Promise.all(adapters.splice(0).map((adapter) => adapter.cleanup()));
 });
 
-describe('guarded adapter child runtime invocation', () => {
+// Same reasoning as external-adapter.test.ts: this actually runs a real executable file through
+// `invokeExternalAdapter`, gated by adapter-trust.ts's raw POSIX execute-bit check, which has no
+// Windows analogue, and by external-adapter.ts's own unconditional win32 refusal upstream of it.
+(isWindowsTestHost ? describe.skip : describe)('guarded adapter child runtime invocation', () => {
   test('runs exact trusted bytes through the injected executable with no runtime on PATH', async () => {
     const response = {
       protocol: { major: 1 as const, minor: 0 },
