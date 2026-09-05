@@ -24,13 +24,27 @@ export type PowershellRunner = (args: readonly string[]) => Promise<{ stdout: st
  * Windows PowerShell 5.1's module autoloader is not safe under concurrent invocation: a real
  * `windows-latest` CI leg observed `Get-Acl` fail outright with `CouldNotAutoloadMatchingModule`
  * for `Microsoft.PowerShell.Security` -- a module that is always present -- because many
- * `powershell.exe` processes starting at once race on the module analysis cache PowerShell keeps
- * between them (a documented class of failure, e.g. PowerShell/PowerShell#18681). The failure is
- * transient: the exact same command against the exact same path succeeds moments later. `wtm`
- * calls this reader from file-trust checks that can genuinely run concurrently in production too
- * (several `wtm` processes on one busy host), not only under a test runner's own parallelism, so
- * tolerating the race belongs here rather than being test-only scaffolding.
+ * `powershell.exe` processes starting at once race on `PSModuleAnalysisCachePath`, a single cache
+ * file every PowerShell 5.1 process on the host reads and rewrites to speed up autoload (a
+ * documented class of failure, e.g. PowerShell/PowerShell#18681): concurrent readers/writers
+ * corrupt each other's view of it and autoload fails outright, not just slowly. A short retry
+ * (still kept below, as a second line of defense) is not enough on its own: on a busy host the
+ * cache stays contended for as long as the burst of concurrent processes lasts, not for one
+ * instant, so a retry can exhaust its budget before the contention clears. `wtm`'s own file-trust
+ * checks can run this concurrently in production too (several `wtm` processes on one busy host),
+ * not only under a test runner's own parallelism, so each invocation opts out of the shared cache
+ * entirely instead: one call gains nothing from a cache built for reuse *within* a process, since
+ * each `powershell.exe` here is a new, short-lived process that runs one command and exits, so
+ * there is no reuse to lose by not sharing the file with everyone else on the host. Leaving
+ * `PSModuleAnalysisCachePath` unset does not opt out -- PowerShell falls back to computing that
+ * same shared default path itself, changing nothing -- so this points it at the `NUL` device
+ * instead: PowerShell's own documented way to disable the cache file outright (it cannot write
+ * there, and treats that silently as "nothing to cache").
  */
+function withoutSharedModuleAnalysisCache(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...env, PSModuleAnalysisCachePath: 'NUL' };
+}
+
 function isTransientModuleLoadFailure(error: unknown): boolean {
   const stderr = error !== null && typeof error === 'object' && 'stderr' in error ? String((error as { stderr?: unknown }).stderr ?? '') : '';
   const message = error instanceof Error ? error.message : String(error);
@@ -60,6 +74,7 @@ const defaultRunPowershell: PowershellRunner = withModuleLoadRetry(async (args) 
     timeout: powershellTimeoutMs,
     killSignal: 'SIGKILL',
     maxBuffer: 1024 * 1024,
+    env: withoutSharedModuleAnalysisCache(process.env),
   }));
 
 interface RawAccessRule {
