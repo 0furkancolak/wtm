@@ -20,62 +20,13 @@ const powershellTimeoutMs = 5_000;
 
 export type PowershellRunner = (args: readonly string[]) => Promise<{ stdout: string }>;
 
-/**
- * Windows PowerShell 5.1's module autoloader is not safe under concurrent invocation: a real
- * `windows-latest` CI leg observed `Get-Acl` fail outright with `CouldNotAutoloadMatchingModule`
- * for `Microsoft.PowerShell.Security` -- a module that is always present -- because many
- * `powershell.exe` processes starting at once race on `PSModuleAnalysisCachePath`, a single cache
- * file every PowerShell 5.1 process on the host reads and rewrites to speed up autoload (a
- * documented class of failure, e.g. PowerShell/PowerShell#18681): concurrent readers/writers
- * corrupt each other's view of it and autoload fails outright, not just slowly. A short retry
- * (still kept below, as a second line of defense) is not enough on its own: on a busy host the
- * cache stays contended for as long as the burst of concurrent processes lasts, not for one
- * instant, so a retry can exhaust its budget before the contention clears. `wtm`'s own file-trust
- * checks can run this concurrently in production too (several `wtm` processes on one busy host),
- * not only under a test runner's own parallelism, so each invocation opts out of the shared cache
- * entirely instead: one call gains nothing from a cache built for reuse *within* a process, since
- * each `powershell.exe` here is a new, short-lived process that runs one command and exits, so
- * there is no reuse to lose by not sharing the file with everyone else on the host. Leaving
- * `PSModuleAnalysisCachePath` unset does not opt out -- PowerShell falls back to computing that
- * same shared default path itself, changing nothing -- so this points it at the `NUL` device
- * instead: PowerShell's own documented way to disable the cache file outright (it cannot write
- * there, and treats that silently as "nothing to cache").
- */
-function withoutSharedModuleAnalysisCache(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return { ...env, PSModuleAnalysisCachePath: 'NUL' };
-}
-
-function isTransientModuleLoadFailure(error: unknown): boolean {
-  const stderr = error !== null && typeof error === 'object' && 'stderr' in error ? String((error as { stderr?: unknown }).stderr ?? '') : '';
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes('CouldNotAutoloadMatchingModule') || stderr.includes('CouldNotAutoloadMatchingModule')
-    || message.includes('module could not be loaded') || stderr.includes('module could not be loaded');
-}
-
-const moduleLoadRetryAttempts = 3;
-const moduleLoadRetryDelayMs = 150;
-
-export function withModuleLoadRetry(run: PowershellRunner): PowershellRunner {
-  return async (args) => {
-    for (let attempt = 1; ; attempt += 1) {
-      try {
-        return await run(args);
-      } catch (error) {
-        if (attempt >= moduleLoadRetryAttempts || !isTransientModuleLoadFailure(error)) throw error;
-        await new Promise((resolve) => setTimeout(resolve, moduleLoadRetryDelayMs));
-      }
-    }
-  };
-}
-
-const defaultRunPowershell: PowershellRunner = withModuleLoadRetry(async (args) =>
+const defaultRunPowershell: PowershellRunner = async (args) =>
   await execFileAsync('powershell.exe', [...args], {
     encoding: 'utf8',
     timeout: powershellTimeoutMs,
     killSignal: 'SIGKILL',
     maxBuffer: 1024 * 1024,
-    env: withoutSharedModuleAnalysisCache(process.env),
-  }));
+  });
 
 interface RawAccessRule {
   Sid?: unknown;
@@ -89,6 +40,30 @@ interface RawPathAcl {
 }
 
 /**
+ * `Get-Acl` lives in the `Microsoft.PowerShell.Security` module, which Windows PowerShell 5.1
+ * autoloads on first use by searching `$env:PSModulePath` for a module exporting that command --
+ * and a real `windows-latest` leg proved that search picks the wrong copy. That host also has
+ * PowerShell 7 installed, whose own `Microsoft.PowerShell.Security` (version 7.0.0.0, `Core`
+ * edition) sits in a `PSModulePath` entry ahead of the real 5.1 module
+ * (`$PSHOME\Modules\Microsoft.PowerShell.Security`, version 3.0.0.0, `Desktop` edition). 5.1's
+ * autoloader finds the PS7 copy first and tries to load its extended type data into a 5.1 session
+ * that already carries its own built-in `ObjectSecurity` type data (`Access`, `Owner`, `Sddl`, ...)
+ * -- the two collide (each member "is already present"), the module load fails with
+ * `FormatXmlUpdateException`, and PowerShell reports the failure up as
+ * `CouldNotAutoloadMatchingModule` for *any* command in that module, `Get-Acl` included. This is
+ * deterministic, not a race: it reproduced identically across purely sequential calls with nothing
+ * else running (which is also why the retry and the `PSModuleAnalysisCachePath` fix an earlier
+ * round of this investigation tried both landed on a real CI leg without changing anything -- ruled
+ * out here rather than described, see this file's git history for that evidence). The fix is to
+ * stop relying on `PSModulePath` search at all: importing the module by its literal `$PSHOME`-
+ * relative path names the real 5.1 copy directly, the same way the diagnostic that found this
+ * proved works, regardless of what else is installed on the host or how it orders `PSModulePath`.
+ */
+function importSecurityModuleByExplicitPath(): string {
+  return `Import-Module -Name "$PSHOME\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1"`;
+}
+
+/**
  * Builds the owner SID and every access rule into one `PSCustomObject`, translated to a SID
  * up front — a `Get-Acl` object's raw `.Access`/`.Owner` serialize as display names by default,
  * which C1's own reasoning for macOS `ps` argument vectors applies here too: a value this code
@@ -98,6 +73,7 @@ function aclScript(path: string): string {
   const escaped = path.replace(/'/g, "''");
   return [
     `$ErrorActionPreference = 'Stop'`,
+    importSecurityModuleByExplicitPath(),
     `$acl = Get-Acl -LiteralPath '${escaped}'`,
     `$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value`,
     `$rules = $acl.Access | ForEach-Object {`,

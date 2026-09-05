@@ -4,7 +4,7 @@
  * unmeasured, and `__tests__/windows.test.ts` for the decision logic this parsing feeds.
  */
 import { describe, expect, test } from 'bun:test';
-import { createCurrentWindowsUserSidReader, createWindowsAclReader, withModuleLoadRetry } from '../windows-powershell';
+import { createCurrentWindowsUserSidReader, createWindowsAclReader } from '../windows-powershell';
 
 describe('createWindowsAclReader', () => {
   test('parses an owner SID and a list of access rules out of the rendered PSCustomObject JSON', async () => {
@@ -78,45 +78,21 @@ describe('createWindowsAclReader', () => {
   });
 });
 
-describe('withModuleLoadRetry', () => {
-  // A real windows-latest CI leg observed `Get-Acl` fail with this exact PowerShell 5.1 error when
-  // many `powershell.exe` processes started at once raced on the module autoload cache -- see
-  // ../windows-powershell.ts's doc comment on `isTransientModuleLoadFailure`.
-  const transientError = Object.assign(new Error('Command failed: powershell.exe ...'), {
-    stderr: "Get-Acl : The 'Get-Acl' command was found in the module 'Microsoft.PowerShell.Security', "
-      + 'but the module could not be loaded.\n    + FullyQualifiedErrorId : CouldNotAutoloadMatchingModule',
-  });
-
-  test('retries a transient module-autoload failure and returns the eventual success', async () => {
-    let calls = 0;
-    const runner = withModuleLoadRetry(async () => {
-      calls += 1;
-      if (calls < 2) throw transientError;
-      return { stdout: 'ok' };
+describe('createWindowsAclReader command construction', () => {
+  test('imports Microsoft.PowerShell.Security by its literal $PSHOME path before calling Get-Acl', async () => {
+    // A real windows-latest leg proved PSModulePath-based autoload picks the wrong copy of this
+    // module (PowerShell 7's, ahead of the real 5.1 one) whenever both are installed -- see
+    // ../windows-powershell.ts's doc comment on `importSecurityModuleByExplicitPath`. The command
+    // sent to powershell.exe must import the module by its $PSHOME-relative path itself, not rely
+    // on Get-Acl's own autoload to find it.
+    let capturedCommand: string | undefined;
+    const reader = createWindowsAclReader(async (args) => {
+      capturedCommand = args[args.indexOf('-Command') + 1];
+      return { stdout: JSON.stringify({ OwnerSid: 'S-1-5-18', AccessRules: [] }) };
     });
-    await expect(runner(['-Command', 'noop'])).resolves.toEqual({ stdout: 'ok' });
-    expect(calls).toBe(2);
-  });
-
-  test('gives up after exhausting its retry budget, still failing with a transient error', async () => {
-    let calls = 0;
-    const runner = withModuleLoadRetry(async () => {
-      calls += 1;
-      throw transientError;
-    });
-    await expect(runner(['-Command', 'noop'])).rejects.toBe(transientError);
-    expect(calls).toBe(3);
-  });
-
-  test('does not retry a failure unrelated to the module-autoload race', async () => {
-    const nonTransient = new Error('ItemNotFoundException');
-    let calls = 0;
-    const runner = withModuleLoadRetry(async () => {
-      calls += 1;
-      throw nonTransient;
-    });
-    await expect(runner(['-Command', 'noop'])).rejects.toBe(nonTransient);
-    expect(calls).toBe(1);
+    await reader('C:\\x');
+    expect(capturedCommand).toContain('Import-Module -Name "$PSHOME\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1"');
+    expect(capturedCommand?.indexOf('Import-Module')).toBeLessThan(capturedCommand?.indexOf('Get-Acl') ?? -1);
   });
 });
 
