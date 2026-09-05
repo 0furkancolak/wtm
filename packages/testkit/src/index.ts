@@ -10,4 +10,4 @@ export { isolatedHomeEnvironment } from './isolated-home';
 export { writeExecutableFixture } from './executable-fixture';
 export type { ExecutableFixture, ExecutableFixtureOptions } from './executable-fixture';
 export { resolveRealExecutablePath } from './real-executable';
-export { isWindowsTestHost } from './platform';
+export { isWindowsTestHost, shortTmpRoot } from './platform';

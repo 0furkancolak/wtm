@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute as posixIsAbsolute, resolve as posixResolve } from 'node:path/posix';
+import { isAbsolute as win32IsAbsolute, resolve as win32Resolve } from 'node:path/win32';
 import type { Remediation } from '@wtm/protocol';
 import { createUnixSocketPublisher, createWindowsIpcPublisher } from './ipc';
 import { platformPathsFor } from './paths';
@@ -109,6 +110,16 @@ export interface SelectPlatformRuntimeOptions {
 export function selectPlatformRuntime(options: SelectPlatformRuntimeOptions = {}): PlatformRuntime {
   const platform = options.platform ?? process.platform;
   if (!isSupported(platform)) throw new UnsupportedPlatformError(String(platform));
+  // `platform` names which filesystem's path rules `home` was written in, and that can differ from
+  // the host actually running this call -- the whole point of taking it as an argument (see this
+  // function's own doc comment). The default `node:path` follows the *host*, so on a Windows host
+  // asked for a `darwin`/`linux` runtime it mangled a POSIX `home` like `/Users/x` into
+  // `D:\Users\x` (a real CI leg surfaced this). `isAbsolute`/`resolve` are picked by the injected
+  // platform instead, the same way `platform-paths.ts` and `socket-path.ts` already choose their
+  // path module explicitly rather than trusting the default.
+  const { isAbsolute, resolve } = platform === 'win32'
+    ? { isAbsolute: win32IsAbsolute, resolve: win32Resolve }
+    : { isAbsolute: posixIsAbsolute, resolve: posixResolve };
   const rawHome = options.home ?? homedir();
   if (rawHome.length === 0 || !isAbsolute(rawHome)) {
     throw new TypeError(`WTM needs an absolute home directory, received ${JSON.stringify(rawHome)}`);

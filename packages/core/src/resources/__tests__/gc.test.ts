@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { createResourceGuard } from '../guard';
 import {
   applyGcPlan,
@@ -49,7 +49,7 @@ async function evidence(
 ): Promise<GcEvidence> {
   const stat = await lstat(path);
   return {
-    storageObjectId: `object-${path.split('/').at(-1)}`,
+    storageObjectId: `object-${basename(path)}`,
     path,
     sandboxId: sandbox.id,
     sandboxRoot: sandbox.root,

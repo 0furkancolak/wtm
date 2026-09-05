@@ -78,8 +78,11 @@ jobs:
       - run: bun run typecheck
       # A per-test timeout catches a hang; it is not an assertion about speed. The slowest
       # honest test measures an idle daemon for ~22s, and the Intel runner varies enough that
-      # 30s failed work that was doing exactly what it should.
-      - run: bun run test --timeout 60000
+      # 30s failed work that was doing exactly what it should. win32 gets a much larger bound for
+      # the same real-cost reason its job timeout is widened above: `ManagedLogStore`'s rotation
+      # tests each make several real `Get-Acl`-backed trust checks, and a real leg measured two of
+      # them landing just past 60s on nothing but that per-call cost, not a hang.
+      - run: bun run test --timeout ${{ matrix.platform == 'win32' && 180000 || 60000 }}
       - run: bun run test:e2e
       - run: bun run build
       - run: bun run package:verify

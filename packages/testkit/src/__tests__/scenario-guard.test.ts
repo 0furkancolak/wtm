@@ -15,7 +15,7 @@
  */
 import { expect, test } from 'bun:test';
 import { readdir, readFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = fileURLToPath(new URL('../../../..', import.meta.url));
@@ -78,13 +78,25 @@ interface Violation {
   text: string;
 }
 
-const selfPath = relative(repositoryRoot, fileURLToPath(import.meta.url));
+/**
+ * `path.relative` follows the host separator, so a Windows run of this guard produced
+ * `packages\...\foo.ts` -- neither matching `reviewedExceptions`' forward-slash `file` values nor
+ * the `'__tests__/'` substring below, which silently dropped every `.test.ts` file (not ending in
+ * `.scenario.ts`) from the scan on that host rather than merely failing to except it. `git` itself
+ * settled on forward slashes as the one true separator for a repo-relative identifier regardless of
+ * host (`1a2c4cf`); this guard's own identifiers follow the same rule.
+ */
+function repoRelative(path: string): string {
+  return relative(repositoryRoot, path).split(sep).join('/');
+}
+
+const selfPath = repoRelative(fileURLToPath(import.meta.url));
 
 async function scannedFiles(): Promise<string[]> {
   const found: string[] = [];
   for (const root of scannedRoots) await collect(join(repositoryRoot, root), found);
   return found
-    .map((path) => relative(repositoryRoot, path))
+    .map((path) => repoRelative(path))
     .filter((path) => path !== selfPath)
     .filter((path) => path.includes('__tests__/') || path.endsWith('.scenario.ts'))
     .sort();

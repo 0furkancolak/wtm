@@ -1,0 +1,7 @@
+# Every text file in this repository is authored and committed with LF line endings. Without this
+# file, a Windows checkout follows the runner's own `core.autocrlf` (GitHub's `windows-latest`
+# image sets it to `true`), silently rewriting every text file to CRLF on checkout -- a real
+# `windows-latest` CI leg hit this: a doc-parsing test's regex assumed bare `\n` and found nothing
+# once `docs/18-errors-json-contract.md` came through CRLF. `eol=lf` pins every text file to LF on
+# every platform, independent of any contributor's or runner's own git configuration.
+* text=auto eol=lf

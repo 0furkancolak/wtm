@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { parseGitWorktreePorcelain } from '../worktree-parser';
+import { parseGitWorktreePorcelain, toNativeGitPath } from '../worktree-parser';
 
 const encodePorcelain = (records: string[][]): Uint8Array =>
   new TextEncoder().encode(records.flatMap((record) => [...record, '']).join('\0'));
@@ -36,7 +36,7 @@ describe('parseGitWorktreePorcelain', () => {
 
     expect(parseGitWorktreePorcelain(output)).toEqual([
       {
-        path: '/repos/main',
+        path: toNativeGitPath('/repos/main'),
         head: '0123456789abcdef0123456789abcdef01234567',
         branch: 'refs/heads/main',
         detached: false,
@@ -45,7 +45,7 @@ describe('parseGitWorktreePorcelain', () => {
         prunableReason: null,
       },
       {
-        path: '/repos/detached',
+        path: toNativeGitPath('/repos/detached'),
         head: '89abcdef0123456789abcdef0123456789abcdef',
         branch: null,
         detached: true,
@@ -54,7 +54,7 @@ describe('parseGitWorktreePorcelain', () => {
         prunableReason: null,
       },
       {
-        path: '/repos/locked',
+        path: toNativeGitPath('/repos/locked'),
         head: '0123456789abcdef0123456789abcdef01234567',
         branch: 'refs/heads/feature/locked',
         detached: false,
@@ -63,7 +63,7 @@ describe('parseGitWorktreePorcelain', () => {
         prunableReason: null,
       },
       {
-        path: '/repos/bare',
+        path: toNativeGitPath('/repos/bare'),
         head: null,
         branch: null,
         detached: false,
@@ -72,7 +72,7 @@ describe('parseGitWorktreePorcelain', () => {
         prunableReason: null,
       },
       {
-        path: '/repos/prunable\nwith-newline',
+        path: toNativeGitPath('/repos/prunable\nwith-newline'),
         head: '89abcdef0123456789abcdef0123456789abcdef',
         branch: null,
         detached: false,

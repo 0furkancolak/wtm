@@ -9,6 +9,7 @@ import type { PlatformRuntime } from '@wtm/platform/ports';
 import { DaemonSocketPathTooLongError, daemonSocketFileName } from '@wtm/platform/socket';
 import { isolatedHomeEnvironment } from '../../../testkit/src/isolated-home';
 import { MemoryManagedProcessStore } from '../../../testkit/src/managed-process-store';
+import { shortTmpRoot } from '../../../testkit/src/platform';
 import { runScenario } from '../../../testkit/src/scenario-child';
 import {
   inspectProcessGroup,
@@ -138,7 +139,7 @@ describe('production daemon composition', () => {
  * does what its name says, on both platforms rather than only the one CI happens to be on.
  */
 function isolatedHome(): { path: string; env: NodeJS.ProcessEnv; cleanup: () => void } {
-  const path = mkdtempSync('/tmp/wtm-scenario-home-');
+  const path = mkdtempSync(join(shortTmpRoot(), 'wtm-scenario-home-'));
   return {
     path,
     env: { ...process.env, ...isolatedHomeEnvironment(path) },
@@ -367,7 +368,7 @@ describe('the production factory measures against the selected platform', () => 
 
   test('a path only macOS refuses is accepted under the Linux runtime', async () => {
     expect(Buffer.byteLength(socketPath)).toBe(106);
-    const dataRoot = mkdtempSync('/tmp/wtm-limit-');
+    const dataRoot = mkdtempSync(join(shortTmpRoot(), 'wtm-limit-'));
     try {
       const runtime = await createProductionDaemon({
         dataRoot,
@@ -387,7 +388,7 @@ describe('the production factory measures against the selected platform', () => 
   });
 
   test('the same path under the macOS runtime is refused, naming the macOS limit', async () => {
-    const dataRoot = join(mkdtempSync('/tmp/wtm-limit-'), 'nested');
+    const dataRoot = join(mkdtempSync(join(shortTmpRoot(), 'wtm-limit-')), 'nested');
     const failure = await createProductionDaemon({
       dataRoot, socketPath, platformRuntime: darwinRuntime,
     }).then(() => null, (error: unknown) => error);
@@ -421,7 +422,7 @@ describe('the production factory supervises through the runtime process port', (
         signalProcessGroup: () => {},
       },
     };
-    const dataRoot = mkdtempSync('/tmp/wtm-port-');
+    const dataRoot = mkdtempSync(join(shortTmpRoot(), 'wtm-port-'));
     const stateStore = new MemoryManagedProcessStore();
     stateStore.reserveManagedProcessStart('worktree-1', 'hold', 'token', new Date().toISOString());
     const record = stateStore.createManagedProcess({

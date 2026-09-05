@@ -25,6 +25,7 @@ import {
 import { exitCodeForError } from '../../exit-codes';
 import { createCli, runCli } from '../../main';
 import { isolatedHomeEnvironment } from '../../../../testkit/src/isolated-home';
+import { shortTmpRoot } from '../../../../testkit/src/platform';
 import { runScenario, scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
 
 const serveScenarioPath = fileURLToPath(new URL('./daemon-serve.scenario.ts', import.meta.url));
@@ -557,7 +558,7 @@ describe('daemon serve', () => {
 
 describe('daemon failure output', () => {
   test('a start failure tells the user what happened without a frame, and keeps the frames in the log', async () => {
-    const home = await mkdtemp('/tmp/wtm-daemon-failure-');
+    const home = await mkdtemp(join(shortTmpRoot(), 'wtm-daemon-failure-'));
     try {
       const result = runScenario('node', ['--import', 'tsx', serveFailureScenarioPath], {
         // `HOME` alone is not isolation: on Linux the ambient `XDG_*` variables survive the spread
@@ -642,7 +643,7 @@ describe('daemon failure output', () => {
  * than assumed.
  */
 async function overLongHome(): Promise<{ root: string; home: string }> {
-  const root = await mkdtemp('/tmp/wtm-daemon-long-home-');
+  const root = await mkdtemp(join(shortTmpRoot(), 'wtm-daemon-long-home-'));
   const padding = hostLimitBytes + 1 - Buffer.byteLength(hostSocketPathFor(root)) - 1;
   if (padding < 1) throw new Error('the temporary root is already past the socket path limit');
   const home = join(root, 'h'.repeat(padding));
@@ -696,7 +697,7 @@ describe('daemon CLI surface', () => {
   });
 
   test('wires serve to the production runtime factory and closes its real socket on SIGTERM', async () => {
-    const home = await mkdtemp('/tmp/wtm-daemon-serve-');
+    const home = await mkdtemp(join(shortTmpRoot(), 'wtm-daemon-serve-'));
     // The address this host publishes under that home. Spelled as `Library/Application Support`
     // the wait below could only ever time out on Linux, ten seconds at a time, while the daemon
     // was in fact listening perfectly well one directory away.

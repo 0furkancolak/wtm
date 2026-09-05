@@ -18,7 +18,11 @@ import { runScenario, scenarioTimeoutMs } from '../../../testkit/src/scenario-ch
  */
 const repositoryRoot = fileURLToPath(new URL('../../../..', import.meta.url));
 
-test('every command in the README quick start succeeds in a clean workspace', () => {
+// `runScenario('/bin/sh', ...)` below runs the quick start exactly as a reader's shell would --
+// there is no Windows equivalent of `/bin/sh` to substitute that would still be "exactly as
+// written" (`todo.md`'s own item 9 names this gap explicitly, deliberately left for the README's
+// own cross-platform pass rather than papered over here with a different shell).
+test.skipIf(process.platform === 'win32')('every command in the README quick start succeeds in a clean workspace', () => {
   const commands = quickStartCommands();
   // A quick start that stops before it has done anything would pass an empty loop.
   expect(commands.length, 'the README quick start block is empty').toBeGreaterThan(1);

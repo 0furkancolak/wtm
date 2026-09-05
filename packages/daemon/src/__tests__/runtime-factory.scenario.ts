@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createWorkspaceFixture } from '../../../testkit/src/workspace-fixture';
+import { shortTmpRoot } from '../../../testkit/src/platform';
 import { developmentRuntimeInvocation } from '../../../testkit/src/runtime-invocation';
 import { listGitWorktrees, readGitRepositoryIdentity } from '@wtm/core';
 import { DaemonClient } from '../../../cli/src/client';
@@ -8,7 +9,7 @@ import { runCli } from '../../../cli/src/main';
 import { createProductionDaemon } from '../runtime-factory';
 
 const fixture = await createWorkspaceFixture();
-const socketDirectory = await mkdtemp('/tmp/wtm-socket-');
+const socketDirectory = await mkdtemp(join(shortTmpRoot(), 'wtm-socket-'));
 const useDefaultClient = process.argv[2] === 'default-client';
 const closeWithLiveTask = process.argv[2] === 'close-live';
 const runtimeInvocation = developmentRuntimeInvocation();

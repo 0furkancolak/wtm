@@ -38,7 +38,14 @@ describe('Agent Skill command', () => {
     expect(await readCanonicalSkill()).toBe(expected);
   });
 
-  test('selects canonical skill paths by an exact source or bundle layout, never by an existing ancestor', () => {
+  // Fixture URLs below are POSIX-shaped (`file:///workspace/...`, no drive letter) purely to
+  // exercise the segment-name matching (`basename`/`dirname` walking up the module directory) —
+  // they never touch a real path. Node's own `fileURLToPath` rejects a driveless `file:///...`
+  // URL on win32 before this function's logic ever runs, which a real Windows `import.meta.url`
+  // (always drive-lettered) never hits, so there is no Windows behaviour left unproven by skipping
+  // this one.
+  test.skipIf(process.platform === 'win32')(
+    'selects canonical skill paths by an exact source or bundle layout, never by an existing ancestor', () => {
     expect(canonicalSkillPathForModule('file:///workspace/packages/cli/src/commands/skill.ts')).toBe(
       '/workspace/skills/wtm/SKILL.md',
     );
