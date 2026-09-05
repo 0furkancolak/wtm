@@ -1022,13 +1022,13 @@ command
 
 ---
 
-### [ ] 11. Shell completion ekle
+### [x] 11. Shell completion ekle
 
 Destek:
 
-- [ ] zsh
-- [ ] bash
-- [ ] fish
+- [x] zsh
+- [x] bash
+- [x] fish
 
 Örnek:
 
@@ -1040,10 +1040,18 @@ wtm completion fish
 
 Completion kaynakları:
 
-- commands
-- task names
-- worktree selectors
-- repo selectors
+- [x] commands
+- [x] task names
+- [x] worktree selectors
+- [x] repo selectors
+
+> **Kapatıldı, 2026-09-05.** `wtm completion {bash,zsh,fish}` üç script'i de üretiyor;
+> `wtm __complete {tasks,worktrees,repos}` her shell'in çağırdığı gerçek veri kaynağı
+> (`productionCompletionData`, `packages/cli/src/main.ts`) — task adları `allocate: false` ile
+> resolve ediliyor ki bir shell'de Tab'a basmak bir endpoint lease'i almasın. `main`'e merge
+> edilirken `packages/cli/src/main.ts`'te aynı noktaya eklenmiş ilgisiz bir fonksiyon grubuyla
+> (item 43'ün `workspaceRootNotRepositoryError`'ı) çakıştı, ikisi de korunarak çözüldü. Tam test
+> paketi merge sonrası yerelde yeşil (1357/0, 1 skip).
 
 ---
 
