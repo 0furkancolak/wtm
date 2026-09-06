@@ -123,16 +123,30 @@ export function createWindowsAclReader(runPowershell: PowershellRunner = default
   };
 }
 
+/**
+ * Memoized after the first successful resolution: the current process's own SID cannot change
+ * for its lifetime, unlike a path's ACL, so every call after the first is a real
+ * `powershell.exe` this port never needed to spend -- a real windows-latest leg measured a
+ * `ManagedProcessSupervisor` suite that starts many real managed processes (each triggering
+ * several trust checks, every one of which asks for this alongside its own `readAcl`) spending
+ * enough of its wall-clock on exactly this cost to occasionally miss even the per-call timeout
+ * under CI contention. A failed or empty resolution is not cached, so a transient failure (or a
+ * host truly missing an identity) still gets asked again on the next call rather than being
+ * remembered forever.
+ */
 export function createCurrentWindowsUserSidReader(
   runPowershell: PowershellRunner = defaultRunPowershell,
 ): CurrentWindowsUserSidReader {
+  let cached: string | null = null;
   return async () => {
+    if (cached !== null) return cached;
     try {
       const { stdout } = await runPowershell([
         '-NoProfile', '-NonInteractive', '-Command',
         '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
       ]);
       const sid = stdout.trim();
+      if (sid.length > 0) cached = sid;
       return sid.length > 0 ? sid : null;
     } catch {
       return null;

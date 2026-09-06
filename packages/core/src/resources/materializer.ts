@@ -1399,13 +1399,20 @@ function conservativeMode(mode: number, directory: boolean): number {
 }
 
 /**
- * `(mode & 0o777) === 0o700`, decomposed rather than asked directly: `FileTrustPolicy` answers
- * "no group/other access at all" (`isWritableOnlyByOwner(..., 0o077)`), which is the platform-
- * varying half of this question, but not "does the owner have exactly `rwx`" — that half has no
- * Windows analogue (there is no permission bit there to ask) and stays a raw check on the owner
- * bits, which is specific to how WTM itself creates these directories (`mkdir(path, {mode:
- * 0o700})`) rather than a general trust question. The two together are exactly the original
- * equality test: zero group/other bits and the owner bits equal to `0o700`.
+ * Was `(mode & 0o777) === 0o700`, decomposed with `FileTrustPolicy` answering "no group/other
+ * access at all" (`isWritableOnlyByOwner(..., 0o077)`) but a raw `(mode & 0o700) === 0o700` still
+ * asked directly for "does the owner have exactly `rwx`" -- reasoned at the time to have no
+ * Windows analogue worth a port method, only a raw bit check specific to how WTM itself creates
+ * these directories. A real windows-latest leg proved that reasoning wrong rather than merely
+ * incomplete: `stat.mode` there is not "the owner bits, always correct" with only group/other
+ * synthesized -- a directory this same process had just `mkdir`'d with `mode: 0o700` came back
+ * `0o666`, because Windows's `stat.mode` synthesis has no owner/group/other concept at all, only
+ * a read-only attribute reflected identically into every bit group. There is no raw expression of
+ * this mask that is ever correct there, so the owner-exact-`rwx` question is dropped rather than
+ * asked a different raw way -- `isOwnedByCurrentUser` + `isWritableOnlyByOwner(..., 0o077)` is
+ * already the full trust question this repository's own artifacts need answered, the same two
+ * calls `gc.ts`'s equivalent check (`quarantineContainerIdentity`) already settled on after the
+ * same real-evidence correction.
  */
 async function isExactlyOwnerOnlyDirectory(
   stat: Awaited<ReturnType<typeof lstat>>,
@@ -1414,11 +1421,10 @@ async function isExactlyOwnerOnlyDirectory(
 ): Promise<boolean> {
   return fileTrust.currentIdentityAvailable()
     && await fileTrust.isOwnedByCurrentUser(stat, path)
-    && await fileTrust.isWritableOnlyByOwner(stat, path, 0o077)
-    && (Number(stat.mode) & 0o700) === 0o700;
+    && await fileTrust.isWritableOnlyByOwner(stat, path, 0o077);
 }
 
-/** The file-mode counterpart of `isExactlyOwnerOnlyDirectory`, for WTM's `0o600` metadata files. */
+/** The file counterpart of `isExactlyOwnerOnlyDirectory`, for WTM's `0o600` metadata files. */
 async function isExactlyOwnerOnlyFile(
   stat: Awaited<ReturnType<typeof lstat>>,
   path: string,
@@ -1427,8 +1433,7 @@ async function isExactlyOwnerOnlyFile(
   return fileTrust.currentIdentityAvailable()
     && await fileTrust.isOwnedByCurrentUser(stat, path)
     && fileTrust.isNotSharedByHardLink(stat)
-    && await fileTrust.isWritableOnlyByOwner(stat, path, 0o077)
-    && (Number(stat.mode) & 0o700) === 0o600;
+    && await fileTrust.isWritableOnlyByOwner(stat, path, 0o077);
 }
 
 function fileIdentity(stat: Awaited<ReturnType<typeof lstat>>): FileIdentity {

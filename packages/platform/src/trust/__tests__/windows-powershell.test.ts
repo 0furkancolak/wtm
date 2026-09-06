@@ -109,4 +109,29 @@ describe('createCurrentWindowsUserSidReader', () => {
     const failed = createCurrentWindowsUserSidReader(async () => { throw new Error('boom'); });
     await expect(failed()).resolves.toBeNull();
   });
+
+  test('spends powershell.exe once per reader, not once per call, once it has a real answer', async () => {
+    let calls = 0;
+    const reader = createCurrentWindowsUserSidReader(async () => {
+      calls += 1;
+      return { stdout: 'S-1-5-21-1-2-3-1001' };
+    });
+    await expect(reader()).resolves.toBe('S-1-5-21-1-2-3-1001');
+    await expect(reader()).resolves.toBe('S-1-5-21-1-2-3-1001');
+    await expect(reader()).resolves.toBe('S-1-5-21-1-2-3-1001');
+    expect(calls).toBe(1);
+  });
+
+  test('does not cache a failed or empty resolution, so a later call can still succeed', async () => {
+    let calls = 0;
+    const reader = createCurrentWindowsUserSidReader(async () => {
+      calls += 1;
+      if (calls < 3) return { stdout: '' };
+      return { stdout: 'S-1-5-21-1-2-3-1001' };
+    });
+    await expect(reader()).resolves.toBeNull();
+    await expect(reader()).resolves.toBeNull();
+    await expect(reader()).resolves.toBe('S-1-5-21-1-2-3-1001');
+    expect(calls).toBe(3);
+  });
 });

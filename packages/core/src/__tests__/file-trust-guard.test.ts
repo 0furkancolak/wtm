@@ -23,13 +23,15 @@
  */
 import { expect, test } from 'bun:test';
 import { readdir, readFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = fileURLToPath(new URL('../../../..', import.meta.url));
 const scannedRoot = 'packages/core/src';
+// A forward-slash literal, not `join(scannedRoot, ...)`: compared below against `repoRelative`'s
+// own forward-slash-normalized output, and `join` would follow the host separator instead.
 /** The port's own implementation is the one place these primitives legitimately live. */
-const portFile = join(scannedRoot, 'file-trust-policy.ts');
+const portFile = `${scannedRoot}/file-trust-policy.ts`;
 
 interface StructuralRule {
   name: string;
@@ -90,13 +92,23 @@ interface Violation {
   text: string;
 }
 
-const selfPath = relative(repositoryRoot, fileURLToPath(import.meta.url));
+// `path.relative` follows the host separator, and this guard's own `reviewedExceptions`/
+// `portFile` identifiers are written with forward slashes -- a real windows-latest leg produced
+// backslash paths here that matched neither, turning every reviewed exception into an unexcused
+// violation. `scenario-guard.test.ts` hit the identical bug for the identical reason; both now
+// normalize to forward slashes explicitly, the rule git itself applies to repo-relative
+// identifiers regardless of host (1a2c4cf).
+function repoRelative(path: string): string {
+  return relative(repositoryRoot, path).split(sep).join('/');
+}
+
+const selfPath = repoRelative(fileURLToPath(import.meta.url));
 
 async function scannedFiles(): Promise<string[]> {
   const found: string[] = [];
   await collect(join(repositoryRoot, scannedRoot), found);
   return found
-    .map((path) => relative(repositoryRoot, path))
+    .map((path) => repoRelative(path))
     .filter((path) => path !== selfPath && path !== portFile)
     .sort();
 }
@@ -144,8 +156,10 @@ test('the guard actually looks at core, and exempts only the port itself', async
   const files = await scannedFiles();
 
   expect(files.length).toBeGreaterThan(50);
-  expect(files).toContain(join('packages', 'core', 'src', 'resources', 'guard.ts'));
-  expect(files).toContain(join('packages', 'core', 'src', 'state', 'private-directory.ts'));
+  // Forward-slash literals, not `join(...)`: `files` is `repoRelative`-normalized to forward
+  // slashes regardless of host, and `join` would follow the host separator instead.
+  expect(files).toContain('packages/core/src/resources/guard.ts');
+  expect(files).toContain('packages/core/src/state/private-directory.ts');
   expect(files).not.toContain(portFile);
   expect(files).not.toContain(selfPath);
 });
