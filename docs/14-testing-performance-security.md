@@ -106,9 +106,14 @@ Release gate on representative Apple Silicon:
 
 ```text
 CPU p95 < 0.2%
-RSS target < 60 MiB
-RSS > 80 MiB requires investigation before release
+RSS target < 85 MiB
+RSS > 110 MiB requires investigation before release
 ```
+
+(Revised 2026-09-06, todo item 42: a bare Node.js process on this project's pinned runtime already
+costs ~46 MiB RSS before any WTM code runs, and loading the bundled daemon plus `better-sqlite3`'s
+native binding adds ~27 MiB more — the original 60/80 MiB pair sat below that floor. See
+`docs/05-daemon-and-macos-runtime.md`'s "Resource budget" section for the full breakdown.)
 
 ### Scale
 

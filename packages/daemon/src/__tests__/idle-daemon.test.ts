@@ -14,7 +14,7 @@ describe('idle daemon release budget', () => {
       runtime: 'createProductionDaemon(SQLite, supervisor, Unix server, structural watcher)',
       samples: 20,
       cpuP95: expect.objectContaining({ unit: 'percent', target: 0.2 }),
-      rss: expect.objectContaining({ unit: 'MiB', target: 60, investigation: 80 }),
+      rss: expect.objectContaining({ unit: 'MiB', target: 85, investigation: 110 }),
     });
     // Whether this machine meets the budget is not what this test can hold the scenario to: a
     // shared CI runner measures an idle daemon at 0.237% against a 0.2% target where a developer
@@ -23,6 +23,6 @@ describe('idle daemon release budget', () => {
     // themselves are enforced by the performance workflow, on both architectures.
     expect(report.cpuP95.status).toBe(report.cpuP95.measured < 0.2 ? 'pass' : 'blocker');
     expect(report.rss.status)
-      .toBe(report.rss.measured <= 60 ? 'pass' : report.rss.measured <= 80 ? 'warning' : 'blocker');
+      .toBe(report.rss.measured <= 85 ? 'pass' : report.rss.measured <= 110 ? 'warning' : 'blocker');
   }, 30_000);
 });

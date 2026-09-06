@@ -454,7 +454,7 @@ reconciliation tetiklemesi ve kullanıcıya ne yapacağını söyleyen mesaj.
 
 ---
 
-### [ ] 42. Idle RSS bütçe hedefinin üzerinde
+### [x] 42. Idle RSS bütçe hedefinin üzerinde
 
 Idle daemon ölçümü 60 MiB hedefinin üzerinde, 80 MiB investigation eşiğinin altında:
 
@@ -468,16 +468,36 @@ tutmuyor.
 
 #### Yapılacaklar
 
-- [ ] RSS'i neyin tuttuğunu ölç (SQLite, structural watcher, embedded runtime).
-- [ ] Hedefi tutturmak ile hedefi gerçekçi bir değere çekmek arasında karar ver.
-- [ ] Karar hedefi değiştirmekse `docs` ve `idle-daemon.scenario.ts` içindeki 60 MiB'ı birlikte
-      güncelle.
-- [ ] Ölçümü her iki mimaride de tekrarla.
+- [x] RSS'i neyin tuttuğunu ölç (SQLite, structural watcher, embedded runtime). — `runtime-factory.ts`'i
+      standalone bundle'a derleyip her başlatma adımında `process.memoryUsage().rss` ölçen bir
+      breakdown (darwin arm64, bu makine): çıplak Node.js süreci tek başına **46 MiB**; bundle'ı
+      (better-sqlite3 native binding dahil) import etmek **+27 MiB**; `createProductionDaemon()`
+      (SQLite store + supervisor + log store kurulumu, henüz start yok) **+5 MiB**;
+      `runtime.start()` (Unix socket server + structural watcher açılışı) **+0.3 MiB**. Yani
+      toplam ~78 MiB'ın ~73 MiB'ı WTM'den önce gelen Node.js/native-binding tabanı; WTM'nin kendi
+      daemon mantığı bu tabana yalnızca ~6 MiB ekliyor — sorun kod verimsizliği değil, hedefin
+      gerçek taban maliyetin altında olması.
+- [x] Hedefi tutturmak ile hedefi gerçekçi bir değere çekmek arasında karar ver. — Kullanıcıyla
+      birlikte karar: hedefi gerçekçi sayıya çek. Gerekçe: 60 MiB, bu projenin sabitlenmiş Node.js
+      sürümünde çıplak bir sürecin bile altında kalamayacağı bir sayıydı; WTM'nin kendi katkısı
+      zaten yalnızca birkaç MiB.
+- [x] Karar hedefi değiştirmekse `docs` ve `idle-daemon.scenario.ts` içindeki 60 MiB'ı birlikte
+      güncelle. — Yeni eşikler **85 MiB pass / 110 MiB investigation** (`idle-daemon.scenario.ts`,
+      `idle-daemon.test.ts`, `docs/05-daemon-and-macos-runtime.md`, `docs/14-testing-performance-
+      security.md`), gerekçesiyle birlikte.
+- [x] Ölçümü her iki mimaride de tekrarla. — arm64 bu oturumda 5 kez ölçüldü (76.28–76.53 MiB
+      aralığı, kararlı); x64 için gerçek CI verisi zaten mevcuttu (`33333237513`, 2026-08-30:
+      63.7 MiB) — yeniden koşmaya gerek kalmadı, yeni eşiklerin ikisini de rahatça karşılıyor.
 
 #### Kabul kriterleri
 
-- [ ] Yayınlanan hedef ile ölçülen değer aynı hikâyeyi anlatıyor.
-- [ ] Stable release'te RSS `pass` veriyor.
+- [x] Yayınlanan hedef ile ölçülen değer aynı hikâyeyi anlatıyor. — her iki mimarideki her gerçek
+      ölçüm (CI ve local) artık 85 MiB pass eşiğinin altında.
+- [x] Stable release'te RSS `pass` veriyor. — yerel doğrulama: `node --import tsx packages/daemon/
+      src/__tests__/idle-daemon.scenario.ts` artık `"status":"pass"` veriyor (önceden `"warning"`).
+
+**Çözüldü:** 2026-09-06, gerçek ölçümle taban maliyet tespit edilip hedef ona göre yeniden
+kalibre edildi.
 
 ---
 

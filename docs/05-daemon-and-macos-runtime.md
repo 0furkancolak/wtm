@@ -517,13 +517,21 @@ V1 acceptance target on a representative Apple Silicon Mac:
 
 ```text
 idle CPU p95:      < 0.2%
-idle RSS target:   < 60 MiB
-idle RSS review:   > 80 MiB triggers profiling before release
+idle RSS target:   < 85 MiB
+idle RSS review:   > 110 MiB triggers profiling before release
 source edit storm: no adapter process spawned for ordinary source edits
 registered but idle worktrees: no dev runtime process
 ```
 
 If the watcher/supervisor layer cannot meet the budget after TypeScript/Node profiling and ordinary optimization, a Rust helper may be introduced behind one narrow interface. Rust is not a default architectural dependency.
+
+The RSS numbers above were revised 2026-09-06 (todo item 42) after measurement showed the original
+60/80 MiB pair was set below what a bare Node.js process on this project's pinned runtime already
+costs: a real breakdown found ~46 MiB of that RSS present before any WTM code runs, and another
+~27 MiB from loading the bundled daemon and `better-sqlite3`'s native binding — WTM's own
+construction and startup (state store, supervisor, log store, Unix socket server, structural
+watcher) added only ~6 MiB on top. Every real measurement taken (CI and local, both architectures)
+fits inside 85/110 MiB with headroom for a genuine regression to still trip the gate.
 
 ## Node single executable note
 
