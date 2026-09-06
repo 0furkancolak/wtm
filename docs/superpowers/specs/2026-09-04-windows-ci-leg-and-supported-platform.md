@@ -12,6 +12,9 @@ can back it" — applies to the flip in this pass exactly as it did to D2 pass 1
 flip it yet. This document's Status line moves to Closed only once that leg is green, with the run
 ID recorded below the way pass 1 recorded `33846848105` for its own three legs.
 
+**2026-09-06: paused, not closed** — see "Status update, 2026-09-06" near the end of this document
+for the real run's numbers and why further iteration stopped here for now.
+
 The user's own instruction for this pass's scope was explicit and is the reason it is not a
 narrower leg: **the same seven steps darwin and linux already run, in the same order** — not a
 reduced Windows subset that would report the same word for a weaker claim, which is the exact
@@ -194,3 +197,59 @@ testkit files carry the changes described above.
 Criterion 8 — the real `windows-latest` leg — is what this pass is pushed to find out. This section
 is updated with the run ID and outcome once it reports, the same way D2 pass 1 appended its CI
 confirmation after the fact rather than treating the spec as finished before the runner spoke.
+
+## Status update, 2026-09-06 — paused with real failures named, not closed
+
+The real `windows-latest` leg reported. Across roughly thirty pushes since this pass opened
+(2026-09-04 through 2026-09-06), four fix waves each found and closed a genuine, evidenced defect —
+a raw owner-only mode-bit check that Windows's ACL-only `stat.mode` synthesis breaks
+(`gc.ts`, `materializer.ts`), a PowerShell 5.1/7 module-autoload collision behind `Get-Acl`
+(`windows-powershell.ts`), two production `fileTrust`-wiring gaps that would have made a real
+Windows daemon refuse to create its own data root on every start (`runtime-factory.ts`, CLI
+`init.ts`/`adapter.ts`), and a path-normalization bug in this repository's own structural guards.
+Each of those is real and stays fixed regardless of what follows here.
+
+The most recent full run (`34041455473`, commit `759eb4e`) is the honest current state: **98 of
+1360 tests fail on `windows-latest`**, concentrated in one still-unresolved cluster rather than
+scattered evenly.
+
+- **`process-supervisor.test.ts` alone accounts for 27 failures**, and the fourth wave's fix (SID
+  caching in `windows-powershell.ts`, aimed at the `LOG_SETUP_FAILED` failures a dedicated real-host
+  ACL diagnostic had traced to *something* in that path) did **not** resolve them — the same
+  `LOG_SETUP_FAILED` context reappears in this run's log. The diagnostic proved
+  `FileTrustPolicy.isOwnedByCurrentUser`/`isWritableOnlyByOwner` answer correctly for a directory
+  shaped like the one `logs.ts` secures; that the real supervisor suite still fails the same way
+  means either a shape the diagnostic did not cover or a second, still-unfound cause. Several of
+  these tests now take 10–48 real seconds each, up from the low milliseconds every other platform
+  reports — a symptom, not yet a diagnosis.
+- **The rest is largely downstream of the same cluster**, not thirty-odd independent bugs: most of
+  the other failing files (`daemon.test.ts`, `main.test.ts` (daemon), `runtime-factory.test.ts`,
+  `process-anchor.test.ts`, and the CLI-level integration suites — `adapter.test.ts`, `gc.test.ts`,
+  `init.test.ts`, `production-init.test.ts`, `remove.test.ts`, `resolve.test.ts`, `skill.test.ts`,
+  `daemon.test.ts` — plus `full-workflow.test.ts`, `reconcile-fallback.test.ts`,
+  `production-commands.test.ts`, `main.test.ts` (CLI)) exercise a real daemon or a real managed
+  process somewhere in their setup, which routes through the same supervisor.
+- **A separate, previously-flagged cluster is still open and untouched by any of the four waves**:
+  `remove-runtime.test.ts`'s two-process lease-conflict scenarios
+  (`lets exactly one of two removing processes hold the repository`, `refuses the daemon's own
+  lease acquisition while a CLI remove holds the repository`) each ran for over 30 real seconds
+  before failing, consistent with the standing, still-unconfirmed suspicion that a bare
+  `spawn('git', ...)` is not resolving through Windows's `.cmd`/PATHEXT shim the way the fixtures
+  need it to (`refresh-remotes.test.ts`, `init.test.ts`, `remove.test.ts`,
+  `remote-freshness.test.ts` show the same signature).
+- **`guard.test.ts`, `materializer.test.ts`, `worktree-analysis.integration.test.ts`,
+  `scenario-child.test.ts`, `git-runner.integration.test.ts`, and `public-api.test.ts`** each show a
+  small number of failures (1–3) that were not chased individually this round; they may be genuine
+  NTFS/permission/signal differences rather than a shared root cause, and are named here rather than
+  guessed at.
+
+**Decision, made with the user:** further real-CI iteration on `win32` is paused here, not because
+the remaining failures are believed shallow, but for the opposite reason — after four waves and
+~30 pushes, the evidence points to one substantial, still-unfound defect in Windows process
+supervision plus at least one separate PATH-resolution question, neither of which this pass's
+"read one more log, patch, push, wait 30–60 minutes" loop was converging on quickly enough to
+justify continuing to block the rest of the P0 backlog on it. `supportedPlatforms` keeps `win32`;
+the CI leg stays in `ci.yml` reporting its real, honest red rather than being narrowed or removed to
+manufacture a green checkmark. This document's Status stays **Open** — criterion 8 is not met — and
+resumes whenever Windows work is picked back up, ideally with access to a real Windows host for
+faster iteration than a 30–60-minute CI round trip per attempt affords.

@@ -946,7 +946,26 @@ wtm-windows-arm64.exe
       dizinini 0755 olduğu için reddetmesiydi; kural düzeltildi (F16), regresyon değildi.
 - [x] Linux x64 CI green. — `33657859156`, üç bacakta da yedi gate'in hepsi koştu, atlanan yok.
 - [ ] Linux arm64 build doğrulanıyor.
-- [ ] Windows x64 CI green.
+- [ ] Windows x64 CI green. — **duraklatıldı, 2026-09-06.** Dört düzeltme dalgası (~30 push,
+      2026-09-04 – 2026-09-06) gerçek, kanıtlanmış kusurları kapattı (Windows'un ACL-only
+      `stat.mode` sentezi, `Get-Acl` arkasındaki PowerShell 5.1/7 modül çakışması, gerçek bir
+      Windows daemon'ın kendi data root'unu hiç oluşturamayacağı iki üretim `fileTrust` bağlama
+      boşluğu, bir path-normalizasyon hatası). Son gerçek koşu (`34041455473`, `759eb4e`) hâlâ
+      1360 testten 98'inin kırmızı olduğunu gösteriyor — çoğunluğu tek bir kümede:
+      `process-supervisor.test.ts`'in 27 hatası hâlâ `LOG_SETUP_FAILED` veriyor (dördüncü dalganın
+      SID-cache düzeltmesi bunu çözmedi; gerçek ACL diagnostiği trust policy'nin doğru cevap
+      verdiğini kanıtlamıştı, yani kök neden hâlâ bulunamadı), ve çoğu CLI entegrasyon testi
+      (`adapter`, `gc`, `init`, `production-init`, `remove`, `resolve`, `skill`, `daemon`,
+      `full-workflow`, `reconcile-fallback`, `production-commands`) gerçek bir daemon/managed
+      process kurduğu için aynı kümeye bağımlı düşüyor. Ayrı, önceden işaretlenmiş bir küme
+      (`remove-runtime.test.ts`'in iki-process lease-conflict senaryoları, muhtemelen
+      Windows'ta bare `spawn('git', ...)`'in `.cmd`/PATHEXT shim'i üzerinden çözülmemesi) hâlâ
+      açık. Karar: kullanıcıyla birlikte, gerisi P0 backlog'unu bekletmesin diye further iterasyon
+      şimdilik durduruldu — kalan hatalar sığ olduğu için değil, tam tersi: köklü, henüz
+      bulunamamış tek bir savunma hattı sorunu olduğu için, ve 30-60 dk'lık her CI turu bunu hızlı
+      kapatmaya yetmiyordu. `supportedPlatforms` `win32`'yi tutuyor, CI leg'i `ci.yml`'de kalıyor
+      ve gerçek kırmızısını raporluyor. Detay: `2026-09-04-windows-ci-leg-and-supported-
+      platform.md`'nin "Status update, 2026-09-06" bölümü.
 - [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
 - [ ] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
       `plistPath` macOS'a özel bir ek alan olarak bilerek duruyor (D11), kaldırılması daemon JSON
