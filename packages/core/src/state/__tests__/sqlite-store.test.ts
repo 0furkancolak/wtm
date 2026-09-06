@@ -142,7 +142,7 @@ describe('SQLiteStateStore', () => {
       activeAfterStop: null,
       orderedStates: ['STOPPED', 'FAILED'],
       rejectedSecondActiveSingleton: true,
-      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     });
   });
 
@@ -189,7 +189,7 @@ describe('SQLiteStateStore', () => {
       tieWinner: 'tie-z',
       tieLoserCleanupRequired: false,
       leaseSurvivedExpiry: true,
-      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     });
   });
 
@@ -244,7 +244,7 @@ describe('SQLiteStateStore', () => {
       conflictHolderAcquiredAt: '2026-08-31T10:14:02.118Z',
       conflictHolderSubjectMatches: true,
       holderViewKeys: [
-        'acquiredAt', 'expiresAt', 'operation', 'pid', 'processStartTime',
+        'acquiredAt', 'expiresAt', 'hostId', 'operation', 'pid', 'processStartTime',
         'renewedAt', 'repositoryId', 'stage', 'subjectWorktreeId',
       ],
       otherOperationOutcome: 'acquired',
@@ -279,6 +279,7 @@ describe('SQLiteStateStore', () => {
         operation: 'remove',
         pid: 900,
         processStartTime: 'start-a',
+        hostId: 'this-host',
         subjectWorktreeId: null,
         stage: 'release-endpoints',
         acquiredAt: '2026-08-31T10:00:00.000Z',
@@ -297,6 +298,7 @@ describe('SQLiteStateStore', () => {
       adoptedAcquiredAt: '2026-08-31T10:00:02.000Z',
       displacedTokenCannotRelease: false,
       adoptOnLiveHolderOutcome: 'conflict',
+      unknownVerdictOutcome: 'conflict',
       finalRelease: true,
     });
   });

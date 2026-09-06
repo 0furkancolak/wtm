@@ -1158,6 +1158,7 @@ function repositoryOperationLeases() {
         token: 'token-1',
         pid: 51422,
         processStartTime: 'Mon Aug 31 10:14:02 2026',
+        hostId: 'this-host',
         subjectWorktreeId: worktreeRecord.id,
         ttlMs: 120_000,
       }, '2026-08-31T10:14:02.118Z');
@@ -1167,6 +1168,7 @@ function repositoryOperationLeases() {
         token: 'token-2',
         pid: 51423,
         processStartTime: 'Mon Aug 31 10:14:03 2026',
+        hostId: 'this-host',
         ttlMs: 120_000,
       }, '2026-08-31T10:14:03.000Z');
       // `gc` and `remove` are different rows: which operations exclude each other is a
@@ -1177,6 +1179,7 @@ function repositoryOperationLeases() {
         token: 'token-gc',
         pid: 51423,
         processStartTime: 'Mon Aug 31 10:14:03 2026',
+        hostId: 'this-host',
         ttlMs: 120_000,
       }, '2026-08-31T10:14:03.000Z');
       let emptyTokenRejected = false;
@@ -1187,6 +1190,7 @@ function repositoryOperationLeases() {
           token: '',
           pid: 51423,
           processStartTime: 'Mon Aug 31 10:14:03 2026',
+          hostId: 'this-host',
           ttlMs: 120_000,
         }, '2026-08-31T10:14:03.000Z');
       } catch (error) {
@@ -1203,6 +1207,7 @@ function repositoryOperationLeases() {
         token: 'token-2',
         pid: 51423,
         processStartTime: 'Mon Aug 31 10:14:03 2026',
+        hostId: 'this-host',
         ttlMs: 120_000,
       }, '2026-08-31T10:14:04.000Z');
       return {
@@ -1256,6 +1261,7 @@ function repositoryOperationLeaseRecovery() {
         token: 'token-1',
         pid: 900,
         processStartTime: 'start-a',
+        hostId: 'this-host',
         ttlMs: 1000,
       } as const;
       const challenger = {
@@ -1264,6 +1270,7 @@ function repositoryOperationLeaseRecovery() {
         token: 'token-2',
         pid: 901,
         processStartTime: 'start-b',
+        hostId: 'this-host',
         ttlMs: 1000,
       } as const;
 
@@ -1326,12 +1333,19 @@ function repositoryOperationLeaseRecovery() {
           token: 'token-3',
           pid: 902,
           processStartTime: 'start-c',
+          hostId: 'this-host',
           ttlMs: 1000,
           adopt: true,
           ownerLiveness: () => 'alive',
         },
         '2026-08-31T10:00:09.000Z',
       );
+      // `unknown` -- a holder on a different host, which this store cannot ask anything about --
+      // is refused exactly like `alive`: only `gone` may ever turn an expired row into `abandoned`.
+      const unknownVerdictOutcome = store.acquireRepositoryOperationLease(
+        { ...challenger, token: 'token-4', ownerLiveness: () => 'unknown' },
+        '2026-08-31T10:00:09.500Z',
+      ).outcome;
       return {
         acquiredOutcome: acquired.outcome,
         freshLivenessCalls,
@@ -1363,6 +1377,7 @@ function repositoryOperationLeaseRecovery() {
         adoptedAcquiredAt: adoptedResult.outcome === 'acquired' ? adoptedResult.lease.acquiredAt : null,
         displacedTokenCannotRelease,
         adoptOnLiveHolderOutcome: adoptOnLiveHolder.outcome,
+        unknownVerdictOutcome,
         finalRelease: store.releaseRepositoryOperationLease(key, 'token-2'),
       };
     } finally {
@@ -1439,6 +1454,7 @@ function operationLeaseRetirement() {
           token: `token-${pid}`,
           pid,
           processStartTime: 'start',
+          hostId: 'this-host',
           ttlMs: 120_000,
         }, '2026-08-31T10:00:00.000Z');
       }

@@ -176,6 +176,7 @@ async function run(driver: DriverName): Promise<Record<string, unknown>> {
       token: 'operation-token',
       pid: 7331,
       processStartTime: 'Fri Aug 28 08:00:00 2026',
+      hostId: 'this-host',
       subjectWorktreeId: registeredWorktree.id,
       ttlMs: 60_000,
     }, '2026-08-28T08:00:10.000Z');
@@ -185,6 +186,7 @@ async function run(driver: DriverName): Promise<Record<string, unknown>> {
       token: 'other-token',
       pid: 7332,
       processStartTime: 'Fri Aug 28 08:00:01 2026',
+      hostId: 'this-host',
       ttlMs: 60_000,
       ownerLiveness: () => 'gone',
     }, '2026-08-28T08:00:11.000Z');

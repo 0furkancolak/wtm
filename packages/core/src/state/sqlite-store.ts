@@ -123,6 +123,7 @@ interface RepositoryOperationLeaseRow {
   token: string;
   pid: number;
   process_start_time: string;
+  host_id: string;
   subject_worktree_id: string | null;
   stage: string | null;
   acquired_at: string;
@@ -136,6 +137,7 @@ function repositoryOperationLeaseHolderFromRow(row: RepositoryOperationLeaseRow)
     operation: row.operation,
     pid: row.pid,
     processStartTime: row.process_start_time,
+    hostId: row.host_id,
     subjectWorktreeId: row.subject_worktree_id,
     stage: row.stage,
     acquiredAt: row.acquired_at,
@@ -1278,6 +1280,9 @@ export class SQLiteStateStore implements StateStore {
     if (input.processStartTime.length === 0) {
       throw new TypeError('Repository operation lease owner identity must be complete');
     }
+    if (input.hostId.length === 0) {
+      throw new TypeError('Repository operation lease host identity must be complete');
+    }
     const expiresAt = repositoryOperationLeaseExpiry(now, input.ttlMs);
     return this.transaction(() => {
       const existing = this.#repositoryOperationLease(input);
@@ -1290,7 +1295,9 @@ export class SQLiteStateStore implements StateStore {
         }
         // Liveness is the caller's verdict and costs a `ps`, so it is asked for exactly one
         // row and only once that row has expired. No callback means no evidence of life.
-        if ((input.ownerLiveness?.(existing) ?? 'gone') === 'alive') {
+        // `unknown` (a holder on a different host) is treated the same as `alive`: only a
+        // verdict of `gone` may reclaim what another host might still be using.
+        if ((input.ownerLiveness?.(existing) ?? 'gone') !== 'gone') {
           return { outcome: 'conflict', holder: existing };
         }
         // An abandoned lease is reported, not taken: its stage names a half-finished cleanup,
@@ -1306,12 +1313,12 @@ export class SQLiteStateStore implements StateStore {
       const subjectWorktreeId = input.subjectWorktreeId ?? existing?.subjectWorktreeId ?? null;
       this.#database.prepare(`
         INSERT INTO repository_operation_leases (
-          repository_id, operation, token, pid, process_start_time, subject_worktree_id,
+          repository_id, operation, token, pid, process_start_time, host_id, subject_worktree_id,
           stage, acquired_at, renewed_at, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         input.repositoryId, input.operation, input.token, input.pid, input.processStartTime,
-        subjectWorktreeId, stage, now, now, expiresAt,
+        input.hostId, subjectWorktreeId, stage, now, now, expiresAt,
       );
       return {
         outcome: 'acquired',
@@ -1321,6 +1328,7 @@ export class SQLiteStateStore implements StateStore {
           token: input.token,
           pid: input.pid,
           processStartTime: input.processStartTime,
+          hostId: input.hostId,
           subjectWorktreeId,
           stage,
           acquiredAt: now,

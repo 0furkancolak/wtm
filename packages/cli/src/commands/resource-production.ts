@@ -120,6 +120,8 @@ export async function runProductionGcCommand(input: {
    * it; a dry run never reads it, since planning never takes the lease.
    */
   readProcessStartTime?: ProcessStartTimeReader;
+  /** Which machine this process is running on. Required alongside `readProcessStartTime`. */
+  hostId?: string;
 }): Promise<JsonEnvelope<GcCommandResult | null>> {
   if (!existsSync(input.databasePath)) return unavailableResourceEnvelope('gc');
   const store = new SQLiteStateStore(input.databasePath, { readonly: !input.apply });
@@ -140,12 +142,17 @@ export async function runProductionGcCommand(input: {
     // id, but every repository the target workspace registers is named, so a future multi-repo
     // workspace is still fully covered without this changing. A workspace with none registered
     // (a bare resources cache) has nothing a `remove`/`repair` could race, so no lease is taken.
-    const repositoryIds = input.apply && input.readProcessStartTime !== undefined
+    const repositoryIds = input.apply && input.readProcessStartTime !== undefined && input.hostId !== undefined
       ? await repositoryIdsForLocalWorkspace(store, workspaces, input.cwd)
       : [];
     const repositoryLease: GcRepositoryLeaseInput | undefined = repositoryIds.length === 0
       ? undefined
-      : { store, readProcessStartTime: input.readProcessStartTime as ProcessStartTimeReader, repositoryIds };
+      : {
+        store,
+        readProcessStartTime: input.readProcessStartTime as ProcessStartTimeReader,
+        hostId: input.hostId as string,
+        repositoryIds,
+      };
 
     for (const sandbox of sandboxes) {
       const repositoryRoots = [...new Set([

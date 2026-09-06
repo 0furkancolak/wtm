@@ -12,6 +12,7 @@
  *
  * Argv: `<databasePath> <repositoryId> <operation>`.
  */
+import { hostname } from 'node:os';
 import { RepositoryOperationConflictError, SQLiteStateStore, withRepositoryOperationLease, type RepositoryOperation } from '@wtm/core';
 import { selectPlatformRuntime } from '@wtm/platform';
 
@@ -27,6 +28,7 @@ try {
     {
       store,
       readProcessStartTime: (pid) => selectPlatformRuntime().process.readStartTime(pid),
+      hostId: hostname(),
       repositoryId,
       operation: operation as RepositoryOperation,
     },

@@ -37,6 +37,8 @@ export interface RemovalRuntimeBinding {
    * this command only passes it along.
    */
   readProcessStartTime: ProcessStartTimeReader;
+  /** Which machine this process is running on. Travels with the lease for the same reason. */
+  hostId: string;
   /** Takes over a lease abandoned by a dead holder. This is `--resume`. */
   adopt: boolean;
 }
@@ -100,6 +102,7 @@ export async function runRemoveCommand(
           lease: {
             store: binding.leaseStore,
             readProcessStartTime: binding.readProcessStartTime,
+            hostId: binding.hostId,
             repositoryId: binding.repositoryId,
             adopt: binding.adopt,
           },

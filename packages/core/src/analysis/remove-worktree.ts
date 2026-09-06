@@ -120,6 +120,8 @@ export interface GuardedRemovalInput {
      * takes no lease and asks the operating system nothing.
      */
     readProcessStartTime: ProcessStartTimeReader;
+    /** Which machine this process is running on. Travels with the lease for the same reason. */
+    hostId: string;
     repositoryId: string;
     adopt?: boolean | undefined;
   } | undefined;
@@ -234,6 +236,7 @@ async function withOptionalLease<T>(
   return withRepositoryOperationLease({
     store: lease.store,
     readProcessStartTime: lease.readProcessStartTime,
+    hostId: lease.hostId,
     repositoryId: lease.repositoryId,
     operation: 'remove',
     ...(input.context.worktreeId === undefined ? {} : { subjectWorktreeId: input.context.worktreeId }),

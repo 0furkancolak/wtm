@@ -134,6 +134,8 @@ export interface GcHooks {
 export interface GcRepositoryLeaseInput {
   store: RepositoryOperationLeaseStore;
   readProcessStartTime: ProcessStartTimeReader;
+  /** Which machine this process is running on. Travels with the lease for the same reason. */
+  hostId: string;
   repositoryIds: readonly string[];
 }
 
@@ -456,6 +458,7 @@ async function acquireGcLeases(
   await withRepositoryOperationLease({
     store: lease.store,
     readProcessStartTime: lease.readProcessStartTime,
+    hostId: lease.hostId,
     repositoryId,
     operation: 'gc',
   }, () => acquireGcLeases(lease, rest, body));

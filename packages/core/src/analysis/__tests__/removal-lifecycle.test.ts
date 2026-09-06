@@ -114,7 +114,7 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
     if (existing !== null) {
       const holder = holderOf(existing);
       if (existing.expiresAt > now) return { outcome: 'conflict', holder };
-      if ((input.ownerLiveness?.(holder) ?? 'gone') === 'alive') return { outcome: 'conflict', holder };
+      if ((input.ownerLiveness?.(holder) ?? 'gone') !== 'gone') return { outcome: 'conflict', holder };
       if (input.adopt !== true) return { outcome: 'abandoned', holder };
     }
     const stage = existing?.stage ?? null;
@@ -124,6 +124,7 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
       token: input.token,
       pid: input.pid,
       processStartTime: input.processStartTime,
+      hostId: input.hostId,
       subjectWorktreeId: input.subjectWorktreeId ?? existing?.subjectWorktreeId ?? null,
       stage,
       acquiredAt: now,
@@ -334,7 +335,7 @@ test('records every stage through the lease in the documented order', async () =
   await removeWorktreeGuarded({
     context: context(fixture),
     coordinator: new RecordingCoordinator(),
-    lease: { store, readProcessStartTime, repositoryId },
+    lease: { store, readProcessStartTime, hostId: 'this-host', repositoryId },
   });
 
   expect(store.stages).toEqual([...removalStages]);
@@ -426,7 +427,7 @@ test('resumes an abandoned lease from the stage it stopped at and completes the 
   const result = await removeWorktreeGuarded({
     context: context(fixture),
     coordinator,
-    lease: { store, readProcessStartTime, repositoryId, adopt: true },
+    lease: { store, readProcessStartTime, hostId: 'this-host', repositoryId, adopt: true },
   });
 
   expect(result.resumedFrom).toBe('release-endpoints');
@@ -452,7 +453,7 @@ test('refuses to remove behind a live holder of the repository lease', async () 
   const thrown = await removeWorktreeGuarded({
     context: context(fixture),
     coordinator,
-    lease: { store, readProcessStartTime, repositoryId },
+    lease: { store, readProcessStartTime, hostId: 'this-host', repositoryId },
   }).then(() => null, (error: unknown) => error);
 
   expect(thrown).toBeInstanceOf(RepositoryOperationConflictError);
@@ -470,7 +471,7 @@ test('releases the repository lease after a successful removal and after a faile
   await expect(removeWorktreeGuarded({
     context: context(failed),
     coordinator: new RecordingCoordinator({ stopError: new Error('daemon unreachable') }),
-    lease: { store: failingStore, readProcessStartTime, repositoryId },
+    lease: { store: failingStore, readProcessStartTime, hostId: 'this-host', repositoryId },
   })).rejects.toThrow('daemon unreachable');
   expect(failingStore.row).toBeNull();
   expect(failingStore.releases).toBe(1);
@@ -480,7 +481,7 @@ test('releases the repository lease after a successful removal and after a faile
   await removeWorktreeGuarded({
     context: context(succeeded),
     coordinator: new RecordingCoordinator(),
-    lease: { store, readProcessStartTime, repositoryId },
+    lease: { store, readProcessStartTime, hostId: 'this-host', repositoryId },
   });
   expect(store.row).toBeNull();
   expect(store.releases).toBe(1);
@@ -514,6 +515,7 @@ function seedHolder(store: FakeLeaseStore, overrides: Partial<RepositoryOperatio
     token: 'holder-token',
     pid: deadHolderPid,
     processStartTime: 'Mon Aug 31 10:00:00 2026',
+    hostId: 'this-host',
     subjectWorktreeId: worktreeId,
     stage: null,
     acquiredAt: '2026-08-31T10:14:02.118Z',

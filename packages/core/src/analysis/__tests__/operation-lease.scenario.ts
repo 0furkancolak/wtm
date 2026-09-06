@@ -62,9 +62,11 @@ async function sqliteOperationLease(): Promise<unknown> {
       remoteIdentity: null,
     });
     const key: RepositoryOperationLeaseKey = { repositoryId: repository.id, operation: 'remove' };
+    const hostId = 'scenario-host';
     const input = {
       store,
       readProcessStartTime: scriptedReader,
+      hostId,
       repositoryId: repository.id,
       operation: 'remove' as const,
     };
@@ -85,6 +87,7 @@ async function sqliteOperationLease(): Promise<unknown> {
       token: 'live-holder-token',
       pid: process.pid,
       processStartTime: selfStartTime,
+      hostId,
       ttlMs: 120_000,
     }, new Date().toISOString());
     const liveHolder = await conflictOf(withRepositoryOperationLease(input, async () => 'unreachable'));
@@ -97,6 +100,7 @@ async function sqliteOperationLease(): Promise<unknown> {
       token: 'dead-holder-token',
       pid: deadProcessId(),
       processStartTime: 'Mon Aug 31 10:00:00 2026',
+      hostId,
       ttlMs: 1_000,
     }, acquiredAt);
     store.advanceRepositoryOperationLease(key, 'dead-holder-token', 'stop-processes', acquiredAt);

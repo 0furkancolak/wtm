@@ -957,7 +957,7 @@ wtm-windows-arm64.exe
 
 ---
 
-### [ ] 44. Ağ üzerinden paylaşılan `HOME`'da lease sahibi yanlışlıkla "gitmiş" okunuyor
+### [x] 44. Ağ üzerinden paylaşılan `HOME`'da lease sahibi yanlışlıkla "gitmiş" okunuyor
 
 Increment C1'de, platform seam'i tasarlanırken bulundu; spec `2026-09-01-platform-seam-design.md`
 D5 ayrıntısını taşıyor.
@@ -988,17 +988,41 @@ kapanmalı: bugün ulaşılamaz olmasının tek sebebi Linux'un henüz çalışm
 
 #### Yapılacaklar
 
-- [ ] Lease satırlarına (ve process kayıtlarına) host identity kolonu ekle; migration yaz.
-- [ ] Host identity'yi platform seam'inden üret; `HOME`'a değil makineye bağlı olsun.
-- [ ] Liveness karşılaştırmasını host-aware yap: farklı host -> `unknown`, asla `gone`.
-- [ ] Host bilgisi taşımayan eski satırların nasıl yorumlanacağına karar ver ve testle.
-- [ ] İki platformun kimlik string'lerini taşıyan tek bir `state.db` üzerinde test ekle.
+- [x] Lease satırlarına host identity kolonu ekle; migration yaz. — migration 011
+      (`repository_operation_leases.host_id`, `DEFAULT ''`); process kayıtlarına (`managed_processes`)
+      eklenmedi, bkz. aşağıdaki not.
+- [x] Host identity'yi platform seam'inden üret; `HOME`'a değil makineye bağlı olsun. —
+      `os.hostname()`, CLI composition root'unda (`main.ts`) üretiliyor; core hâlâ hiçbir OS çağrısı
+      yapmıyor, değeri parametre olarak alıyor (`RepositoryOperationLeaseInput.hostId`), tıpkı
+      `readProcessStartTime` gibi.
+- [x] Liveness karşılaştırmasını host-aware yap: farklı host -> `unknown`, asla `gone`. —
+      `operation-lease.ts`'in `livenessOf`'u artık `'alive' | 'unknown' | 'gone'` döndürüyor; store
+      tarafı (`sqlite-store.ts`) `unknown`'ı `alive` ile aynı şekilde ele alıyor (yalnızca `gone`
+      lease'i `abandoned` yapabiliyor).
+- [x] Host bilgisi taşımayan eski satırların nasıl yorumlanacağına karar ver ve testle. — Karar: boş
+      `host_id` gerçek bir host id'sine asla eşit olamayacağı için otomatik olarak `unknown` okunuyor
+      (farklı host'tan ayrı bir kural gerekmiyor); `operation-lease.test.ts`'te ayrı test var.
+- [x] İki platformun kimlik string'lerini taşıyan tek bir `state.db` üzerinde test ekle. —
+      `operation-lease.test.ts`'te host uyuşmazlığı senaryosu (macOS `lstart` tarzı ve Linux `/proc`
+      tarzı string'ler karışabilir; test bu iki formatın karşılaştırılamayacağını değil, host_id
+      farkının nasıl ele alındığını doğruluyor) ve `sqlite-store.scenario.ts`'te gerçek SQLite
+      üzerinde `unknown` verdict'inin `conflict` (asla `abandoned`) ürettiğini doğrulayan test.
 
 #### Kabul kriterleri
 
-- [ ] Başka bir host'un tuttuğu lease yalnızca TTL dolduğu için geri alınıyor; kimlik farkı tek
-      başına gerekçe olmuyor.
-- [ ] Aynı host üzerindeki PID reuse tespiti bugünkü davranışını koruyor.
+- [x] Başka bir host'un tuttuğu lease yalnızca TTL dolduğu için geri alınıyor; kimlik farkı tek
+      başına gerekçe olmuyor. — `unknown` verdict'i her zaman `conflict`, asla `abandoned`.
+- [x] Aynı host üzerindeki PID reuse tespiti bugünkü davranışını koruyor. — mevcut
+      "treats a holder whose start time no longer matches as gone" testi değişmeden geçiyor.
+
+> **Kapanış notu, 2026-09-06.** Kapsam bilinçli olarak daraltıldı: `managed_processes`
+> (supervised process kayıtları) host_id almadı, çünkü bu maddenin kendi metni bu kaydın bugün
+> güvenli olduğunu söylüyor (yanlış "gone" okuması yalnızca lease'in serileştirdiği yıkıcı işlemler
+> için tehlikeli) — kullanılmayacak bir kolon eklemek gereksiz yüzey olurdu. İleride supervised
+> process tarafı da host-aware olması gerekirse aynı desen (`hostId` parametresi, port'tan asla OS
+> çağrısı) tekrarlanabilir. `readProcessStartTime` ile aynı disipline uyuldu: `hostId` her çağıran
+> için zorunlu, varsayılan değeri yok — bu yüzden `@wtm/core`'un mevcut tüm lease çağrı noktaları
+> (üretim ve test) `hostId` geçmeye zorlandı, TypeScript bunu derleme zamanında garanti ediyor.
 
 ---
 

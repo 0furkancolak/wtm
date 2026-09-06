@@ -100,6 +100,14 @@ export interface RepositoryOperationLeaseInput {
    * reader would be a platform assumption made silently, in core, by whichever caller forgot.
    */
   readProcessStartTime: ProcessStartTimeReader;
+  /**
+   * Which machine this process is running on. Required and not defaulted for the same reason
+   * `readProcessStartTime` is: a lease that cannot name its own host cannot be told apart from
+   * one on a different host sharing this state store over a network `HOME` (todo item 44), and a
+   * default supplied silently by core would be a platform assumption made in the one package
+   * that must not make one.
+   */
+  hostId: string;
   repositoryId: string;
   operation: RepositoryOperation;
   subjectWorktreeId?: string | undefined;
@@ -194,7 +202,7 @@ async function acquireLease(
     // costs a trip to the operating system, so an unexpired holder is left unmeasured — it is a
     // conflict either way.
     const measured = observed !== null && observed.expiresAt <= timestamp
-      ? { holder: observed, verdict: await livenessOf(input.readProcessStartTime, observed) }
+      ? { holder: observed, verdict: await livenessOf(input.readProcessStartTime, observed, input.hostId) }
       : null;
     let raced = false;
     const result = input.store.acquireRepositoryOperationLease({
@@ -203,6 +211,7 @@ async function acquireLease(
       token,
       pid: owner.pid,
       processStartTime: owner.processStartTime,
+      hostId: input.hostId,
       subjectWorktreeId: input.subjectWorktreeId,
       ttlMs,
       adopt: input.adopt,
@@ -229,11 +238,19 @@ async function acquireLease(
 /**
  * A holder is gone when its PID has no process, and equally when the process at that PID started
  * at a different time — that second case is a recycled PID wearing a dead holder's number.
+ *
+ * Neither question is askable of a holder on a different host: this process's own operating
+ * system has no way to inspect a PID on a machine it is not running on, and a coincidentally
+ * present or absent local PID would answer a question about the wrong computer. A host mismatch
+ * — including a holder recorded before `hostId` existed, whose empty string can never equal a
+ * real one — resolves `unknown` before either read is attempted.
  */
 async function livenessOf(
   read: ProcessStartTimeReader,
   holder: RepositoryOperationLeaseHolder,
-): Promise<'alive' | 'gone'> {
+  myHostId: string,
+): Promise<'alive' | 'unknown' | 'gone'> {
+  if (holder.hostId !== myHostId) return 'unknown';
   const identity = await readProcessStartIdentity(read, holder.pid);
   if (identity === null) return 'gone';
   return identity.processStartTime === holder.processStartTime ? 'alive' : 'gone';
@@ -267,6 +284,7 @@ function isSameHolder(
 ): boolean {
   return measured.pid === observed.pid
     && measured.processStartTime === observed.processStartTime
+    && measured.hostId === observed.hostId
     && measured.acquiredAt === observed.acquiredAt;
 }
 

@@ -122,6 +122,7 @@ function createFakeRepositoryLeaseStore(): RepositoryOperationLeaseStore {
         token: input.token,
         pid: input.pid,
         processStartTime: input.processStartTime,
+        hostId: input.hostId,
         subjectWorktreeId: input.subjectWorktreeId ?? null,
         stage: null,
         acquiredAt: now,
@@ -157,6 +158,7 @@ function createFakeRepositoryLeaseStore(): RepositoryOperationLeaseStore {
 }
 
 const readProcessStartTime: ProcessStartTimeReader = async () => 'Mon Sep  1 09:00:00 2026';
+const hostId = 'this-host';
 
 describe('applyGcPlan repository-operation-lease wiring', () => {
   test('refuses a second "gc" on the same repository while the first apply is still running', async () => {
@@ -174,7 +176,7 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
     const hooks: GcHooks = {
       async beforeAbsentFinalize() {
         contended = await withRepositoryOperationLease(
-          { store, readProcessStartTime, repositoryId: 'repository-1', operation: 'gc' },
+          { store, readProcessStartTime, hostId, repositoryId: 'repository-1', operation: 'gc' },
           async () => 'a second gc should never reach this',
         ).then(() => null, (error: unknown) => error);
       },
@@ -182,7 +184,7 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
 
     const result = await applyGcPlan(plan, {
       guard, apply: true, lease: coordination.lease, journal: coordination.journal, hooks, fileTrust,
-      repositoryLease: { store, readProcessStartTime, repositoryIds: ['repository-1'] },
+      repositoryLease: { store, readProcessStartTime, hostId, repositoryIds: ['repository-1'] },
     });
 
     expect(result.items[0]?.outcome, JSON.stringify(result.items[0])).toBe('already-absent');
@@ -203,12 +205,12 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
 
     await applyGcPlan(plan, {
       guard, apply: true, lease: coordination.lease, journal: coordination.journal, fileTrust,
-      repositoryLease: { store, readProcessStartTime, repositoryIds: ['repository-1'] },
+      repositoryLease: { store, readProcessStartTime, hostId, repositoryIds: ['repository-1'] },
     });
 
     expect(store.readRepositoryOperationLease({ repositoryId: 'repository-1', operation: 'gc' })).toBeNull();
     const next = await withRepositoryOperationLease(
-      { store, readProcessStartTime, repositoryId: 'repository-1', operation: 'gc' },
+      { store, readProcessStartTime, hostId, repositoryId: 'repository-1', operation: 'gc' },
       async () => 'acquired',
     );
     expect(next).toBe('acquired');
@@ -227,6 +229,7 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
       fileTrust,
       repositoryLease: {
         store, readProcessStartTime: async (pid) => { readerCalls += 1; return readProcessStartTime(pid); },
+        hostId,
         repositoryIds: ['repository-1'],
       },
     });
@@ -247,7 +250,7 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
 
     const result = await applyGcPlan(plan, {
       guard, apply: true, lease: coordination.lease, journal: coordination.journal, fileTrust,
-      repositoryLease: { store, readProcessStartTime, repositoryIds: [] },
+      repositoryLease: { store, readProcessStartTime, hostId, repositoryIds: [] },
     });
 
     expect(result.items[0]?.outcome, JSON.stringify(result.items[0])).toBe('deleted');

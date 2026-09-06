@@ -195,6 +195,12 @@ export interface RepositoryOperationLeaseHolder {
   pid: number;
   /** The verbatim `ps -o lstart=` string, so a recycled PID cannot pass for the holder. */
   processStartTime: string;
+  /**
+   * Which machine acquired this lease. Empty for a row acquired before this column existed
+   * (spec `2026-09-01-platform-seam-design.md` D5, todo item 44) — never treated as "this host"
+   * on that account, since an empty value can never equal a real host id.
+   */
+  hostId: string;
   subjectWorktreeId: string | null;
   /** The last stage the holder recorded, which is where a resumed operation continues from. */
   stage: string | null;
@@ -219,6 +225,12 @@ export interface RepositoryOperationLeaseRequest {
   token: string;
   pid: number;
   processStartTime: string;
+  /**
+   * Which machine is acquiring this lease. Required for the same reason `processStartTime` is:
+   * a lease that cannot name its own host cannot be told apart from one on a different host
+   * sharing this state store over a network HOME (todo item 44).
+   */
+  hostId: string;
   subjectWorktreeId?: string | undefined;
   ttlMs: number;
   /** Takes over an abandoned lease instead of reporting it. This is the `--resume` path. */
@@ -227,9 +239,11 @@ export interface RepositoryOperationLeaseRequest {
    * Whether the process holding a colliding, expired lease is still alive. The store cannot
    * run `ps`, and core must not spawn one per row, so the verdict is the caller's — computed
    * inside the transaction for the single row the acquisition collides with, and only when
-   * that row has already expired.
+   * that row has already expired. `unknown` is a holder on a different host: this store cannot
+   * ask that host anything, and treats `unknown` exactly like `alive` — never abandoned on the
+   * strength of a host mismatch alone.
    */
-  ownerLiveness?: ((holder: RepositoryOperationLeaseHolder) => 'alive' | 'gone') | undefined;
+  ownerLiveness?: ((holder: RepositoryOperationLeaseHolder) => 'alive' | 'unknown' | 'gone') | undefined;
 }
 
 export interface StateStore extends AdapterTrustStateStore {

@@ -2,7 +2,7 @@ import { Command, CommanderError, InvalidArgumentError, Option } from 'commander
 import { constants as fsConstants, existsSync, readdirSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { access } from 'node:fs/promises';
-import { constants, homedir } from 'node:os';
+import { constants, homedir, hostname } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
 import { exitCodeForError } from './exit-codes';
@@ -410,6 +410,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
         cwd,
         apply,
         readProcessStartTime: (pid) => hostPlatformRuntime().process.readStartTime(pid),
+        hostId: hostname(),
       })
       : await dependencies.gcRunner({ cwd, apply });
     renderRuntime(envelope, runtimeJson(program, options));
@@ -964,6 +965,7 @@ function bindRemovalRuntime(options: {
      * strings can never be confused for one another.
      */
     readProcessStartTime: (pid) => hostPlatformRuntime().process.readStartTime(pid),
+    hostId: hostname(),
     adopt: options.adopt,
   };
 }

@@ -15,6 +15,7 @@ export const migrationFileNames = [
   '008-resource-gc-container-identity.sql',
   '009-lifecycle-events.sql',
   '010-repository-operation-leases.sql',
+  '011-repository-operation-lease-host-identity.sql',
 ] as const;
 
 export const filesystemMigrationAssets: MigrationAssetProvider = {

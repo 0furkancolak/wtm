@@ -21,6 +21,7 @@ const key: RepositoryOperationLeaseKey = { repositoryId, operation: 'remove' };
 const selfStartTime = 'Mon Aug 31 09:59:00 2026';
 const holderPid = 4_242;
 const holderStartTime = 'Mon Aug 31 10:00:00 2026';
+const myHostId = 'this-host';
 
 /**
  * A faithful re-implementation of the four store semantics this module depends on, so a unit
@@ -46,7 +47,7 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
       const holder = holderOf(existing);
       if (existing.expiresAt > now) return { outcome: 'conflict', holder };
       this.livenessArguments.push(holder);
-      if ((input.ownerLiveness?.(holder) ?? 'gone') === 'alive') return { outcome: 'conflict', holder };
+      if ((input.ownerLiveness?.(holder) ?? 'gone') !== 'gone') return { outcome: 'conflict', holder };
       if (input.adopt !== true) return { outcome: 'abandoned', holder };
     }
     const stage = existing?.stage ?? null;
@@ -56,6 +57,7 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
       token: input.token,
       pid: input.pid,
       processStartTime: input.processStartTime,
+      hostId: input.hostId,
       subjectWorktreeId: input.subjectWorktreeId ?? existing?.subjectWorktreeId ?? null,
       stage,
       acquiredAt: now,
@@ -126,6 +128,7 @@ function seedHolder(store: FakeLeaseStore, overrides: Partial<RepositoryOperatio
     token: 'holder-token',
     pid: holderPid,
     processStartTime: holderStartTime,
+    hostId: myHostId,
     subjectWorktreeId: 'worktree-7',
     stage: null,
     acquiredAt: '2026-08-31T10:14:02.118Z',
@@ -168,7 +171,7 @@ test('runs the body, returns its value, and releases the lease afterwards', asyn
   const observedTokens: string[] = [];
 
   const result = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', subjectWorktreeId: 'worktree-7', now: clockAt('2026-08-31T10:00:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', subjectWorktreeId: 'worktree-7', now: clockAt('2026-08-31T10:00:00.000Z') },
     async (session) => {
       observedTokens.push(session.token);
       expect(session.adoptedStage).toBeNull();
@@ -190,7 +193,7 @@ test('gives the lease a default two-minute time to live', async () => {
   let expiresAt = '';
 
   await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
     async () => {
       expiresAt = store.readRepositoryOperationLease(key)?.expiresAt ?? '';
     },
@@ -206,7 +209,7 @@ test('releases the lease when the body throws and rethrows that very error', asy
   const failure = new Error('cleanup could not finish');
 
   const thrown = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
     async () => {
       throw failure;
     },
@@ -223,7 +226,7 @@ test('refuses to start behind a live holder, without measuring anything about it
   let bodyRuns = 0;
 
   const thrown = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:15:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:15:00.000Z') },
     async () => {
       bodyRuns += 1;
     },
@@ -257,7 +260,7 @@ test('reports an abandoned lease with the stage it stopped at and a --resume rem
   let bodyRuns = 0;
 
   const thrown = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:17:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:17:00.000Z') },
     async () => {
       bodyRuns += 1;
     },
@@ -288,7 +291,7 @@ test('adopts an abandoned lease and reports the stage it resumed from', async ()
   const reader = scriptedReader(new Map([[holderPid, null]]));
 
   const resumedFrom = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
     async (session) => session.adoptedStage,
   );
 
@@ -303,7 +306,7 @@ test('refuses to adopt a lease whose holder is still alive, even past its expiry
   let bodyRuns = 0;
 
   const thrown = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
     async () => {
       bodyRuns += 1;
     },
@@ -327,7 +330,7 @@ test('treats a holder whose start time no longer matches as gone, so a reused PI
   const reader = scriptedReader(new Map([[holderPid, 'Mon Aug 31 11:30:00 2026']]));
 
   const thrown = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:17:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:17:00.000Z') },
     async () => 'unreachable',
   ).then(() => null, (error: unknown) => error);
 
@@ -335,10 +338,57 @@ test('treats a holder whose start time no longer matches as gone, so a reused PI
   expect((thrown as RepositoryOperationConflictError).abandoned).toBe(true);
 
   const adopted = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
     async (session) => session.adoptedStage,
   );
   expect(adopted).toBe('stop-processes');
+});
+
+test('treats a holder on a different host as unknown, never abandoning or adopting its lease', async () => {
+  // A network HOME shared by two hosts puts both platforms' identity strings in one state.db
+  // (todo item 44). This reader would report the holder as gone if it were ever consulted for
+  // its PID -- proving the refusal below comes from the host mismatch, not from a real check.
+  const store = new FakeLeaseStore();
+  seedHolder(store, { stage: 'stop-processes', hostId: 'other-host' });
+  const reader = scriptedReader(new Map([[holderPid, null]]));
+
+  const thrown = await withRepositoryOperationLease(
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:17:00.000Z') },
+    async () => 'unreachable',
+  ).then(() => null, (error: unknown) => error);
+
+  expect(thrown).toBeInstanceOf(RepositoryOperationConflictError);
+  expect((thrown as RepositoryOperationConflictError).abandoned).toBe(false);
+  // Only this process's own PID was ever put to the reader -- the holder's PID belongs to a
+  // machine this reader cannot answer for, so the mismatch is caught before asking it anything.
+  expect(reader.seen).toEqual([process.pid]);
+
+  const adoptAttempt = await withRepositoryOperationLease(
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
+    async () => 'unreachable',
+  ).then(() => null, (error: unknown) => error);
+  expect(adoptAttempt).toBeInstanceOf(RepositoryOperationConflictError);
+  expect((adoptAttempt as RepositoryOperationConflictError).abandoned).toBe(false);
+  // The other host's row is untouched: still there, still under its own token.
+  expect(store.row?.token).toBe('holder-token');
+});
+
+test('treats a lease acquired before host identity existed the same as a different host, never this one', async () => {
+  // Decision for todo item 44's "how are pre-migration rows interpreted": an empty host_id can
+  // never equal a real one, so a legacy row reads as `unknown` -- exactly as safe as, and no more
+  // privileged than, a row genuinely written by another host.
+  const store = new FakeLeaseStore();
+  seedHolder(store, { stage: 'stop-processes', hostId: '' });
+  const reader = scriptedReader(new Map([[holderPid, null]]));
+
+  const thrown = await withRepositoryOperationLease(
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:17:00.000Z') },
+    async () => 'unreachable',
+  ).then(() => null, (error: unknown) => error);
+
+  expect(thrown).toBeInstanceOf(RepositoryOperationConflictError);
+  expect((thrown as RepositoryOperationConflictError).abandoned).toBe(false);
+  expect(reader.seen).toEqual([process.pid]);
 });
 
 test('records a stage on the lease row while the session is open', async () => {
@@ -348,7 +398,7 @@ test('records a stage on the lease row while the session is open', async () => {
   const failure = new Error('verification found residue');
 
   const thrown = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
     async (session) => {
       session.advance('stop-processes');
       stagesSeenInside.push(store.readRepositoryOperationLease(key)?.stage ?? null);
@@ -371,7 +421,7 @@ test('refuses to record a stage once the lease is no longer held', async () => {
   let advanceFailure: unknown = null;
 
   await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
     async (session) => {
       store.releaseRepositoryOperationLease(key, session.token);
       try {
@@ -391,7 +441,7 @@ test('never measures a holder when nothing collides', async () => {
   const reader = scriptedReader(new Map());
 
   await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
     async () => undefined,
   );
 
@@ -411,7 +461,7 @@ test('never evicts a holder it has not measured, and retries the whole measureme
   };
 
   const resumedFrom = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
     async (session) => session.adoptedStage,
   );
 
@@ -434,7 +484,7 @@ test('reports a conflict rather than looping when the holder keeps changing unde
   let bodyRuns = 0;
 
   const thrown = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
     async () => {
       bodyRuns += 1;
     },
@@ -452,7 +502,7 @@ test('refuses to take a lease when this process has no readable start identity',
   const reader: ScriptedReader = { read: async () => null, seen: [] };
 
   const thrown = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
     async () => 'unreachable',
   ).then(() => null, (error: unknown) => error);
 
@@ -468,7 +518,7 @@ test('treats an empty start time as no identity, rather than as an identity that
   const reader: ScriptedReader = { read: async () => '', seen: [] };
 
   const thrown = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:00:00.000Z') },
     async () => 'unreachable',
   ).then(() => null, (error: unknown) => error);
 
@@ -489,7 +539,7 @@ test('refuses a lease row whose PID is not a positive integer instead of measuri
     const measured = reader.seen.length;
 
     const thrown = await withRepositoryOperationLease(
-      { store, readProcessStartTime: reader.read, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
+      { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z') },
       async () => 'unreachable',
     ).then(() => null, (error: unknown) => error);
 
