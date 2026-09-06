@@ -151,10 +151,16 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
   // The limit is the selected platform's — 104 bytes on macOS, 108 on Linux — rather than a
   // constant: measuring a Linux path against macOS's number refuses addresses that would bind.
   assertDaemonSocketPathFits(requestedPaths.socketPath, platformRuntime.socket.limitBytes);
-  await ensurePrivateDirectory(dataRoot);
+  // Both calls below default to `defaultCoreFileTrustPolicy` (core's POSIX-only fallback) when
+  // not given one explicitly, and that default's `currentIdentityAvailable()` is
+  // `process.getuid?.() !== undefined` -- always `false` on win32. Omitting `platformRuntime
+  // .fileTrust` here meant the composition root that exists specifically to select the right
+  // trust policy never reached these two calls at all, so a real Windows daemon would refuse to
+  // create its own data root on every single start -- confirmed on a real windows-latest leg.
+  await ensurePrivateDirectory(dataRoot, platformRuntime.fileTrust);
   const ownedStore = options.stateStore === undefined;
   const databaseParent = ownedStore
-    ? await ensurePrivateDirectory(dirname(requestedPaths.databasePath))
+    ? await ensurePrivateDirectory(dirname(requestedPaths.databasePath), platformRuntime.fileTrust)
     : undefined;
   const paths: ProductionRuntimePaths = {
     ...requestedPaths,
@@ -164,7 +170,7 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
   };
   const stateStore = options.stateStore ?? new SQLiteStateStore(paths.databasePath);
   if (databaseParent !== undefined) {
-    try { await verifyPrivateDirectory(databaseParent); }
+    try { await verifyPrivateDirectory(databaseParent, platformRuntime.fileTrust); }
     catch (error) {
       (stateStore as SQLiteStateStore).close();
       throw error;

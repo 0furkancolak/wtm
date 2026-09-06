@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { createResourceGuard, type ResourceGuard } from '../guard';
 import {
   ResourceMaterializationError,
@@ -41,19 +41,26 @@ async function fixture() {
 
 describe('resource materializer', () => {
   test('builds a pure deterministic plan and rejects mutable symlinks', () => {
+    // Never touches real fs -- `buildMaterializationPlan` only demands *resolved* absolute paths
+    // (`assertAbsoluteResolved`), which a bare POSIX literal is not once `resolve()` runs it
+    // through win32's drive-letter rules. `resolve()` here for the same reason production always
+    // hands this a real, host-resolved path: idempotent under `resolve` on any host, not just one.
+    const safeRoot = resolve('/safe');
+    const sourcePath = join(safeRoot, 'source');
+    const targetPath = join(safeRoot, 'target');
     const request = {
       policy: 'copy' as const,
-      sourcePath: '/safe/source',
-      targetPath: '/safe/target',
+      sourcePath,
+      targetPath,
       mutable: true,
     };
     expect(buildMaterializationPlan(request)).toEqual(buildMaterializationPlan(request));
     expect(() => buildMaterializationPlan({
       policy: 'symlink',
-      sourcePath: '/safe/source',
-      targetPath: '/safe/target',
+      sourcePath,
+      targetPath,
       immutable: false,
-      allowedSourceRoots: ['/safe'],
+      allowedSourceRoots: [safeRoot],
     })).toThrow(ResourceMaterializationError);
   });
 

@@ -7,6 +7,7 @@ import {
   type AdapterTrustStore,
 } from '@wtm/core';
 import { basename, dirname, join } from 'node:path';
+import type { FileTrustPolicy } from '@wtm/platform/ports';
 import type { JsonEnvelope, WtmError } from '@wtm/protocol';
 
 interface AdapterCommandBase {
@@ -15,6 +16,12 @@ interface AdapterCommandBase {
   workspaceId?: string;
   /** Internal race-test boundary immediately before SQLite is opened. */
   beforeDatabaseOpen?(): Promise<void> | void;
+  /**
+   * Defaults to `ensurePrivateDirectory`/`verifyPrivateDirectory`'s own POSIX-only fallback,
+   * which reports no identity at all on win32 and so refuses every call unconditionally -- the
+   * caller who has already selected a real platform runtime should pass its `fileTrust` instead.
+   */
+  fileTrust?: FileTrustPolicy;
 }
 
 export type AdapterCommandInput =
@@ -65,14 +72,14 @@ async function openTrustStore(input: AdapterCommandBase): Promise<{
   close(): void;
 }> {
   if (input.trust !== undefined) return { trust: input.trust, close: () => {} };
-  const parent = await ensurePrivateDirectory(dirname(input.databasePath));
+  const parent = await ensurePrivateDirectory(dirname(input.databasePath), input.fileTrust);
   const databasePath = join(parent.path, basename(input.databasePath));
   await input.beforeDatabaseOpen?.();
-  await verifyPrivateDirectory(parent);
+  await verifyPrivateDirectory(parent, input.fileTrust);
   const { SQLiteStateStore, createSqliteAdapterTrustStore } = await import('@wtm/core');
   const state = new SQLiteStateStore(databasePath);
   try {
-    await verifyPrivateDirectory(parent);
+    await verifyPrivateDirectory(parent, input.fileTrust);
     return { trust: createSqliteAdapterTrustStore(state), close: () => state.close() };
   } catch (error) {
     state.close();

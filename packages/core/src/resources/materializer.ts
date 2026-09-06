@@ -457,7 +457,22 @@ async function reconcileOwnedStages(
       stage === null || !stage.isDirectory() || stage.isSymbolicLink()
       || !(await isExactlyOwnerOnlyDirectory(stage, stagePath, fileTrust))
     ) {
-      throw materializationDenied('An exact recovery stage is not an owner-only real directory.', { stagePath });
+      // Broken down for the same reason `cleanupOwnedStage` below is: a real windows-latest leg
+      // hit this on a directory this same process had just created, and guessing which of the
+      // conditions actually failed there would repeat the mistake two earlier rounds of the
+      // PowerShell investigation already showed the cost of.
+      throw materializationDenied('An exact recovery stage is not an owner-only real directory.', {
+        stagePath,
+        stageIsNull: stage === null,
+        ...(stage === null ? {} : {
+          isDirectory: stage.isDirectory(),
+          isSymbolicLink: stage.isSymbolicLink(),
+          currentIdentityAvailable: fileTrust.currentIdentityAvailable(),
+          isOwnedByCurrentUser: await fileTrust.isOwnedByCurrentUser(stage, stagePath),
+          isWritableOnlyByOwner: await fileTrust.isWritableOnlyByOwner(stage, stagePath, 0o077),
+          mode: (Number(stage.mode) & 0o777).toString(8),
+        }),
+      });
     }
     const intent = await readExactStageJson(join(stagePath, 'intent.json'), true, fileTrust);
     if (!isMatchingStageIntent(intent, stageId, plan, authorization)) {
@@ -520,7 +535,19 @@ async function cleanupOwnedStage(
   }
   const stage = await lstat(stagePath);
   if (!stage.isDirectory() || stage.isSymbolicLink() || !(await isExactlyOwnerOnlyDirectory(stage, stagePath, fileTrust))) {
-    throw materializationDenied('Owned stage cleanup requires an owner-only real directory.', { stagePath });
+    // Broken down rather than re-asking the single boolean: a real windows-latest leg hit this on
+    // a directory this same process had just created, and without knowing which of the four
+    // conditions actually failed there, a fix here would be exactly the kind of guess two earlier
+    // rounds of the PowerShell investigation already showed the cost of.
+    throw materializationDenied('Owned stage cleanup requires an owner-only real directory.', {
+      stagePath,
+      isDirectory: stage.isDirectory(),
+      isSymbolicLink: stage.isSymbolicLink(),
+      currentIdentityAvailable: fileTrust.currentIdentityAvailable(),
+      isOwnedByCurrentUser: await fileTrust.isOwnedByCurrentUser(stage, stagePath),
+      isWritableOnlyByOwner: await fileTrust.isWritableOnlyByOwner(stage, stagePath, 0o077),
+      mode: (Number(stage.mode) & 0o777).toString(8),
+    });
   }
   const cleanupPath = join(authorization.parentPath, `.wtm-cleanup-${plan.recoveryKey}-${stageId}.json`);
   const evidence: StageCleanupEvidence = {
@@ -1118,7 +1145,14 @@ async function assertCopiedStageManifest(
     const copy = staged[index] as SourceManifestEntry;
     if (
       source.path !== copy.path || source.kind !== copy.kind
-      || Number(BigInt(copy.mode) & 0o777n) !== conservativeMode(Number(BigInt(source.mode)), source.kind === 'directory')
+      // `conservativeMode` always returns an owner-bits-only value (`0o700`, or a file's mode
+      // masked to `0o700`) -- masking the copy's own mode to `0o777` before comparing against
+      // that compared group/other bits too, which a real windows-latest leg always reports as a
+      // mirror of the owner bits (Node's `fs.Stats.mode` synthesis there has no group/other
+      // concept), so this never matched a freshly-copied directory or file on that host. `0o700`
+      // is the same owner-bits-only mask `isExactlyOwnerOnlyDirectory`/`isExactlyOwnerOnlyFile`
+      // already use for an identically-shaped comparison.
+      || Number(BigInt(copy.mode) & 0o700n) !== conservativeMode(Number(BigInt(source.mode)), source.kind === 'directory')
       || (source.kind === 'file' && (source.size !== copy.size || source.hash !== copy.hash))
     ) throw materializationDenied('The staged copy does not match its planned source manifest.', { payloadPath, path: source.path });
   }

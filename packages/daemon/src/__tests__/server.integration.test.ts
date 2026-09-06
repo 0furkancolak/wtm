@@ -166,7 +166,18 @@ async function exchangeRaw(path: string, payload: string): Promise<IpcResponse> 
   });
 }
 
-describe('Unix IPC server and client', () => {
+// Every test below exercises the POSIX-only publish protocol directly: a hidden-name bind,
+// hardlinked into place, with a stale occupant quarantined by identity -- `windows.ts`'s own doc
+// comment names exactly why win32's publisher skips all of it (`listen()` alone, no hardlink dance,
+// no quarantine) rather than needing a weaker version of the same mechanism: a named pipe is not a
+// filesystem entry once its owning process exits, so there is nothing here for it to leave behind.
+// A real windows-latest leg confirmed the mechanical half of that gap too -- these fixtures build a
+// plain filesystem path (`join(tmpdir(), ..., 'wtmd.sock')`), which `net.Server.listen({ path })`
+// accepts as a Unix domain socket address on POSIX and refuses outright (`EACCES`) on Windows,
+// which has no notion of a socket address that is also a filesystem path. Testing the *real*
+// Windows publisher means exercising `windows.ts` directly against a `\\.\pipe\...` address, not
+// asking this suite's POSIX-shaped fixtures to grow a second address scheme.
+(process.platform === 'win32' ? describe.skip : describe)('Unix IPC server and client', () => {
   test('publishes only the public entry and recovers it after an abrupt daemon exit', async () => {
     expect(serverModule).not.toBeNull();
     expect(clientModule).not.toBeNull();

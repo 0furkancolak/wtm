@@ -322,7 +322,7 @@ async function applyGcCandidates(
       phase = 'prepared';
       await options.journal.record(journalEntry(operationId, candidate, phase, quarantinePath, null));
       await mkdir(quarantineContainer, { mode: 0o700 });
-      const containerIdentity = quarantineContainerIdentity(quarantineContainer, await lstat(quarantineContainer));
+      const containerIdentity = await quarantineContainerIdentity(quarantineContainer, await lstat(quarantineContainer), fileTrust);
       await options.journal.record(journalEntry(operationId, candidate, phase, quarantinePath, containerIdentity));
       await options.hooks?.afterContainerCreated?.(candidate, quarantineContainer);
       await options.hooks?.beforeQuarantine?.(candidate);
@@ -709,7 +709,7 @@ async function ensureRecoveryContainer(
     await mkdir(containerPath, { mode: 0o700 });
     stat = await lstat(containerPath);
   }
-  const actual = quarantineContainerIdentity(containerPath, stat);
+  const actual = await quarantineContainerIdentity(containerPath, stat, options.fileTrust ?? defaultCoreFileTrustPolicy);
   if (entry.quarantineContainer !== null) assertContainerIdentity(entry.quarantineContainer, stat);
   else {
     const children = await readdir(containerPath);
@@ -923,11 +923,24 @@ async function assertExactTwoLinkTopology(
   }
 }
 
-function quarantineContainerIdentity(
+async function quarantineContainerIdentity(
   path: string,
   stat: Awaited<ReturnType<typeof lstat>>,
-): QuarantineContainerIdentity {
-  if (!stat.isDirectory() || stat.isSymbolicLink() || (Number(stat.mode) & 0o777) !== 0o700) {
+  fileTrust: FileTrustPolicy,
+): Promise<QuarantineContainerIdentity> {
+  // Was a raw `(stat.mode & 0o777) !== 0o700` -- exactly the inline mode-bit check D1 migrated
+  // every *other* owner-only question in this file away from, missed here because it compared
+  // against a literal `0o700` rather than one of the two denial masks the file-trust-guard test
+  // scans for. `stat.mode` does not reflect real NTFS permissions at all, so this equality was
+  // unconditionally true (i.e. always "outside the trust boundary") on a real windows-latest leg,
+  // regardless of the container's actual ACL. `isWritableOnlyByOwner(..., 0o077)` is the same
+  // "no group/other access at all" question `logs.ts`'s `directoryIdentity` already asks through
+  // the port for an identically-shaped "is this exactly owner-only" check.
+  if (
+    !stat.isDirectory() || stat.isSymbolicLink()
+    || !(await fileTrust.isOwnedByCurrentUser(stat, path))
+    || !(await fileTrust.isWritableOnlyByOwner(stat, path, 0o077))
+  ) {
     throw cleanupFailure('GC quarantine container is outside its owner-only trust boundary.', { path });
   }
   return {

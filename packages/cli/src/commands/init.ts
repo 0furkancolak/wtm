@@ -8,6 +8,7 @@ import {
   type InitResult,
   type StateStore,
 } from '@wtm/core';
+import type { FileTrustPolicy } from '@wtm/platform/ports';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
 import { runSkillInstallCommand, type SkillInstaller } from './skill';
 
@@ -108,6 +109,13 @@ export interface ProductionInitCommandInput {
   detect?: boolean;
   /** Explicit `--yes` intent forwarded into the init result contract. */
   acceptDefaults?: boolean;
+  /**
+   * Defaults to `ensurePrivateDirectory`/`verifyPrivateDirectory`'s own POSIX-only fallback,
+   * which reports no identity at all on win32 (`process.getuid` does not exist there) and so
+   * refuses every call unconditionally -- the caller who has already selected a real platform
+   * runtime should pass its `fileTrust` instead, the same way `wtm skill install` does.
+   */
+  fileTrust?: FileTrustPolicy;
 }
 
 export interface ProductionInitDependencies {
@@ -119,12 +127,12 @@ export async function runProductionInitCommand(
   input: ProductionInitCommandInput,
   dependencies: ProductionInitDependencies = {},
 ): Promise<InitCommandEnvelope> {
-  const databaseParent = await ensurePrivateDirectory(dirname(input.databasePath));
+  const databaseParent = await ensurePrivateDirectory(dirname(input.databasePath), input.fileTrust);
   const databasePath = join(databaseParent.path, basename(input.databasePath));
-  await verifyPrivateDirectory(databaseParent);
+  await verifyPrivateDirectory(databaseParent, input.fileTrust);
   const opened = dependencies.openStateStore?.(databasePath) ?? openSqliteStateStore(databasePath);
   try {
-    await verifyPrivateDirectory(databaseParent);
+    await verifyPrivateDirectory(databaseParent, input.fileTrust);
     return await (dependencies.runInit ?? runInitCommand)({
       root: input.root,
       userDataDir: input.userDataDir,

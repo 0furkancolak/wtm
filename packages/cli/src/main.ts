@@ -444,6 +444,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     renderRuntime(await runAdapterCommand({
       action: 'list',
       databasePath: dependencies.adapterDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+      fileTrust: hostPlatformRuntime().fileTrust,
       ...(dependencies.adapterTrustStore === undefined ? {} : { trust: dependencies.adapterTrustStore }),
     }), runtimeJson(program, options));
   });
@@ -455,6 +456,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       adapterId,
       executablePath,
       databasePath: dependencies.adapterDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+      fileTrust: hostPlatformRuntime().fileTrust,
       ...(dependencies.adapterTrustStore === undefined ? {} : { trust: dependencies.adapterTrustStore }),
     }), runtimeJson(program, options));
   });
@@ -486,6 +488,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       detect: options.detect !== false,
       acceptDefaults: options.yes === true,
       aiSkillInstaller: installer,
+      fileTrust: hostPlatformRuntime().fileTrust,
       ...(options.maxDepth === undefined ? {} : { maxDepth: options.maxDepth }),
     });
     if (envelope.ok) await announceRegistration(dependencies.runtimeClient);

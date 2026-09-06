@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { join as posixJoin } from 'node:path/posix';
 import { fileURLToPath } from 'node:url';
 import type { DaemonStateStore } from '@wtm/core';
 import { UnsupportedPlatformError, selectPlatformRuntime } from '@wtm/platform';
@@ -305,8 +306,20 @@ describe('an isolated home confines WTM to it', () => {
     ...defaultProductionRuntimePaths(home, { platform, env }),
     serviceRoot: selectPlatformRuntime({ platform, home, env }).paths.serviceRoot,
   });
-  const confined = (platform: 'darwin' | 'linux') =>
-    resolve(platform, { ...hostile, ...isolatedHomeEnvironment(home) });
+  // Not `isolatedHomeEnvironment(home)`: that helper's own `join` is correct for the real,
+  // host-native `home` every other call site hands it, and wrong for the POSIX literal this
+  // describe block injects on purpose to test darwin/linux path derivation from any host --
+  // exactly the mismatch a real windows-latest leg surfaced (a backslash-joined XDG_RUNTIME_DIR
+  // failing `linuxPlatformPaths`'s own posix `isAbsolute`, silently falling back to the data root).
+  const confined = (platform: 'darwin' | 'linux') => resolve(platform, {
+    ...hostile,
+    HOME: home,
+    XDG_CONFIG_HOME: posixJoin(home, '.config'),
+    XDG_STATE_HOME: posixJoin(home, '.local', 'state'),
+    XDG_DATA_HOME: posixJoin(home, '.local', 'share'),
+    XDG_CACHE_HOME: posixJoin(home, '.cache'),
+    XDG_RUNTIME_DIR: posixJoin(home, 'run'),
+  });
 
   test('macOS writes every path under the fixture home', () => {
     expect(confined('darwin')).toEqual({
