@@ -37,7 +37,13 @@ import type { ProcessGroupInspection, ProcessInspection, ProcessPlatform } from 
 import { observedCommandFingerprint, safeErrorCode } from './identity';
 
 const execFileAsync = promisify(execFile);
-const commandTimeoutMs = 5_000;
+// `defaultRunQuery` shells to the same cold `powershell.exe` `windows-powershell.ts`'s own
+// `powershellTimeoutMs` measured at ~1.6s-plus-real-CI-contention (raised from 5s to 15s there for
+// exactly that reason); a real windows-latest leg's `ManagedProcessSupervisor` suite -- which spawns
+// and reaps many real processes across many sequential tests -- hit `taskkill.exe ETIMEDOUT` here at
+// the same 5s bound, the identical class of "measuring the bug's absence, not the platform's real
+// cost" this project already corrected once.
+const commandTimeoutMs = 15_000;
 
 export interface WindowsProcessRecord {
   readonly processId: number;

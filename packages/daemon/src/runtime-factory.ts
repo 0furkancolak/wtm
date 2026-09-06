@@ -1,7 +1,8 @@
 import { homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename as posixBasename, dirname as posixDirname, join as posixJoin, resolve as posixResolve } from 'node:path/posix';
+import { basename as win32Basename, dirname as win32Dirname, join as win32Join, resolve as win32Resolve } from 'node:path/win32';
 import { selectPlatformRuntime } from '@wtm/platform';
-import type { PlatformRuntime } from '@wtm/platform/ports';
+import type { PlatformId, PlatformRuntime } from '@wtm/platform/ports';
 import {
   assertDaemonSocketPathFits,
   daemonSocketFileName,
@@ -68,6 +69,23 @@ export interface ProductionDaemonRuntime {
 /** The state database's file name. Only its directory is a platform question. */
 const databaseFileName = 'state.db';
 
+/**
+ * The `node:path` module for `platform`'s filesystem rules, not the host's.
+ *
+ * A real CI run surfaced this the same way `select.ts` already needed it: the default `node:path`
+ * follows the *host*, so building `databasePath`/`socketPath`/`globalConfigPath` with a plain
+ * `join`/`resolve` mangled a POSIX `dataRoot` like `/Users/somebody/Library/...` into
+ * `\Users\somebody\Library\...` on a Windows host asked for the `darwin`/`linux` runtime
+ * `runtime-factory.test.ts` (and `createProductionDaemon`'s own `platformRuntime` injection point)
+ * construct. Every path built in this file from an already-resolved `PlatformRuntime`'s roots goes
+ * through this instead of the default import.
+ */
+function pathModuleFor(platform: PlatformId) {
+  return platform === 'win32'
+    ? { join: win32Join, resolve: win32Resolve, dirname: win32Dirname, basename: win32Basename }
+    : { join: posixJoin, resolve: posixResolve, dirname: posixDirname, basename: posixBasename };
+}
+
 export interface ProductionRuntimePathsOptions {
   platform?: NodeJS.Platform | string;
   env?: Readonly<Partial<Record<string, string>>>;
@@ -86,6 +104,7 @@ export interface ProductionRuntimePathsOptions {
  */
 export function runtimePathsFor(runtime: PlatformRuntime): ProductionRuntimePaths {
   const { paths } = runtime;
+  const { join } = pathModuleFor(runtime.id);
   return {
     dataRoot: paths.dataRoot,
     databasePath: join(paths.dataRoot, databaseFileName),
@@ -110,6 +129,7 @@ export function defaultProductionRuntimePaths(
 
 export async function createProductionDaemon(options: ProductionDaemonOptions = {}): Promise<ProductionDaemonRuntime> {
   const platformRuntime = options.platformRuntime ?? selectPlatformRuntime();
+  const { join, resolve, dirname, basename } = pathModuleFor(platformRuntime.id);
   const defaults = runtimePathsFor(platformRuntime);
   const dataRoot = resolve(options.dataRoot ?? defaults.dataRoot);
   const requestedPaths: ProductionRuntimePaths = {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
@@ -205,7 +205,10 @@ describe('Commander CLI', () => {
     expect(exitCode).toBe(0);
     expect(installs).toBe(0);
     expect(seen).toEqual([expect.objectContaining({
-      root: '/workspace/project',
+      // `root` is computed in production by `resolve(cwd, path)` against the *host's* default
+      // `node:path` (correct there, since a real `cwd` is a real filesystem path) — mirror that
+      // exact call here instead of hardcoding a POSIX literal, so this matches on win32 too.
+      root: resolve('/workspace', 'project'),
       maxDepth: 3,
       globalOnly: false,
       installAiSkill: false,

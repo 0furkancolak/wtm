@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtemp, mkdir, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { join as posixJoin } from 'node:path/posix';
 import {
   DaemonSocketPathTooLongError,
   boundDaemonSocketPath,
@@ -19,9 +20,13 @@ import { UnixIpcServer } from '../server';
  * the same way the factory does would pass whatever the factory decided. The full pinning of all
  * five macOS paths to literal strings lives in `runtime-factory.test.ts`; this one keeps the
  * socket path tied to the shared `publishedDaemonSocketPath` definition.
+ *
+ * `home` here is always POSIX-shaped (this file's own darwin fixture, injected regardless of the
+ * host actually running the test), so this always joins with `path/posix` rather than the
+ * default `join` above, which follows the host and mangled this on a real windows-latest leg.
  */
 function darwinSocketRoot(home: string): string {
-  return join(home, 'Library', 'Application Support', 'WTM');
+  return posixJoin(home, 'Library', 'Application Support', 'WTM');
 }
 
 /**

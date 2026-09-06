@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { createGitWorktreeFixture } from '../../../../testkit/src/git-fixture';
+import { writeExecutableFixture } from '../../../../testkit/src/executable-fixture';
 import { GitCommandError, createGitEnvironment, listGitWorktrees, runGit } from '../git-runner';
 
 describe('listGitWorktrees', () => {
@@ -116,10 +117,15 @@ describe('runGit timeouts', () => {
    */
   async function stalledGitOnPath(): Promise<{ restore: () => Promise<void> }> {
     const directory = await mkdtemp(join(tmpdir(), 'wtm-stalled-git-'));
-    const executable = join(directory, 'git');
-    await writeFile(executable, '#!/bin/sh\nexec sleep 30\n', { mode: 0o700 });
+    // A raw `#!/bin/sh` script only dispatches on darwin/linux; `writeExecutableFixture` also
+    // lays down the `.cmd`+`.cjs` pair win32 needs to run it at all (see that helper's own
+    // comment). `setInterval` is the portable stand-in for `exec sleep 30`: it holds the event
+    // loop open under Node on every platform without needing a shell to `exec` into.
+    await writeExecutableFixture(join(directory, 'git'), 'setInterval(() => {}, 1_000);\n');
     const previousPath = process.env.PATH;
-    process.env.PATH = `${directory}:${previousPath ?? ''}`;
+    // `delimiter`, not a hardcoded `:` — that separator is POSIX-only and win32's own PATH uses
+    // `;`, which a literal `:` would silently fail to split on.
+    process.env.PATH = `${directory}${delimiter}${previousPath ?? ''}`;
     return {
       restore: async () => {
         if (previousPath === undefined) delete process.env.PATH;

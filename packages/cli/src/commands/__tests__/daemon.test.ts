@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { join as posixJoin } from 'node:path/posix';
 import { fileURLToPath } from 'node:url';
 import {
   DaemonSocketPathTooLongError,
@@ -38,9 +39,13 @@ const serveFailureScenarioPath = fileURLToPath(new URL('./daemon-serve-failure.s
  * this suite agree with any answer that resolver gave; spelling it literally is what pins macOS to
  * the exact path every installed daemon is already listening on across the move onto the platform
  * seam.
+ *
+ * `home` here is always POSIX-shaped, injected regardless of the host actually running the test,
+ * so this always joins with `path/posix` -- the default `join` above follows the host and
+ * mangled this on a real windows-latest leg.
  */
 function darwinSocketRoot(home: string): string {
-  return join(home, 'Library', 'Application Support', 'WTM');
+  return posixJoin(home, 'Library', 'Application Support', 'WTM');
 }
 
 /** This macOS host, and a linux one constructed on it — the seam is what makes the second possible. */

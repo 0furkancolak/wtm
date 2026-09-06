@@ -2527,9 +2527,16 @@ function validTransactionId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
+/**
+ * Fsyncing a directory handle has no meaning on a host whose filesystem journals directory-entry
+ * changes itself -- `materializer.ts`'s own `syncDirectory` hit this for real on a
+ * `windows-latest` leg, which throws `EPERM` for exactly this call rather than silently no-op'ing
+ * it. Reacting to the syscall's own error code, not `process.platform`, is what makes this
+ * correct even on a host whose fsync-directory support this project has not measured yet.
+ */
 async function syncDirectory(path: string): Promise<void> {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try { await handle.sync(); } finally { await handle.close(); }
+  try { await handle.sync(); } catch (error) { if (!isNodeError(error, 'EPERM')) throw error; } finally { await handle.close(); }
 }
 
 

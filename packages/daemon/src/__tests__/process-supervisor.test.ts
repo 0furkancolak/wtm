@@ -37,6 +37,18 @@ const fixturePath = fileURLToPath(new URL('./process-group-fixture.scenario.ts',
 const tsxLoader = import.meta.resolve('tsx');
 const cleanups: Array<() => Promise<void>> = [];
 
+/**
+ * `rm(root, { recursive: true, force: true })` alone hit a real `EBUSY` on a `windows-latest`
+ * leg: this suite kills real child processes and closes real log file handles right before
+ * removing the directory they lived in, and Windows can still hold one of those handles open for
+ * a moment after the process that owned it is gone -- a POSIX unlink of an open file never hits
+ * this, which is why it was never a problem before a real Windows kernel ran this suite.
+ * `maxRetries`/`retryDelay` are `fs.rm`'s own documented answer to exactly this race.
+ */
+async function removeRootDirectory(root: string): Promise<void> {
+  await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
 function createSupervisor(options: ManagedProcessSupervisorOptions): ManagedProcessSupervisor {
   return new ManagedProcessSupervisor({ runtimeInvocation: developmentRuntimeInvocation(), ...options });
 }
@@ -106,7 +118,7 @@ async function setup(gracePeriodMs = 1_000) {
       await waitFor(async () => (await inspectProcessGroup(pgid)).status === 'absent', 2_000);
     }
     await supervisor.close();
-    await rm(root, { recursive: true, force: true });
+    await removeRootDirectory(root);
   });
   return { root, store, worktree, supervisor };
 }
@@ -409,7 +421,7 @@ describe('ManagedProcessSupervisor', () => {
       },
       signalProcessGroup: (pgid, signal) => { killedPgid = pgid; hostSignalProcessGroup(pgid, signal); },
     });
-    cleanups.push(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
+    cleanups.push(async () => { await supervisor.close(); await removeRootDirectory(root); });
     const descendantMarker = join(root, 'create-descendant-launched');
     await expect(supervisor.start({
       worktreeId: 'worktree-1', taskName: 'create-fault',
@@ -509,7 +521,7 @@ describe('ManagedProcessSupervisor', () => {
       inspectProcess: async (pid) => { inspections += 1; return await inspectProcess(pid); },
       signalProcessGroup: (pgid, signal) => { killedPgid = pgid; hostSignalProcessGroup(pgid, signal); },
     });
-    cleanups.push(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
+    cleanups.push(async () => { await supervisor.close(); await removeRootDirectory(root); });
     const descendantMarker = join(root, 'update-descendant-launched');
     await expect(supervisor.start({
       worktreeId: 'worktree-1', taskName: 'update-fault',
@@ -558,7 +570,7 @@ describe('ManagedProcessSupervisor', () => {
         }
       }
       await supervisor.close();
-      await rm(root, { recursive: true, force: true });
+      await removeRootDirectory(root);
     });
 
     await expect(supervisor.start({
@@ -661,7 +673,7 @@ describe('ManagedProcessSupervisor', () => {
         }
       }
       await supervisor.close();
-      await rm(root, { recursive: true, force: true });
+      await removeRootDirectory(root);
     });
     const payload = Array.from({ length: 100 }, (_, index) => String(index % 10)).join('');
 
@@ -712,7 +724,7 @@ describe('ManagedProcessSupervisor', () => {
       const supervisor = createSupervisor({ stateStore: store, logs, pollIntervalMs: 10 });
       cleanups.push(async () => {
         await supervisor.close();
-        await rm(root, { recursive: true, force: true });
+        await removeRootDirectory(root);
       });
 
       const started = await supervisor.start({
@@ -762,7 +774,7 @@ describe('ManagedProcessSupervisor', () => {
     const supervisor = createSupervisor({ stateStore: store, logs, pollIntervalMs: 10 });
     cleanups.push(async () => {
       await supervisor.close();
-      await rm(root, { recursive: true, force: true });
+      await removeRootDirectory(root);
     });
 
     await expect(supervisor.start({
@@ -1056,7 +1068,7 @@ describe('ManagedProcessSupervisor', () => {
         .rejects.toMatchObject({ code: 'RUNTIME_START_FAILED' });
       expect(store.hasManagedProcessStartReservation('wt', 'dev')).toBe(true);
       await candidate.close();
-      await rm(root, { recursive: true, force: true });
+      await removeRootDirectory(root);
     }
   });
 
@@ -1166,7 +1178,7 @@ describe('ManagedProcessSupervisor', () => {
         try { hostSignalProcessGroup(started.record.pgid, 'SIGKILL'); } catch (error) { if (!isNoSuchProcess(error)) throw error; }
       }
       await recoveredSupervisor.close();
-      await rm(root, { recursive: true, force: true });
+      await removeRootDirectory(root);
     });
 
     const recovered = await recoveredSupervisor.recover();

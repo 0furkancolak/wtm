@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { createWorkspaceFixture, type WorkspaceFixture } from '../../../../testkit/src/workspace-fixture';
 import { discoverWorkspace } from '../discover';
 
@@ -66,7 +66,9 @@ describe('discoverWorkspace', () => {
     const report = await discoverWorkspace(fixture.root, { maxDepth: 20 });
 
     expect(report.repositories).toHaveLength(2);
-    expect(report.repositories.every((repository) => repository.mainRoot.startsWith(`${fixture.root}/`))).toBe(true);
+    // `mainRoot` and `fixture.root` are real filesystem paths, backslash-joined on win32 — match
+    // the host's own separator rather than a POSIX literal.
+    expect(report.repositories.every((repository) => repository.mainRoot.startsWith(`${fixture.root}${sep}`))).toBe(true);
   });
 
   test('continues bounded traversal below a repository to find an independent nested repo and its marker', async () => {

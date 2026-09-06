@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import {
   RepositoryOperationConflictError,
   withRepositoryOperationLease,
@@ -57,7 +57,9 @@ async function fixture() {
 async function evidence(sandbox: ResourceSandboxIdentity, path: string): Promise<GcEvidence> {
   const stat = await lstat(path);
   return {
-    storageObjectId: `object-${path.split('/').at(-1)}`,
+    // `path` is a real filesystem path (`join`-built above), backslash-separated on win32 — a
+    // hardcoded `/`-split here found nothing to split on and left the whole path as the "name".
+    storageObjectId: `object-${basename(path)}`,
     path,
     sandboxId: sandbox.id,
     sandboxRoot: sandbox.root,
@@ -183,7 +185,7 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
       repositoryLease: { store, readProcessStartTime, repositoryIds: ['repository-1'] },
     });
 
-    expect(result.items[0]?.outcome).toBe('already-absent');
+    expect(result.items[0]?.outcome, JSON.stringify(result.items[0])).toBe('already-absent');
     expect(contended).toBeInstanceOf(RepositoryOperationConflictError);
     const conflict = contended as RepositoryOperationConflictError;
     expect(conflict.code).toBe('WTM_OPERATION_CONFLICT');
@@ -248,6 +250,6 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
       repositoryLease: { store, readProcessStartTime, repositoryIds: [] },
     });
 
-    expect(result.items[0]?.outcome).toBe('deleted');
+    expect(result.items[0]?.outcome, JSON.stringify(result.items[0])).toBe('deleted');
   });
 });

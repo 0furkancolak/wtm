@@ -1298,10 +1298,22 @@ async function writeExclusiveFile(path: string, contents: string | Uint8Array, m
   }
 }
 
+/**
+ * Fsyncing a directory handle -- as opposed to a file handle, which `writeExclusiveFile` above
+ * does without incident -- has no meaning on a host whose filesystem journals directory-entry
+ * changes itself, and a real `windows-latest` leg confirmed that host throws `EPERM` for exactly
+ * this call rather than silently no-op'ing it. Reacting to the syscall's own error code is what
+ * lets this stay in `@wtm/core`: asking the runtime what OS it is on is barred here by the same
+ * rule (spec D8) that pushed every other host-specific answer out into `@wtm/platform`, and this
+ * one is answerable from the syscall alone -- the host that cannot fsync a directory is exactly
+ * the host that already guarantees what this call exists to guarantee some other way.
+ */
 async function syncDirectory(path: string): Promise<void> {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     await handle.sync();
+  } catch (error) {
+    if (!isFileError(error, 'EPERM')) throw error;
   } finally {
     await handle.close();
   }

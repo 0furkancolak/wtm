@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { join } from 'node:path';
+import { join } from 'node:path/posix';
 import { wtmErrorCodeSchema, wtmErrorSchema } from '@wtm/protocol';
 import {
   DaemonSocketPathTooLongError,
@@ -17,6 +17,10 @@ import {
  * — and every length in this suite is a length of the macOS path, which is the path Increment B
  * measured the 104-byte limit against. Spelling it out keeps that provenance rather than binding
  * this suite to whatever `PlatformPaths` resolves on the host it runs on.
+ *
+ * Joined with `node:path/posix` specifically: `home` here is always POSIX-shaped regardless of
+ * the host actually running the test, and the default `join` follows the host -- a real
+ * windows-latest leg turned this into a backslash path no macOS length fixture ever meant.
  */
 function darwinSocketRoot(home: string): string {
   return join(home, 'Library', 'Application Support', 'WTM');

@@ -139,14 +139,14 @@ describe('safe resource GC', () => {
     const first = await applyGcPlan(plan, {
       guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
     });
-    expect(first.items[0]?.outcome).toBe('deleted');
+    expect(first.items[0]?.outcome, JSON.stringify(first.items[0])).toBe('deleted');
     expect(coordination.phases).toEqual(['prepared', 'prepared', 'quarantined', 'deleting', 'deleted', 'finalized']);
     expect(await lstat(target).catch(() => null)).toBeNull();
 
     const second = await applyGcPlan(plan, {
       guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
     });
-    expect(second.items[0]?.outcome).toBe('already-absent');
+    expect(second.items[0]?.outcome, JSON.stringify(second.items[0])).toBe('already-absent');
   });
 
   test('leases and finalizes an already-absent apply candidate instead of leaving stale state', async () => {
@@ -159,7 +159,7 @@ describe('safe resource GC', () => {
     const result = await applyGcPlan(plan, {
       guard, fileTrust, apply: true, lease: coordination.lease, journal: coordination.journal,
     });
-    expect(result.items[0]?.outcome).toBe('already-absent');
+    expect(result.items[0]?.outcome, JSON.stringify(result.items[0])).toBe('already-absent');
     expect(coordination.phases).toEqual(['prepared', 'finalized']);
   });
 
@@ -290,7 +290,7 @@ describe('safe resource GC', () => {
           },
         },
       });
-      expect(result.items[0]?.outcome).toBe('failed');
+      expect(result.items[0]?.outcome, JSON.stringify(result.items[0])).toBe('failed');
       expect(await readFile(target, 'utf8')).toBe('owned');
       const winner = await lstat(winnerPath);
       expect(winnerKind === 'file' ? await readFile(winnerPath, 'utf8') : winner.isDirectory() || winner.isSymbolicLink())
@@ -369,7 +369,7 @@ describe('safe resource GC', () => {
     const recovered = await recoverGcJournalEntry(entry as NonNullable<typeof entry>, {
       guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
-    expect(recovered.outcome).toBe('deleted');
+    expect(recovered?.outcome, JSON.stringify(recovered)).toBe('deleted');
     expect(await lstat(quarantinePath).catch(() => null)).toBeNull();
   });
 
@@ -410,7 +410,7 @@ describe('safe resource GC', () => {
     const recovered = await recoverGcJournalEntry(entry as NonNullable<typeof entry>, {
       guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
-    expect(recovered.outcome).toBe('deleted');
+    expect(recovered?.outcome, JSON.stringify(recovered)).toBe('deleted');
     expect(await lstat(entry?.quarantineContainer?.path as string).catch(() => null)).toBeNull();
   });
 
@@ -432,7 +432,7 @@ describe('safe resource GC', () => {
     const swappedRecovery = await recoverGcJournalEntry(swappedEntry as NonNullable<typeof swappedEntry>, {
       guard, fileTrust, lease: swappedCoordination.lease, journal: swappedCoordination.journal,
     });
-    expect(swappedRecovery.outcome).toBe('failed');
+    expect(swappedRecovery?.outcome, JSON.stringify(swappedRecovery)).toBe('failed');
     expect(await lstat(containerPath)).toBeDefined();
     expect(await lstat(movedContainer)).toBeDefined();
 
@@ -449,17 +449,17 @@ describe('safe resource GC', () => {
       guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
       hooks: { async beforeContainerCleanup() { throw new Error('repeat cleanup crash'); } },
     });
-    expect(firstRecovery.outcome).toBe('failed');
+    expect(firstRecovery?.outcome, JSON.stringify(firstRecovery)).toBe('failed');
     expect(await lstat(finalized?.quarantineContainer?.path as string)).toBeDefined();
     const secondRecovery = await recoverGcJournalEntry(finalized as NonNullable<typeof finalized>, {
       guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
-    expect(secondRecovery.outcome).toBe('already-absent');
+    expect(secondRecovery?.outcome, JSON.stringify(secondRecovery)).toBe('already-absent');
     expect(await lstat(finalized?.quarantineContainer?.path as string).catch(() => null)).toBeNull();
     const repeatedRecovery = await recoverGcJournalEntry(finalized as NonNullable<typeof finalized>, {
       guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
-    expect(repeatedRecovery.outcome).toBe('already-absent');
+    expect(repeatedRecovery?.outcome, JSON.stringify(repeatedRecovery)).toBe('already-absent');
   });
 
   test('cleans a finalized recorded container when the original path holds an unrelated replacement', async () => {
@@ -658,7 +658,7 @@ describe('safe resource GC', () => {
     const recovered = await recoverGcJournalEntry(entry as NonNullable<typeof entry>, {
       guard, fileTrust, lease: coordination.lease, journal: coordination.journal,
     });
-    expect(recovered.outcome).toBe('deleted');
+    expect(recovered?.outcome, JSON.stringify(recovered)).toBe('deleted');
     expect(coordination.phases.slice(-2)).toEqual(['deleted', 'finalized']);
   });
 });

@@ -1,5 +1,5 @@
 import { access, readFile, writeFile } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { basename, join, sep } from 'node:path';
 import Database from 'better-sqlite3';
 import { createWorkspaceFixture } from '../../../../testkit/src/workspace-fixture';
 import { SQLiteStateStore } from '../../state/sqlite-store';
@@ -268,7 +268,9 @@ try {
     });
     print({
       scope: result.workspace.scope,
-      configIsInUserData: result.configPath.startsWith(`${fixture.userDataDir}/workspaces/`),
+      // `configPath` is a real filesystem path, backslash-joined on win32 — build the prefix with
+      // `join` rather than a `/`-spliced template literal so the comparison matches on any host.
+      configIsInUserData: result.configPath.startsWith(`${join(fixture.userDataDir, 'workspaces')}${sep}`),
       config: await readFile(result.configPath, 'utf8'),
       localConfigExists: await exists(join(fixture.root, 'wtm.toml')),
       discoveryStayedAtSelectedRoot: result.discovery.root === fixture.root,

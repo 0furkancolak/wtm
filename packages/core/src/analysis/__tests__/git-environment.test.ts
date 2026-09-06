@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runScenario as runScenarioChild } from '../../../../testkit/src/scenario-child';
 
@@ -20,7 +21,9 @@ describe('Git environment isolation', () => {
     });
 
     expect(scenario).toMatchObject({
-      analyzedPath: expect.stringContaining('/linked feature'),
+      // `analyzedPath` is a real filesystem path from the git fixture, backslash-joined on
+      // win32 — match the host's own separator rather than a POSIX literal.
+      analyzedPath: expect.stringContaining(`${sep}linked feature`),
       blockerCodes: ['GIT_DIRTY_UNSTAGED'],
       repoBStatus: '',
       environmentUnchanged: true,

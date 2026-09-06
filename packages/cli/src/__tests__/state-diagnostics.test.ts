@@ -324,18 +324,19 @@ describe('socket-path', () => {
 
   it('measures bytes rather than code units', async () => {
     // A home directory holding non-ASCII characters is longer than its character count, and
-    // the limit is a property of the address in bytes.
-    const path = `/${'ü'.repeat(50)}/wtmd.sock`;
-    expect(path.length).toBe(61);
+    // the limit is a property of the address in bytes. `repeats` of a 2-byte character land
+    // comfortably past whatever this host's own limit is, in bytes, while the character count
+    // stays under it -- 111 was a POSIX-only constant, past every limit WTM had a backend for
+    // until win32's own 256-byte named pipe limit made that no longer true on every host.
+    const repeats = hostLimitBytes;
+    const path = `/${'ü'.repeat(repeats)}/wtmd.sock`;
+    const byteLength = Buffer.byteLength(path);
+    expect(path.length).toBeLessThan(byteLength);
+    expect(byteLength).toBeGreaterThan(hostLimitBytes);
 
     const finding = await socketPathFinding(path);
 
-    expect(finding?.details).toMatchObject({ byteLength: 111 });
-    // Stated rather than left to be inferred: 111 bytes is past every limit WTM has a backend
-    // for, so the status this fixture characterises is the same one on either host. It was left
-    // unasserted, which meant the test would have gone on passing had the finding silently
-    // become a `pass` on a platform whose limit was larger.
-    expect(hostLimitBytes).toBeLessThan(111);
+    expect(finding?.details).toMatchObject({ byteLength });
     expect(finding?.status).toBe('error');
   });
 });

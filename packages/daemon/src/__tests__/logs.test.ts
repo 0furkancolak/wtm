@@ -332,7 +332,13 @@ describe('ManagedLogStore', () => {
     }
   });
 
-  test('rejects a task-directory symlink swap after final open before exposing the descriptor', async () => {
+  // The race this proves closed needs the directory to be renameable while a file inside it is
+  // still open -- POSIX allows that unconditionally, which is exactly the gap the code under test
+  // closes. Windows's own mandatory file locking refuses the rename itself in that state
+  // (`EPERM`), a real windows-latest leg confirmed: the swap this test constructs cannot happen
+  // there at all, which is the platform doing structurally what this code does defensively on
+  // POSIX, not a gap in either.
+  test.skipIf(process.platform === 'win32')('rejects a task-directory symlink swap after final open before exposing the descriptor', async () => {
     const logRoot = await root();
     const outside = await root();
     const taskDirectory = join(logRoot, 'worktree-1', 'race');
@@ -352,7 +358,11 @@ describe('ManagedLogStore', () => {
     expect(await lstat(join(outside, 'stdout.log')).then(() => true, () => false)).toBe(false);
   });
 
-  test('rejects a parent swap immediately after read open without returning external content', async () => {
+  // Same reason as the swap test above: this race needs to rename a directory while `read()`
+  // still holds a handle open inside it, which POSIX allows and Windows's mandatory file locking
+  // refuses outright (`EPERM`) -- confirmed on a real windows-latest leg. The swap this test
+  // constructs is structurally impossible there, not unguarded.
+  test.skipIf(process.platform === 'win32')('rejects a parent swap immediately after read open without returning external content', async () => {
     const logRoot = await root();
     const initial = new ManagedLogStore({ root: logRoot });
     const opened = await initial.open('worktree-1', 'read-race');

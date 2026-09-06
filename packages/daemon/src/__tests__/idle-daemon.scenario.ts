@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const benchmarkSource = String.raw`
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -48,7 +49,10 @@ const root = await mkdtemp(join(temporaryParent, 'run-'));
 const bundlePath = join(root, 'daemon.js');
 try {
   const build = spawnSync('bun', [
-    'build', new URL('../runtime-factory.ts', import.meta.url).pathname,
+    // `URL.pathname` keeps the leading `/` a `file://` URL always has, which on win32 leaves a
+    // drive-letter path (`D:\...`) misread as `/D:/...` — `fileURLToPath` is the one that strips
+    // it correctly on every platform.
+    'build', fileURLToPath(new URL('../runtime-factory.ts', import.meta.url)),
     '--outfile', bundlePath, '--target', 'node', '--external', 'better-sqlite3',
   ], { encoding: 'utf8' });
   if (build.status !== 0) throw new Error(build.stderr || build.stdout);

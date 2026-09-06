@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DaemonStateStore } from '@wtm/core';
 import { UnsupportedPlatformError } from '@wtm/platform';
@@ -44,7 +45,9 @@ describe('WtmDaemon startup', () => {
       socketOpened: true,
       healthyRegistered: true,
       reported: [
-        'Registered repository root is unavailable: <root>/gone'
+        // The scenario only strips the `<root>` prefix; the `gone` suffix it appended came from a
+        // real `join(root, 'gone')`, so it is backslash-joined on win32 too.
+        `Registered repository root is unavailable: <root>${sep}gone`
         + ' (the registration is kept in case it returns; retire it with `wtm forget`)',
       ],
     });

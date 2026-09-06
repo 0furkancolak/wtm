@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { access } from 'node:fs/promises';
+import { join } from 'node:path';
 import * as core from '../../index';
 import type { GitSafetyFixture } from '../../../../testkit/src/git-fixture';
 import { createGitSafetyFixture } from '../../../../testkit/src/git-fixture';
@@ -149,7 +150,10 @@ describe('removeWorktreeSafely', () => {
 
   test('safely removes a clean remote-persisted linked worktree attached to a bare repository', async () => {
     const fixture = await createFixture();
-    const bareLinkedPath = `${fixture.root}/bare-safe-linked`;
+    // A real filesystem path (passed to real `git worktree add` below and compared against
+    // production's own, host-normalized `identity.path`) — `join`, not a `/`-spliced template
+    // literal, so it matches byte-for-byte on win32 too.
+    const bareLinkedPath = join(fixture.root, 'bare-safe-linked');
     await fixture.git(fixture.remotePath, ['remote', 'add', 'origin', fixture.repoPath]);
     await fixture.git(fixture.remotePath, [
       'worktree', 'add', '-b', 'feature/bare-safe', bareLinkedPath, 'main',

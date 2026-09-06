@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { join as posixJoin } from 'node:path/posix';
 import type { RepositoryRecord, WorkspaceRecord, WorktreeRecord } from '@wtm/core';
 import { runForgetCommand } from '../commands/forget';
 
@@ -14,11 +15,15 @@ function workspace(name: string, root: string): WorkspaceRecord {
 
 function createStore(workspaces: WorkspaceRecord[]) {
   const forgotten: string[] = [];
+  // `item.root` is this file's own POSIX-shaped fixture, injected regardless of the host running
+  // the test, so it always joins with `path/posix` -- the default `join` above follows the host
+  // and produced a mainRoot no POSIX selector fixture below could ever match on a real
+  // windows-latest leg.
   const repositories: RepositoryRecord[] = workspaces.map((item) => ({
     id: `repository-${item.name}`,
     workspaceId: item.id,
-    commonGitDir: join(item.root, 'repo/.git'),
-    mainRoot: join(item.root, 'repo'),
+    commonGitDir: posixJoin(item.root, 'repo/.git'),
+    mainRoot: posixJoin(item.root, 'repo'),
     remoteIdentity: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     lastReconciledAt: null,

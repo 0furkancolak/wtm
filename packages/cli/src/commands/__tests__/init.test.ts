@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { jsonEnvelopeSchema } from '@wtm/protocol';
 import { runScenario as runScenarioChild } from '../../../../testkit/src/scenario-child';
@@ -82,7 +83,9 @@ describe('runInitCommand', () => {
         code: 'WTM_CONFIG_INVALID',
         context: {
           command: 'init',
-          source: expect.stringContaining('/wtm.toml'),
+          // `source` is a real filesystem path (`join(fixture.root, 'wtm.toml')`), so it is
+          // backslash-joined on win32 — match the host's own separator rather than a POSIX literal.
+          source: expect.stringContaining(`${sep}wtm.toml`),
           issues: expect.any(Array),
         },
       }],
