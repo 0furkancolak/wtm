@@ -32,6 +32,12 @@ export interface ReleaseSmokeCheck {
   detail?: string;
 }
 
+/** The subset of `scripts/performance-report.ts`'s output the gate actually needs. */
+export interface ReleasePerformanceReport {
+  blockers: number;
+  warnings: number;
+}
+
 export interface ReleaseArchive {
   name: string;
   bytes: number;
@@ -50,6 +56,8 @@ export interface ReleaseVerification {
   packageVersion: string;
   smoke?: readonly ReleaseSmokeCheck[] | undefined;
   signing?: string | undefined;
+  /** One report per architecture this directory's job measured; the whole release for `publish`'s combined gate. */
+  performance?: readonly ReleasePerformanceReport[] | undefined;
   /**
    * The archives this directory is expected to hold, defaulting to the whole release. A job that
    * builds one architecture can only produce one of them, and must gate exactly that one: asking
@@ -92,6 +100,7 @@ export function verifyReleaseArtifacts(request: ReleaseVerification): ReleaseMan
   }
   verifySmoke(request.smoke);
   verifySigning(release, request.signing);
+  verifyPerformance(release, request.performance);
 
   const expected = request.archives ?? releaseArchiveNames;
   const listed = parseChecksums(directory);
@@ -173,6 +182,28 @@ function verifySigning(release: ReleaseVersion, signing: string | undefined): vo
   }
 }
 
+/**
+ * Item 4 (todo.md): docs called performance a "release gate" while `release.yml` never asked it
+ * anything, so a real performance blocker never once stopped a release. This is the other half of
+ * that fix -- the workflow wiring is what actually produces `WTM_RELEASE_PERFORMANCE`.
+ *
+ * A prerelease is exempt from a blocker the same way `verifySigning` exempts it from requiring a
+ * signed executable: it exists to be tried, including for measuring whether a performance fix
+ * worked, and refusing to publish it would remove the only vehicle for that. Only a stable
+ * release -- the one `npm install <name>` actually hands out -- is refused.
+ */
+function verifyPerformance(release: ReleaseVersion, performance: readonly ReleasePerformanceReport[] | undefined): void {
+  if (performance === undefined || performance.length === 0) {
+    throw new Error('Release verification requires performance results: run bun run test:perf first');
+  }
+  const blockers = performance.reduce((total, report) => total + report.blockers, 0);
+  if (!release.prerelease && blockers > 0) {
+    throw new Error(
+      `Stable release ${release.tag} has ${String(blockers)} performance blocker(s); see the uploaded performance artifacts for detail`,
+    );
+  }
+}
+
 function readSmokeResults(value: string | undefined): readonly ReleaseSmokeCheck[] | undefined {
   if (value === undefined || value.trim() === '') return undefined;
   let parsed: unknown;
@@ -193,6 +224,26 @@ function isSmokeCheck(value: unknown): boolean {
   return typeof check['name'] === 'string' && typeof check['passed'] === 'boolean';
 }
 
+function readPerformanceResults(value: string | undefined): readonly ReleasePerformanceReport[] | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error('WTM_RELEASE_PERFORMANCE must be a JSON array of {"blockers","warnings"} performance results');
+  }
+  if (!Array.isArray(parsed) || parsed.some((report) => !isPerformanceReport(report))) {
+    throw new Error('WTM_RELEASE_PERFORMANCE must be a JSON array of {"blockers","warnings"} performance results');
+  }
+  return parsed as readonly ReleasePerformanceReport[];
+}
+
+function isPerformanceReport(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const report = value as Record<string, unknown>;
+  return typeof report['blockers'] === 'number' && typeof report['warnings'] === 'number';
+}
+
 if (import.meta.main) {
   const root = resolve(fileURLToPath(import.meta.url), '../..');
   const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version: string };
@@ -205,6 +256,7 @@ if (import.meta.main) {
     packageVersion: version,
     smoke: readSmokeResults(process.env['WTM_RELEASE_SMOKE']),
     signing: process.env['WTM_RELEASE_SIGNING'],
+    performance: readPerformanceResults(process.env['WTM_RELEASE_PERFORMANCE']),
     archives: arch === undefined || arch === '' ? releaseArchiveNames : [releaseArchiveFor(arch)],
   });
   process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);

@@ -166,7 +166,7 @@ Refresh sonrası:
 
 ---
 
-### [ ] 4. Performance release gate davranışını netleştir
+### [x] 4. Performance release gate davranışını netleştir
 
 Dokümantasyon ile workflow aynı şeyi söylemeli.
 
@@ -176,11 +176,11 @@ Aşağıdaki iki yaklaşımdan biri seçilmeli:
 
 #### Tercih edilen: gerçek release gate
 
-- [ ] ARM64 performance job release öncesi zorunlu olsun.
-- [ ] x64 performance job release öncesi zorunlu olsun.
-- [ ] Publish job performance sonuçlarına `needs` ile bağlı olsun.
-- [ ] Stable release performance blocker varken yayınlanmasın.
-- [ ] Prerelease için ayrı policy gerekiyorsa açıkça tanımla.
+- [x] ARM64 performance job release öncesi zorunlu olsun.
+- [x] x64 performance job release öncesi zorunlu olsun.
+- [x] Publish job performance sonuçlarına `needs` ile bağlı olsun.
+- [x] Stable release performance blocker varken yayınlanmasın.
+- [x] Prerelease için ayrı policy gerekiyorsa açıkça tanımla.
 
 Önerilen akış:
 
@@ -193,6 +193,13 @@ performance-x64
       publish
 ```
 
+Gerçekte uygulanan akış yukarıdakinden kasıtlı olarak farklı: ayrı `performance-arm64`/
+`performance-x64` job'ları açmak yerine, ölçüm zaten var olan `verify` matrix job'unun İÇİNE
+eklendi — aynı iki runner'ı (macOS arm64/x64) tekrar açmadan, `publish`'in zaten `needs: verify`
+ile bağlı olduğu job'a bir adım daha eklemek yeterliydi. Sonuç aynı: performance ölçümü
+`publish`'ten önce koşuyor ve `publish`'in kendisi `needs: verify` üzerinden dolaylı olarak ona
+bağlı — ayrı bir `needs: performance` gerekmedi çünkü performance artık `verify`'ın bir parçası.
+
 #### Alternatif
 
 - [ ] Performance testlerini "release gate" olarak tanımlayan dokümantasyonu değiştir.
@@ -200,8 +207,20 @@ performance-x64
 
 #### Kabul kriterleri
 
-- [ ] Workflow ve docs aynı davranışı tarif ediyor.
-- [ ] Performance blocker'ın release üzerindeki etkisi deterministic.
+- [x] Workflow ve docs aynı davranışı tarif ediyor. — docs/14 ve docs/05 zaten "release gate"
+      diyordu; şimdi gerçekten öyle.
+- [x] Performance blocker'ın release üzerindeki etkisi deterministic. — `scripts/verify-release.ts`'in
+      yeni `verifyPerformance`'ı: stable release + en az bir blocker → release reddedilir (hata
+      mesajında blocker sayısıyla); prerelease → blocker olsa bile yayınlanabilir (aynı `verifySigning`'in
+      unsigned executable'a prerelease için tanıdığı muafiyetin aynısı, aynı gerekçeyle: prerelease'in
+      kendisi bir düzeltmeyi ölçmenin tek aracı, onu reddetmek düzeltmeyi ölçecek hiçbir şey bırakmaz).
+
+**Çözüldü:** 2026-09-06. `performance.yml` ayrı workflow'u kaldırıldı (kimsenin bakmadığı bir yerde
+koşuyordu); ölçüm `release.yml`'in `verify` job'una taşındı, `dist/release/PERFORMANCE.json` olarak
+diğer kanıtlarla (SIGNING, SMOKE.json) aynı şekilde taşınıp `publish`'te birleştiriliyor,
+`verify-release.ts`'in `verifyPerformance`'ı gerçek gate kararını veriyor.
+`scripts/__tests__/verify-release.test.ts` ve `scripts/__tests__/release-workflow.test.ts` yeni
+davranışı doğruluyor.
 
 ---
 

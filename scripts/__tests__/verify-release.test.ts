@@ -7,6 +7,7 @@ import {
   buildReleaseManifest,
   verifyReleaseArtifacts,
   verifyReleaseTag,
+  type ReleasePerformanceReport,
   type ReleaseSmokeCheck,
   type ReleaseVerification,
 } from '../verify-release';
@@ -16,6 +17,7 @@ const payloads: Readonly<Record<string, string>> = {
   'wtm-darwin-x64.tar.gz': 'x64 archive payload',
 };
 const smoke: readonly ReleaseSmokeCheck[] = [{ name: 'wtm --version', passed: true }];
+const performance: readonly ReleasePerformanceReport[] = [{ blockers: 0, warnings: 0 }];
 const temporaries: string[] = [];
 
 afterEach(() => {
@@ -46,6 +48,7 @@ function request(directory: string, overrides: Partial<ReleaseVerification> = {}
     packageVersion: '1.2.3',
     smoke,
     signing: 'signed',
+    performance,
     ...overrides,
   };
 }
@@ -280,6 +283,48 @@ describe('release artifact gate', () => {
       'wtm-darwin-arm64.tar.gz',
       'wtm-darwin-x64.tar.gz',
     ]);
+  });
+
+  test('rejects a release without performance results', () => {
+    const directory = stage();
+
+    expect(() => verifyReleaseArtifacts(request(directory, { performance: undefined }))).toThrow(
+      'Release verification requires performance results',
+    );
+    expect(() => verifyReleaseArtifacts(request(directory, { performance: [] }))).toThrow(
+      'Release verification requires performance results',
+    );
+  });
+
+  test('rejects a stable release with a performance blocker', () => {
+    const directory = stage();
+
+    expect(() => verifyReleaseArtifacts(request(directory, {
+      performance: [{ blockers: 0, warnings: 1 }, { blockers: 1, warnings: 0 }],
+    }))).toThrow('Stable release v1.2.3 has 1 performance blocker(s)');
+  });
+
+  test('accepts a stable release with performance warnings but no blockers', () => {
+    const directory = stage();
+
+    const manifest = verifyReleaseArtifacts(request(directory, {
+      performance: [{ blockers: 0, warnings: 2 }, { blockers: 0, warnings: 1 }],
+    }));
+
+    expect(manifest.tag).toBe('v1.2.3');
+  });
+
+  test('accepts a prerelease despite a performance blocker', () => {
+    const directory = stage();
+
+    const manifest = verifyReleaseArtifacts(request(directory, {
+      release: { tag: 'v1.2.3-rc.1', version: '1.2.3-rc.1', prerelease: true },
+      packageVersion: '1.2.3-rc.1',
+      signing: 'adhoc',
+      performance: [{ blockers: 3, warnings: 0 }],
+    }));
+
+    expect(manifest.tag).toBe('v1.2.3-rc.1');
   });
 });
 

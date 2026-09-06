@@ -44,6 +44,15 @@ jobs:
       - name: Verify the whole release
         run: bun run release:verify
 
+      - name: Measure performance budgets
+        run: |
+          set -uo pipefail
+          # The gate, not this step, decides what a performance blocker means for a release: a
+          # prerelease may still publish through one, a stable release may not
+          # (verify-release.ts's verifyPerformance, todo item 4). test:perf's own exit code would
+          # end this job before the gate ever saw the number, so it is deliberately not trusted.
+          bun run test:perf || true
+
       - name: Sign the executable
         id: sign
         env:
@@ -92,6 +101,19 @@ jobs:
           # with the artifact instead of being re-asserted by the publishing job.
           echo '${{ steps.sign.outputs.signing }}' > dist/release/SIGNING
           printf '%s' "$WTM_RELEASE_SMOKE" > dist/release/SMOKE.json
+          # Wrapped as a one-element array up front: verifyPerformance sums blockers/warnings
+          # across every architecture's report, and the combined gate in `publish` below simply
+          # concatenates this file with the other architecture's, the same way it already does
+          # for SHA256SUMS.
+          bun -e "const {readFileSync,writeFileSync}=require('node:fs');
+            const r=JSON.parse(readFileSync('artifacts/performance.json','utf8')).release;
+            writeFileSync('dist/release/PERFORMANCE.json', JSON.stringify([r]));"
+          {
+            echo 'WTM_RELEASE_PERFORMANCE<<WTM_PERFORMANCE_EOF'
+            cat dist/release/PERFORMANCE.json
+            echo
+            echo 'WTM_PERFORMANCE_EOF'
+          } >> "$GITHUB_ENV"
 
       - name: Gate the release artifacts
         env:
@@ -157,6 +179,17 @@ jobs:
               process.stdout.write(JSON.stringify(merged));'
             echo
             echo 'WTM_SMOKE_EOF'
+          } >> "$GITHUB_ENV"
+          # Same idea as smoke above: each architecture's own single-element performance report,
+          # concatenated into the array the combined gate sums blockers and warnings across.
+          {
+            echo 'WTM_RELEASE_PERFORMANCE<<WTM_PERFORMANCE_EOF'
+            bun -e 'const {readdirSync,readFileSync}=require("node:fs");
+              const roots=readdirSync("staged");
+              const merged=roots.flatMap((dir)=>JSON.parse(readFileSync(`staged/${dir}/PERFORMANCE.json`,"utf8")));
+              process.stdout.write(JSON.stringify(merged));'
+            echo
+            echo 'WTM_PERFORMANCE_EOF'
           } >> "$GITHUB_ENV"
 
       - name: Gate the combined release

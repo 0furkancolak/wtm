@@ -63,7 +63,7 @@ describe('release workflow', () => {
     // The gate reads its evidence from the environment, and the workflow produces it under a name
     // chosen in a different file. A mismatch is silent: the combined gate saw no smoke results at
     // all and refused a release whose executables had both passed.
-    const required = ['WTM_RELEASE_SIGNING', 'WTM_RELEASE_SMOKE'];
+    const required = ['WTM_RELEASE_SIGNING', 'WTM_RELEASE_SMOKE', 'WTM_RELEASE_PERFORMANCE'];
 
     const gaps: string[] = [];
     for (const [name, job] of Object.entries(workflow('release.yml').jobs ?? {})) {
@@ -129,7 +129,10 @@ describe('release workflow', () => {
   test('keeps every publishing command out of the untagged workflows', () => {
     const published = ['npm publish', 'gh release create', 'actions/attest', 'git -C tap push'];
 
-    for (const name of ['ci.yml', 'performance.yml']) {
+    // performance.yml no longer exists: its release-budgets job folded into release.yml's verify
+    // job (todo item 4), so the numbers it measures can actually gate a release instead of running
+    // in a workflow nothing downstream ever looked at.
+    for (const name of ['ci.yml']) {
       const untagged = commands(workflow(name));
       for (const command of published) expect(untagged).not.toContain(command);
     }
