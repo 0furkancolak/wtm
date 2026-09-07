@@ -357,6 +357,13 @@ Worktree: #7 feat/auth
 WTM did not modify Git state.
 ```
 
+## Creating a worktree
+
+`wtm create <branch>` is the other end of the lifecycle this document describes. It computes the
+worktree path from the workspace root and the branch, refuses before Git writes anything, and
+hands registration to the daemon so `worktree.created` and `[prepare] mode` are applied by the
+one process that owns them. See [`wtm create`](04-cli-reference.md#wtm-create-branch).
+
 ## Cleanup candidates
 
 ```bash

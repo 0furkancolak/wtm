@@ -56,6 +56,7 @@ import {
   type DiagnosticDataSource,
 } from './diagnostics';
 import { renderEnvelope } from './output';
+import { runCreateCommand } from './commands/create';
 import { runStartCommand } from './commands/start';
 import { runStopCommand } from './commands/stop';
 import { runRestartCommand } from './commands/restart';
@@ -244,6 +245,21 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       })
       : await dependencies.analyzeRunner(input);
     renderRuntime(envelope, json);
+  });
+
+  const create = program
+    .command('create <branch>')
+    .description('Create one linked worktree for a branch, beside its repository.');
+  addJsonOption(create);
+  create.option('--from <ref>', 'start a new branch here instead of at the main worktree HEAD');
+  create.action(async (branch: string, options: ScopeOptions & { from?: string }) => {
+    renderRuntime(await runCreateCommand({
+      cwd,
+      branch,
+      ...(options.from === undefined ? {} : { from: options.from }),
+      databasePath: dependencies.analysisDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+      ...(dependencies.runtimeClient === undefined ? {} : { client: dependencies.runtimeClient }),
+    }), runtimeJson(program, options));
   });
 
   const remove = program.command('remove <selector>').description('Safely remove one linked worktree.');

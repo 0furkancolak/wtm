@@ -57,6 +57,7 @@ WTM_DAEMON_INVALID_REQUEST
 WTM_DAEMON_PROTOCOL_INCOMPATIBLE
 WTM_DAEMON_REQUEST_FAILED
 WTM_OPERATION_CONFLICT
+WTM_WORKTREE_PATH_OCCUPIED
 WTM_SOCKET_PATH_TOO_LONG
 WTM_PLATFORM_UNSUPPORTED
 WTM_WATCH_UNAVAILABLE
@@ -118,6 +119,21 @@ starting, and at startup the reasons are host limits and permissions: something 
 be raised or granted, and running the command again does not clear it. That is the same class as a
 socket path that does not fit.
 
+`WTM_WORKTREE_PATH_OCCUPIED` and `GIT_BRANCH_IN_USE` are `wtm create`'s two refusals, and both
+are decided before Git writes anything, so nothing was created when either is reported.
+
+`WTM_WORKTREE_PATH_OCCUPIED` means the path `create` computed —
+`<workspace>/<repository-directory>-<branch-slug>` — already exists. `context` carries `branch` and
+`path`. This is also what a slug collision looks like: `feat/auth` and `feat-auth` name the same
+directory, and the second one is refused here rather than given a generated suffix, because a
+computed path is only useful while a person can guess it.
+
+`GIT_BRANCH_IN_USE` means the branch is already checked out in another worktree of the same
+repository, which Git would refuse too — but as a pre-flight it can say *which* one. `context`
+carries `branch` and `worktreePath`, the worktree holding it.
+
+Both exit with code 3: nothing was done, and the caller has somewhere to look.
+
 ### Git
 
 ```text
@@ -128,6 +144,7 @@ GIT_WORKTREE_LOCKED
 GIT_DIRTY_STAGED
 GIT_DIRTY_UNSTAGED
 GIT_UNTRACKED
+GIT_BRANCH_IN_USE
 GIT_UNMERGED
 GIT_HEAD_NOT_REMOTE_PERSISTED
 GIT_UPSTREAM_MISSING

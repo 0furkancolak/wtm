@@ -656,23 +656,63 @@ wtm create feat/auth --json
 wtm create feat/auth --repos web,api,worker
 ```
 
+**Kısmen kapandı.** Tek repo `wtm create` çalışıyor; multi-repo, veri modelinde olmayan bir kavram
+gerektirdiği için gerekçesiyle açık bırakıldı. Spec
+`docs/superpowers/specs/2026-09-07-create-worktree.md`, plan
+`docs/superpowers/plans/2026-09-07-create-worktree.md`. Başlık, multi-repo satırları açık olduğu
+için madde 2 ve 7'nin kullandığı aynı kuralla `[ ]` kalıyor.
+
+Dokuz alt maddenin üçü zaten yazılmıştı — `create`'in işi onları kurmak değil, tetiklemek: worktree
+var olduktan sonrasının tamamı daemon'da. Bu, uygulamayı yazmadan önce spec'i yazmanın kazandırdığı
+şeydi.
+
 #### Yapılacaklar
 
-- [ ] Branch var/yok kontrolü.
-- [ ] Existing worktree conflict kontrolü.
-- [ ] Target path strategy.
-- [ ] Multi-repo branch alignment.
-- [ ] Worktree oluşturulduktan sonra reconcile.
-- [ ] Eager/lazy resource prepare policy ile uyum.
-- [ ] `worktree.created` event entegrasyonu.
-- [ ] `--json` stable output.
-- [ ] Partial multi-repo creation rollback/recovery.
+- [x] Branch var/yok kontrolü. — `branchExists` (`git show-ref --verify`, exit 1 "hayır" cevabı
+      olarak kabul ediliyor). Var olan dal *yeniden yaratılmıyor*, checkout ediliyor:
+      "an existing branch is checked out rather than restarted somewhere".
+- [x] Existing worktree conflict kontrolü. — iki ayrı ret, ikisi de Git hiçbir şey yazmadan önce:
+      `GIT_BRANCH_IN_USE` (dalı tutan worktree'yi adıyla söylüyor) ve
+      `WTM_WORKTREE_PATH_OCCUPIED`. Her testi kodun yanı sıra **hiçbir şey yaratılmadığını** da
+      doğruluyor — bir reddin taşıyıcı yarısı bu.
+- [x] Target path strategy. — `<workspace>/<repo-dizini>-<branch-slug>`. Kodda hiçbir konvansiyon
+      yoktu; repository'nin içine hiçbir şey yazmayan, `wtm init`'in mevcut keşfinin zaten
+      bulduğu ve deponun kendi senaryosunun (`reconcile-fallback.scenario.ts`) kurduğu düzen
+      seçildi. Slug çakışması (`feat/auth` ve `feat-auth`) üretilmiş bir sonek yerine
+      occupied-path reddiyle karşılanıyor: hesaplanmış bir yol ancak tahmin edilebildiği sürece
+      işe yarar.
+- [ ] Multi-repo branch alignment. — **açık.** Veri modelinde repository'ler arası worktree'leri
+      gruplayan hiçbir şey yok: `WorktreeRecord` tam olarak bir `repositoryId`'ye ait ve
+      `state/store.ts`'te bir gruplama anahtarı bulunmuyor. Bu bir komut değil, veri modeli
+      değişikliği.
+- [x] Worktree oluşturulduktan sonra reconcile. — daemon ayaktaysa `reconcile` isteği (daemon
+      cevaplamadan önce kuyruğunu boşaltıyor, yani cevap geldiğinde iş bitmiş oluyor); değilse
+      CLI kendi reconcile ediyor. **Asla ikisi birden** — bir registry'nin iki yazıcısı olması
+      `reconcileContainingRepository`'nin zaten önlediği hata.
+- [x] Eager/lazy resource prepare policy ile uyum. — `prepareDiscovered` bunu zaten yapıyor;
+      `create` daemon'a devrederek ona ulaşıyor. Daemon kapalıyken **çalışmıyor**, ve bu
+      sessizce geçilmiyor: `WTM_DAEMON_UNAVAILABLE` uyarısı neyin atlandığını adıyla söylüyor.
+- [x] `worktree.created` event entegrasyonu. — `LifecycleEventDispatcher.onReconciled` bunu zaten
+      atıyor. CLI'ya ikinci bir dispatcher konmadı: bir event'in duyurulup duyurulmadığına iki
+      yazıcının karar vermesi tam olarak `claimLifecycleEvent`'in önlemek için var olduğu şey.
+- [x] `--json` stable output. — `registration: 'daemon' | 'local'` alanı dahil, ki `--json`
+      çağıranı hook'ların çalışıp çalışmadığını daemon'u yoklamadan bilebilsin.
+- [ ] Partial multi-repo creation rollback/recovery. — **açık.** Tek repository'lik bir create tek
+      bir `git worktree add`; yarım kalacak bir şey yok. N repository için `remove`'un lease +
+      journal + `--resume` makinesinin create tarafına genişletilmesi ve deterministik bir kilit
+      sırası gerekir (yoksa iki multi-repo create birbirini kilitler) — kendi spec'ini hak eden
+      bir soru.
 
 #### Kabul kriterleri
 
-- [ ] Tek repo create deterministic.
-- [ ] Multi-repo create aynı feature identity altında çalışıyor.
-- [ ] Yarım kalan creation güvenli biçimde recover ediliyor.
+- [x] Tek repo create deterministic. — hesaplanmış yol, çağıranın dizininden bağımsız başlangıç
+      noktası, ve Git yazmadan önce verilen her ret. Yeni dal **main worktree'nin HEAD'inden**
+      başlıyor, kullanıcının içinde durduğu worktree'den değil: "starts a new branch at the main
+      worktree HEAD" hem core hem CLI seviyesinde bunu doğruluyor.
+- [ ] Multi-repo create aynı feature identity altında çalışıyor. — **bu dalganın kapsamı dışında.**
+      Adını verdiği kimlik veri modelinde yok (yukarıya bakınız).
+- [ ] Yarım kalan creation güvenli biçimde recover ediliyor. — **bu dalganın kapsamı dışında.**
+      Tek repository'lik create'te kurtarılacak yarım bir durum yok.
 
 ---
 

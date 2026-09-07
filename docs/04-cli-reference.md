@@ -247,6 +247,66 @@ neither downgrading the confidence nor reporting `REFRESHED` over unchanged refs
 Without the flag, analysis performs no network access. Every analysis carries a
 `remoteKnowledge` block saying which of the two it was.
 
+## Worktree creation
+
+### `wtm create <branch>`
+
+Creates one linked worktree for `<branch>`, at a path WTM computes rather than one you pass:
+
+```text
+<workspace-root>/<repository-directory>-<branch-slug>
+```
+
+The slug maps every character outside `[A-Za-z0-9._-]` to `-`, collapses runs, and trims leading
+and trailing separators, so `feat/auth` in a repository directory named `repo` becomes
+`<workspace>/repo-feat-auth`. Nothing is written inside the repository, and `wtm init`'s existing
+discovery finds the new worktree with no extra configuration.
+
+```bash
+wtm create feat/auth
+wtm create feat/auth --from main
+wtm create feat/auth --json
+```
+
+Options:
+
+```text
+--from <ref>   start a new branch here instead of at the main worktree HEAD
+--json         emit the stable JSON envelope
+```
+
+A **new** branch starts at the main worktree's HEAD, not at the HEAD of the worktree you are
+standing in — so the same command in the same repository produces the same branch point from
+anywhere in the workspace. `--from <ref>` overrides that. A branch that **already exists** is
+checked out instead, and combining `--from` with it is refused: "start a new branch here" and
+"check out the one that exists" are different requests.
+
+Every refusal is decided before Git writes, so a rejected `create` leaves no directory, no branch
+and no registry row:
+
+| Code | Meaning |
+| --- | --- |
+| `WTM_NOT_INITIALIZED` | The directory is not inside a registered workspace, and only the registry knows the workspace root the path is computed from |
+| `WTM_WORKTREE_PATH_OCCUPIED` | Something already sits at the computed path |
+| `GIT_BRANCH_IN_USE` | Another worktree of this repository already has the branch checked out; `context.worktreePath` names it |
+| `WTM_CONFIG_INVALID` | `--from` was combined with a branch that already exists |
+
+The envelope reports the created worktree, whether the branch was created or checked out, the
+start point, and `registration` — `daemon` or `local`. That last field is the one worth reading:
+`daemon` means a running daemon reconciled the repository and therefore dispatched
+`worktree.created` and applied `[prepare] mode`; `local` means the CLI registered the worktree
+itself, because only the daemon runs the event dispatcher. In the `local` case the worktree is
+registered and usable but **its `worktree.created` tasks did not run and `eager` preparation did
+not happen**, and a `WTM_DAEMON_UNAVAILABLE` warning says so. The first task run there prepares
+its resources as `lazy` always would.
+
+`create` takes no repository operation lease. Leases serialize the operations that destroy
+(`remove`, `gc`, `repair`) and exclude the whole repository while held; creating a worktree
+destroys nothing, so it neither takes one nor waits for one.
+
+Multi-repository creation (`--repos`) is not implemented. See
+`docs/superpowers/specs/2026-09-07-create-worktree.md` for why it is deferred rather than pending.
+
 ## Safe removal
 
 ### `wtm remove <selector>`
