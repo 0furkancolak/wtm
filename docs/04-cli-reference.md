@@ -215,11 +215,21 @@ Options:
 
 ```text
 --all                  every worktree in the current repository
---cleanup-candidates   linked worktrees that may be cleanup candidates
+--cleanup-candidates   linked worktrees, ranked as cleanup candidates
 --refresh-remotes      refresh remote-tracking refs first (network access)
 --global               aggregate registered workspaces only
 --json                 emit the stable JSON envelope
 ```
+
+`--cleanup-candidates` returns every linked worktree of the current repository — never the main
+one — ordered best-first, each carrying a `cleanup` block of `rank`, `score` and `reason`. The
+order is lexicographic over ordered tiers (readiness, nothing running, work safely elsewhere,
+remote persistence strength, idleness, prunable), tie-broken by worktree path so the output is a
+total order; `score` is derived from those same tiers rather than sorted on. An input nothing can
+answer ranks neutral and is named in `reason`, and a `BLOCKED` candidate is ranked last rather
+than filtered out. The sort happens in the envelope, so `--json` and the human rendering list the
+candidates in the same order by construction. See
+[Cleanup candidates](10-git-safety-worktree-analysis.md#cleanup-candidates).
 
 `--refresh-remotes` runs `git fetch --prune` for every remote an allowed remote-ref pattern
 selects, before any analysis, and names the remotes it refreshed in the human output — not in the

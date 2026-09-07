@@ -363,15 +363,43 @@ WTM did not modify Git state.
 wtm analyze --cleanup-candidates
 ```
 
-ranks non-running linked worktrees by safe cleanup usefulness using:
+lists every linked worktree of the current repository — the main worktree is never a candidate —
+ordered best-first, with a `cleanup` block on each entry carrying `rank`, `score` and `reason`.
 
-- deletion readiness;
-- age;
-- merged/reachable status;
-- disk reclaimable estimate;
-- recent WTM activity.
+The order is **lexicographic over ordered tiers**, not a weighted sum. Each comparison is decided
+by the first tier that separates two candidates, so every position has a one-sentence answer:
 
-This ranking is advisory; WTM never bulk-removes worktrees without explicit selectors/confirmation.
+1. **Deletion readiness** — `SAFE`, then `REVIEW`, then `BLOCKED`.
+2. **Nothing running** — provably no managed process, then unknown, then a live one.
+3. **Work is safely elsewhere** — how many of "merged" and "remote-persisted" are provably true.
+4. **Remote persistence strength** — confirmed by a fetch, then from local refs only, then not
+   persisted. This also decides between a candidate that is merged but unpushed and one that is
+   pushed but unmerged: the pushed one ranks higher, because a push survives the worktree going
+   away whether or not anything merged it.
+5. **Idleness** — longest since the last WTM activity first, then since the last commit.
+6. **Prunable** — a worktree Git already reports as gone, before one that is still there.
+
+Two candidates that tie on every tier are ordered by worktree path, so the output is a total
+order and the same repository produces the same sequence every run.
+
+`score` (0-100) is **derived** from those same tier values by a fixed function and is never the
+thing sorted on, so it cannot become a second, disagreeing opinion: a candidate can never score
+above one that outranks it. `reason` carries one entry per ranking input, in tier order.
+
+**An input nothing can answer ranks neutral, never favourable, and says so in `reason`.** `wtm
+analyze` answers for repositories WTM has never registered, and such a worktree has no record,
+therefore no known activity and no known processes — `running-unknown` and `wtm-activity-unknown`
+rather than a silent omission. A list that confidently recommended deleting the worktrees it knows
+least about would be worse than no list.
+
+Ranking never deletes and never hides. A `BLOCKED` candidate is returned ranked last, carrying its
+blockers, because dropping it would be a policy decision disguised as a sort. The ranking is
+advisory; WTM never bulk-removes worktrees without explicit selectors/confirmation.
+
+Reclaimable disk size is **not** a ranking input today: `wtm disk` reports its own basis as
+`not-estimated`, and turning that into a number is a measurement feature with its own cost,
+caching and staleness questions rather than a ranking one. The tier order above is written so it
+can be added later without reordering anything above it.
 
 ## JSON analysis
 

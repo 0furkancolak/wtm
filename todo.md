@@ -680,16 +680,40 @@ wtm create feat/auth --repos web,api,worker
 
 `wtm analyze --cleanup-candidates` yalnızca linked worktree filtresi olmamalı.
 
+**Kısmen kapandı.** Ranking uygulandı: sekiz girdinin yedisi çalışıyor, reclaimable disk size
+gerekçesiyle açık bırakıldı. Spec `docs/superpowers/specs/2026-09-07-cleanup-candidate-ranking.md`,
+plan `docs/superpowers/plans/2026-09-07-cleanup-candidate-ranking.md`. Sıralama ağırlıklı toplam
+değil, sıralı tier'lar üzerinden leksikografik: her karşılaştırmanın tek cümlelik bir cevabı var,
+ve `reason` tam olarak o cevapları taşıyor. Başlık, reclaimable satırı açık olduğu için madde 2'nin
+`repair` satırında kullanılan aynı kuralla `[ ]` kalıyor.
+
 #### Ranking girdileri
 
-- [ ] deletion readiness
-- [ ] age
-- [ ] merged/reachable state
-- [ ] remote persistence
-- [ ] reclaimable disk size
-- [ ] last WTM activity
-- [ ] running process var/yok
-- [ ] prunable state
+- [x] deletion readiness — 1. tier. `safety.readiness`: SAFE → REVIEW → BLOCKED.
+      `cleanup-ranking.test.ts`, "ranks SAFE above REVIEW above BLOCKED".
+- [x] age — 6. tier. `readGitCommitTimestamp` (yeni, `git/git-runner.ts`) her aday için HEAD'in
+      commit tarihini repository üzerinden okuyor — worktree dizini silinmiş bir adayın da
+      tarihlenebilmesi için. Cevap alınamazsa `last-commit-unknown`.
+- [x] merged/reachable state — 3. tier, `base.merged`.
+- [x] remote persistence — 3. ve 4. tier. 4. tier `remoteKnowledge.source` ile nitelendiriyor:
+      yalnızca yerel ref'lerden bilinen kalıcılık, fetch ile doğrulanmışın altında sıralanıyor.
+      "persistence known only from local refs ranks below the same candidate after a fetch".
+- [ ] reclaimable disk size — **açık.** Bu sayı hiçbir yerde yok: `packages/cli/src/commands/
+      disk.ts` kendi ölçüm temelini `reclaimable: 'not-estimated'` diye ilan ediyor ve core'daki
+      tek reclaimable fonksiyonu (`resources/removal.ts`) bayt değil *yol* döndürüyor. Sayıya
+      çevirmek, kendi yürüme maliyeti/cache/bayatlama kararları olan bir ölçüm özelliği — ranking
+      özelliği değil. Tier sırası, bu girdi sonradan üstündekileri bozmadan eklenebilecek şekilde
+      yazıldı.
+- [x] last WTM activity — 5. tier, ama beklenen alandan değil: `worktrees.last_runtime_at`
+      sütununu **hiçbir production yolu yazmıyor**, migration'dan beri hep NULL. Bu yüzden aktivite
+      managed-process journal'ından türetiliyor (`startedAt`/`stoppedAt`'in en yenisi), o da yoksa
+      taban `createdAt` — "WTM bu worktree'yi şu tarihten beri tanıyor ve o zamandan beri içinde
+      bir şey olduğunu kaydetmedi" ölçülmüş bir boşta kalmadır, bilgi yokluğu değil. Kayıt hiç
+      yoksa `wtm-activity-unknown`.
+- [x] running process var/yok — 2. tier. `listManagedProcesses` + `STARTING|RUNNING|STOPPING`.
+      Bilinmiyor, "yok" ile aynı şey değil ve öyle sıralanmıyor: "not knowing whether anything is
+      running ranks between provably idle and provably busy".
+- [x] prunable state — 7. tier, `identity.prunableReason` ve `identity.pathExists`.
 
 #### Önerilen sonuç
 
@@ -708,9 +732,27 @@ wtm create feat/auth --repos web,api,worker
 
 #### Kabul kriterleri
 
-- [ ] Çıktı deterministic.
-- [ ] Ranking hiçbir zaman otomatik delete yapmıyor.
-- [ ] Human ve JSON output aynı candidate sırasını kullanıyor.
+- [x] Çıktı deterministic. — sıra tam: her tier eşitse worktree yolu ile bozuluyor. "candidates
+      identical on every tier come back in path order" ve "shuffling the input does not change the
+      order" (girdi iki kez karıştırılıp aynı diziyi veriyor).
+- [x] Ranking hiçbir zaman otomatik delete yapmıyor. — `analyze` salt-okunur kaldı, apply yolu ya
+      da flag eklenmedi, ve `BLOCKED` aday listeden düşürülmüyor: en sona, blocker'larıyla
+      birlikte konuyor. Onu gizlemek, sıralama kılığına girmiş bir politika kararı olurdu.
+      `cleanup-ranking.test.ts` (CLI), "a candidate the safety analysis refuses to delete is ranked
+      last, never filtered out".
+- [x] Human ve JSON output aynı candidate sırasını kullanıyor. — sıralama renderer'da değil
+      **zarfın içinde** yapılıyor; `renderEnvelope`, `--json`'ın serialize ettiği aynı
+      `envelope.data`'yı geziyor, dolayısıyla ikisinin sıra konusunda anlaşmazlığa düşmesi yapısal
+      olarak mümkün değil. Yine de varsayılmadı, uçtan uca ölçüldü: "the human rendering lists
+      candidates in the same order as --json" insan çıktısındaki yol offset'lerinin artan olduğunu
+      doğruluyor.
+
+#### Score
+
+`score` (0-100) sıralanan şey **değil**: sortun karşılaştırdığı aynı tier değerlerinden, sabit bir
+fonksiyonla türetiliyor. Tier değerleri karışık tabanlı bir sayının basamakları olarak okunuyor, bu
+yüzden bir aday kendisinden üstte sıralanan bir adaydan yüksek puan alamaz — eşitlik mümkün
+(idleness puanda kovalanmış, sortta tam), anlaşmazlık değil. "score never disagrees with rank".
 
 ---
 
