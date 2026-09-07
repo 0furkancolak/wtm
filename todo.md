@@ -714,9 +714,13 @@ wtm create feat/auth --repos web,api,worker
 
 ---
 
-### [ ] 8. Allowed remote refs configuration ekle
+### [x] 8. Allowed remote refs configuration ekle
 
 Core desteği kullanıcı config katmanına bağlanmalı.
+
+**Kapandı.** Kodun tamamı zaten yazılmış ve testliymiş; bu madde geride kalan tek gerçek boşluk
+olan kullanıcı dokümantasyonu kapatılarak bitirildi. Aşağıdaki her satır çalıştırılıp doğrulandı
+(`allowed-remote-refs-config.test.ts` + `decisions.test.ts` + `schema.test.ts`: 23 test yeşil).
 
 #### Önerilen config
 
@@ -730,12 +734,38 @@ allowed_remote_refs = [
 
 #### Yapılacaklar
 
-- [ ] Schema ekle.
-- [ ] Config validation ekle.
-- [ ] Provenance desteği ekle.
-- [ ] `analyze` ve `remove` resolved config'i kullansın.
-- [ ] Invalid wildcard pattern testleri ekle.
-- [ ] `wtm explain` içinde göster.
+- [x] Schema ekle. — `packages/core/src/config/schema.ts`'te `gitSchema`, `.strict()`; varsayılan
+      `builtInConfig` içinde adıyla duruyor (`config/load.ts`), böylece `wtm explain`'in
+      raporlayacağı bir "WTM'nin kendi varsayılanı" var: `["refs/remotes/origin/*"]`.
+- [x] Config validation ekle. — aynı şemadaki `superRefine`, analiz anındaki kuralın *aynısını*
+      (`normalizeAllowedRemoteRefs`, `analysis/remote-persistence.ts`) config yükleme anında
+      çalıştırıyor. Yani `analyzeRemotePersistence`'ın derinlerinde çıplak bir `TypeError` olarak
+      patlayacak bir pattern, bunun yerine hatalı pattern'i adıyla söyleyen kodlu bir
+      `WTM_CONFIG_INVALID` olarak raporlanıyor.
+- [x] Provenance desteği ekle. — `config/provenance.ts`'in `collectProvenance`'ı ve
+      `config/merge.ts`'in katman birleştirmesi bu anahtarı da taşıyor; kazanan değerin dosyası ve
+      satırı `decisions.test.ts`'te birebir doğrulanıyor
+      (`{ source: '/projects/demo/wtm.toml', line: 60 }`).
+- [x] `analyze` ve `remove` resolved config'i kullansın. — `packages/cli/src/main.ts`'te
+      `resolveConfiguredAllowedRemoteRefs`; `analyze` repo başına tekilleştirip çözüyor, `remove`
+      kendi repo'su için çözüp `commands/remove.ts`'e geçiriyor. İkisi de WTM'nin hiç kaydetmediği
+      bir repository için de çalışıyor: workspace kökü kayıt aranarak değil, yukarı yürünerek
+      bulunuyor.
+- [x] Invalid wildcard pattern testleri ekle. — `packages/core/src/config/__tests__/schema.test.ts`
+      (refs/remotes dışı, trailing olmayan wildcard, boş liste, kodlu hata) ve
+      `packages/cli/src/__tests__/allowed-remote-refs-config.test.ts` (geçersiz pattern `analyze`'ı
+      *crash* değil kodlu hata ile düşürüyor; `remove`'da da aynısı oluyor **ve worktree yerinde
+      kalıyor**).
+- [x] `wtm explain` içinde göster. — `git.allowed_remote_refs` bir `config` kararı olarak çıkıyor,
+      değeri ve provenance'ıyla; `decisions.test.ts` → "surfaces the configured [git]
+      allowed_remote_refs as a config decision, for `wtm explain`".
+- [x] Kullanıcı dokümantasyonuna yaz. — **bu maddede yapılan tek yeni iş.** Anahtar şemada vardı
+      ama hiçbir kullanıcı dokümanında geçmiyordu, yani ayarlanabilir olduğu halde keşfedilemezdi.
+      `docs/03-configuration-spec.md`'e "Git safety" bölümü eklendi: varsayılan, listenin
+      *eklemediği* ama tamamen *değiştirdiği* (dizi birleştirilmiyor, `config/merge.ts` diziyi
+      yaprak sayıyor), üç doğrulama kuralı, `WTM_CONFIG_INVALID` davranışı ve `--refresh-remotes`
+      ile bağı. `docs/10-git-safety-worktree-analysis.md`'in "configuration may expand/restrict
+      this" cümlesi de artık anahtarı adıyla söyleyip oraya bağlanıyor.
 
 ---
 

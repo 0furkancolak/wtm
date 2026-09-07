@@ -124,7 +124,10 @@ The simplest useful check is not merely "ahead of upstream" because a branch may
 
 WTM defines a commit as **remote-persisted** when HEAD is reachable from at least one allowed remote-tracking ref according to local Git refs.
 
-Default allowed remotes are `refs/remotes/origin/*`; configuration may expand/restrict this.
+Default allowed remotes are `refs/remotes/origin/*`. `[git] allowed_remote_refs` in
+`wtm.toml` replaces that list — see
+[Git safety](03-configuration-spec.md#git-safety) for the precedence, the validation rules
+and what `wtm explain` reports.
 
 If the developer expects fresh remote state, they run `wtm analyze --refresh-remotes` or fetch
 themselves first. The analysis reports which of the two happened; see
