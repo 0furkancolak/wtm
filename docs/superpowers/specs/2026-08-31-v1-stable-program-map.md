@@ -44,6 +44,12 @@ Exit: `wtm remove` never orphans a managed process, never deletes a worktree aft
 blocks on identity change, is safe under concurrent CLI/daemon invocation, is recoverable after a
 daemon crash, and reports remote-knowledge provenance in JSON.
 
+**2026-09-07: reopened, narrowly.** `docs/superpowers/specs/2026-08-31-destructive-operation-safety-design.md`
+marked this Implemented, but item 2 kept two `[~]` (partial) lines: no `repair` command exists yet,
+and a CLI `remove` does not conflict with a daemon `gc` on the same repository (different
+operations, same repository, never checked against each other). See
+`docs/superpowers/specs/2026-09-07-cross-operation-lease-conflict.md` for the closing design.
+
 ### Increment B — Next-tag packaging and first-run correctness
 
 Covers items 36, 37, 39, 40, 41 and parts of the "Distribution / install" checklist.
@@ -163,6 +169,10 @@ Covers item 5 and closes item 36's temporary workaround.
 
 Exit: stable macOS artifacts pass Gatekeeper on a clean machine; publication is blocked without
 successful notarization.
+
+**2026-09-07: design written, not started.** See
+`docs/superpowers/specs/2026-09-07-macos-notarization-gatekeeper.md`. Needs real Apple Developer
+credentials as GitHub secrets before it can close; the workflow/gate code does not.
 
 ### Increment H — v1 experience completion
 
