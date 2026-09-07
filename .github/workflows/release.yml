@@ -93,6 +93,78 @@ jobs:
           # The gate, not this step, decides what a failed smoke result means for a release.
           echo "WTM_RELEASE_SMOKE=$smoke" >> "$GITHUB_ENV"
 
+      - name: Notarize the executable
+        id: notarize
+        env:
+          NOTARIZATION_APPLE_ID: ${{ secrets.MACOS_NOTARIZATION_APPLE_ID }}
+          NOTARIZATION_PASSWORD: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
+          NOTARIZATION_TEAM_ID: ${{ secrets.MACOS_NOTARIZATION_TEAM_ID }}
+          SIGNING: ${{ steps.sign.outputs.signing }}
+        run: |
+          set -euo pipefail
+          # Same rule as signing: an absent credential is a skip, not a failure, so a contributor
+          # with no Apple account can still build a prerelease. The gate refuses a *stable*
+          # release in this state. An ad-hoc signature is skipped too -- the notary service only
+          # accepts Developer ID signed code, so submitting one would fail a build that did
+          # nothing wrong.
+          if [ "${SIGNING}" != 'signed' ] || [ -z "${NOTARIZATION_APPLE_ID}" ] \
+            || [ -z "${NOTARIZATION_PASSWORD}" ] || [ -z "${NOTARIZATION_TEAM_ID}" ]; then
+            echo 'notarization=skipped' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The notary service accepts UDIF disk images, signed flat installer packages and ZIP
+          # archives -- not a bare Mach-O. So the executable is zipped for the submission only.
+          # This zip is never published: the release still ships the .tar.gz built below, and the
+          # ticket is keyed to the code directory hash rather than to the container, so the
+          # binary inside that tarball is the notarized one.
+          submission="$RUNNER_TEMP/wtm-notarization.zip"
+          /usr/bin/ditto -c -k dist/sea/wtm "$submission"
+          # `--wait` returns only once the service has finished, so no polling is needed. The
+          # status is then read rather than inferred: a submission can come back Invalid, and a
+          # release must not turn on whether that is reported through the exit code.
+          xcrun notarytool submit "$submission" \
+            --apple-id "$NOTARIZATION_APPLE_ID" \
+            --password "$NOTARIZATION_PASSWORD" \
+            --team-id "$NOTARIZATION_TEAM_ID" \
+            --output-format json \
+            --wait > "$RUNNER_TEMP/notarization.json"
+          rm -f "$submission"
+          status="$(bun -e "const {readFileSync}=require('node:fs');
+            const r=JSON.parse(readFileSync(process.env.RUNNER_TEMP+'/notarization.json','utf8'));
+            process.stdout.write(String(r.status ?? ''));")"
+          if [ "$status" != 'Accepted' ]; then
+            echo "The notary service answered \"$status\", not \"Accepted\"." >&2
+            id="$(bun -e "const {readFileSync}=require('node:fs');
+              const r=JSON.parse(readFileSync(process.env.RUNNER_TEMP+'/notarization.json','utf8'));
+              process.stdout.write(String(r.id ?? ''));")"
+            # Apple's own advice is to always read the log, even on success. On a refusal it is
+            # the only place the actual reason appears.
+            if [ -n "$id" ]; then
+              xcrun notarytool log "$id" \
+                --apple-id "$NOTARIZATION_APPLE_ID" \
+                --password "$NOTARIZATION_PASSWORD" \
+                --team-id "$NOTARIZATION_TEAM_ID" >&2 || true
+            fi
+            exit 1
+          fi
+          echo 'notarization=notarized' >> "$GITHUB_OUTPUT"
+
+      - name: Verify Gatekeeper accepts the executable
+        env:
+          NOTARIZATION: ${{ steps.notarize.outputs.notarization }}
+        run: |
+          set -euo pipefail
+          if [ "${NOTARIZATION}" != 'notarized' ]; then
+            echo 'Notarization was skipped, so there is no ticket for Gatekeeper to look up.'
+            exit 0
+          fi
+          # Apple cannot staple a ticket to a standalone binary, so this is an online lookup
+          # against the notary service -- which is exactly what a user's first run performs. It
+          # is the closest thing CI has to "a clean machine accepts it": this runner has never
+          # seen this binary before. `spctl` exits non-zero when it rejects, so `set -e` is the
+          # failure.
+          spctl --assess --type execute --verbose=2 dist/sea/wtm
+
       - name: Archive the signed executable
         run: |
           set -euo pipefail
@@ -100,6 +172,7 @@ jobs:
           # Archiving rebuilds the directory, so the evidence is recorded afterwards and travels
           # with the artifact instead of being re-asserted by the publishing job.
           echo '${{ steps.sign.outputs.signing }}' > dist/release/SIGNING
+          echo '${{ steps.notarize.outputs.notarization }}' > dist/release/NOTARIZATION
           printf '%s' "$WTM_RELEASE_SMOKE" > dist/release/SMOKE.json
           # Wrapped as a one-element array up front: verifyPerformance sums blockers/warnings
           # across every architecture's report, and the combined gate in `publish` below simply
@@ -118,6 +191,7 @@ jobs:
       - name: Gate the release artifacts
         env:
           WTM_RELEASE_SIGNING: ${{ steps.sign.outputs.signing }}
+          WTM_RELEASE_NOTARIZATION: ${{ steps.notarize.outputs.notarization }}
           # This job built one architecture, so it gates one archive. The whole release is gated
           # again by the job that collects both.
           WTM_RELEASE_ARCH: ${{ matrix.arch }}
@@ -168,6 +242,12 @@ jobs:
           signing="$(cat staged/*/SIGNING | sort -u)"
           test "$(printf '%s\n' "$signing" | wc -l | tr -d ' ')" -eq 1
           echo "signing=$signing" >> "$GITHUB_OUTPUT"
+          # Notarization is one value across both architectures for the same reason signing is:
+          # a release where one architecture is notarized and the other is not does not describe
+          # one build, and the gate would otherwise be handed whichever value sorted first.
+          notarization="$(cat staged/*/NOTARIZATION | sort -u)"
+          test "$(printf '%s\n' "$notarization" | wc -l | tr -d ' ')" -eq 1
+          echo "notarization=$notarization" >> "$GITHUB_OUTPUT"
           # The name the gate reads. Exporting it as anything else leaves the gate with no smoke
           # evidence at all, which it refuses.
           {
@@ -195,6 +275,7 @@ jobs:
       - name: Gate the combined release
         env:
           WTM_RELEASE_SIGNING: ${{ steps.collect.outputs.signing }}
+          WTM_RELEASE_NOTARIZATION: ${{ steps.collect.outputs.notarization }}
         run: bun run release:gate
 
       # Provenance has to describe the build that produced these archives. The generic attest

@@ -249,22 +249,68 @@ Developer ID signing tek başına stable macOS dağıtımı için yeterli değil
 
 #### Yapılacaklar
 
-- [ ] Apple notarization credentials/secrets ekle.
-- [ ] `xcrun notarytool submit` pipeline'ı ekle.
-- [ ] Notarization sonucu başarılı olmadan stable release'i yayınlama.
-- [ ] Gerekiyorsa artifact paket formatını notarization'a göre düzenle.
-- [ ] `spctl --assess` doğrulaması ekle.
-- [ ] Gatekeeper verification testleri ekle.
-- [ ] Release dokümantasyonunu güncelle.
+- [~] Apple notarization credentials/secrets ekle. — secret **isimleri seçildi ve workflow'a
+      bağlandı**, ama secret'ları yalnızca repo sahibi ekleyebilir (Apple ID bir agent'ın
+      edinebileceği bir şey değil). GitHub'a eklenecek üç secret:
+      `MACOS_NOTARIZATION_APPLE_ID`, `MACOS_NOTARIZATION_PASSWORD` (**app-specific password** —
+      App Store Connect tüm hesaplarda 2FA zorunlu kıldığı için hesap parolası çalışmaz),
+      `MACOS_NOTARIZATION_TEAM_ID`. Şekil, Apple'ın güncel dokümantasyonuna karşı 2026-09-07'de
+      doğrulandı (spec'in "Credentials" bölümü alıntıları taşıyor); `altool` 1 Kasım 2023'ten beri
+      desteklenmiyor, `notarytool` tek yol.
+- [x] `xcrun notarytool submit` pipeline'ı ekle. — `.github/workflows/release.yml`, "Notarize the
+      executable" adımı. İmzalama adımının desenini birebir izliyor: credential yoksa
+      `notarization=skipped`, iş **başarısız olmuyor** (Apple hesabı olmayan bir katkıcı hâlâ
+      prerelease build edebiliyor). Ad-hoc imza da atlanıyor — notary service yalnızca Developer
+      ID imzalı kodu kabul ediyor. `--wait` kullanılıyor ve dönen `status` açıkça okunuyor;
+      `Accepted` değilse `notarytool log` stderr'a dökülüp adım kırmızıya düşüyor.
+- [x] Notarization sonucu başarılı olmadan stable release'i yayınlama. — `verifyNotarization`
+      (`scripts/verify-release.ts`), `verifySigning` ile aynı kural: stable release
+      `notarization !== 'notarized'` ise publish edilmiyor. `WTM_RELEASE_NOTARIZATION` hem
+      per-architecture `verify` gate'ine hem `publish`'in birleşik gate'ine bağlandı ve
+      `release-workflow.test.ts`'in `required` dizisine eklendi (bağlantı koparsa test kırmızı —
+      negatif olarak doğrulandı).
+- [x] Gerekiyorsa artifact paket formatını notarization'a göre düzenle. — **Gerekmiyor, ve bu
+      Apple dokümantasyonuna karşı doğrulandı, tahmin değil.** Notary service yalnızca UDIF disk
+      image, imzalı flat installer package ve ZIP kabul ediyor, çıplak Mach-O kabul etmiyor —
+      bu yüzden executable *yalnızca submission için* zipleniyor (`ditto -c -k`, `RUNNER_TEMP`
+      altında, yayınlanmıyor). Dağıtım formatı değişmiyor: release hâlâ aynı `.tar.gz`.
+      Stapling bir seçenek değil, Apple'ın kendi ifadesiyle: *"Although tickets are created for
+      standalone binaries, it's not currently possible to staple tickets to them."* Yani
+      Gatekeeper ticket'ı çevrimiçi arayacak — ilk çalıştırmada ağ erişimi gerekiyor. Bu bir
+      kısayol değil, `.pkg`/`.dmg`'ye geçmeden mümkün olan tek şey.
+- [~] `spctl --assess` doğrulaması ekle. — adım yazıldı ("Verify Gatekeeper accepts the
+      executable", `spctl --assess --type execute --verbose=2 dist/sea/wtm`, notarization
+      atlandıysa kendisi de atlanıyor), ama **hiç çalışmadı**: credential olmadan çalıştıracak
+      bir notarize edilmiş artifact yok. Gerçek çıktı ancak secret'lar eklenip bir tag
+      push'landığında görülecek.
+- [~] Gatekeeper verification testleri ekle. — CI tarafındaki test yukarıdaki `spctl` adımı; onun
+      dışında lokal olarak yazılabilecek bir Gatekeeper testi yok (runner'ın kendisi temiz
+      makine rolünü oynuyor). Gate'in mantığı `verify-release.test.ts`'te dört testle kapalı
+      (evidence yok / stable notarize değil / prerelease skipped / stable notarized), ama bunlar
+      gate'i test ediyor, Gatekeeper'ı değil.
+- [ ] Release dokümantasyonunu güncelle. — bilerek yapılmadı: çevrimiçi ticket lookup gereksinimi
+      ("ilk çalıştırma ağ istiyor") ancak notarization gerçekten çalıştığında doğru bir cümle
+      olur. Aşağıdaki workaround kaldırma adımıyla aynı değişikliğe ait.
 - [ ] Quarantine workaround'unu kaldır: `README.md` ve `CHANGELOG.md` içinde
       `<!-- gatekeeper-quarantine:start -->` / `<!-- gatekeeper-quarantine:end -->` ile
       işaretli bölümler. `scripts/__tests__/gatekeeper-workaround.test.ts` yarım kaldırmayı
       kırmızıya düşürür; her iki bölüm de gidince o test dosyası da aynı değişiklikte silinir.
+      **Bilerek yapılmadı.** Plan'ın kendi "What to hand back if credentials are never added"
+      bölümü tam olarak bu durumu tarif ediyor: gerçek bir `spctl --assess` yeşili olmadan
+      workaround'u kaldırmak, hâlâ var olan bir kusuru belgesiz bırakır. Workaround ve testi
+      olduğu gibi duruyor.
 
 #### Kabul kriterleri
 
-- [ ] Stable artifact temiz macOS makinede Gatekeeper tarafından kabul ediliyor.
-- [ ] Stable release notarization yoksa publish edilmiyor.
+- [ ] Stable artifact temiz macOS makinede Gatekeeper tarafından kabul ediliyor. — **doğrulanamadı.**
+      Bunun için gerçek Apple Developer credential'ları GitHub secret olarak eklenmeli ve bir tag
+      push'lanmalı; ikisi de yalnızca repo sahibinin yapabileceği şeyler. Kod ve workflow hazır ve
+      credential'sız hâliyle yeşil.
+- [ ] Stable release notarization yoksa publish edilmiyor. — gate yazıldı, bağlandı ve testlerle
+      kapatıldı (yukarıya bak), ama gerçek bir tag koşusunda hiç çalışmadı. Bugün pratikte şu
+      anlama geliyor: secret'lar eklenene kadar **stable release publish edilemez** (gate
+      `skipped`'ı reddeder); prerelease etkilenmiyor. Bu, kriterin istediği davranış — ama
+      "gerçekten çalıştı" kanıtı bir release koşusundan gelmeli.
 
 ---
 
@@ -317,7 +363,13 @@ hiç anmıyor.
 - [x] Tarayıcıyla indiren kullanıcı README'de ne yapacağını buluyor.
 - [ ] Notarization tamamlandığında bu geçici çözüm dokümandan kaldırılıyor. Kalan tek kriter
       bu; 5. maddede kaldırma adımı ve yarım kaldırmayı yakalayan test yazılı, madde o zaman
-      kapanır.
+      kapanır. — **Hâlâ açık, bilerek.** Notarization pipeline'ı ve gate'i 5. maddede yazıldı
+      (`release.yml`'de `notarytool submit` + `spctl --assess`, `verify-release.ts`'te
+      `verifyNotarization`), ama notarization henüz *tamamlanmadı*: Apple credential'ları secret
+      olarak eklenmediği için hiç bir artifact notarize edilmedi. Kriterin koşulu ("notarization
+      tamamlandığında") gerçekleşmedi, dolayısıyla workaround `README.md`/`CHANGELOG.md`'de ve
+      `scripts/__tests__/gatekeeper-workaround.test.ts` yerinde duruyor. Kaldırma, gerçek bir
+      notarize edilmiş release koşusundan sonra yapılacak tek bir değişiklik.
 
 ---
 

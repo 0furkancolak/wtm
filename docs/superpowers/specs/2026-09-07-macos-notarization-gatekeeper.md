@@ -33,17 +33,46 @@ Today's signing step (`.github/workflows/release.yml:56-82`) only runs `codesign
 
 ### Credentials
 
-Apple's notarization needs one of two credential shapes for `notarytool`: an Apple ID +
-app-specific password + team ID, or an App Store Connect API key (key ID + issuer ID + `.p8` file).
-**Before writing the workflow step, check Apple's current `notarytool` documentation** — this
-project's own real-evidence-only rule applies here as much as anywhere else, and Apple has changed
-which credential shapes it accepts before. Do not assume the shape below is still current; verify
-it, then adjust the secret names/step accordingly.
+**Verified 2026-09-07** against Apple's current documentation
+([Customizing the notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow),
+fetched from `developer.apple.com/tutorials/data/documentation/security/customizing-the-notarization-workflow.json`
+because the HTML page is JS-rendered). What that page says today, and what this increment is
+therefore built on:
+
+- `altool` is dead: *"The `altool` command has been deprecated, and the Apple notary service no
+  longer supports `altool` from November 1, 2023."* `notarytool` is the only path.
+- Two credential shapes are documented for `notarytool submit`: `--apple-id` + `--password` +
+  `--team-id`, where `--password` is an **app-specific password** (App Store Connect requires 2FA
+  on all accounts, so an account password will not work); or `--keychain-profile "<name>"`,
+  referring to an item created beforehand by `xcrun notarytool store-credentials`.
+- **Chosen shape: `--apple-id` / `--password` / `--team-id`.** The keychain-profile form exists to
+  keep a password out of a script on a developer's own machine; in CI the value arrives from
+  GitHub secrets either way, and `store-credentials` would only add a keychain to build and tear
+  down. Three secrets, named to match the existing `MACOS_SIGNING_*` ones:
+  `MACOS_NOTARIZATION_APPLE_ID`, `MACOS_NOTARIZATION_PASSWORD` (the app-specific password),
+  `MACOS_NOTARIZATION_TEAM_ID`. **These are the names to add in GitHub.**
+- `--wait` makes `notarytool` return only once the service has finished processing, which removes
+  the need to poll. The step still reads the returned `status` explicitly rather than trusting the
+  exit code alone.
+- Accepted upload formats: *"The notary service accepts disk images (UDIF format), signed flat
+  installer packages, and ZIP archives."* A bare Mach-O is not one of them, which is why the
+  submission is zipped.
+- The packaging decision below is **confirmed, not assumed**: *"Although tickets are created for
+  standalone binaries, it's not currently possible to staple tickets to them."* So WTM's bare
+  executable genuinely cannot carry a stapled ticket in any distribution format short of a bundle,
+  dmg or pkg, and Gatekeeper's online lookup is not a shortcut being taken here — it is the only
+  option that does not re-architect distribution.
+- Operational limits worth knowing before a release: most submissions finish within 5 minutes and
+  98% within 15; Apple asks for no more than 75 notarizations a day. `notarytool` uploads through
+  `notary-submissions-prod.s3-accelerate.amazonaws.com` (or the `us-west-2` endpoint with
+  `--no-s3-acceleration`), so a build host behind an egress allowlist needs that reachable.
 
 Follow the existing signing step's pattern exactly (`release.yml:56-82`): read credentials from
 `secrets.*`, and if they are absent, fall through to an explicit non-notarized status rather than
 failing the job — a prerelease must still be buildable by a contributor who has no Apple credentials
-configured, the same way it is buildable with no signing certificate today.
+configured, the same way it is buildable with no signing certificate today. The step also skips
+when signing itself was skipped: there is nothing to notarize about an ad-hoc signature, and
+submitting one would fail the job for a contributor who did nothing wrong.
 
 ### Gate
 

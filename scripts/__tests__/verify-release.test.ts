@@ -48,6 +48,7 @@ function request(directory: string, overrides: Partial<ReleaseVerification> = {}
     packageVersion: '1.2.3',
     smoke,
     signing: 'signed',
+    notarization: 'notarized',
     performance,
     ...overrides,
   };
@@ -283,6 +284,54 @@ describe('release artifact gate', () => {
       'wtm-darwin-arm64.tar.gz',
       'wtm-darwin-x64.tar.gz',
     ]);
+  });
+
+  test('rejects a release with no notarization evidence at all', () => {
+    // Not the same thing as "notarization was skipped": an absent value is the workflow having
+    // failed to hand the gate what it produced, which is exactly the silent wiring bug the
+    // structural test in release-workflow.test.ts exists to catch. Refused for a prerelease too.
+    const directory = stage();
+
+    expect(() => verifyReleaseArtifacts(request(directory, { notarization: undefined }))).toThrow(
+      'Release verification requires a notarization status of notarized or skipped',
+    );
+    expect(() => verifyReleaseArtifacts(request(directory, { notarization: 'maybe' }))).toThrow(
+      'Unknown notarization status "maybe": expected notarized or skipped',
+    );
+  });
+
+  test('rejects a stable release that was not notarized', () => {
+    // Item 5's acceptance criterion, as a test: a stable release does not publish without
+    // notarization. Without a ticket, a first-time user's download is killed by Gatekeeper
+    // before any WTM code runs.
+    const directory = stage();
+
+    expect(() => verifyReleaseArtifacts(request(directory, { notarization: 'skipped' }))).toThrow(
+      'Stable release v1.2.3 requires a notarized executable, found skipped',
+    );
+  });
+
+  test('accepts a prerelease whose build skipped notarization', () => {
+    // A contributor with no Apple credentials configured must still be able to cut a prerelease,
+    // the same way an ad-hoc signature is tolerated for one.
+    const directory = stage();
+
+    const manifest = verifyReleaseArtifacts(request(directory, {
+      release: { tag: 'v1.2.3-rc.1', version: '1.2.3-rc.1', prerelease: true },
+      packageVersion: '1.2.3-rc.1',
+      signing: 'adhoc',
+      notarization: 'skipped',
+    }));
+
+    expect(manifest.tag).toBe('v1.2.3-rc.1');
+  });
+
+  test('accepts a stable release that was notarized', () => {
+    const directory = stage();
+
+    const manifest = verifyReleaseArtifacts(request(directory, { notarization: 'notarized' }));
+
+    expect(manifest.tag).toBe('v1.2.3');
   });
 
   test('rejects a release without performance results', () => {
