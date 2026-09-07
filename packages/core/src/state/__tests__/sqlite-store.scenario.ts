@@ -34,6 +34,7 @@ type StateStoreDomainOperation =
   | 'advanceRepositoryOperationLease'
   | 'releaseRepositoryOperationLease'
   | 'readRepositoryOperationLease'
+  | 'listRepositoryOperationLeases'
   | 'releaseEndpointLeasesForWorktree'
   | 'transaction';
 type StateStoreHasExactlyPlannedOperations = Assert<Equal<keyof StateStore, StateStoreDomainOperation>>;
@@ -1171,8 +1172,10 @@ function repositoryOperationLeases() {
         hostId: 'this-host',
         ttlMs: 120_000,
       }, '2026-08-31T10:14:03.000Z');
-      // `gc` and `remove` are different rows: which operations exclude each other is a
-      // decision for the caller, not for the primary key.
+      // `gc` and `remove` are different rows, and the primary key alone would let both be
+      // held at once. Which operations exclude each other is a decision made in code, and the
+      // decision is that all of them do: a `gc` that reclaims what a `remove` is halfway
+      // through releasing is the destructive race this lease exists to prevent.
       const otherOperation = secondStore.acquireRepositoryOperationLease({
         repositoryId: repository.id,
         operation: 'gc',
@@ -1224,6 +1227,12 @@ function repositoryOperationLeases() {
         // A diagnostic read is not a capability to release: the token stays inside the store.
         holderViewKeys: survived === null ? null : Object.keys(survived).sort(),
         otherOperationOutcome: otherOperation.outcome,
+        // The refusal names the operation actually in the way, not the one that was asked for.
+        otherOperationHolder: otherOperation.outcome === 'acquired' ? null : otherOperation.holder.operation,
+        otherOperationHolderPid: otherOperation.outcome === 'acquired' ? null : otherOperation.holder.pid,
+        otherOperationRowAbsent: secondStore.readRepositoryOperationLease({
+          repositoryId: repository.id, operation: 'gc',
+        }) === null,
         emptyTokenRejected,
         wrongTokenReleased,
         survivedWrongTokenPid: survived?.pid ?? null,
@@ -1387,6 +1396,127 @@ function repositoryOperationLeaseRecovery() {
 }
 
 /**
+ * The cross-operation half of the exclusion, which the primary key cannot express.
+ *
+ * A repository holds one row per operation, so a live `gc` and a live `remove` are two different
+ * rows and nothing in the schema keeps them apart — a `remove` could delete the worktree the `gc`
+ * was walking. The refusal has to come from the code, and it has to name the operation that is
+ * actually in the way rather than the one the caller asked for, which is the only thing that makes
+ * "wtm remove says a gc is running" a sentence a user can act on.
+ *
+ * The second half is what a dead cross-operation row may hand over. Nothing: the row *is* one
+ * operation's journal, so `gc`'s half-finished stage is not a `remove`'s progress. It is cleared
+ * out of the way, not resumed from.
+ */
+function crossOperationLeaseExclusion() {
+  return withDatabase((path, open, close) => {
+    const first = open();
+    const repository = createRepository(first);
+    const worktreeRecord = first.reconcileWorktrees(repository.id, [
+      worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
+    ]).discovered[0];
+    if (worktreeRecord === undefined) throw new Error('Expected discovered worktree');
+    close();
+    const gcStore = new SQLiteStateStore(path);
+    const removeStore = new SQLiteStateStore(path);
+    const gcKey = { repositoryId: repository.id, operation: 'gc' } as const;
+    const removeKey = { repositoryId: repository.id, operation: 'remove' } as const;
+    try {
+      // The daemon's `gc`, holding the repository and journalling its way through.
+      const gcHeld = gcStore.acquireRepositoryOperationLease({
+        repositoryId: repository.id,
+        operation: 'gc',
+        token: 'gc-token',
+        pid: 7001,
+        processStartTime: 'Sun Sep  6 09:00:00 2026',
+        hostId: 'this-host',
+        ttlMs: 120_000,
+      }, '2026-09-07T09:00:00.000Z');
+      gcStore.advanceRepositoryOperationLease(gcKey, 'gc-token', 'quarantine', '2026-09-07T09:00:01.000Z');
+
+      // A `wtm remove` from another process, while that `gc` is live and unexpired.
+      const removeRefused = removeStore.acquireRepositoryOperationLease({
+        repositoryId: repository.id,
+        operation: 'remove',
+        token: 'remove-token',
+        pid: 7002,
+        processStartTime: 'Sun Sep  6 09:00:02 2026',
+        hostId: 'this-host',
+        subjectWorktreeId: worktreeRecord.id,
+        ttlMs: 120_000,
+        // Never reached: an unexpired row is a conflict without anybody being asked about it.
+        ownerLiveness: () => 'gone',
+      }, '2026-09-07T09:00:02.000Z');
+      const removeRowAfterRefusal = removeStore.readRepositoryOperationLease(removeKey);
+
+      // The same `gc`, now past its TTL with its owner provably gone: reported, not taken.
+      const removeToldItIsAbandoned = removeStore.acquireRepositoryOperationLease({
+        repositoryId: repository.id,
+        operation: 'remove',
+        token: 'remove-token',
+        pid: 7002,
+        processStartTime: 'Sun Sep  6 09:00:02 2026',
+        hostId: 'this-host',
+        ttlMs: 120_000,
+        ownerLiveness: () => 'gone',
+      }, '2026-09-07T09:05:00.000Z');
+
+      // And with `adopt`, cleared away — but never resumed from. The `remove` starts with its own
+      // subject and no stage at all, because "quarantine" is a thing `gc` was doing.
+      const removeAdopted = removeStore.acquireRepositoryOperationLease({
+        repositoryId: repository.id,
+        operation: 'remove',
+        token: 'remove-token',
+        pid: 7002,
+        processStartTime: 'Sun Sep  6 09:00:02 2026',
+        hostId: 'this-host',
+        subjectWorktreeId: worktreeRecord.id,
+        ttlMs: 120_000,
+        adopt: true,
+        ownerLiveness: () => 'gone',
+      }, '2026-09-07T09:05:00.000Z');
+      // The dead sibling went with it: a `gc` row left behind would refuse the very next caller.
+      const gcRowAfterAdoption = removeStore.readRepositoryOperationLease(gcKey);
+      // And the `remove` now holds the repository against the daemon's next `gc`.
+      const gcRefusedAfterwards = gcStore.acquireRepositoryOperationLease({
+        repositoryId: repository.id,
+        operation: 'gc',
+        token: 'gc-token-2',
+        pid: 7003,
+        processStartTime: 'Sun Sep  6 09:05:01 2026',
+        hostId: 'this-host',
+        ttlMs: 120_000,
+      }, '2026-09-07T09:05:01.000Z');
+
+      return {
+        gcHeldOutcome: gcHeld.outcome,
+        removeRefusedOutcome: removeRefused.outcome,
+        removeRefusedHolderOperation: removeRefused.outcome === 'acquired' ? null : removeRefused.holder.operation,
+        removeRefusedHolderPid: removeRefused.outcome === 'acquired' ? null : removeRefused.holder.pid,
+        removeRefusedHolderStage: removeRefused.outcome === 'acquired' ? null : removeRefused.holder.stage,
+        removeRowAfterRefusal,
+        removeToldItIsAbandonedOutcome: removeToldItIsAbandoned.outcome,
+        removeToldItIsAbandonedHolder: removeToldItIsAbandoned.outcome === 'acquired'
+          ? null : removeToldItIsAbandoned.holder.operation,
+        removeAdoptedOutcome: removeAdopted.outcome,
+        // Nothing is inherited across operations: neither the journal nor the subject.
+        removeAdoptedStage: removeAdopted.outcome === 'acquired' ? removeAdopted.adoptedStage : 'unreachable',
+        removeAdoptedLeaseStage: removeAdopted.outcome === 'acquired' ? removeAdopted.lease.stage : 'unreachable',
+        removeAdoptedSubjectIsOwn: removeAdopted.outcome === 'acquired'
+          && removeAdopted.lease.subjectWorktreeId === worktreeRecord.id,
+        gcRowAfterAdoption,
+        gcRefusedAfterwardsOutcome: gcRefusedAfterwards.outcome,
+        gcRefusedAfterwardsHolder: gcRefusedAfterwards.outcome === 'acquired'
+          ? null : gcRefusedAfterwards.holder.operation,
+      };
+    } finally {
+      gcStore.close();
+      removeStore.close();
+    }
+  });
+}
+
+/**
  * Removal has to give a worktree's ports back before Git deletes it, and be able to say how
  * many it gave back. Reconciliation's own release stays where it is; the two agree.
  */
@@ -1501,6 +1631,7 @@ const scenarios: Record<string, () => unknown> = {
   'orphaned-endpoint-release': orphanedEndpointRelease,
   'repository-operation-leases': repositoryOperationLeases,
   'repository-operation-lease-recovery': repositoryOperationLeaseRecovery,
+  'cross-operation-lease-exclusion': crossOperationLeaseExclusion,
   'worktree-endpoint-release': worktreeEndpointRelease,
   'operation-lease-retirement': operationLeaseRetirement,
 };

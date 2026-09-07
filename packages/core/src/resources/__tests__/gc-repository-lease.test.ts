@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { existsSync } from 'node:fs';
 import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -99,8 +100,10 @@ function memoryCoordination() {
  * A repository operation lease store that never expires and never questions liveness: this suite
  * only ever holds a lease for the duration of one synchronous hook call, so nothing here needs to
  * reason about time or dead holders — those are `operation-lease.test.ts`'s job. What it has to
- * get right is the one thing this suite is about: a second acquisition of the same
- * `{repositoryId, operation}` while the first is still held is a conflict, and releasing frees it.
+ * get right is the one thing this suite is about: a second acquisition while the first is still
+ * held is a conflict, and releasing frees it. That conflict is repository-wide — any live row of
+ * the repository refuses, whichever operation holds it — which is what lets this suite prove a
+ * `remove` cannot start underneath a running `gc --apply`.
  */
 function createFakeRepositoryLeaseStore(): RepositoryOperationLeaseStore {
   const rows = new Map<string, RepositoryOperationLease>();
@@ -114,7 +117,10 @@ function createFakeRepositoryLeaseStore(): RepositoryOperationLeaseStore {
       input: RepositoryOperationLeaseRequest,
       now: string,
     ): RepositoryOperationLeaseResult {
-      const existing = rows.get(keyOf(input));
+      const [existing] = [...rows.values()]
+        .filter((row) => row.repositoryId === input.repositoryId)
+        .sort((left, right) => left.acquiredAt.localeCompare(right.acquiredAt)
+          || left.operation.localeCompare(right.operation));
       if (existing !== undefined) return { outcome: 'conflict', holder: holderOf(existing) };
       const lease: RepositoryOperationLease = {
         repositoryId: input.repositoryId,
@@ -154,6 +160,13 @@ function createFakeRepositoryLeaseStore(): RepositoryOperationLeaseStore {
       const row = rows.get(keyOf(key));
       return row === undefined ? null : holderOf(row);
     },
+    listRepositoryOperationLeases(repositoryId): RepositoryOperationLeaseHolder[] {
+      return [...rows.values()]
+        .filter((row) => row.repositoryId === repositoryId)
+        .sort((left, right) => left.acquiredAt.localeCompare(right.acquiredAt)
+          || left.operation.localeCompare(right.operation))
+        .map(holderOf);
+    },
   };
 }
 
@@ -192,6 +205,36 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
     const conflict = contended as RepositoryOperationConflictError;
     expect(conflict.code).toBe('WTM_OPERATION_CONFLICT');
     expect(conflict.context).toMatchObject({ repositoryId: 'repository-1', operation: 'gc' });
+  });
+
+  test('refuses the whole apply while a CLI remove holds the repository', async () => {
+    // The cross-operation half of `todo.md` item 2, from `gc`'s side: `remove` and `gc` hold
+    // different rows, so nothing in the schema stops a `gc --apply` from reclaiming a resource
+    // the `remove` is halfway through releasing. The refusal is the widened conflict check.
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
+    const target = join(sandboxRoot, 'stale');
+    await writeFile(target, 'stale');
+    const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-09-01T00:00:00.000Z' });
+    const coordination = memoryCoordination();
+    const store = createFakeRepositoryLeaseStore();
+
+    const held = await withRepositoryOperationLease(
+      { store, readProcessStartTime, hostId, repositoryId: 'repository-1', operation: 'remove' },
+      async () => applyGcPlan(plan, {
+        guard, apply: true, lease: coordination.lease, journal: coordination.journal, fileTrust,
+        repositoryLease: { store, readProcessStartTime, hostId, repositoryIds: ['repository-1'] },
+      }).then(() => null, (error: unknown) => error),
+    );
+
+    expect(held).toBeInstanceOf(RepositoryOperationConflictError);
+    const conflict = held as RepositoryOperationConflictError;
+    expect(conflict.code).toBe('WTM_OPERATION_CONFLICT');
+    // `gc` was asked for; a `remove` is what is in the way, and the error says which is which.
+    expect(conflict.context).toMatchObject({
+      repositoryId: 'repository-1', operation: 'gc', holderOperation: 'remove',
+    });
+    // The apply never ran, so the file the plan was going to delete is still there.
+    expect(existsSync(target)).toBe(true);
   });
 
   test('releases the repository lease once apply finishes, so the next gc can take it', async () => {

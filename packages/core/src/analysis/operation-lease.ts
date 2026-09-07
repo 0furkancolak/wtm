@@ -81,6 +81,7 @@ export type RepositoryOperationLeaseStore = Pick<
   | 'advanceRepositoryOperationLease'
   | 'releaseRepositoryOperationLease'
   | 'readRepositoryOperationLease'
+  | 'listRepositoryOperationLeases'
 >;
 
 export interface RepositoryOperationSession {
@@ -197,13 +198,19 @@ async function acquireLease(
   let refusal: RepositoryOperationLeaseResult | null = null;
   for (let attempt = 0; attempt < maxAcquisitionAttempts; attempt += 1) {
     const timestamp = now();
-    const observed = input.store.readRepositoryOperationLease(key);
+    // Every operation's row, not just this one's: the store refuses on any colliding row of the
+    // repository, so a verdict measured only for `key.operation` would leave a dead `gc` row
+    // permanently unanswerable — refused as `alive` on the conservative branch below, forever,
+    // by a `remove` that could safely have cleared it.
+    const observed = input.store.listRepositoryOperationLeases(key.repositoryId);
     // Liveness is only ever the deciding question for a row that has already expired, and it
     // costs a trip to the operating system, so an unexpired holder is left unmeasured — it is a
     // conflict either way.
-    const measured = observed !== null && observed.expiresAt <= timestamp
-      ? { holder: observed, verdict: await livenessOf(input.readProcessStartTime, observed, input.hostId) }
-      : null;
+    const measured: Array<{ holder: RepositoryOperationLeaseHolder; verdict: 'alive' | 'unknown' | 'gone' }> = [];
+    for (const holder of observed) {
+      if (holder.expiresAt > timestamp) continue;
+      measured.push({ holder, verdict: await livenessOf(input.readProcessStartTime, holder, input.hostId) });
+    }
     let raced = false;
     const result = input.store.acquireRepositoryOperationLease({
       repositoryId: key.repositoryId,
@@ -216,16 +223,17 @@ async function acquireLease(
       ttlMs,
       adopt: input.adopt,
       ownerLiveness: (holder) => {
-        if (measured === null || !isSameHolder(measured.holder, holder)) {
-          // The row inside the transaction is not the row whose owner was measured, so the
-          // verdict in hand says nothing about this holder. `alive` is the conservative answer:
-          // it can only cost a retry, while `gone` would evict a process whose liveness was
-          // never actually checked — and two processes inside one destruction is the failure
-          // this whole mechanism exists to prevent.
+        const match = measured.find((entry) => isSameHolder(entry.holder, holder));
+        if (match === undefined) {
+          // The row inside the transaction is not a row whose owner was measured, so no verdict
+          // in hand says anything about this holder. `alive` is the conservative answer: it can
+          // only cost a retry, while `gone` would evict a process whose liveness was never
+          // actually checked — and two processes inside one destruction is the failure this
+          // whole mechanism exists to prevent.
           raced = true;
           return 'alive';
         }
-        return measured.verdict;
+        return match.verdict;
       },
     }, timestamp);
     if (result.outcome === 'acquired') return result.adoptedStage;
@@ -277,12 +285,20 @@ async function readProcessStartIdentity(
   return { pid, processStartTime };
 }
 
-/** The fields that make a holder the same holder: who it is, and when it took the lease. */
+/**
+ * The fields that make a holder the same holder: which row it is, who owns it, and when the
+ * lease was taken.
+ *
+ * The operation is part of the identity now that one repository's rows are measured together.
+ * One process can hold two of them, taken in the same millisecond by the same PID, and matching
+ * the wrong one would apply a verdict measured from one row to a different row's owner.
+ */
 function isSameHolder(
   measured: RepositoryOperationLeaseHolder,
   observed: RepositoryOperationLeaseHolder,
 ): boolean {
-  return measured.pid === observed.pid
+  return measured.operation === observed.operation
+    && measured.pid === observed.pid
     && measured.processStartTime === observed.processStartTime
     && measured.hostId === observed.hostId
     && measured.acquiredAt === observed.acquiredAt;
@@ -300,21 +316,33 @@ function conflictFrom(
   // A live holder's stage is a moving target — it can change in the moment between the read and
   // the report — so only an abandoned lease, whose owner will never write again, is quoted.
   const stage = abandoned ? holder.stage : null;
+  // What blocked the caller and what the caller asked for are two different operations now that
+  // the lease excludes the whole repository. `operation` stays the request — that is what the
+  // field has always meant, and a `--resume` suggestion has to name the caller's own command —
+  // and `holderOperation` names what is actually in the way, so a `remove` refused by a running
+  // `gc` says `gc` instead of blaming a second `remove` that does not exist.
+  const holderOperation = holder.operation;
+  const sameOperation = holderOperation === key.operation;
   return new RepositoryOperationConflictError(
     abandoned
-      ? `A previous "${key.operation}" on this repository stopped at stage ${stage === null ? '<none>' : `"${stage}"`} and its process (pid ${String(holder.pid)}) is gone.`
-      : `Another wtm process is performing "${key.operation}" on this repository (pid ${String(holder.pid)}, acquired ${holder.acquiredAt}).`,
+      ? `A previous "${holderOperation}" on this repository stopped at stage ${stage === null ? '<none>' : `"${stage}"`} and its process (pid ${String(holder.pid)}) is gone.`
+      : `Another wtm process is performing "${holderOperation}" on this repository (pid ${String(holder.pid)}, acquired ${holder.acquiredAt}).`,
     {
       abandoned,
       context: {
         repositoryId: key.repositoryId,
         operation: key.operation,
+        holderOperation,
         holderPid: holder.pid,
         acquiredAt: holder.acquiredAt,
         stage,
         abandoned,
       },
-      remediation: abandoned
+      // Resuming is only ever an offer to finish the caller's *own* half-done operation. A dead
+      // `gc` row is cleared out of a `remove`'s way by `--resume`, but suggesting
+      // `wtm remove --resume` for a stage `gc` wrote would be offering to continue work this
+      // command has no journal for.
+      remediation: abandoned && sameOperation
         ? [{ kind: 'command-suggestion', argv: ['wtm', key.operation, '--resume'] }]
         : [],
     },

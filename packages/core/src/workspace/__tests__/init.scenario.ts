@@ -147,6 +147,10 @@ class FailingReconciliationStore implements StateStore {
     return this.inner.readRepositoryOperationLease(key);
   }
 
+  listRepositoryOperationLeases(repositoryId: string): RepositoryOperationLeaseHolder[] {
+    return this.inner.listRepositoryOperationLeases(repositoryId);
+  }
+
   releaseEndpointLeasesForWorktree(worktreeId: string, releasedAt: string): number {
     return this.inner.releaseEndpointLeasesForWorktree(worktreeId, releasedAt);
   }

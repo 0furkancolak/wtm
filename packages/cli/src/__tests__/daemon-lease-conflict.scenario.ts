@@ -3,6 +3,12 @@
  * against one repository: the cross-process guarantee is only proven once the two holders are
  * composed the way their real entry points compose them, not just run twice from the same one.
  *
+ * The daemon side asks twice, for `remove` and then for `gc`. The second is the one that used to
+ * be granted: the lease is keyed `(repository_id, operation)`, so a daemon `gc` and a CLI
+ * `remove` took two independent rows and both proceeded — one free to reclaim a resource the
+ * other was mid-way through releasing. Both are refused now, and the `gc` refusal names `remove`
+ * as the holder in its way.
+ *
  * The CLI side is `remove-child.ts`, the same real `wtm remove` the CLI-vs-CLI scenario spawns.
  * The daemon side is `daemon-lease-conflict-child.ts`, which calls `withRepositoryOperationLease`
  * directly with `@wtm/platform`'s `selectPlatformRuntime` — the same composition
@@ -79,6 +85,11 @@ try {
   await waitFor(markerPath, 30_000);
 
   const daemon = runChildSync([databasePath, repository.id, 'remove']);
+  // The same held `remove` lease, asked for by the *other* destructive operation. `gc` is a
+  // different row in `repository_operation_leases`, so nothing in the schema stops the daemon
+  // from starting one on a repository a `wtm remove` is halfway through — this is `todo.md`
+  // item 2's remaining case, and the refusal has to come from the widened conflict check.
+  const daemonGc = runChildSync([databasePath, repository.id, 'gc']);
 
   await writeFile(releasePath, '');
   const cliReport = await cli;
@@ -92,6 +103,14 @@ try {
     daemonAbandoned: daemon.abandoned ?? null,
     daemonRepositoryId: daemon.context?.['repositoryId'] ?? null,
     daemonOperation: daemon.context?.['operation'] ?? null,
+    daemonHolderOperation: daemon.context?.['holderOperation'] ?? null,
+    daemonGcOutcome: daemonGc.outcome,
+    daemonGcCode: daemonGc.code ?? null,
+    daemonGcAbandoned: daemonGc.abandoned ?? null,
+    daemonGcRepositoryId: daemonGc.context?.['repositoryId'] ?? null,
+    // What the daemon asked for, and what the CLI is actually holding against it.
+    daemonGcOperation: daemonGc.context?.['operation'] ?? null,
+    daemonGcHolderOperation: daemonGc.context?.['holderOperation'] ?? null,
   })}\n`);
 } finally {
   store?.close();

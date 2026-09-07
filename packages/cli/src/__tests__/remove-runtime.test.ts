@@ -170,6 +170,16 @@ describe('runtime-aware wtm remove', () => {
       daemonAbandoned: false,
       daemonRepositoryId: expect.any(String),
       daemonOperation: 'remove',
+      daemonHolderOperation: 'remove',
+      // The cross-operation case (`todo.md` item 2): the daemon's `gc` is a different row from
+      // the CLI's `remove` and used to be granted alongside it. Two real OS processes, one
+      // `state.db`, and the second one is refused.
+      daemonGcOutcome: 'conflict',
+      daemonGcCode: 'WTM_OPERATION_CONFLICT',
+      daemonGcAbandoned: false,
+      daemonGcRepositoryId: expect.any(String),
+      daemonGcOperation: 'gc',
+      daemonGcHolderOperation: 'remove',
     });
   }, scenarioTestTimeoutMs);
 

@@ -1264,9 +1264,11 @@ export class SQLiteStateStore implements StateStore {
   /**
    * Claims a repository for one destructive operation, or reports who is already doing it.
    *
-   * The primary key is the repository and the operation, so the insert conflict *is* the
-   * refusal — the same shape as a managed process start reservation, and for the same reason:
-   * two processes asking at once cannot both be told yes.
+   * The transaction is what makes the refusal safe — the same shape as a managed process start
+   * reservation, and for the same reason: two processes asking at once cannot both be told yes.
+   * What it excludes is every *other* destructive operation on the repository too, not only a
+   * second attempt at this one, because `remove` deleting the worktree `gc` is walking is the
+   * race this lease exists to prevent and the two hold different rows.
    */
   acquireRepositoryOperationLease(
     input: RepositoryOperationLeaseRequest,
@@ -1285,32 +1287,53 @@ export class SQLiteStateStore implements StateStore {
     }
     const expiresAt = repositoryOperationLeaseExpiry(now, input.ttlMs);
     return this.transaction(() => {
-      const existing = this.#repositoryOperationLease(input);
-      if (existing !== null) {
+      // Exclusivity is repository-wide, not per operation. The primary key is
+      // `(repository_id, operation)` because a row *is* one operation's journal, but which
+      // operations exclude each other was always a decision for the code rather than for the
+      // key — Increment A's own schema comment says so, and says it that way on purpose so a
+      // fourth destructive operation never costs a table rebuild. Until this loop existed the
+      // decision was simply never written down anywhere, so a `wtm remove` and a `wtm gc`
+      // took two independent rows and both proceeded into the same repository.
+      const reclaimable: RepositoryOperationLeaseHolder[] = [];
+      for (const existing of this.#repositoryOperationLeases(input.repositoryId)) {
         // A lapsed TTL is not evidence that the holder is gone — a `git worktree remove` on a
         // cold filesystem outlives a TTL and is still the safest thing in the room. Stealing
         // the lease from it would put two processes inside the same destruction.
         if (!isRepositoryOperationLeaseExpired(existing, now)) {
           return { outcome: 'conflict', holder: existing };
         }
-        // Liveness is the caller's verdict and costs a `ps`, so it is asked for exactly one
-        // row and only once that row has expired. No callback means no evidence of life.
-        // `unknown` (a holder on a different host) is treated the same as `alive`: only a
-        // verdict of `gone` may reclaim what another host might still be using.
+        // Liveness is the caller's verdict and costs a `ps`, so it is asked only for a row
+        // that has already expired. No callback means no evidence of life. `unknown` (a
+        // holder on a different host) is treated the same as `alive`: only a verdict of
+        // `gone` may reclaim what another host might still be using.
         if ((input.ownerLiveness?.(existing) ?? 'gone') !== 'gone') {
           return { outcome: 'conflict', holder: existing };
         }
+        reclaimable.push(existing);
+      }
+      // Whichever dead row is reported, it is the one that got here first: the rows are read
+      // oldest-acquired first, so a caller told which operation is in its way is told about
+      // the holder that has held the repository longest.
+      const [abandoned] = reclaimable;
+      if (abandoned !== undefined) {
         // An abandoned lease is reported, not taken: its stage names a half-finished cleanup,
         // and continuing one is only safe for a caller that asked to resume it.
-        if (input.adopt !== true) return { outcome: 'abandoned', holder: existing };
-        this.#database.prepare(`
+        if (input.adopt !== true) return { outcome: 'abandoned', holder: abandoned };
+        // Every dead row goes, not just this operation's. A sibling row nobody adopted would
+        // be left behind to conflict with the very next acquisition in this same run.
+        const forget = this.#database.prepare(`
           DELETE FROM repository_operation_leases WHERE repository_id = ? AND operation = ?
-        `).run(input.repositoryId, input.operation);
+        `);
+        for (const holder of reclaimable) forget.run(input.repositoryId, holder.operation);
       }
       // The stage survives adoption. If the resuming process dies too, the next one still
-      // learns how far the first one got.
-      const stage = existing?.stage ?? null;
-      const subjectWorktreeId = input.subjectWorktreeId ?? existing?.subjectWorktreeId ?? null;
+      // learns how far the first one got — but only within one operation. The row is *that*
+      // operation's journal, so a dead `gc`'s half-finished stage is not a `remove`'s progress
+      // and must never be inherited as though it were: a cross-operation row being cleared is
+      // stale exclusivity, not a resumption of anything.
+      const resumed = reclaimable.find((holder) => holder.operation === input.operation);
+      const stage = resumed?.stage ?? null;
+      const subjectWorktreeId = input.subjectWorktreeId ?? resumed?.subjectWorktreeId ?? null;
       this.#database.prepare(`
         INSERT INTO repository_operation_leases (
           repository_id, operation, token, pid, process_start_time, host_id, subject_worktree_id,
@@ -1335,7 +1358,7 @@ export class SQLiteStateStore implements StateStore {
           renewedAt: now,
           expiresAt,
         },
-        adoptedStage: existing === null ? null : stage,
+        adoptedStage: stage,
       };
     });
   }
@@ -1398,6 +1421,11 @@ export class SQLiteStateStore implements StateStore {
   readRepositoryOperationLease(key: RepositoryOperationLeaseKey): RepositoryOperationLeaseHolder | null {
     this.#assertOpen();
     return this.#repositoryOperationLease(key);
+  }
+
+  listRepositoryOperationLeases(repositoryId: string): RepositoryOperationLeaseHolder[] {
+    this.#assertOpen();
+    return this.#repositoryOperationLeases(repositoryId);
   }
 
   listManagedProcesses(query: ManagedProcessQuery = {}): ManagedProcessRecord[] {
@@ -1492,6 +1520,22 @@ export class SQLiteStateStore implements StateStore {
       SELECT * FROM repository_operation_leases WHERE repository_id = ? AND operation = ?
     `).get(key.repositoryId, key.operation) as RepositoryOperationLeaseRow | undefined;
     return row === undefined ? null : repositoryOperationLeaseHolderFromRow(row);
+  }
+
+  /**
+   * Every operation currently holding this repository, oldest acquisition first.
+   *
+   * The order is what makes "which operation is in your way" a stable answer rather than
+   * whichever row SQLite happened to return first: the holder that got there first is the one
+   * a refusal names. `acquired_at` is the same caller-supplied ISO-8601 text everything else
+   * here compares, so the ordering is a fact of the timeline the caller stated.
+   */
+  #repositoryOperationLeases(repositoryId: string): RepositoryOperationLeaseHolder[] {
+    const rows = this.#database.prepare(`
+      SELECT * FROM repository_operation_leases WHERE repository_id = ?
+      ORDER BY acquired_at, operation
+    `).all(repositoryId) as RepositoryOperationLeaseRow[];
+    return rows.map(repositoryOperationLeaseHolderFromRow);
   }
 
   #releaseResourceCleanupLease(storageObjectId: string, token: string, preserveReservation = false): boolean {
