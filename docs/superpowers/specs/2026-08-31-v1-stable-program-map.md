@@ -179,6 +179,15 @@ credentials as GitHub secrets before it can close; the workflow/gate code does n
 Covers items 6 (`wtm create`), 7 (cleanup candidate ranking), 8 (allowed remote refs config),
 10 (readiness/healthcheck), 11 (shell completion), 42 (idle RSS budget decision).
 
+**2026-09-07: item 8 closed.** Its code had already shipped; the gap was that the key appeared in
+no user-facing document, which is now written (`docs/03-configuration-spec.md`, "Git safety").
+
+**2026-09-07: item 7 design written, not started.** See
+`docs/superpowers/specs/2026-09-07-cleanup-candidate-ranking.md`. Seven of the eight ranking inputs
+are reachable today; reclaimable disk size is deliberately deferred, because `disk.ts` reports its
+own basis as `reclaimable: 'not-estimated'` and turning that into a number is a measurement
+feature with its own cost and staleness decisions, not a ranking one.
+
 ### Increment I — Differentiators (post-v1)
 
 Covers items 12–15 and 16–21. Not required for `v1.0.0`.
