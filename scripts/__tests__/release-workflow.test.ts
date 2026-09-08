@@ -63,7 +63,9 @@ describe('release workflow', () => {
     // The gate reads its evidence from the environment, and the workflow produces it under a name
     // chosen in a different file. A mismatch is silent: the combined gate saw no smoke results at
     // all and refused a release whose executables had both passed.
-    const required = ['WTM_RELEASE_SIGNING', 'WTM_RELEASE_SMOKE', 'WTM_RELEASE_PERFORMANCE'];
+    const required = [
+      'WTM_RELEASE_SIGNING', 'WTM_RELEASE_SMOKE', 'WTM_RELEASE_PERFORMANCE', 'WTM_RELEASE_NOTARIZATION',
+    ];
 
     const gaps: string[] = [];
     for (const [name, job] of Object.entries(workflow('release.yml').jobs ?? {})) {

@@ -11,6 +11,19 @@ export const releaseSigningStatuses = ['signed', 'adhoc', 'unsigned'] as const;
 
 export type ReleaseSigningStatus = (typeof releaseSigningStatuses)[number];
 
+/**
+ * What the release run learned about Apple's notary service, and about what Gatekeeper then made
+ * of the result.
+ *
+ * `skipped` is the honest answer for a run with no Apple credentials configured, and for one whose
+ * executable is only ad-hoc signed — an ad-hoc signature cannot be notarized at all, so a
+ * prerelease is `skipped` by construction. `rejected` covers both halves of the check failing:
+ * the notary service refusing the submission, and `spctl --assess` refusing the result afterwards.
+ */
+export const releaseNotarizationStatuses = ['notarized', 'skipped', 'rejected'] as const;
+
+export type ReleaseNotarizationStatus = (typeof releaseNotarizationStatuses)[number];
+
 /** The one archive a single-architecture build produces. */
 export function releaseArchiveFor(arch: string): string {
   const name = `wtm-darwin-${arch}.tar.gz`;
@@ -56,6 +69,7 @@ export interface ReleaseVerification {
   packageVersion: string;
   smoke?: readonly ReleaseSmokeCheck[] | undefined;
   signing?: string | undefined;
+  notarization?: string | undefined;
   /** One report per architecture this directory's job measured; the whole release for `publish`'s combined gate. */
   performance?: readonly ReleasePerformanceReport[] | undefined;
   /**
@@ -100,6 +114,7 @@ export function verifyReleaseArtifacts(request: ReleaseVerification): ReleaseMan
   }
   verifySmoke(request.smoke);
   verifySigning(release, request.signing);
+  verifyNotarization(release, request.notarization);
   verifyPerformance(release, request.performance);
 
   const expected = request.archives ?? releaseArchiveNames;
@@ -183,6 +198,30 @@ function verifySigning(release: ReleaseVersion, signing: string | undefined): vo
 }
 
 /**
+ * Items 5 and 36 (todo.md). A Developer ID signature alone does not get a downloaded executable
+ * past Gatekeeper: the quarantine bit makes the kernel `SIGKILL` it at `exec`, before any WTM code
+ * runs, which is what item 36's `xattr -d com.apple.quarantine` workaround exists to route around.
+ * Only notarization removes the need for that workaround, so a stable release that was not
+ * notarized must not be published -- the same rule, and the same shape, as `verifySigning`.
+ *
+ * A prerelease is exempt for a stronger reason than it is exempt from signing: a prerelease is
+ * ad-hoc signed, and an ad-hoc signature cannot be submitted to the notary service at all. Holding
+ * one to this gate would leave no way to publish a release candidate.
+ */
+function verifyNotarization(release: ReleaseVersion, notarization: string | undefined): void {
+  const known = releaseNotarizationStatuses.join(', ').replace(/, (?=[^,]*$)/, ', or ');
+  if (notarization === undefined) {
+    throw new Error(`Release verification requires a notarization status of ${known}`);
+  }
+  if (!(releaseNotarizationStatuses as readonly string[]).includes(notarization)) {
+    throw new Error(`Unknown notarization status "${notarization}": expected ${known}`);
+  }
+  if (!release.prerelease && notarization !== 'notarized') {
+    throw new Error(`Stable release ${release.tag} requires a notarized executable, found ${notarization}`);
+  }
+}
+
+/**
  * Item 4 (todo.md): docs called performance a "release gate" while `release.yml` never asked it
  * anything, so a real performance blocker never once stopped a release. This is the other half of
  * that fix -- the workflow wiring is what actually produces `WTM_RELEASE_PERFORMANCE`.
@@ -256,6 +295,7 @@ if (import.meta.main) {
     packageVersion: version,
     smoke: readSmokeResults(process.env['WTM_RELEASE_SMOKE']),
     signing: process.env['WTM_RELEASE_SIGNING'],
+    notarization: process.env['WTM_RELEASE_NOTARIZATION'],
     performance: readPerformanceResults(process.env['WTM_RELEASE_PERFORMANCE']),
     archives: arch === undefined || arch === '' ? releaseArchiveNames : [releaseArchiveFor(arch)],
   });

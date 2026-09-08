@@ -2,7 +2,19 @@
 
 ## Status
 
-Open — planned, not started. Named and scoped one paragraph deep in
+Tasks 1–3 implemented — 2026-09-07. Task 4 (removing the quarantine workaround) is deliberately
+**not** done: it cannot close honestly without a real notarized artifact, and no Apple credentials
+exist as GitHub secrets yet. See "Credentials" for what to add and "What this increment cannot
+verify without the user" for what remains.
+
+What landed: the `notarize` step in `release.yml`'s `verify` job (both credential shapes, the
+`spctl --assess` check, `dist/release/NOTARIZATION`), `verifyNotarization` in
+`scripts/verify-release.ts` reading `WTM_RELEASE_NOTARIZATION`, the combined-gate merge in
+`publish`, and `scripts/__tests__/release-notarization.test.ts`, which runs the step's real shell
+against a scripted `notarytool`/`spctl` so every branch — including the credential-absent one a
+contributor hits — is proven without contacting Apple.
+
+Originally named and scoped one paragraph deep in
 `docs/superpowers/specs/2026-08-31-v1-stable-program-map.md:160-165`:
 
 > Covers item 5 and closes item 36's temporary workaround. Exit: stable macOS artifacts pass
@@ -33,12 +45,45 @@ Today's signing step (`.github/workflows/release.yml:56-82`) only runs `codesign
 
 ### Credentials
 
-Apple's notarization needs one of two credential shapes for `notarytool`: an Apple ID +
-app-specific password + team ID, or an App Store Connect API key (key ID + issuer ID + `.p8` file).
-**Before writing the workflow step, check Apple's current `notarytool` documentation** — this
-project's own real-evidence-only rule applies here as much as anywhere else, and Apple has changed
-which credential shapes it accepts before. Do not assume the shape below is still current; verify
-it, then adjust the secret names/step accordingly.
+**Verified 2026-09-07 against the tool itself** (`xcrun notarytool 1.1.2 (41)`), not against
+documentation or memory — Apple's own documentation page renders client-side and could not be read,
+and `--help` is the authority the workflow actually runs against anyway:
+
+```text
+-k, --key <key>        App Store Connect API key. File system path to the private key.
+-d, --key-id <key-id>  App Store Connect API Key ID.
+-i, --issuer <issuer>  App Store Connect API Issuer ID, UUID format. Required for Team API
+                       Keys. Do not provide for Individual API Keys.
+    --apple-id <apple-id> / --password <password> / --team-id <team-id>
+    --wait/--no-wait   Wait until processing is complete. (default: false)
+    --timeout <duration>
+-f, --output-format    ["normal", "json", "plist"]
+```
+
+Both shapes are still accepted, so the step supports both and prefers the API key. The `--issuer`
+line is the one detail worth carrying forward: it is *required* for a team key and must be
+*omitted* for an individual one, so the step passes it only when the secret is non-empty rather
+than always — `release-notarization.test.ts` covers both.
+
+The `stapler` claim in the packaging section below was verified the same way
+(`xcrun stapler staple --help`): *"Supported file formats are: UDIF disk images, code-signed
+executable bundles, and signed 'flat' installer packages."* A bare Mach-O is none of those, which
+is what settles the packaging question in favour of leaving distribution alone.
+
+**Secrets to add in GitHub** (repository settings → Secrets and variables → Actions). Configure
+*either* group; the API key is checked first:
+
+| Secret | Meaning |
+| --- | --- |
+| `MACOS_NOTARIZATION_API_KEY` | The App Store Connect `.p8` private key, base64-encoded (`base64 -i AuthKey_XXXX.p8`) |
+| `MACOS_NOTARIZATION_API_KEY_ID` | The key ID, ~10 alphanumeric characters |
+| `MACOS_NOTARIZATION_API_ISSUER` | The issuer UUID. Set it for a **team** key; leave it unset for an **individual** key |
+| `MACOS_NOTARIZATION_APPLE_ID` | Developer Apple ID (alternative to the three above) |
+| `MACOS_NOTARIZATION_PASSWORD` | App-specific password for that Apple ID |
+| `MACOS_NOTARIZATION_TEAM_ID` | Developer team ID |
+
+With neither group configured the step reports `notarization=skipped`, which a prerelease publishes
+through and a stable release does not — the same shape as `MACOS_SIGNING_*` today.
 
 Follow the existing signing step's pattern exactly (`release.yml:56-82`): read credentials from
 `secrets.*`, and if they are absent, fall through to an explicit non-notarized status rather than

@@ -2,6 +2,16 @@
 
 Spec: `docs/superpowers/specs/2026-09-07-macos-notarization-gatekeeper.md`
 
+**Executed 2026-09-07: Tasks 1, 2 and 3. Task 4 deliberately not done** — see this plan's own
+"What to hand back if credentials are never added", which is exactly the situation reached. Task 1's
+answer came from `xcrun notarytool submit --help` and `xcrun stapler staple --help` on this machine,
+not from Apple's documentation site (it renders client-side and returned nothing readable); the
+verified flags and the chosen secret names are recorded in the spec's "Credentials" section. Task 2
+gained one thing the plan did not list: a real test of the step's shell
+(`scripts/__tests__/release-notarization.test.ts`), because the spec's claim that the
+credential-absent path stays buildable is otherwise only an assertion — `release-workflow.test.ts`
+reads the YAML's shape, not what the shell in it decides.
+
 Four tasks in sequence — each one gates the next, so this is not a parallel wave like
 `2026-09-02-linux-in-ci.md`'s. Do them in order; do not start the workaround removal before the
 gate is real and green.
