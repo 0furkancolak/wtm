@@ -63,10 +63,13 @@ WTM_WATCH_UNAVAILABLE
 ```
 
 `WTM_OPERATION_CONFLICT` means another process already holds a destructive-operation lease on the
-repository, so the requested operation would race it. `context` carries `repositoryId`, `operation`,
-`holderPid`, `acquiredAt`, `stage` (`null` while the holder is still live, otherwise the last stage
-the abandoned holder recorded), and `abandoned`. It is a safety policy block, so it exits with code
-3.
+repository, so the requested operation would race it. Exclusion is per repository, not per
+operation: a running `gc` refuses a `remove` on the same repository, and the other way round, because
+one can delete what the other is walking. `context` carries `repositoryId`, `operation` (what this
+process asked to do), `holderOperation` (what the process in the way is doing — the same as
+`operation` when two of the same kind collide), `holderPid`, `acquiredAt`, `stage` (`null` while the
+holder is still live, otherwise the last stage the abandoned holder recorded), and `abandoned`. It
+is a safety policy block, so it exits with code 3.
 
 `WTM_DAEMON_UNAVAILABLE` means a required daemon operation could not reach the daemon. It also
 covers the case one step earlier, where WTM could not reach the *service manager* that would start

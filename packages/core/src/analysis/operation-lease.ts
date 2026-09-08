@@ -9,6 +9,12 @@
  * transaction and handed in as a precomputed verdict, with a guard that refuses to apply that
  * verdict to any row other than the one it was measured from.
  *
+ * Exclusion is per repository rather than per operation — a `gc` and a `remove` destroy the same
+ * things — so what has to be measured is every lease the repository holds, not just this
+ * operation's. Measuring only our own row and answering `alive` for the rest would be safe but
+ * useless: a crashed `gc` would refuse every `remove` on that repository forever, since nothing
+ * would ever be allowed to notice the process is gone.
+ *
  * How the start time is read is the caller's business, not this module's. Core states the question
  * as {@link ProcessStartTimeReader} and every caller supplies an implementation, which is what
  * keeps `@wtm/core` free of any operating system: the CLI and the daemon are the composition roots
@@ -81,6 +87,7 @@ export type RepositoryOperationLeaseStore = Pick<
   | 'advanceRepositoryOperationLease'
   | 'releaseRepositoryOperationLease'
   | 'readRepositoryOperationLease'
+  | 'listRepositoryOperationLeases'
 >;
 
 export interface RepositoryOperationSession {
@@ -197,13 +204,7 @@ async function acquireLease(
   let refusal: RepositoryOperationLeaseResult | null = null;
   for (let attempt = 0; attempt < maxAcquisitionAttempts; attempt += 1) {
     const timestamp = now();
-    const observed = input.store.readRepositoryOperationLease(key);
-    // Liveness is only ever the deciding question for a row that has already expired, and it
-    // costs a trip to the operating system, so an unexpired holder is left unmeasured — it is a
-    // conflict either way.
-    const measured = observed !== null && observed.expiresAt <= timestamp
-      ? { holder: observed, verdict: await livenessOf(input.readProcessStartTime, observed, input.hostId) }
-      : null;
+    const measured = await measureExpiredHolders(input, key.repositoryId, timestamp);
     let raced = false;
     const result = input.store.acquireRepositoryOperationLease({
       repositoryId: key.repositoryId,
@@ -216,16 +217,17 @@ async function acquireLease(
       ttlMs,
       adopt: input.adopt,
       ownerLiveness: (holder) => {
-        if (measured === null || !isSameHolder(measured.holder, holder)) {
-          // The row inside the transaction is not the row whose owner was measured, so the
-          // verdict in hand says nothing about this holder. `alive` is the conservative answer:
-          // it can only cost a retry, while `gone` would evict a process whose liveness was
-          // never actually checked — and two processes inside one destruction is the failure
-          // this whole mechanism exists to prevent.
+        const match = measured.find((entry) => isSameHolder(entry.holder, holder));
+        if (match === undefined) {
+          // No row measured out here matches the one inside the transaction, so no verdict in
+          // hand says anything about this holder. `alive` is the conservative answer: it can
+          // only cost a retry, while `gone` would evict a process whose liveness was never
+          // actually checked — and two processes inside one destruction is the failure this
+          // whole mechanism exists to prevent.
           raced = true;
           return 'alive';
         }
-        return measured.verdict;
+        return match.verdict;
       },
     }, timestamp);
     if (result.outcome === 'acquired') return result.adoptedStage;
@@ -233,6 +235,32 @@ async function acquireLease(
     if (!raced) break;
   }
   throw conflictFrom(key, refusal);
+}
+
+interface MeasuredHolder {
+  holder: RepositoryOperationLeaseHolder;
+  verdict: 'alive' | 'unknown' | 'gone';
+}
+
+/**
+ * Measures every lease on the repository that has already lapsed.
+ *
+ * Liveness is only ever the deciding question for an expired row, and it costs a trip to the
+ * operating system, so an unexpired holder is left unmeasured — it is a conflict either way.
+ * The reads are sequential because there are at most as many rows as there are destructive
+ * operations, and a handful of `ps` calls is not worth the concurrency.
+ */
+async function measureExpiredHolders(
+  input: RepositoryOperationLeaseInput,
+  repositoryId: string,
+  timestamp: string,
+): Promise<MeasuredHolder[]> {
+  const measured: MeasuredHolder[] = [];
+  for (const holder of input.store.listRepositoryOperationLeases(repositoryId)) {
+    if (holder.expiresAt > timestamp) continue;
+    measured.push({ holder, verdict: await livenessOf(input.readProcessStartTime, holder, input.hostId) });
+  }
+  return measured;
 }
 
 /**
@@ -300,15 +328,21 @@ function conflictFrom(
   // A live holder's stage is a moving target — it can change in the moment between the read and
   // the report — so only an abandoned lease, whose owner will never write again, is quoted.
   const stage = abandoned ? holder.stage : null;
+  // The operation in the way is not necessarily the one being asked for: a repository excludes
+  // every destructive operation, so a `remove` can be refused by a `gc`. Both are reported —
+  // `operation` is still what the caller asked to do, and `holderOperation` is what is actually
+  // happening — because a message that named only the request would send the user looking for
+  // another `remove` that does not exist.
   return new RepositoryOperationConflictError(
     abandoned
-      ? `A previous "${key.operation}" on this repository stopped at stage ${stage === null ? '<none>' : `"${stage}"`} and its process (pid ${String(holder.pid)}) is gone.`
-      : `Another wtm process is performing "${key.operation}" on this repository (pid ${String(holder.pid)}, acquired ${holder.acquiredAt}).`,
+      ? `A previous "${holder.operation}" on this repository stopped at stage ${stage === null ? '<none>' : `"${stage}"`} and its process (pid ${String(holder.pid)}) is gone.`
+      : `Another wtm process is performing "${holder.operation}" on this repository (pid ${String(holder.pid)}, acquired ${holder.acquiredAt}).`,
     {
       abandoned,
       context: {
         repositoryId: key.repositoryId,
         operation: key.operation,
+        holderOperation: holder.operation,
         holderPid: holder.pid,
         acquiredAt: holder.acquiredAt,
         stage,

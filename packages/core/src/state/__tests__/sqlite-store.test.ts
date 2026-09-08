@@ -247,7 +247,8 @@ describe('SQLiteStateStore', () => {
         'acquiredAt', 'expiresAt', 'hostId', 'operation', 'pid', 'processStartTime',
         'renewedAt', 'repositoryId', 'stage', 'subjectWorktreeId',
       ],
-      otherOperationOutcome: 'acquired',
+      otherOperationOutcome: 'conflict',
+      otherOperationHolderOperation: 'remove',
       emptyTokenRejected: true,
       wrongTokenReleased: false,
       survivedWrongTokenPid: 51422,
@@ -255,6 +256,33 @@ describe('SQLiteStateStore', () => {
       releasedTwice: false,
       readAfterRelease: null,
       reacquiredOutcome: 'acquired',
+    });
+  });
+
+  test('refuses a destructive operation while a different one holds the same repository', () => {
+    expect(runScenario('cross-operation-repository-leases')).toEqual({
+      gcOutcome: 'acquired',
+      whileGcLiveOutcome: 'conflict',
+      whileGcLiveHolderOperation: 'gc',
+      livenessAskedWhileLive: 0,
+      whileGcExpiredAndAliveOutcome: 'conflict',
+      whileGcExpiredAndGoneOutcome: 'abandoned',
+      whileGcExpiredAndGoneHolderOperation: 'gc',
+      whileGcExpiredAndGoneHolderStage: 'gc-quarantined',
+      adoptedOutcome: 'acquired',
+      adoptedStage: null,
+      adoptedLeaseStage: null,
+      adoptedLeaseSubjectWorktreeId: null,
+      rowsAfterAdopt: ['remove'],
+      listedHolderKeys: [
+        'acquiredAt', 'expiresAt', 'hostId', 'operation', 'pid', 'processStartTime',
+        'renewedAt', 'repositoryId', 'stage', 'subjectWorktreeId',
+      ],
+      rowsBeforeBothAdopted: ['gc', 'remove'],
+      adoptedBothOutcome: 'acquired',
+      adoptedBothStage: 'remove-processes-stopped',
+      adoptedBothSubjectWorktreeId: null,
+      rowsAfterBothAdopted: ['remove'],
     });
   });
 

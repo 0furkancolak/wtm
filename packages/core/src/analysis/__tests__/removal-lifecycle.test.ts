@@ -96,28 +96,44 @@ class RecordingCoordinator implements RemovalRuntimeCoordinator {
 }
 
 /**
- * The four lease semantics this lifecycle depends on, re-implemented in memory so a test can seed
- * a holder instead of racing a wall clock. Expiry is `expiresAt <= now` on ISO-8601 text and
+ * The lease semantics this lifecycle depends on, re-implemented in memory so a test can seed a
+ * holder instead of racing a wall clock. Expiry is `expiresAt <= now` on ISO-8601 text and
  * `ownerLiveness` is consulted only for a colliding row that has already expired, exactly as the
- * SQLite store behaves.
+ * SQLite store behaves — including the part that matters to a removal: a repository already
+ * being collected refuses one, so the rows this holds are not filtered down to `remove`.
  */
 class FakeLeaseStore implements RepositoryOperationLeaseStore {
-  row: RepositoryOperationLease | null = null;
+  rows: RepositoryOperationLease[] = [];
   readonly stages: string[] = [];
   releases = 0;
+
+  /** The single-holder view this suite seeds and asserts against. */
+  get row(): RepositoryOperationLease | null {
+    return this.rows[0] ?? null;
+  }
+
+  set row(value: RepositoryOperationLease | null) {
+    this.rows = value === null ? [] : [value];
+  }
 
   acquireRepositoryOperationLease(
     input: RepositoryOperationLeaseRequest,
     now: string,
   ): RepositoryOperationLeaseResult {
-    const existing = this.#matching(input);
-    if (existing !== null) {
+    const reclaimable: RepositoryOperationLease[] = [];
+    for (const existing of this.#held(input.repositoryId, input.operation)) {
       const holder = holderOf(existing);
       if (existing.expiresAt > now) return { outcome: 'conflict', holder };
       if ((input.ownerLiveness?.(holder) ?? 'gone') !== 'gone') return { outcome: 'conflict', holder };
-      if (input.adopt !== true) return { outcome: 'abandoned', holder };
+      reclaimable.push(existing);
     }
-    const stage = existing?.stage ?? null;
+    const abandoned = reclaimable[0];
+    if (abandoned !== undefined && input.adopt !== true) {
+      return { outcome: 'abandoned', holder: holderOf(abandoned) };
+    }
+    this.rows = this.rows.filter((row) => !reclaimable.includes(row));
+    const resumed = reclaimable.find(({ operation }) => operation === input.operation) ?? null;
+    const stage = resumed?.stage ?? null;
     const lease: RepositoryOperationLease = {
       repositoryId: input.repositoryId,
       operation: input.operation,
@@ -125,14 +141,14 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
       pid: input.pid,
       processStartTime: input.processStartTime,
       hostId: input.hostId,
-      subjectWorktreeId: input.subjectWorktreeId ?? existing?.subjectWorktreeId ?? null,
+      subjectWorktreeId: input.subjectWorktreeId ?? resumed?.subjectWorktreeId ?? null,
       stage,
       acquiredAt: now,
       renewedAt: now,
       expiresAt: new Date(Date.parse(now) + input.ttlMs).toISOString(),
     };
-    this.row = lease;
-    return { outcome: 'acquired', lease, adoptedStage: existing === null ? null : stage };
+    this.rows.push(lease);
+    return { outcome: 'acquired', lease, adoptedStage: resumed === null ? null : stage };
   }
 
   renewRepositoryOperationLease(
@@ -143,7 +159,7 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
   ): boolean {
     const row = this.#matching(key);
     if (row === null || row.token !== token || row.expiresAt <= now) return false;
-    this.row = { ...row, renewedAt: now, expiresAt: new Date(Date.parse(now) + ttlMs).toISOString() };
+    this.#replace(row, { ...row, renewedAt: now, expiresAt: new Date(Date.parse(now) + ttlMs).toISOString() });
     return true;
   }
 
@@ -156,7 +172,7 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
     const row = this.#matching(key);
     if (row === null || row.token !== token) return false;
     this.stages.push(stage);
-    this.row = { ...row, stage, renewedAt: now };
+    this.#replace(row, { ...row, stage, renewedAt: now });
     return true;
   }
 
@@ -164,7 +180,7 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
     const row = this.#matching(key);
     if (row === null || row.token !== token) return false;
     this.releases += 1;
-    this.row = null;
+    this.rows = this.rows.filter((candidate) => candidate !== row);
     return true;
   }
 
@@ -173,10 +189,30 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
     return row === null ? null : holderOf(row);
   }
 
+  listRepositoryOperationLeases(leaseRepositoryId: string): RepositoryOperationLeaseHolder[] {
+    return this.#held(leaseRepositoryId).map(holderOf);
+  }
+
+  /** The repository's rows, with `first` ahead of the others, exactly as the store orders them. */
+  #held(leaseRepositoryId: string, first?: RepositoryOperationLeaseRequest['operation']): RepositoryOperationLease[] {
+    return this.rows
+      .filter((row) => row.repositoryId === leaseRepositoryId)
+      .sort((left, right) => {
+        if (left.operation === right.operation) return 0;
+        if (left.operation === first) return -1;
+        if (right.operation === first) return 1;
+        return left.operation < right.operation ? -1 : 1;
+      });
+  }
+
+  #replace(row: RepositoryOperationLease, next: RepositoryOperationLease): void {
+    this.rows = this.rows.map((candidate) => (candidate === row ? next : candidate));
+  }
+
   #matching(key: RepositoryOperationLeaseKey): RepositoryOperationLease | null {
-    const row = this.row;
-    if (row === null) return null;
-    return row.repositoryId === key.repositoryId && row.operation === key.operation ? row : null;
+    return this.rows.find(
+      (row) => row.repositoryId === key.repositoryId && row.operation === key.operation,
+    ) ?? null;
   }
 }
 
@@ -461,6 +497,32 @@ test('refuses to remove behind a live holder of the repository lease', async () 
   expect(coordinator.calls).toEqual([]);
   expect(await pathExists(fixture.linkedWorktreePath)).toBe(true);
   expect(store.row?.pid).toBe(deadHolderPid);
+});
+
+test('refuses to remove behind a live gc on the same repository, and does not touch the worktree', async () => {
+  // The row a `gc` holds is a different row, and the removal never asks for it — so this only
+  // refuses if the repository, not the row, is what a destructive operation claims. A collection
+  // walking this worktree while it is deleted is the failure being prevented.
+  const fixture = await createFixture();
+  const store = new FakeLeaseStore();
+  seedHolder(store, { operation: 'gc', token: 'gc-token', expiresAt: '2099-01-01T00:00:00.000Z' });
+  const readProcessStartTime = scriptedReader(new Map([[deadHolderPid, null]]));
+  const coordinator = new RecordingCoordinator();
+
+  const thrown = await removeWorktreeGuarded({
+    context: context(fixture),
+    coordinator,
+    lease: { store, readProcessStartTime, hostId: 'this-host', repositoryId },
+  }).then(() => null, (error: unknown) => error);
+
+  expect(thrown).toBeInstanceOf(RepositoryOperationConflictError);
+  const conflict = thrown as RepositoryOperationConflictError;
+  expect(conflict.code).toBe('WTM_OPERATION_CONFLICT');
+  expect(conflict.context).toMatchObject({ operation: 'remove', holderOperation: 'gc' });
+  // Not one cleanup stage ran, and the gc's lease is exactly as it was.
+  expect(coordinator.calls).toEqual([]);
+  expect(await pathExists(fixture.linkedWorktreePath)).toBe(true);
+  expect(store.rows.map(({ operation, token }) => [operation, token])).toEqual([['gc', 'gc-token']]);
 });
 
 test('releases the repository lease after a successful removal and after a failed one', async () => {

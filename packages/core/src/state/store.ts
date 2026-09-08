@@ -238,10 +238,12 @@ export interface RepositoryOperationLeaseRequest {
   /**
    * Whether the process holding a colliding, expired lease is still alive. The store cannot
    * run `ps`, and core must not spawn one per row, so the verdict is the caller's — computed
-   * inside the transaction for the single row the acquisition collides with, and only when
-   * that row has already expired. `unknown` is a holder on a different host: this store cannot
-   * ask that host anything, and treats `unknown` exactly like `alive` — never abandoned on the
-   * strength of a host mismatch alone.
+   * inside the transaction, and asked only of a colliding row that has already expired. A
+   * repository holds at most one row per operation and they all collide with each other, so
+   * this can be asked more than once in a single acquisition; a caller that measured only some
+   * of them must answer `alive` for the rest, never `gone`. `unknown` is a holder on a
+   * different host: this store cannot ask that host anything, and treats `unknown` exactly like
+   * `alive` — never abandoned on the strength of a host mismatch alone.
    */
   ownerLiveness?: ((holder: RepositoryOperationLeaseHolder) => 'alive' | 'unknown' | 'gone') | undefined;
 }
@@ -271,6 +273,11 @@ export interface StateStore extends AdapterTrustStateStore {
   /**
    * Claims the repository for one destructive operation, or reports who holds it.
    *
+   * Exclusion is per *repository*, not per operation: a `gc` running on a repository refuses a
+   * `remove` on it, and the other way round. One destructive operation can delete what another
+   * is walking, so the row that blocks an acquisition is any row the repository has, and the
+   * holder reported names the operation actually in the way.
+   *
    * A lapsed TTL is not evidence that the holder is gone: an expired lease whose owner
    * `ownerLiveness` reports `alive` is still a conflict. An expired lease whose owner is gone
    * is reported `abandoned` rather than taken, because continuing a half-done cleanup is only
@@ -296,6 +303,15 @@ export interface StateStore extends AdapterTrustStateStore {
   ): boolean;
   releaseRepositoryOperationLease(key: RepositoryOperationLeaseKey, token: string): boolean;
   readRepositoryOperationLease(key: RepositoryOperationLeaseKey): RepositoryOperationLeaseHolder | null;
+  /**
+   * Every operation currently holding this repository, in `operation` order.
+   *
+   * Exclusion spans operations, so a caller that has to measure the liveness of whoever is in
+   * its way cannot ask about its own operation alone — the row blocking it may be a different
+   * one. This is the read that makes that measurable, and like {@link readRepositoryOperationLease}
+   * it hands back holders rather than leases: a diagnostic is not a capability to release.
+   */
+  listRepositoryOperationLeases(repositoryId: string): RepositoryOperationLeaseHolder[];
   /**
    * Releases every active endpoint lease of one worktree, and reports how many it released.
    *

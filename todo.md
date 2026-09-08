@@ -97,8 +97,10 @@ Mevcut process-local `Map` mutex ayrı CLI process'leri veya daemon ile CLI aras
 - [x] PID reuse riskine karşı process identity doğrulaması yap.
 - [~] `remove`, `gc`, destructive cleanup ve ileride `repair` gibi operasyonlarda aynı mekanizmayı
       kullan. — `remove` (`remove-worktree.ts`) ve `gc --apply` (`resources/gc.ts`) ikisi de
-      `withRepositoryOperationLease`'i kullanıyor; `repair` diye ayrı bir komut henüz yok, o yüzden
-      hâlâ implement edilmemiş. `RepositoryOperation` tipi zaten `'remove' | 'gc' | 'repair'`.
+      `withRepositoryOperationLease`'i kullanıyor ve **2026-09-07'den beri birbirlerini de
+      dışlıyorlar** (aşağıdaki kabul kriteri). `repair` diye ayrı bir komut hâlâ yok, o yüzden bu
+      satır bilerek `[~]` kalıyor; `RepositoryOperation` tipi zaten `'remove' | 'gc' | 'repair'` ve
+      genişletilmiş conflict kontrolü `repair` eklendiği gün ekstra iş gerektirmeden doğru çalışır.
 - [x] Lock conflict için stable JSON error code ekle.
 
 #### Önerilen hata kodu
@@ -110,11 +112,21 @@ WTM_OPERATION_CONFLICT
 #### Kabul kriterleri
 
 - [x] İki terminal aynı repository üzerinde destructive işlem başlatamıyor.
-- [~] CLI ve daemon aynı repository üzerinde çakışan destructive işlem yapamıyor. — kısmen: lease
-      anahtarı `{repository_id, operation}`, yani `remove-runtime.test.ts`'teki
-      `daemon-lease-conflict.scenario.ts` CLI'nin bir `remove`'unun daemon'un kendi `remove`'unu
-      gerçekten engellediğini kanıtlıyor (`WTM_OPERATION_CONFLICT`), ama farklı operasyonlar
-      (CLI `remove` + daemon `gc` gibi) birbirini engellemiyor — bu hâlâ açık.
+- [x] CLI ve daemon aynı repository üzerinde çakışan destructive işlem yapamıyor. — **kapandı,
+      2026-09-07.** Lease satırı hâlâ `{repository_id, operation}` ile saklanıyor (dördüncü bir
+      operasyon tablo migration'ı gerektirmesin diye), ama *conflict kontrolü* artık repository'nin
+      bütün satırlarını okuyor: `sqlite-store.ts`'teki `acquireRepositoryOperationLease` iki geçiş
+      yapıyor — canlı bir sahip her zaman ölü bir sahibi geçersiz kılıyor — ve `operation-lease.ts`
+      liveness'ı `listRepositoryOperationLeases` ile *her* lapsed satır için ölçüyor, yoksa çökmüş
+      bir `gc` o repository'deki her `remove`'u sonsuza kadar bloklardı. Kanıt: `remove-runtime.test.ts`
+      → `daemon-lease-conflict.scenario.ts` artık CLI `remove` tutarken daemon tarafından hem
+      `remove` hem de **`gc`** denemesi yapıyor, ikisi de gerçek ayrı OS process'lerinden
+      `WTM_OPERATION_CONFLICT` alıyor. Ek testler: `sqlite-store.test.ts`
+      (`cross-operation-repository-leases`), `operation-lease.test.ts` (ölü `gc` lease'i
+      adopt edilebiliyor ve journal'ı `remove`'a miras kalmıyor), `removal-lifecycle.test.ts`
+      (canlı `gc` removal'ı durduruyor), `gc-repository-lease.test.ts` (tutulan `remove` bütün
+      apply'ı reddediyor). Hata artık `context.holderOperation` ile *engelleyen* operasyonu da
+      söylüyor (additive alan, `docs/18-errors-json-contract.md`).
 - [x] Crash olmuş process'in lease'i sonsuza kadar kalmıyor.
 
 ---
@@ -1842,7 +1854,8 @@ dokümanda anlatıldığı gibi çalışıyor mu test edilmeli.
 - [x] port release
 - [x] resource release
 - [x] concurrent CLI remove
-- [ ] CLI + daemon conflict
+- [x] CLI + daemon conflict — `daemon-lease-conflict.scenario.ts`, hem aynı operasyon (`remove`
+      vs `remove`) hem de farklı operasyon (`remove` vs `gc`) için.
 - [x] crash during cleanup
 - [x] HEAD changes between checks
 - [ ] branch changes between checks

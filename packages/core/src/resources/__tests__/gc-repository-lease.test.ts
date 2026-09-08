@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { existsSync } from 'node:fs';
 import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -99,12 +100,22 @@ function memoryCoordination() {
  * A repository operation lease store that never expires and never questions liveness: this suite
  * only ever holds a lease for the duration of one synchronous hook call, so nothing here needs to
  * reason about time or dead holders — those are `operation-lease.test.ts`'s job. What it has to
- * get right is the one thing this suite is about: a second acquisition of the same
- * `{repositoryId, operation}` while the first is still held is a conflict, and releasing frees it.
+ * get right is the one thing this suite is about: while a lease is held, a second acquisition on
+ * that repository is a conflict — whatever operation it names, since a `remove` can delete what
+ * this collection is walking — and releasing frees it.
  */
 function createFakeRepositoryLeaseStore(): RepositoryOperationLeaseStore {
   const rows = new Map<string, RepositoryOperationLease>();
   const keyOf = (key: RepositoryOperationLeaseKey): string => `${key.repositoryId}\0${key.operation}`;
+  const heldBy = (repositoryId: string, first?: RepositoryOperationLeaseRequest['operation']) =>
+    [...rows.values()]
+      .filter((row) => row.repositoryId === repositoryId)
+      .sort((left, right) => {
+        if (left.operation === right.operation) return 0;
+        if (left.operation === first) return -1;
+        if (right.operation === first) return 1;
+        return left.operation < right.operation ? -1 : 1;
+      });
   const holderOf = (lease: RepositoryOperationLease): RepositoryOperationLeaseHolder => {
     const { token: _token, ...holder } = lease;
     return holder;
@@ -114,7 +125,7 @@ function createFakeRepositoryLeaseStore(): RepositoryOperationLeaseStore {
       input: RepositoryOperationLeaseRequest,
       now: string,
     ): RepositoryOperationLeaseResult {
-      const existing = rows.get(keyOf(input));
+      const existing = heldBy(input.repositoryId, input.operation)[0];
       if (existing !== undefined) return { outcome: 'conflict', holder: holderOf(existing) };
       const lease: RepositoryOperationLease = {
         repositoryId: input.repositoryId,
@@ -154,6 +165,9 @@ function createFakeRepositoryLeaseStore(): RepositoryOperationLeaseStore {
       const row = rows.get(keyOf(key));
       return row === undefined ? null : holderOf(row);
     },
+    listRepositoryOperationLeases(repositoryId): RepositoryOperationLeaseHolder[] {
+      return heldBy(repositoryId).map(holderOf);
+    },
   };
 }
 
@@ -192,6 +206,38 @@ describe('applyGcPlan repository-operation-lease wiring', () => {
     const conflict = contended as RepositoryOperationConflictError;
     expect(conflict.code).toBe('WTM_OPERATION_CONFLICT');
     expect(conflict.context).toMatchObject({ repositoryId: 'repository-1', operation: 'gc' });
+  });
+
+  test('refuses the whole apply while a remove holds the repository, and names remove as the blocker', async () => {
+    const { sandbox, sandboxRoot, guard, fileTrust } = await fixture();
+    const target = join(sandboxRoot, 'stale');
+    await writeFile(target, 'stale');
+    const plan = buildGcPlan({ sandbox, records: [await evidence(sandbox, target)], now: '2026-09-01T00:00:00.000Z' });
+    const coordination = memoryCoordination();
+    const store = createFakeRepositoryLeaseStore();
+
+    // The apply runs *inside* a held `remove` lease, which is the interleaving that matters: a
+    // collection can delete a resource the removal is midway through releasing, so `gc` has to be
+    // refused by a lease it does not share a row with.
+    const thrown = await withRepositoryOperationLease(
+      { store, readProcessStartTime, hostId, repositoryId: 'repository-1', operation: 'remove' },
+      async () => applyGcPlan(plan, {
+        guard, apply: true, lease: coordination.lease, journal: coordination.journal, fileTrust,
+        repositoryLease: { store, readProcessStartTime, hostId, repositoryIds: ['repository-1'] },
+      }),
+    ).then(() => null, (error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(RepositoryOperationConflictError);
+    const conflict = thrown as RepositoryOperationConflictError;
+    expect(conflict.code).toBe('WTM_OPERATION_CONFLICT');
+    expect(conflict.context).toMatchObject({
+      repositoryId: 'repository-1',
+      operation: 'gc',
+      holderOperation: 'remove',
+    });
+    // Refused before anything was deleted, and the removal's own lease outlived the refusal.
+    expect(existsSync(target)).toBe(true);
+    expect(store.readRepositoryOperationLease({ repositoryId: 'repository-1', operation: 'gc' })).toBeNull();
   });
 
   test('releases the repository lease once apply finishes, so the next gc can take it', async () => {

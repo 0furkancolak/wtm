@@ -44,11 +44,15 @@ Exit: `wtm remove` never orphans a managed process, never deletes a worktree aft
 blocks on identity change, is safe under concurrent CLI/daemon invocation, is recoverable after a
 daemon crash, and reports remote-knowledge provenance in JSON.
 
-**2026-09-07: reopened, narrowly.** `docs/superpowers/specs/2026-08-31-destructive-operation-safety-design.md`
-marked this Implemented, but item 2 kept two `[~]` (partial) lines: no `repair` command exists yet,
-and a CLI `remove` does not conflict with a daemon `gc` on the same repository (different
-operations, same repository, never checked against each other). See
-`docs/superpowers/specs/2026-09-07-cross-operation-lease-conflict.md` for the closing design.
+**2026-09-07: reopened, narrowly — and closed the same day.**
+`docs/superpowers/specs/2026-08-31-destructive-operation-safety-design.md` marked this Implemented,
+but item 2 kept two `[~]` (partial) lines: no `repair` command exists yet, and a CLI `remove` did
+not conflict with a daemon `gc` on the same repository (different operations, same repository,
+never checked against each other). The cross-operation half is now closed —
+`docs/superpowers/specs/2026-09-07-cross-operation-lease-conflict.md`, proven end to end by
+`daemon-lease-conflict.scenario.ts` running a real CLI `remove` against a real daemon-side `gc`.
+`repair` stays open on purpose: there is still no `repair` command, so there is nothing to exclude,
+and the widened check already covers it the day one exists.
 
 ### Increment B — Next-tag packaging and first-run correctness
 

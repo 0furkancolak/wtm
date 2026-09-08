@@ -156,7 +156,7 @@ describe('runtime-aware wtm remove', () => {
     });
   }, scenarioTestTimeoutMs);
 
-  test('refuses the daemon\'s own lease acquisition while a CLI remove holds the repository', () => {
+  test('refuses the daemon\'s own remove *and* gc while a CLI remove holds the repository', () => {
     const result = runScenario('node', ['--import', 'tsx', daemonConflictScenarioPath]);
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
@@ -170,6 +170,11 @@ describe('runtime-aware wtm remove', () => {
       daemonAbandoned: false,
       daemonRepositoryId: expect.any(String),
       daemonOperation: 'remove',
+      daemonGcOutcome: 'conflict',
+      daemonGcCode: 'WTM_OPERATION_CONFLICT',
+      daemonGcAbandoned: false,
+      daemonGcOperation: 'gc',
+      daemonGcHolderOperation: 'remove',
     });
   }, scenarioTestTimeoutMs);
 

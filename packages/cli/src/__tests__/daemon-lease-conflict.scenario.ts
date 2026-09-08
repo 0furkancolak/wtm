@@ -79,6 +79,10 @@ try {
   await waitFor(markerPath, 30_000);
 
   const daemon = runChildSync([databasePath, repository.id, 'remove']);
+  // The claim item 2 was still carrying: two *different* destructive operations on one
+  // repository. A `gc` acquires a different row than the `remove` the CLI is holding, so this is
+  // only refused if the conflict check reads the repository rather than the row.
+  const daemonGc = runChildSync([databasePath, repository.id, 'gc']);
 
   await writeFile(releasePath, '');
   const cliReport = await cli;
@@ -92,6 +96,12 @@ try {
     daemonAbandoned: daemon.abandoned ?? null,
     daemonRepositoryId: daemon.context?.['repositoryId'] ?? null,
     daemonOperation: daemon.context?.['operation'] ?? null,
+    daemonGcOutcome: daemonGc.outcome,
+    daemonGcCode: daemonGc.code ?? null,
+    daemonGcAbandoned: daemonGc.abandoned ?? null,
+    daemonGcOperation: daemonGc.context?.['operation'] ?? null,
+    // The refusal names the operation actually holding the repository, not the one asked for.
+    daemonGcHolderOperation: daemonGc.context?.['holderOperation'] ?? null,
   })}\n`);
 } finally {
   store?.close();

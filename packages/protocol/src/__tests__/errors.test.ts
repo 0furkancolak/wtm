@@ -52,6 +52,7 @@ describe('WTM_OPERATION_CONFLICT', () => {
         context: {
           repositoryId: 3,
           operation: 'remove',
+          holderOperation: 'gc',
           holderPid: 4242,
           acquiredAt: '2026-08-31T10:00:00.000Z',
           stage: null,
