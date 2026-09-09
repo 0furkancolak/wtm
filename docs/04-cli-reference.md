@@ -386,7 +386,7 @@ best-effort kill. A worktree with no such records is removed with no daemon at a
 | `0` | Success | — |
 | `1` | Generic operational failure | Every code not listed below |
 | `2` | Usage or configuration error | `WTM_CONFIG_INVALID`, `WTM_WORKSPACE_NOT_FOUND`, `WTM_NOT_INITIALIZED` |
-| `3` | A safety policy blocked the requested action | `GIT_MAIN_WORKTREE`, `GIT_WORKTREE_LOCKED`, `GIT_DIRTY_STAGED`, `GIT_DIRTY_UNSTAGED`, `GIT_UNTRACKED`, `GIT_UNMERGED`, `GIT_HEAD_NOT_REMOTE_PERSISTED`, `WTM_OPERATION_CONFLICT`, `RESOURCE_PATH_DENIED`, `GC_ACTIVE_WORKTREE_PROTECTED` |
+| `3` | A safety policy blocked the requested action | `GIT_MAIN_WORKTREE`, `GIT_WORKTREE_LOCKED`, `GIT_DIRTY_STAGED`, `GIT_DIRTY_UNSTAGED`, `GIT_UNTRACKED`, `GIT_IGNORED_CONTENT`, `GIT_UNMERGED`, `GIT_HEAD_NOT_REMOTE_PERSISTED`, `WTM_OPERATION_CONFLICT`, `RESOURCE_PATH_DENIED`, `GC_ACTIVE_WORKTREE_PROTECTED` |
 | `4` | The daemon is unavailable for an operation that requires it | `WTM_DAEMON_UNAVAILABLE` |
 | `5` | Protocol or adapter incompatibility | `ADAPTER_PROTOCOL_INCOMPATIBLE`, `ADAPTER_INVALID_RESPONSE` |
 

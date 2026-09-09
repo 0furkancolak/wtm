@@ -8,13 +8,48 @@ describe('parseStatusPorcelainV2', () => {
   test('accepts empty porcelain output as a clean worktree', () => {
     expect(parseStatusPorcelainV2(encode(''))).toMatchObject({
       classifications: ['clean'],
-      counts: { staged: 0, unstaged: 0, untracked: 0, unmerged: 0, submoduleDirty: 0 },
+      counts: { staged: 0, unstaged: 0, untracked: 0, ignored: 0, unmerged: 0, submoduleDirty: 0 },
     });
+  });
+
+  test('keeps ignored paths separate from untracked paths, including unusual filenames', () => {
+    const parsed = parseStatusPorcelainV2(encode(
+      '? notes.txt\0! .env\0! cache/\0? line\nbreak.txt\0! private cache\0! .env\0',
+    ));
+    expect(parsed.counts).toMatchObject({ untracked: 2, ignored: 3 });
+    expect(parsed.paths.untracked).toEqual(['line\nbreak.txt', 'notes.txt']);
+    expect(parsed.paths.ignored).toEqual(['.env', 'cache/', 'private cache']);
+    expect(parsed.classifications).toEqual(['untracked', 'ignored']);
+  });
+
+  test('does not classify an ignored-only worktree as clean or untracked', () => {
+    expect(parseStatusPorcelainV2(encode('! .env\0'))).toMatchObject({
+      classifications: ['ignored'],
+      counts: { untracked: 0, ignored: 1 },
+      paths: { untracked: [], ignored: ['.env'] },
+    });
+    expectDegraded('! \0', 'missing-path');
   });
 
   test('rejects an unknown porcelain-v2 record type', () => {
     expect(() => parseStatusPorcelainV2(encode('x unknown\0'))).toThrow(WorktreeAnalysisError);
     expectDegraded('x unknown\0', 'unknown-record-type');
+  });
+
+  for (const recordType of ['?', '!']) {
+    test(`rejects invalid UTF-8 in a ${recordType} pathname instead of changing its identity`, () => {
+      const output = new Uint8Array([recordType.charCodeAt(0), 32, 255, 46, 101, 110, 118, 0]);
+      expect(() => parseStatusPorcelainV2(output)).toThrow(WorktreeAnalysisError);
+      try {
+        parseStatusPorcelainV2(output);
+      } catch (error) {
+        expect(error).toMatchObject({ code: 'GIT_REPOSITORY_DEGRADED', context: { reason: 'invalid-utf8' } });
+      }
+    });
+  }
+
+  test('preserves valid Unicode, including a literal replacement character in a pathname', () => {
+    expect(parseStatusPorcelainV2(encode('! özel-�.env\0')).paths.ignored).toEqual(['özel-�.env']);
   });
 
   test('rejects invalid XY and submodule fields instead of treating the record as clean', () => {
@@ -61,6 +96,7 @@ describe('parseStatusPorcelainV2', () => {
 
       expect(parsed.paths.staged).toEqual(['renamed.txt']);
       expect(parsed.paths.untracked).toEqual([]);
+      expect(parsed.paths.ignored).toEqual([]);
     }
   });
 

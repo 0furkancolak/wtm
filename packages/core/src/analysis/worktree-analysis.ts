@@ -9,7 +9,7 @@ import {
   type RemotePersistenceAnalysis,
 } from './remote-persistence';
 
-export type WorkingTreeClassification = 'clean' | 'staged' | 'unstaged' | 'untracked' | 'unmerged';
+export type WorkingTreeClassification = 'clean' | 'staged' | 'unstaged' | 'untracked' | 'ignored' | 'unmerged';
 
 export interface WorktreeContext {
   repoPath: string;
@@ -49,6 +49,7 @@ interface WorkingTreeGroups<T> {
   staged: T;
   unstaged: T;
   untracked: T;
+  ignored: T;
   unmerged: T;
   submoduleDirty: T;
 }
@@ -219,24 +220,21 @@ async function withoutSymbolicLinks(
   worktreePath: string,
   analysis: WorkingTreeAnalysis,
 ): Promise<WorkingTreeAnalysis> {
-  const links = await Promise.all(analysis.paths.untracked.map(async (path) => {
-    try {
-      return (await lstat(resolve(worktreePath, path))).isSymbolicLink() ? path : null;
-    } catch {
-      // Gone between `git status` and now: not something a removal could lose either.
-      return path;
-    }
-  }));
-  const dropped = new Set(links.filter((path): path is string => path !== null));
-  if (dropped.size === 0) return analysis;
-  const untracked = analysis.paths.untracked.filter((path) => !dropped.has(path));
-  const counts = { ...analysis.counts, untracked: untracked.length };
-  return {
-    ...analysis,
-    classifications: classifyWorkingTree(counts),
-    counts,
-    paths: { ...analysis.paths, untracked },
-  };
+  const paths = { ...analysis.paths };
+  for (const group of ['untracked', 'ignored'] as const) {
+    const kept = await Promise.all(paths[group].map(async (path) => {
+      try {
+        return (await lstat(resolve(worktreePath, path))).isSymbolicLink() ? null : path;
+      } catch (error) {
+        // Only disappearance proves there is no content to lose. Other errors must fail closed.
+        if (isNodeError(error) && error.code === 'ENOENT') return null;
+        throw error;
+      }
+    }));
+    paths[group] = kept.filter((path): path is string => path !== null);
+  }
+  const counts = { ...analysis.counts, untracked: paths.untracked.length, ignored: paths.ignored.length };
+  return { ...analysis, classifications: classifyWorkingTree(counts), counts, paths };
 }
 
 export function parseStatusPorcelainV2(output: Uint8Array): WorkingTreeAnalysis {
@@ -244,10 +242,17 @@ export function parseStatusPorcelainV2(output: Uint8Array): WorkingTreeAnalysis 
     staged: [],
     unstaged: [],
     untracked: [],
+    ignored: [],
     unmerged: [],
     submoduleDirty: [],
   };
-  const decoded = new TextDecoder().decode(output);
+  let decoded: string;
+  try {
+    // Replacing invalid bytes would change path identity; lstat could then mistake it for a gone file.
+    decoded = new TextDecoder('utf-8', { fatal: true }).decode(output);
+  } catch {
+    throw malformedStatus('invalid-utf8', 0, null);
+  }
   if (decoded.length > 0 && !decoded.endsWith('\0')) {
     throw malformedStatus('missing-terminal-nul', 0, null);
   }
@@ -262,7 +267,7 @@ export function parseStatusPorcelainV2(output: Uint8Array): WorkingTreeAnalysis 
     }
     if (field.startsWith('? ') || field.startsWith('! ')) {
       if (field.length === 2) throw malformedStatus('missing-path', index, field[0] ?? null);
-      addPath(paths.untracked, field.slice(2));
+      addPath(field.startsWith('! ') ? paths.ignored : paths.untracked, field.slice(2));
       continue;
     }
     if (field.startsWith('u ')) {
@@ -305,6 +310,7 @@ export function parseStatusPorcelainV2(output: Uint8Array): WorkingTreeAnalysis 
     paths.staged,
     paths.unstaged,
     paths.untracked,
+    paths.ignored,
     paths.unmerged,
     paths.submoduleDirty,
   ];
@@ -313,6 +319,7 @@ export function parseStatusPorcelainV2(output: Uint8Array): WorkingTreeAnalysis 
     staged: paths.staged.length,
     unstaged: paths.unstaged.length,
     untracked: paths.untracked.length,
+    ignored: paths.ignored.length,
     unmerged: paths.unmerged.length,
     submoduleDirty: paths.submoduleDirty.length,
   };
@@ -324,6 +331,7 @@ function classifyWorkingTree(counts: WorkingTreeAnalysis['counts']): WorkingTree
   if (counts.staged > 0) classifications.push('staged');
   if (counts.unstaged > 0) classifications.push('unstaged');
   if (counts.untracked > 0) classifications.push('untracked');
+  if (counts.ignored > 0) classifications.push('ignored');
   if (counts.unmerged > 0) classifications.push('unmerged');
   if (classifications.length === 0) classifications.push('clean');
   return classifications;
@@ -488,6 +496,13 @@ function buildSafety(
       'GIT_UNTRACKED',
       'The worktree contains untracked files.',
       pathContext(worktreeContext, workingTree.paths.untracked),
+    ));
+  }
+  if (workingTree.counts.ignored > 0) {
+    blockers.push(gitError(
+      'GIT_IGNORED_CONTENT',
+      'The worktree contains ignored files or directories.',
+      pathContext(worktreeContext, workingTree.paths.ignored),
     ));
   }
   if (!remotePersistence.persisted) {
@@ -663,8 +678,8 @@ function unavailableWorkingTree(): WorkingTreeAnalysis {
   return {
     available: false,
     classifications: [],
-    counts: { staged: 0, unstaged: 0, untracked: 0, unmerged: 0, submoduleDirty: 0 },
-    paths: { staged: [], unstaged: [], untracked: [], unmerged: [], submoduleDirty: [] },
+    counts: { staged: 0, unstaged: 0, untracked: 0, ignored: 0, unmerged: 0, submoduleDirty: 0 },
+    paths: { staged: [], unstaged: [], untracked: [], ignored: [], unmerged: [], submoduleDirty: [] },
   };
 }
 

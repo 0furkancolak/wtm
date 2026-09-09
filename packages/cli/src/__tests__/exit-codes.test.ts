@@ -30,6 +30,7 @@ const expectedExitCodes: Readonly<Record<WtmErrorCode, number>> = {
   GIT_DIRTY_STAGED: 3,
   GIT_DIRTY_UNSTAGED: 3,
   GIT_UNTRACKED: 3,
+  GIT_IGNORED_CONTENT: 3,
   GIT_UNMERGED: 3,
   GIT_HEAD_NOT_REMOTE_PERSISTED: 3,
   GIT_BRANCH_IN_USE: 3,

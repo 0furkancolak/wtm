@@ -188,10 +188,43 @@ describe('a blocker that only names what WTM materialized', () => {
       // The directory WTM created is what the cleanup stage exists to collect, so the removal
       // has to reach that stage rather than refuse in front of it.
       expect(result.cleanup.collectedResources).toBe(1);
-      expect(result.deferredBlockers.map((blocker) => blocker.code)).toEqual(['GIT_UNTRACKED']);
+      expect(result.deferredBlockers.map((blocker) => blocker.code)).toEqual([
+        visibility === 'gitignored' ? 'GIT_IGNORED_CONTENT' : 'GIT_UNTRACKED',
+      ]);
       expect(await pathExists(fixture.linkedWorktreePath)).toBe(false);
     });
   }
+
+  test('preserves ignored user content alongside a reclaimable ignored resource', async () => {
+    const fixture = await createFixture();
+    await materializeEphemeralResource(fixture, 'gitignored');
+    await fixture.write(fixture.repoPath, '.git/info/exclude', '.env\n');
+    await fixture.write(fixture.linkedWorktreePath, '.env', 'must survive\n');
+    await expect(removeWorktreeGuarded({
+      context: runtimeContext(fixture), coordinator: resourceCleanupCoordinator(fixture),
+    })).rejects.toMatchObject({
+      blockers: [{ code: 'GIT_IGNORED_CONTENT', context: { paths: ['.env', 'node_modules/'] } }],
+    });
+    expect(await pathExists(join(fixture.linkedWorktreePath, '.env'))).toBe(true);
+    expect(await pathExists(join(fixture.linkedWorktreePath, 'node_modules/.package-lock.json'))).toBe(true);
+  });
+
+  test('rechecks ignored content created during runtime cleanup', async () => {
+    const fixture = await createFixture();
+    await materializeEphemeralResource(fixture, 'gitignored');
+    await fixture.write(fixture.repoPath, '.git/info/exclude', '.env\n');
+    const coordinator = resourceCleanupCoordinator(fixture);
+    const cleanup = coordinator.cleanupEphemeralResources;
+    coordinator.cleanupEphemeralResources = async (subject) => {
+      const result = await cleanup(subject);
+      await fixture.write(fixture.linkedWorktreePath, '.env', 'created during cleanup\n');
+      return result;
+    };
+    await expect(removeWorktreeGuarded({ context: runtimeContext(fixture), coordinator }))
+      .rejects.toMatchObject({ blockers: [{ code: 'GIT_IGNORED_CONTENT', context: { paths: ['.env'] } }] });
+    expect(await pathExists(join(fixture.linkedWorktreePath, '.env'))).toBe(true);
+    expect(await pathExists(join(fixture.linkedWorktreePath, 'node_modules'))).toBe(false);
+  });
 
   test('still refuses an untracked file the cleanup stage would not collect', async () => {
     const fixture = await createFixture();
@@ -235,8 +268,7 @@ async function materializeEphemeralResource(
 ): Promise<void> {
   await fixture.write(fixture.linkedWorktreePath, 'node_modules/.package-lock.json', '{}\n');
   if (visibility === 'untracked') return;
-  // Ignored and untracked reach the analysis by different `git status` records and both fold
-  // into the same blocker, so a fix that only understands one of them is only half a fix.
+  // Both porcelain record types must reach runtime cleanup under their own blocker code.
   await fixture.write(fixture.linkedWorktreePath, '.gitignore', 'node_modules/\n');
   await fixture.git(fixture.linkedWorktreePath, ['add', '.gitignore']);
   await fixture.git(fixture.linkedWorktreePath, ['commit', '-m', 'Ignore node_modules']);

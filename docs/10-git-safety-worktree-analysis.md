@@ -24,7 +24,7 @@ For every worktree, collect:
 
 ### Working tree state
 
-Use porcelain output suitable for machine parsing, including untracked files.
+Use porcelain output suitable for machine parsing, including untracked and ignored content.
 
 Classify:
 
@@ -33,10 +33,26 @@ clean
 staged
 unstaged
 untracked
+ignored
 unmerged
 ```
 
-Counts and representative paths can be returned; JSON can include the full parsed set when requested.
+`workingTree.counts` and `workingTree.paths` expose independent `untracked` and `ignored`
+groups. A worktree containing only ignored content is classified as `ignored`, not `clean`.
+Ignored directories may be represented by one trailing-slash entry; these are Git entry counts,
+not recursive file counts. Both groups block removal, using `GIT_UNTRACKED` and
+`GIT_IGNORED_CONTENT` respectively.
+
+Untracked and ignored symbolic links retain the existing policy: WTM ignores the link itself
+without following its target. A missing path can be dropped between status and inspection;
+other inspection failures abort analysis rather than classify unreadable content as safe.
+Invalid UTF-8 in porcelain output also aborts analysis (`GIT_REPOSITORY_DEGRADED`), because
+replacing invalid bytes could change pathname identity and make existing content appear absent.
+
+Runtime-aware removal can defer either content blocker only when **every** named path lies
+inside an ephemeral resource scheduled for cleanup. Ignored user data outside those resources
+still blocks removal. After cleanup the full analysis runs again; any remaining or newly created
+ignored content blocks Git removal.
 
 ### Upstream and remote safety
 
@@ -257,26 +273,26 @@ tool's own bookkeeping blocked it. That is not a hypothetical; it was the behavi
 So stage 1 partitions the blockers before it refuses. A blocker is **deferred** to stage 4 when
 both of these hold:
 
-1. its code is `GIT_UNTRACKED`, and
+1. its code is `GIT_UNTRACKED` or `GIT_IGNORED_CONTENT`, and
 2. **every** path it names resolves inside a path the cleanup stage says it is about to collect.
 
 Everything else refuses, exactly as before. The rule is deliberately narrow in three directions,
 and each narrowing is what keeps it safe:
 
-- **Per-blocker and all-or-nothing.** A single `GIT_UNTRACKED` blocker naming one reclaimable
+- **Per-blocker and all-or-nothing.** A single untracked or ignored blocker naming one reclaimable
   directory and one real file is not deferred. Half a match is no match.
 - **Code-checked, not only path-checked.** `GIT_DIRTY_STAGED`, `GIT_DIRTY_UNSTAGED` and
   `GIT_UNMERGED` carry paths through the same machinery, so without the code check an edit to a
   *tracked* file that happens to live under a declared resource path would be deferred — and
   deferring it authorizes deleting work Git could not give back.
 - **Failing closed.** A blocker whose path list is missing, empty, or holds anything that is not a
-  string is not deferrable. An untracked blocker WTM cannot read the extent of is one it cannot
+  string is not deferrable. A content blocker WTM cannot read the extent of is one it cannot
   prove is harmless. Likewise, a worktree whose configuration WTM cannot resolve reports no
   reclaimable paths at all, so it refuses at stage 1 rather than entering a cleanup that does not
   know what to collect.
 
 Deferring authorizes nothing. It moves the decision to stage 6, which sees whatever cleanup
-actually left behind: if stage 4 retains a target instead of deleting it, the untracked content is
+actually left behind: if stage 4 retains a target instead of deleting it, the untracked or ignored content is
 still there and the removal is refused — after the processes were stopped, but with the worktree
 intact.
 
@@ -418,6 +434,7 @@ Example codes:
 GIT_DIRTY_STAGED
 GIT_DIRTY_UNSTAGED
 GIT_UNTRACKED
+GIT_IGNORED_CONTENT
 GIT_UNMERGED
 GIT_HEAD_NOT_REMOTE_PERSISTED
 GIT_WORKTREE_LOCKED

@@ -144,11 +144,19 @@ GIT_WORKTREE_LOCKED
 GIT_DIRTY_STAGED
 GIT_DIRTY_UNSTAGED
 GIT_UNTRACKED
+GIT_IGNORED_CONTENT
 GIT_BRANCH_IN_USE
 GIT_UNMERGED
 GIT_HEAD_NOT_REMOTE_PERSISTED
 GIT_UPSTREAM_MISSING
 ```
+
+`GIT_UNTRACKED` identifies untracked paths; `GIT_IGNORED_CONTENT` identifies ignored files or
+directories reported by Git (including `.gitignore`, `info/exclude`, and global excludes).
+Both carry worktree-relative `context.paths` and `context.count`, and both map to exit code 3.
+`workingTree.counts.ignored` and `workingTree.paths.ignored` are separate from `untracked`;
+consumers that need all local-only content must inspect both groups. Ignored directories can be
+reported as one path ending in `/`; counts describe Git entries, not a recursive file count.
 
 ### Runtime
 

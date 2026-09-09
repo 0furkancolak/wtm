@@ -133,7 +133,7 @@ Read `errors[].code` and handle the refusal, do not work around it:
 
 | `errors[].code` | Exit | What it means, and what to do |
 | --- | --- | --- |
-| `GIT_DIRTY_*`, `GIT_UNTRACKED`, `GIT_UNMERGED`, `GIT_HEAD_NOT_REMOTE_PERSISTED`, `GIT_WORKTREE_LOCKED`, `GIT_MAIN_WORKTREE` | 3 | Real work would be lost. Report the blocker and its remediation. |
+| `GIT_DIRTY_*`, `GIT_UNTRACKED`, `GIT_IGNORED_CONTENT`, `GIT_UNMERGED`, `GIT_HEAD_NOT_REMOTE_PERSISTED`, `GIT_WORKTREE_LOCKED`, `GIT_MAIN_WORKTREE` | 3 | Real work would be lost. Report the blocker and its remediation. Ignored content is separate from untracked content; inspect both `workingTree.paths.ignored` and `workingTree.paths.untracked`. |
 | `WTM_OPERATION_CONFLICT` | 3 | Another process is removing in this repository. `context` names `holderPid` and `acquiredAt`. Do not retry in a loop; report the holder. |
 | `WTM_OPERATION_CONFLICT` with `context.abandoned: true` | 3 | The previous removal's process died at `context.stage`. This is the only case for `--resume`; the error's remediation carries the exact command. |
 | `WTM_DAEMON_UNAVAILABLE` | 4 | The daemon owns running processes here and cannot be reached. Start it with `wtm daemon install` — never `kill`/`pkill` them yourself. |

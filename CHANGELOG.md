@@ -26,6 +26,15 @@ binaries are Developer ID signed and notarized.
 
 ### Added
 
+- Separate ignored-file counts, paths, and classification in worktree analysis, with
+  `GIT_IGNORED_CONTENT` (exit 3). Consumers aggregating local-only content must now read both
+  `untracked` and `ignored`. Runtime cleanup continues to defer only fully reclaimable content
+  and rechecks safety before removing the worktree. Invalid UTF-8 Git paths and filesystem
+  inspection errors fail closed instead of making local content appear absent.
+- CLI documentation checks cover command and option references in the README, CLI reference,
+  Agent Skill, and example Markdown files. Fixed the README installation command to
+  `wtm skill install`.
+
 - **Linux x64 support, proven by CI rather than asserted.** An `ubuntu-latest` x64 job runs `lint`,
   `typecheck`, the full suite, `test:e2e`, `build`, `package:verify` and `binary:verify` — the same
   gates as the two macOS legs, in the same order, with nothing skipped, weakened or made

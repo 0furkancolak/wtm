@@ -32,8 +32,8 @@ function analysis(overrides: {
     workingTree: {
       available: true,
       classifications: ['clean'],
-      counts: { staged: 0, unstaged: 0, untracked: 0, unmerged: 0, submoduleDirty: 0 },
-      paths: { staged: [], unstaged: [], untracked: [], unmerged: [], submoduleDirty: [] },
+      counts: { staged: 0, unstaged: 0, untracked: 0, ignored: 0, unmerged: 0, submoduleDirty: 0 },
+      paths: { staged: [], unstaged: [], untracked: [], ignored: [], unmerged: [], submoduleDirty: [] },
     },
     upstream: { configuredRef: null, available: false, ahead: null, behind: null },
     remotePersistence: {

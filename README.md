@@ -220,7 +220,7 @@ workspace.
 wtm analyze
 ```
 
-`analyze` reports the safety picture for the current worktree: staged, unstaged, untracked
+`analyze` reports the safety picture for the current worktree: staged, unstaged, untracked, ignored
 and unmerged counts, the upstream relationship, and whether removal would lose work.
 
 ### 3. Define or inherit tasks
@@ -601,7 +601,7 @@ formatting never leak into JSON or into a task's own output streams.
 WTM ships an Agent Skill so a coding agent can use all of this without being taught:
 
 ```bash
-wtm skill --install
+wtm skill install
 ```
 
 ## Command reference

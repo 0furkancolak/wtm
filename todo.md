@@ -12,6 +12,10 @@ göre listeler.
 
 ---
 
+**2026-09-09 analiz ve ilk geliştirme dilimi:**
+[`docs/development/2026-09-09-todo-analysis.md`](docs/development/2026-09-09-todo-analysis.md).
+Madde 16 ve 34 tamamlandı; kalan P0/P1 bağımlılıkları ve doğrulama sınırları bu notta.
+
 ## P0 — Stable öncesi zorunlu
 
 ### [x] 1. `wtm remove` lifecycle'ını runtime-aware hale getir
@@ -1437,9 +1441,21 @@ Bu özellik core logic taşımamalı; yalnızca mevcut stable protocol üzerinde
 
 ## P2 — Analysis ve UX iyileştirmeleri
 
-### [ ] 16. Ignored dosyaları `untracked` grubundan ayır
+### [x] 16. Ignored dosyaları `untracked` grubundan ayır
 
-Şu an ignored content safety açısından doğru şekilde blocker ancak JSON semantics daha açık olabilir.
+**Tamamlandı, 2026-09-09.** Porcelain `!` kayıtları artık `workingTree.counts.ignored`,
+`workingTree.paths.ignored` ve `ignored` classification'ında; `?` kayıtları `untracked` altında.
+Yeni `GIT_IGNORED_CONTENT` kodu silmede exit 3 üretir. İki grup da silmeyi engeller;
+WTM'nin temizleyeceği ephemeral kaynakların tamamını kapsayan blocker'lar runtime cleanup'a
+ertelenebilir. Cleanup sonrası analiz, geride kalan veya yeni oluşan ignored kullanıcı
+verisini tekrar engeller. İki gruptaki symlink'ler mevcut politikayı korur; ENOENT dışındaki
+inceleme hataları güvenli kabul edilmez.
+
+Kanıt: `status-parser.test.ts`, `worktree-analysis.integration.test.ts`,
+`guarded-remove.integration.test.ts`, `git-environment.test.ts`, `ignored-content.test.ts`
+ve `exit-codes.test.ts`. `.gitignore`, `info/exclude`, global excludes, ignored dizin,
+symlink, karma kullanıcı/kaynak verisi, cleanup sırasında oluşan dosya ve CLI JSON/exit
+senaryoları kapsanıyor. Counts, Git'in döndürdüğü entry sayısıdır; ignored dizin tek entry olabilir.
 
 #### Önerilen yapı
 
@@ -1987,9 +2003,15 @@ Kurallar:
 
 # Documentation / consistency checklist
 
-### [ ] 34. Kod ve docs parity testi ekle
+### [x] 34. Kod ve docs parity testi ekle
 
-Dokümantasyonda geçen komutların gerçekten CLI'da mevcut olduğunu test et.
+**Tamamlandı, 2026-09-09.** `scripts/__tests__/cli-docs.test.ts`, aşağıdaki kaynakların
+inline komut referanslarını ve fenced komut örneklerini gerçek Commander komut/option
+kayıtlarına karşı doğrular. Örnekler çalıştırılmaz; create/remove/start yan etkisi yoktur.
+Kontrol, README'deki hatalı `wtm skill --install` kullanımını yakaladı; `wtm skill install`
+olarak düzeltildi. Bilinmeyen komut, alt komut ve flag negatif senaryoları mevcut.
+Normal `bun test` kapsamında CI'da çalışır. Bu gate komut/flag varlığını denetler;
+görevlerin çalışma sonucunu, metin açıklamalarının tamamını veya tüm shell gramerini doğrulamaz.
 
 Kontrol edilecekler:
 
@@ -2042,14 +2064,17 @@ dokümanda anlatıldığı gibi çalışıyor mu test edilmeli.
 
 ### [ ] Create
 
-- [ ] existing branch
-- [ ] new branch
-- [ ] conflicting worktree
+- [x] existing branch
+- [x] new branch
+- [x] conflicting worktree
 - [ ] partial multi-repo failure
 - [ ] daemon running
-- [ ] daemon stopped
+- [x] daemon stopped
 - [ ] eager prepare
 - [ ] lazy prepare
+
+Doğrulama (2026-09-09): `packages/cli/src/__tests__/create.test.ts` 11/11 başarılı.
+Daemon açıkken hook ve multi-repo kabul kriterleri bu sonuçla kapatılmadı.
 
 ### [ ] Runtime
 
@@ -2086,15 +2111,15 @@ dokümanda anlatıldığı gibi çalışıyor mu test edilmeli.
 
 ---
 
-# Release checklist — Stable v1.0
+# Release checklist — v0.2.0
 
-Stable `v1.0.0` tag'i aşağıdakiler tamamlanmadan çıkarılmamalı:
+Hedef `v0.2.0` tag'i aşağıdakiler tamamlanmadan çıkarılmamalı:
 
 - [ ] P0 maddelerinin tamamı bitmiş.
 - [x] `wtm remove` runtime-aware.
 - [x] Cross-process destructive operation lease mevcut.
 - [x] Remote freshness semantics net.
-- [ ] Performance workflow/docs parity sağlanmış.
+- [x] Performance workflow/docs parity sağlanmış. — Madde 4; gerçek platform performance sonucu ayrı gate olarak kalır.
 - [ ] Stable macOS binary Developer ID signed.
 - [ ] Stable macOS binary notarized.
 - [ ] macOS ARM64 CI green.
