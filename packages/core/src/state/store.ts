@@ -357,7 +357,7 @@ export interface LifecycleEventStore {
   releaseLifecycleEvent(subjectType: LifecycleEventSubject, subjectId: string, event: string): boolean;
 }
 
-export type DaemonStateStore = StateStore & StateRegistrationReader;
+export type DaemonStateStore = StateStore & StateRegistrationReader & { jobs?: import('./jobs').HeavyJobStore };
 
 export interface ResourceSandboxInput {
   id: string;

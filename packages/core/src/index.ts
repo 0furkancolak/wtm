@@ -133,6 +133,11 @@ export type {
 export { renderConfigDraft } from './detect/config-draft';
 export type { ConfigDraft, ConfigDraftBlock, ConfigDraftInput, OutOfRangePort } from './detect/config-draft';
 export { SQLiteStateStore } from './state/sqlite-store';
+export { HeavyJobError, maxPendingHeavyJobs, maxRetainedHeavyJobs, heavyJobRetentionMs } from './state/jobs';
+export type { HeavyJobRecord, HeavyJobStore, HeavyJobEnqueueInput, HeavyJobFinishInput } from './state/jobs';
+export { captureSourceSnapshot } from './jobs/source-snapshot';
+export type { SourceSnapshot } from './jobs/source-snapshot';
+export { queueTaskTimeoutMs } from './config/task-timeout';
 export { ensurePrivateDirectory, PrivateDirectoryError, verifyPrivateDirectory } from './state/private-directory';
 export type { PrivateDirectory, PrivateDirectoryIdentity } from './state/private-directory';
 export type {

@@ -13,6 +13,7 @@ export const seaMigrationAssetKeys = [
   'migration/009',
   'migration/010',
   'migration/011',
+  'migration/012',
 ] as const;
 
 export const seaSkillAssetKey = 'skill/wtm/SKILL.md';

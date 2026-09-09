@@ -3,6 +3,8 @@ import type { GitWorktreeRecord } from '../git/worktree-parser';
 import type { MigrationAssetProvider } from './assets';
 import type { SqliteDatabase, SqliteDatabaseFactory } from './database';
 import { stateStoreRuntime } from './runtime';
+import { assertNoHeavyJobs, createHeavyJobStore } from './jobs-store';
+import type { HeavyJobStore } from './jobs';
 import type {
   LifecycleEventSubject,
   AdapterTrustInput,
@@ -245,6 +247,7 @@ export interface SQLiteStateStoreOptions {
 
 export class SQLiteStateStore implements StateStore {
   readonly #database: SqliteDatabase;
+  readonly jobs: HeavyJobStore;
   #closed = false;
 
   constructor(path: string, options: SQLiteStateStoreOptions = {}) {
@@ -252,6 +255,7 @@ export class SQLiteStateStore implements StateStore {
     this.#database = (options.databaseFactory ?? runtime.databaseFactory)(path, {
       readonly: options.readonly === true,
     });
+    this.jobs = createHeavyJobStore(this.#database);
     try {
       this.#database.pragma('foreign_keys = ON');
       if (options.readonly !== true && path !== ':memory:' && !path.startsWith('file::memory:')) {
@@ -454,6 +458,7 @@ export class SQLiteStateStore implements StateStore {
       const repositoryIds = this.#database
         .prepare('SELECT id FROM repositories WHERE workspace_id = ?')
         .all(workspaceId) as Array<{ id: string }>;
+      for (const { id } of repositoryIds) assertNoHeavyJobs(this.#database, id);
       // The cascade reaches operation leases, and the explicit delete is what the tests
       // assert: a lease naming a repository that no longer exists would refuse an operation
       // nobody could ever release.
@@ -506,6 +511,7 @@ export class SQLiteStateStore implements StateStore {
   forgetRepository(repositoryId: string): boolean {
     this.#assertOpen();
     return this.#database.transaction(() => {
+      assertNoHeavyJobs(this.#database, repositoryId);
       const worktreeIds = this.#database
         .prepare('SELECT id FROM worktrees WHERE repository_id = ?')
         .all(repositoryId) as Array<{ id: string }>;
@@ -1287,6 +1293,7 @@ export class SQLiteStateStore implements StateStore {
     }
     const expiresAt = repositoryOperationLeaseExpiry(now, input.ttlMs);
     return this.transaction(() => {
+      assertNoHeavyJobs(this.#database, input.repositoryId);
       // Exclusivity is repository-wide, not per operation. The primary key is
       // `(repository_id, operation)` because a row *is* one operation's journal, but which
       // operations exclude each other was always a decision for the code rather than for the
