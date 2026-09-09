@@ -62,7 +62,11 @@ export interface HeavyJobStore {
   requestCancellation(jobId: string, scope: string, reason: 'CANCELLED' | 'TIMED_OUT' | 'INTERRUPTED', now: string): HeavyJobRecord;
   /** Authenticated timeout evidence may replace a provisional interruption, never explicit cancellation. */
   confirmTimeout(jobId: string, scope: string): HeavyJobRecord;
-  /** Caller must establish process-group absence before releasing an occupied slot. */
+  /**
+   * Caller must establish process-group absence before releasing an occupied slot.
+   * Finalization atomically preserves an already accepted stop reason and numeric exit
+   * evidence. A stop request after finalization cannot rewrite the terminal result.
+   */
   finish(jobId: string, input: HeavyJobFinishInput): HeavyJobRecord;
   setError(jobId: string, error: string): void;
   prunable(scope: string, now: string): HeavyJobRecord[];

@@ -135,7 +135,16 @@ export function createHeavyJobStore(database: SqliteDatabase): HeavyJobStore {
     },
     finish(jobId: string, input: HeavyJobFinishInput) {
       return transaction(() => {
-        database.prepare(`UPDATE heavy_jobs SET state = ?, slot_held = 0, finished_at = ?, exit_code = ?, signal = ?, error = ?, source_validity = ? WHERE job_id = ? AND (state = 'QUEUED' OR slot_held = 1)`).run(input.state, input.now, input.exitCode, input.signal, input.error, input.sourceValidity, jobId);
+        const job = getById(jobId);
+        if (job.state !== 'QUEUED' && !job.slotHeld) return job;
+        // Source verification can await after the scheduler chooses an outcome. A stop
+        // request committed in that interval is authoritative at this final transaction.
+        const state = job.stopReason ?? input.state;
+        let error = input.error;
+        if (job.stopReason === 'CANCELLED') error = 'USER_CANCELLED';
+        else if (job.stopReason === 'TIMED_OUT') error = input.state === 'TIMED_OUT' ? input.error ?? 'TIMEOUT' : 'TIMEOUT';
+        else if (job.stopReason === 'INTERRUPTED') error = (input.state === 'INTERRUPTED' ? input.error : null) ?? job.error ?? 'DAEMON_INTERRUPTED';
+        database.prepare(`UPDATE heavy_jobs SET state = ?, slot_held = 0, finished_at = ?, exit_code = ?, signal = ?, error = ?, source_validity = ? WHERE job_id = ? AND (state = 'QUEUED' OR slot_held = 1)`).run(state, input.now, input.exitCode, input.signal, error, input.sourceValidity, jobId);
         return getById(jobId);
       });
     },
