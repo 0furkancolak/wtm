@@ -67,7 +67,13 @@ try {
     }));
   } else {
     const ps = await invoke(['ps', '--json']);
+    if (ps.exitCode !== 0 || ps.envelope.ok !== true) {
+      throw new Error(JSON.stringify({ stage: 'ps', ...ps }));
+    }
     const stop = await invoke(['stop', 'hold', '--json']);
+    if (stop.exitCode !== 0 || stop.envelope.ok !== true) {
+      throw new Error(JSON.stringify({ stage: 'stop', ...stop }));
+    }
     console.log(JSON.stringify({
       startExit: start.exitCode,
       startState: start.envelope.data.process.state,
