@@ -188,6 +188,23 @@ still real until a tag is actually notarized.
 Covers items 6 (`wtm create`), 7 (cleanup candidate ranking), 8 (allowed remote refs config),
 10 (readiness/healthcheck), 11 (shell completion), 42 (idle RSS budget decision).
 
+**2026-09-07: item 8 closed.** Its code had already shipped; the gap was that the key appeared in
+no user-facing document, which is now written (`docs/03-configuration-spec.md`, "Git safety").
+
+**2026-09-07: item 6 partially closed.** Single-repository `wtm create` ships; see
+`docs/superpowers/specs/2026-09-07-create-worktree.md`. Three of its nine sub-items turned out to
+be built already — the daemon owns everything downstream of the directory existing — and the two
+multi-repository ones stay open, because the "same feature" identity they name does not exist in
+the data model and holding N repositories through one creation needs its own lock-ordering
+decision.
+
+**2026-09-07: item 7 closed except reclaimable disk size.** Ranking ships as ordered tiers with a
+derived score; see the spec below. See
+`docs/superpowers/specs/2026-09-07-cleanup-candidate-ranking.md`. Seven of the eight ranking inputs
+are reachable today; reclaimable disk size is deliberately deferred, because `disk.ts` reports its
+own basis as `reclaimable: 'not-estimated'` and turning that into a number is a measurement
+feature with its own cost and staleness decisions, not a ranking one.
+
 ### Increment I — Differentiators (post-v1)
 
 Covers items 12–15 and 16–21. Not required for `v1.0.0`.

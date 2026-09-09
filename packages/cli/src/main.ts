@@ -18,12 +18,20 @@ import {
   containsPath,
   GitCommandError,
   listGitWorktrees,
+  rankCleanupCandidates,
+  readGitCommitTimestamp,
   refreshRemoteTrackingRefs,
   resolveWorkspaceConfig,
   SQLiteStateStore,
   type TaskResolutionInput,
 } from '@wtm/core';
-import type { GitWorktreeRecord } from '@wtm/core';
+import type {
+  GitWorktreeRecord,
+  ManagedProcessRecord,
+  ManagedProcessState,
+  WorktreeAnalysis,
+  WorktreeRecord,
+} from '@wtm/core';
 import {
   DaemonRegistrationError,
   branchName,
@@ -48,6 +56,7 @@ import {
   type DiagnosticDataSource,
 } from './diagnostics';
 import { renderEnvelope } from './output';
+import { runCreateCommand } from './commands/create';
 import { runStartCommand } from './commands/start';
 import { runStopCommand } from './commands/stop';
 import { runRestartCommand } from './commands/restart';
@@ -236,6 +245,21 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       })
       : await dependencies.analyzeRunner(input);
     renderRuntime(envelope, json);
+  });
+
+  const create = program
+    .command('create <branch>')
+    .description('Create one linked worktree for a branch, beside its repository.');
+  addJsonOption(create);
+  create.option('--from <ref>', 'start a new branch here instead of at the main worktree HEAD');
+  create.action(async (branch: string, options: ScopeOptions & { from?: string }) => {
+    renderRuntime(await runCreateCommand({
+      cwd,
+      branch,
+      ...(options.from === undefined ? {} : { from: options.from }),
+      databasePath: dependencies.analysisDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+      ...(dependencies.runtimeClient === undefined ? {} : { client: dependencies.runtimeClient }),
+    }), runtimeJson(program, options));
   });
 
   const remove = program.command('remove <selector>').description('Safely remove one linked worktree.');
@@ -690,6 +714,7 @@ async function runProductionAnalyze(input: {
     return analysisFailure('WTM_CONFIG_INVALID', 'Only one aggregate analysis mode may be selected.', input.global);
   }
   const selected: Array<{ repoPath: string; record: GitWorktreeRecord }> = [];
+  let cleanupState = new Map<string, CleanupCandidateState>();
   let store: SQLiteStateStore | null = null;
   try {
     if (input.global || /^\d+$/.test(input.selector ?? '')) {
@@ -697,6 +722,16 @@ async function runProductionAnalyze(input: {
         store = new SQLiteStateStore(input.databasePath, { readonly: true });
       } catch {
         return stateFailure('analyze', input.global);
+      }
+    } else if (input.cleanupCandidates && existsSync(input.databasePath)) {
+      // Ranking reads what WTM already recorded about each candidate, but `analyze` answers for
+      // repositories WTM has never registered — the workspace root is found by walking up, not by
+      // requiring a registration. A store that will not open therefore costs the ranking its
+      // state-derived tiers, which it reports as unknown; it does not fail the analysis.
+      try {
+        store = new SQLiteStateStore(input.databasePath, { readonly: true });
+      } catch {
+        store = null;
       }
     }
     if (input.global) {
@@ -740,6 +775,9 @@ async function runProductionAnalyze(input: {
         if (record !== undefined) selected.push({ repoPath: repositoryRoot, record });
       }
     }
+    if (input.cleanupCandidates && store !== null) {
+      cleanupState = readCleanupCandidateState(store, selected.map(({ record }) => record.path));
+    }
   } finally {
     store?.close();
   }
@@ -773,7 +811,16 @@ async function runProductionAnalyze(input: {
     });
   }));
   if (!input.global && !input.all && !input.cleanupCandidates) return envelopes[0] as JsonEnvelope<unknown>;
-  const analyses = envelopes.flatMap(({ data }) => data === null ? [] : [data]);
+  const analysed = selected.flatMap(({ repoPath }, index) => {
+    const data = envelopes[index]?.data;
+    return data === undefined || data === null ? [] : [{ repoPath, analysis: data }];
+  });
+  // The order belongs to the envelope, never to a renderer: `renderEnvelope` walks the same
+  // `envelope.data` that `--json` serializes, so sorting here is what makes human and JSON output
+  // structurally incapable of disagreeing about which candidate comes first.
+  const analyses = input.cleanupCandidates
+    ? await rankCleanupCandidateAnalyses(analysed, cleanupState)
+    : analysed.map(({ analysis }) => analysis);
   const errors = envelopes.flatMap(({ errors }) => errors);
   const common = {
     schemaVersion: 1 as const,
@@ -968,6 +1015,87 @@ function bindRemovalRuntime(options: {
     hostId: hostname(),
     adopt: options.adopt,
   };
+}
+
+/** What the state store already knows about a cleanup candidate, as far as it has a record. */
+interface CleanupCandidateState {
+  lastRuntimeAt?: string | undefined;
+  hasRunningProcess?: boolean | undefined;
+}
+
+const liveManagedProcessStates: readonly ManagedProcessState[] = ['STARTING', 'RUNNING', 'STOPPING'];
+
+/**
+ * The registration facts the cleanup ranking reads, keyed by resolved worktree path.
+ *
+ * A worktree with no entry is one WTM has no record of, which the ranking scores as unknown
+ * rather than as idle: a list that confidently recommends deleting the worktrees it knows least
+ * about is worse than no list.
+ */
+function readCleanupCandidateState(
+  store: SQLiteStateStore,
+  worktreePaths: readonly string[],
+): Map<string, CleanupCandidateState> {
+  const state = new Map<string, CleanupCandidateState>();
+  let registered;
+  try {
+    registered = store.listWorktrees();
+  } catch {
+    return state;
+  }
+  const byPath = new Map(registered.map((record) => [resolve(record.path), record]));
+  for (const worktreePath of worktreePaths) {
+    const record = byPath.get(resolve(worktreePath));
+    if (record === undefined) continue;
+    let processes;
+    try {
+      processes = store.listManagedProcesses({ worktreeId: record.id });
+    } catch {
+      state.set(resolve(worktreePath), { lastRuntimeAt: record.lastRuntimeAt ?? record.createdAt });
+      continue;
+    }
+    state.set(resolve(worktreePath), {
+      lastRuntimeAt: lastWtmActivity(record, processes),
+      hasRunningProcess: processes.some(({ state }) => liveManagedProcessStates.includes(state)),
+    });
+  }
+  return state;
+}
+
+/**
+ * The most recent moment WTM is known to have done something in this worktree.
+ *
+ * `WorktreeRecord.lastRuntimeAt` is read first because it is the field named for this, but no
+ * production path writes it today — the column is always NULL — so the managed-process journal
+ * is what actually answers. Failing that, the registration itself is the floor: WTM has known
+ * this worktree since `createdAt` and has recorded nothing happening in it since, which is a
+ * measured idleness rather than an absence of knowledge.
+ */
+function lastWtmActivity(record: WorktreeRecord, processes: readonly ManagedProcessRecord[]): string {
+  const observed = [record.lastRuntimeAt, record.createdAt];
+  for (const process of processes) observed.push(process.startedAt, process.stoppedAt);
+  return observed.filter((value): value is string => value !== null)
+    .reduce((latest, value) => value > latest ? value : latest);
+}
+
+async function rankCleanupCandidateAnalyses(
+  candidates: ReadonlyArray<{ repoPath: string; analysis: WorktreeAnalysis }>,
+  state: ReadonlyMap<string, CleanupCandidateState>,
+): Promise<unknown[]> {
+  const inputs = await Promise.all(candidates.map(async ({ repoPath, analysis }) => {
+    // Read the commit through the repository rather than the worktree: a prunable candidate is
+    // one whose directory is already gone, and it still has a HEAD worth dating.
+    const lastCommitAt = await readGitCommitTimestamp(repoPath, analysis.identity.headOid);
+    return {
+      analysis,
+      ...state.get(resolve(analysis.identity.path)) ?? {},
+      ...(lastCommitAt === null ? {} : { lastCommitAt }),
+    };
+  }));
+  return rankCleanupCandidates(inputs).map(({ analysis, rank, score, reason }) => ({
+    ...analysis,
+    cleanup: { rank, score, reason },
+  }));
 }
 
 function containingWorktreeRoot(topology: readonly GitWorktreeRecord[], cwd: string): string | undefined {

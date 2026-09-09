@@ -9,6 +9,7 @@ import {
   type RepositoryOperationLeaseStore,
 } from '../operation-lease';
 import type {
+  RepositoryOperation,
   RepositoryOperationLease,
   RepositoryOperationLeaseHolder,
   RepositoryOperationLeaseKey,
@@ -29,24 +30,27 @@ const myHostId = 'this-host';
  * `ownerLiveness` is consulted only for a colliding row that has already expired, and an
  * abandoned lease is reported rather than taken unless `adopt` is set.
  *
- * It holds one row per operation, because the real store does and because exclusion spans them:
- * a fake that could only ever hold this operation's row would agree with every assertion here
- * while being blind to the collision the store now refuses.
+ * It holds one row *per operation*, keyed the way the real table is, because the semantics being
+ * modelled are repository-wide: a `remove` collides with a live `gc` row, and a fake that could
+ * only ever hold one row at a time would agree with that by accident — it would have nothing else
+ * to hold — and would keep agreeing after a regression narrowed the real store back to a single
+ * `(repository_id, operation)` lookup.
  */
 class FakeLeaseStore implements RepositoryOperationLeaseStore {
-  rows: RepositoryOperationLease[] = [];
+  readonly rows = new Map<string, RepositoryOperationLease>();
   readonly livenessArguments: RepositoryOperationLeaseHolder[] = [];
   acquireCalls = 0;
   /** Runs at the top of an acquisition, to model a row that changes under the caller. */
   beforeAcquire: (() => void) | null = null;
 
-  /** The single-holder view most of this suite seeds and asserts against. */
-  get row(): RepositoryOperationLease | null {
-    return this.rows[0] ?? null;
+  /** Puts a row in the table directly, so a test can state the state it wants to start from. */
+  seed(lease: RepositoryOperationLease): void {
+    this.rows.set(rowKey(lease), lease);
   }
 
-  set row(value: RepositoryOperationLease | null) {
-    this.rows = value === null ? [] : [value];
+  /** The row one operation holds, for a test that has to look at it rather than through it. */
+  rowFor(operation: RepositoryOperation = 'remove'): RepositoryOperationLease | null {
+    return this.rows.get(rowKey({ repositoryId, operation })) ?? null;
   }
 
   acquireRepositoryOperationLease(
@@ -55,24 +59,24 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
   ): RepositoryOperationLeaseResult {
     this.acquireCalls += 1;
     this.beforeAcquire?.();
-    // A live holder outranks a dead one whatever operation either names, so every row is
-    // classified before any of them is acted on.
+    // Every row of the repository, not just this operation's: exclusion is repository-wide.
     const reclaimable: RepositoryOperationLease[] = [];
-    for (const existing of this.#held(input.repositoryId, input.operation)) {
+    for (const existing of this.#repositoryRows(input.repositoryId)) {
       const holder = holderOf(existing);
       if (existing.expiresAt > now) return { outcome: 'conflict', holder };
       this.livenessArguments.push(holder);
       if ((input.ownerLiveness?.(holder) ?? 'gone') !== 'gone') return { outcome: 'conflict', holder };
       reclaimable.push(existing);
     }
-    const abandoned = reclaimable[0];
-    if (abandoned !== undefined && input.adopt !== true) {
-      return { outcome: 'abandoned', holder: holderOf(abandoned) };
+    const [abandoned] = reclaimable;
+    if (abandoned !== undefined) {
+      if (input.adopt !== true) return { outcome: 'abandoned', holder: holderOf(abandoned) };
+      // Adoption clears every dead row, or the sibling nobody adopted refuses the next caller.
+      for (const dead of reclaimable) this.rows.delete(rowKey(dead));
     }
-    this.rows = this.rows.filter((row) => !reclaimable.includes(row));
-    // Only this operation's own row is a resume point; another operation's journal describes
-    // work this one never did.
-    const resumed = reclaimable.find(({ operation }) => operation === input.operation) ?? null;
+    // Only this operation's own dead row hands its journal on. Another operation's stage is not
+    // this operation's progress.
+    const resumed = reclaimable.find((dead) => dead.operation === input.operation);
     const stage = resumed?.stage ?? null;
     const lease: RepositoryOperationLease = {
       repositoryId: input.repositoryId,
@@ -87,8 +91,8 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
       renewedAt: now,
       expiresAt: new Date(Date.parse(now) + input.ttlMs).toISOString(),
     };
-    this.rows.push(lease);
-    return { outcome: 'acquired', lease, adoptedStage: resumed === null ? null : stage };
+    this.rows.set(rowKey(lease), lease);
+    return { outcome: 'acquired', lease, adoptedStage: stage };
   }
 
   renewRepositoryOperationLease(
@@ -99,7 +103,7 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
   ): boolean {
     const row = this.#matching(leaseKey);
     if (row === null || row.token !== token || row.expiresAt <= now) return false;
-    this.#replace(row, { ...row, renewedAt: now, expiresAt: new Date(Date.parse(now) + ttlMs).toISOString() });
+    this.rows.set(rowKey(row), { ...row, renewedAt: now, expiresAt: new Date(Date.parse(now) + ttlMs).toISOString() });
     return true;
   }
 
@@ -111,14 +115,14 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
   ): boolean {
     const row = this.#matching(leaseKey);
     if (row === null || row.token !== token) return false;
-    this.#replace(row, { ...row, stage, renewedAt: now });
+    this.rows.set(rowKey(row), { ...row, stage, renewedAt: now });
     return true;
   }
 
   releaseRepositoryOperationLease(leaseKey: RepositoryOperationLeaseKey, token: string): boolean {
     const row = this.#matching(leaseKey);
     if (row === null || row.token !== token) return false;
-    this.rows = this.rows.filter((candidate) => candidate !== row);
+    this.rows.delete(rowKey(row));
     return true;
   }
 
@@ -127,31 +131,25 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
     return row === null ? null : holderOf(row);
   }
 
-  listRepositoryOperationLeases(leaseRepositoryId: string): RepositoryOperationLeaseHolder[] {
-    return this.#held(leaseRepositoryId).map(holderOf);
-  }
-
-  /** The repository's rows, with `first` ahead of the others, exactly as the store orders them. */
-  #held(leaseRepositoryId: string, first?: RepositoryOperationLeaseRequest['operation']): RepositoryOperationLease[] {
-    return this.rows
-      .filter((row) => row.repositoryId === leaseRepositoryId)
-      .sort((left, right) => {
-        if (left.operation === right.operation) return 0;
-        if (left.operation === first) return -1;
-        if (right.operation === first) return 1;
-        return left.operation < right.operation ? -1 : 1;
-      });
+  listRepositoryOperationLeases(id: string): RepositoryOperationLeaseHolder[] {
+    return this.#repositoryRows(id).map(holderOf);
   }
 
   #matching(leaseKey: RepositoryOperationLeaseKey): RepositoryOperationLease | null {
-    return this.rows.find(
-      (row) => row.repositoryId === leaseKey.repositoryId && row.operation === leaseKey.operation,
-    ) ?? null;
+    return this.rows.get(rowKey(leaseKey)) ?? null;
   }
 
-  #replace(row: RepositoryOperationLease, next: RepositoryOperationLease): void {
-    this.rows = this.rows.map((candidate) => (candidate === row ? next : candidate));
+  /** Oldest acquisition first, then by operation — the order the real table is read in. */
+  #repositoryRows(id: string): RepositoryOperationLease[] {
+    return [...this.rows.values()]
+      .filter((row) => row.repositoryId === id)
+      .sort((left, right) => left.acquiredAt.localeCompare(right.acquiredAt)
+        || left.operation.localeCompare(right.operation));
   }
+}
+
+function rowKey(leaseKey: RepositoryOperationLeaseKey): string {
+  return `${leaseKey.repositoryId}\u0000${leaseKey.operation}`;
 }
 
 function holderOf(lease: RepositoryOperationLease): RepositoryOperationLeaseHolder {
@@ -165,7 +163,7 @@ function clockAt(instant: string): () => string {
 }
 
 function seedHolder(store: FakeLeaseStore, overrides: Partial<RepositoryOperationLease> = {}): void {
-  store.row = {
+  store.seed({
     repositoryId,
     operation: 'remove',
     token: 'holder-token',
@@ -178,7 +176,7 @@ function seedHolder(store: FakeLeaseStore, overrides: Partial<RepositoryOperatio
     renewedAt: '2026-08-31T10:14:02.118Z',
     expiresAt: '2026-08-31T10:16:02.118Z',
     ...overrides,
-  };
+  });
 }
 
 interface ScriptedReader {
@@ -294,7 +292,7 @@ test('refuses to start behind a live holder, without measuring anything about it
   expect(store.livenessArguments).toEqual([]);
   expect(reader.seen).toEqual([process.pid]);
   // The holder view carries no token, so the untouched row is checked directly.
-  expect(store.row?.token).toBe('holder-token');
+  expect(store.rowFor()?.token).toBe('holder-token');
 });
 
 test('reports an abandoned lease with the stage it stopped at and a --resume remediation', async () => {
@@ -344,6 +342,134 @@ test('adopts an abandoned lease and reports the stage it resumed from', async ()
   expect(store.readRepositoryOperationLease(key)).toBeNull();
 });
 
+test('refuses a remove behind a live gc, and names the gc rather than blaming a second remove', async () => {
+  // The `todo.md` item 2 case at the policy layer: two *different* destructive operations on one
+  // repository. The rows are different rows -- nothing in the primary key keeps them apart -- so
+  // the refusal has to come from the check, and it has to name what is actually in the way.
+  const store = new FakeLeaseStore();
+  seedHolder(store, { operation: 'gc', token: 'gc-token', stage: 'quarantine' });
+  const reader = scriptedReader(new Map());
+  let bodyRuns = 0;
+
+  const thrown = await withRepositoryOperationLease(
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:15:00.000Z') },
+    async () => {
+      bodyRuns += 1;
+    },
+  ).then(() => null, (error: unknown) => error);
+
+  expect(thrown).toBeInstanceOf(RepositoryOperationConflictError);
+  const conflict = thrown as RepositoryOperationConflictError;
+  expect(conflict.code).toBe('WTM_OPERATION_CONFLICT');
+  expect(conflict.abandoned).toBe(false);
+  expect(conflict.context).toEqual({
+    repositoryId,
+    // What was asked for, and what is standing in its way. They are not the same operation, and
+    // a message that reported only the request would tell the user a `remove` is running.
+    operation: 'remove',
+    holderOperation: 'gc',
+    holderPid,
+    acquiredAt: '2026-08-31T10:14:02.118Z',
+    stage: null,
+    abandoned: false,
+  });
+  expect(conflict.message).toContain('performing "gc"');
+  expect(bodyRuns).toBe(0);
+  // An unexpired holder is a conflict either way, so nothing was measured about it.
+  expect(store.livenessArguments).toEqual([]);
+  expect(reader.seen).toEqual([process.pid]);
+  expect(store.rowFor('gc')?.token).toBe('gc-token');
+});
+
+test('measures a dead gc row when a remove is what is asking, instead of refusing it unseen', async () => {
+  // The measurement happens outside the transaction and is matched back to the row it came from,
+  // so a `remove` that only ever read its own row would hand the store no verdict for the `gc`
+  // row it collides with -- and the store's conservative branch would refuse it as `alive`,
+  // permanently, over a holder that has been dead for minutes.
+  const store = new FakeLeaseStore();
+  seedHolder(store, { operation: 'gc', token: 'gc-token', stage: 'quarantine' });
+  const reader = scriptedReader(new Map([[holderPid, null]]));
+  let bodyRuns = 0;
+
+  const thrown = await withRepositoryOperationLease(
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:17:00.000Z') },
+    async () => {
+      bodyRuns += 1;
+    },
+  ).then(() => null, (error: unknown) => error);
+
+  const conflict = thrown as RepositoryOperationConflictError;
+  expect(conflict).toBeInstanceOf(RepositoryOperationConflictError);
+  expect(conflict.abandoned).toBe(true);
+  expect(conflict.context.holderOperation).toBe('gc');
+  // Reported with the stage `gc` stopped at, but with no `wtm remove --resume` offered: resuming
+  // is an offer to finish this command's own half-done work, and there is none.
+  expect(conflict.context.stage).toBe('quarantine');
+  expect(conflict.remediation).toEqual([]);
+  expect(bodyRuns).toBe(0);
+  // Measured once, from the other operation's row, on one attempt -- not retried as a race.
+  expect(store.livenessArguments).toHaveLength(1);
+  expect(store.livenessArguments[0]?.operation).toBe('gc');
+  expect(store.acquireCalls).toBe(1);
+});
+
+test('clears a dead gc row out of an adopting remove\'s way without inheriting its journal', async () => {
+  const store = new FakeLeaseStore();
+  seedHolder(store, {
+    operation: 'gc', token: 'gc-token', stage: 'quarantine', subjectWorktreeId: 'worktree-gc-was-on',
+  });
+  const reader = scriptedReader(new Map([[holderPid, null]]));
+
+  const resumedFrom = await withRepositoryOperationLease(
+    {
+      store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId,
+      operation: 'remove', subjectWorktreeId: 'worktree-7', adopt: true,
+      now: clockAt('2026-08-31T10:17:00.000Z'),
+    },
+    async (session) => {
+      // Inside the body: the `remove` holds the repository and the dead `gc` row is gone, so
+      // nothing is left to refuse the next acquisition in this same run.
+      expect(store.rowFor('gc')).toBeNull();
+      expect(store.rowFor('remove')?.stage).toBeNull();
+      expect(store.rowFor('remove')?.subjectWorktreeId).toBe('worktree-7');
+      return session.adoptedStage;
+    },
+  );
+
+  // Nothing was resumed. A cross-operation row being cleared is stale exclusivity, not progress.
+  expect(resumedFrom).toBeNull();
+  expect(store.rowFor('remove')).toBeNull();
+});
+
+test('refuses a remove behind a live gc even when this operation\'s own row is free', async () => {
+  // Both rows present: a dead `remove` this caller could have adopted, and a live `gc` it cannot.
+  // A check that looked at `remove` and stopped would adopt its own row and walk straight into
+  // the running `gc`.
+  const store = new FakeLeaseStore();
+  seedHolder(store, { stage: 'stop-processes', expiresAt: '2026-08-31T10:15:00.000Z' });
+  seedHolder(store, {
+    operation: 'gc', token: 'gc-token', pid: 9_999, acquiredAt: '2026-08-31T10:16:00.000Z',
+    renewedAt: '2026-08-31T10:16:00.000Z', expiresAt: '2026-08-31T10:18:00.000Z',
+  });
+  const reader = scriptedReader(new Map([[holderPid, null]]));
+
+  const thrown = await withRepositoryOperationLease(
+    {
+      store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId,
+      operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:00.000Z'),
+    },
+    async () => 'unreachable',
+  ).then(() => null, (error: unknown) => error);
+
+  const conflict = thrown as RepositoryOperationConflictError;
+  expect(conflict).toBeInstanceOf(RepositoryOperationConflictError);
+  expect(conflict.abandoned).toBe(false);
+  expect(conflict.context.holderOperation).toBe('gc');
+  // The dead `remove` row is untouched: a refused acquisition adopts nothing.
+  expect(store.rowFor('remove')?.token).toBe('holder-token');
+  expect(store.rowFor('gc')?.token).toBe('gc-token');
+});
+
 test('refuses to adopt a lease whose holder is still alive, even past its expiry', async () => {
   const store = new FakeLeaseStore();
   seedHolder(store, { stage: 'stop-processes' });
@@ -365,7 +491,7 @@ test('refuses to adopt a lease whose holder is still alive, even past its expiry
   expect(conflict.remediation).toEqual([]);
   expect(bodyRuns).toBe(0);
   // The holder view carries no token, so the untouched row is checked directly.
-  expect(store.row?.token).toBe('holder-token');
+  expect(store.rowFor()?.token).toBe('holder-token');
 });
 
 test('treats a holder whose start time no longer matches as gone, so a reused PID cannot hold a lease', async () => {
@@ -387,69 +513,6 @@ test('treats a holder whose start time no longer matches as gone, so a reused PI
     async (session) => session.adoptedStage,
   );
   expect(adopted).toBe('stop-processes');
-});
-
-test('refuses a remove while a gc holds the same repository, and names the gc in the refusal', async () => {
-  const store = new FakeLeaseStore();
-  seedHolder(store, { operation: 'gc', token: 'gc-token' });
-  const reader = scriptedReader(new Map([[holderPid, holderStartTime]]));
-  let bodyRuns = 0;
-
-  const thrown = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:15:00.000Z') },
-    async () => {
-      bodyRuns += 1;
-    },
-  ).then(() => null, (error: unknown) => error);
-
-  expect(thrown).toBeInstanceOf(RepositoryOperationConflictError);
-  const conflict = thrown as RepositoryOperationConflictError;
-  expect(conflict.code).toBe('WTM_OPERATION_CONFLICT');
-  // Both are reported: `operation` is what this process asked to do, `holderOperation` is what is
-  // actually happening. Naming only the request would send the user hunting for another `remove`.
-  expect(conflict.context).toEqual({
-    repositoryId,
-    operation: 'remove',
-    holderOperation: 'gc',
-    holderPid,
-    acquiredAt: '2026-08-31T10:14:02.118Z',
-    stage: null,
-    abandoned: false,
-  });
-  expect(conflict.message).toContain('"gc"');
-  expect(bodyRuns).toBe(0);
-  expect(store.rows.map(({ operation }) => operation)).toEqual(['gc']);
-});
-
-test('reclaims a gc lease whose process is gone, so a crashed collection cannot block removals forever', async () => {
-  // The liveness verdict the store consults is measured out here, before the transaction, and it
-  // is only ever applied to the row it was measured from. Measuring this process's own operation
-  // alone would therefore answer `alive` for a crashed `gc` — every `remove` on the repository
-  // refused forever by a process that no longer exists.
-  const store = new FakeLeaseStore();
-  seedHolder(store, { operation: 'gc', token: 'gc-token', stage: 'gc-quarantined' });
-  const reader = scriptedReader(new Map([[holderPid, null]]));
-
-  const thrown = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', now: clockAt('2026-08-31T10:17:00.000Z') },
-    async () => 'unreachable',
-  ).then(() => null, (error: unknown) => error);
-
-  expect(thrown).toBeInstanceOf(RepositoryOperationConflictError);
-  const conflict = thrown as RepositoryOperationConflictError;
-  expect(conflict.abandoned).toBe(true);
-  expect(conflict.context).toMatchObject({ holderOperation: 'gc', stage: 'gc-quarantined' });
-  expect(reader.seen).toEqual([process.pid, holderPid]);
-
-  // Adopting it clears the dead row, but inherits nothing from it: `gc-quarantined` says how far
-  // a collection got, which is not a stage any removal has ever been at.
-  const resumedFrom = await withRepositoryOperationLease(
-    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', adopt: true, now: clockAt('2026-08-31T10:17:01.000Z') },
-    async (session) => session.adoptedStage,
-  );
-
-  expect(resumedFrom).toBeNull();
-  expect(store.rows).toEqual([]);
 });
 
 test('treats a holder on a different host as unknown, never abandoning or adopting its lease', async () => {
@@ -478,7 +541,7 @@ test('treats a holder on a different host as unknown, never abandoning or adopti
   expect(adoptAttempt).toBeInstanceOf(RepositoryOperationConflictError);
   expect((adoptAttempt as RepositoryOperationConflictError).abandoned).toBe(false);
   // The other host's row is untouched: still there, still under its own token.
-  expect(store.row?.token).toBe('holder-token');
+  expect(store.rowFor()?.token).toBe('holder-token');
 });
 
 test('treats a lease acquired before host identity existed the same as a different host, never this one', async () => {
@@ -655,7 +718,7 @@ test('refuses a lease row whose PID is not a positive integer instead of measuri
     expect((thrown as TypeError).message).toContain(String(pid));
     // Only our own PID was ever put to the reader; the bad one was rejected in front of it.
     expect(reader.seen.slice(measured)).toEqual([process.pid]);
-    expect(store.row?.token).toBe('holder-token');
+    expect(store.rowFor()?.token).toBe('holder-token');
   }
 });
 

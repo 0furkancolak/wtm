@@ -96,72 +96,74 @@ jobs:
       - name: Notarize the executable
         id: notarize
         env:
+          NOTARIZATION_APPLE_ID: ${{ secrets.MACOS_NOTARIZATION_APPLE_ID }}
+          NOTARIZATION_PASSWORD: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
+          NOTARIZATION_TEAM_ID: ${{ secrets.MACOS_NOTARIZATION_TEAM_ID }}
           SIGNING: ${{ steps.sign.outputs.signing }}
-          NOTARY_API_KEY: ${{ secrets.MACOS_NOTARIZATION_API_KEY }}
-          NOTARY_API_KEY_ID: ${{ secrets.MACOS_NOTARIZATION_API_KEY_ID }}
-          NOTARY_API_ISSUER: ${{ secrets.MACOS_NOTARIZATION_API_ISSUER }}
-          NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARIZATION_APPLE_ID }}
-          NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
-          NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARIZATION_TEAM_ID }}
         run: |
-          set -uo pipefail
-          # The gate, not this step, decides what a missing or refused notarization means for a
-          # release: a prerelease publishes without one, a stable release does not
-          # (verify-release.ts's verifyNotarization, todo items 5 and 36). A run with no Apple
-          # credentials configured must still build, exactly as one with no signing certificate
-          # does today -- and an ad-hoc signature cannot be submitted to the notary service at
-          # all, so an unsigned run has nothing to submit and says so instead of failing.
-          notarization=skipped
-          mode=none
-          if [ -n "${NOTARY_API_KEY}" ] && [ -n "${NOTARY_API_KEY_ID}" ]; then
-            mode=api-key
-          elif [ -n "${NOTARY_APPLE_ID}" ] && [ -n "${NOTARY_PASSWORD}" ] && [ -n "${NOTARY_TEAM_ID}" ]; then
-            mode=apple-id
+          set -euo pipefail
+          # Same rule as signing: an absent credential is a skip, not a failure, so a contributor
+          # with no Apple account can still build a prerelease. The gate refuses a *stable*
+          # release in this state. An ad-hoc signature is skipped too -- the notary service only
+          # accepts Developer ID signed code, so submitting one would fail a build that did
+          # nothing wrong.
+          if [ "${SIGNING}" != 'signed' ] || [ -z "${NOTARIZATION_APPLE_ID}" ] \
+            || [ -z "${NOTARIZATION_PASSWORD}" ] || [ -z "${NOTARIZATION_TEAM_ID}" ]; then
+            echo 'notarization=skipped' >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          if [ "${SIGNING}" = 'signed' ] && [ "${mode}" != 'none' ]; then
-            # notarytool takes an archive, never a bare Mach-O. This zip exists only for the
-            # submission: it is not what ships, and nothing staples a ticket to it, because
-            # `stapler` accepts only "UDIF disk images, code-signed executable bundles, and
-            # signed flat installer packages" -- and a bare executable is none of those. The
-            # ticket therefore lives on Apple's servers and Gatekeeper resolves it online.
-            archive="$RUNNER_TEMP/wtm-notarize.zip"
-            /usr/bin/ditto -c -k dist/sea/wtm "$archive"
-            if [ "${mode}" = 'api-key' ]; then
-              printf '%s' "${NOTARY_API_KEY}" | base64 --decode > "$RUNNER_TEMP/notary-key.p8"
-              # `--issuer` is required for a team API key and must be omitted for an individual
-              # one, so it is passed only when it was configured (`notarytool submit --help`).
-              xcrun notarytool submit "$archive" \
-                --key "$RUNNER_TEMP/notary-key.p8" --key-id "${NOTARY_API_KEY_ID}" \
-                ${NOTARY_API_ISSUER:+--issuer "${NOTARY_API_ISSUER}"} \
-                --wait --timeout 30m --output-format json > "$RUNNER_TEMP/notary.json"
-              submitted=$?
-              rm -f "$RUNNER_TEMP/notary-key.p8"
-            else
-              xcrun notarytool submit "$archive" \
-                --apple-id "${NOTARY_APPLE_ID}" --password "${NOTARY_PASSWORD}" \
-                --team-id "${NOTARY_TEAM_ID}" \
-                --wait --timeout 30m --output-format json > "$RUNNER_TEMP/notary.json"
-              submitted=$?
+          # The notary service accepts UDIF disk images, signed flat installer packages and ZIP
+          # archives -- not a bare Mach-O. So the executable is zipped for the submission only.
+          # This zip is never published: the release still ships the .tar.gz built below, and the
+          # ticket is keyed to the code directory hash rather than to the container, so the
+          # binary inside that tarball is the notarized one.
+          submission="$RUNNER_TEMP/wtm-notarization.zip"
+          /usr/bin/ditto -c -k dist/sea/wtm "$submission"
+          # `--wait` returns only once the service has finished, so no polling is needed. The
+          # status is then read rather than inferred: a submission can come back Invalid, and a
+          # release must not turn on whether that is reported through the exit code.
+          xcrun notarytool submit "$submission" \
+            --apple-id "$NOTARIZATION_APPLE_ID" \
+            --password "$NOTARIZATION_PASSWORD" \
+            --team-id "$NOTARIZATION_TEAM_ID" \
+            --output-format json \
+            --wait > "$RUNNER_TEMP/notarization.json"
+          rm -f "$submission"
+          status="$(bun -e "const {readFileSync}=require('node:fs');
+            const r=JSON.parse(readFileSync(process.env.RUNNER_TEMP+'/notarization.json','utf8'));
+            process.stdout.write(String(r.status ?? ''));")"
+          if [ "$status" != 'Accepted' ]; then
+            echo "The notary service answered \"$status\", not \"Accepted\"." >&2
+            id="$(bun -e "const {readFileSync}=require('node:fs');
+              const r=JSON.parse(readFileSync(process.env.RUNNER_TEMP+'/notarization.json','utf8'));
+              process.stdout.write(String(r.id ?? ''));")"
+            # Apple's own advice is to always read the log, even on success. On a refusal it is
+            # the only place the actual reason appears.
+            if [ -n "$id" ]; then
+              xcrun notarytool log "$id" \
+                --apple-id "$NOTARIZATION_APPLE_ID" \
+                --password "$NOTARIZATION_PASSWORD" \
+                --team-id "$NOTARIZATION_TEAM_ID" >&2 || true
             fi
-            status="$(NOTARY_RESULT="$RUNNER_TEMP/notary.json" bun -e 'const {readFileSync}=require("node:fs");
-              try { process.stdout.write(String(JSON.parse(readFileSync(process.env.NOTARY_RESULT, "utf8")).status ?? "")); }
-              catch { process.stdout.write(""); }')"
-            echo "notarytool exited ${submitted} with status \"${status}\""
-            if [ "${submitted}" -eq 0 ] && [ "${status}" = 'Accepted' ]; then
-              # The CI-side proxy for "a clean machine accepts it": this runner has never seen
-              # this executable, and `spctl --assess` is the assessment Gatekeeper itself makes.
-              # A ticket Apple issued but Gatekeeper will not honour is not a notarized release.
-              if spctl --assess --type execute -vv dist/sea/wtm; then
-                notarization=notarized
-              else
-                notarization=rejected
-              fi
-            else
-              notarization=rejected
-              cat "$RUNNER_TEMP/notary.json" || true
-            fi
+            exit 1
           fi
-          echo "notarization=${notarization}" >> "$GITHUB_OUTPUT"
+          echo 'notarization=notarized' >> "$GITHUB_OUTPUT"
+
+      - name: Verify Gatekeeper accepts the executable
+        env:
+          NOTARIZATION: ${{ steps.notarize.outputs.notarization }}
+        run: |
+          set -euo pipefail
+          if [ "${NOTARIZATION}" != 'notarized' ]; then
+            echo 'Notarization was skipped, so there is no ticket for Gatekeeper to look up.'
+            exit 0
+          fi
+          # Apple cannot staple a ticket to a standalone binary, so this is an online lookup
+          # against the notary service -- which is exactly what a user's first run performs. It
+          # is the closest thing CI has to "a clean machine accepts it": this runner has never
+          # seen this binary before. `spctl` exits non-zero when it rejects, so `set -e` is the
+          # failure.
+          spctl --assess --type execute --verbose=2 dist/sea/wtm
 
       - name: Archive the signed executable
         run: |
@@ -240,8 +242,9 @@ jobs:
           signing="$(cat staged/*/SIGNING | sort -u)"
           test "$(printf '%s\n' "$signing" | wc -l | tr -d ' ')" -eq 1
           echo "signing=$signing" >> "$GITHUB_OUTPUT"
-          # Same rule for notarization: one architecture notarized and the other not is not one
-          # release, and the gate must never see the better of the two answers.
+          # Notarization is one value across both architectures for the same reason signing is:
+          # a release where one architecture is notarized and the other is not does not describe
+          # one build, and the gate would otherwise be handed whichever value sorted first.
           notarization="$(cat staged/*/NOTARIZATION | sort -u)"
           test "$(printf '%s\n' "$notarization" | wc -l | tr -d ' ')" -eq 1
           echo "notarization=$notarization" >> "$GITHUB_OUTPUT"

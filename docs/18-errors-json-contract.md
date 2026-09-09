@@ -57,19 +57,23 @@ WTM_DAEMON_INVALID_REQUEST
 WTM_DAEMON_PROTOCOL_INCOMPATIBLE
 WTM_DAEMON_REQUEST_FAILED
 WTM_OPERATION_CONFLICT
+WTM_WORKTREE_PATH_OCCUPIED
 WTM_SOCKET_PATH_TOO_LONG
 WTM_PLATFORM_UNSUPPORTED
 WTM_WATCH_UNAVAILABLE
 ```
 
 `WTM_OPERATION_CONFLICT` means another process already holds a destructive-operation lease on the
-repository, so the requested operation would race it. Exclusion is per repository, not per
-operation: a running `gc` refuses a `remove` on the same repository, and the other way round, because
-one can delete what the other is walking. `context` carries `repositoryId`, `operation` (what this
-process asked to do), `holderOperation` (what the process in the way is doing — the same as
-`operation` when two of the same kind collide), `holderPid`, `acquiredAt`, `stage` (`null` while the
-holder is still live, otherwise the last stage the abandoned holder recorded), and `abandoned`. It
-is a safety policy block, so it exits with code 3.
+repository, so the requested operation would race it. The lease is repository-wide: any of
+`remove`, `gc` and `repair` refuses the other two, not just a second attempt at the same one, so a
+`wtm remove` is refused while a daemon `gc` is running on that repository. `context` carries
+`repositoryId`, `operation` (what was requested), `holderOperation` (what is holding the
+repository, which is the same as `operation` only when the collision is with the same operation),
+`holderPid`, `acquiredAt`, `stage` (`null` while the holder is still live, otherwise the last stage
+the abandoned holder recorded), and `abandoned`. A `--resume` remediation is offered only when
+`holderOperation` equals `operation`: resuming continues *this* command's half-done work, and there
+is none to continue in another operation's journal. It is a safety policy block, so it exits with
+code 3.
 
 `WTM_DAEMON_UNAVAILABLE` means a required daemon operation could not reach the daemon. It also
 covers the case one step earlier, where WTM could not reach the *service manager* that would start
@@ -115,6 +119,21 @@ starting, and at startup the reasons are host limits and permissions: something 
 be raised or granted, and running the command again does not clear it. That is the same class as a
 socket path that does not fit.
 
+`WTM_WORKTREE_PATH_OCCUPIED` and `GIT_BRANCH_IN_USE` are `wtm create`'s two refusals, and both
+are decided before Git writes anything, so nothing was created when either is reported.
+
+`WTM_WORKTREE_PATH_OCCUPIED` means the path `create` computed —
+`<workspace>/<repository-directory>-<branch-slug>` — already exists. `context` carries `branch` and
+`path`. This is also what a slug collision looks like: `feat/auth` and `feat-auth` name the same
+directory, and the second one is refused here rather than given a generated suffix, because a
+computed path is only useful while a person can guess it.
+
+`GIT_BRANCH_IN_USE` means the branch is already checked out in another worktree of the same
+repository, which Git would refuse too — but as a pre-flight it can say *which* one. `context`
+carries `branch` and `worktreePath`, the worktree holding it.
+
+Both exit with code 3: nothing was done, and the caller has somewhere to look.
+
 ### Git
 
 ```text
@@ -125,6 +144,7 @@ GIT_WORKTREE_LOCKED
 GIT_DIRTY_STAGED
 GIT_DIRTY_UNSTAGED
 GIT_UNTRACKED
+GIT_BRANCH_IN_USE
 GIT_UNMERGED
 GIT_HEAD_NOT_REMOTE_PERSISTED
 GIT_UPSTREAM_MISSING

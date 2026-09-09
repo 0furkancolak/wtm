@@ -461,6 +461,42 @@ A symbolic link a resource creates does not block `wtm remove`: the link holds n
 its own, and whatever it points at lives outside the worktree and survives. A copied or cloned
 resource is real content in the worktree, and does block, like any other untracked file.
 
+## Git safety
+
+```toml
+[git]
+allowed_remote_refs = [
+  "refs/remotes/origin/*",
+  "refs/remotes/upstream/*",
+]
+```
+
+Which remote-tracking refs count as "this work is safely somewhere else". `wtm analyze` and
+`wtm remove` refuse to delete a worktree whose HEAD is not reachable from one of them
+(`GIT_HEAD_NOT_REMOTE_PERSISTED`), so this list is the definition of the safety net — see
+[Git safety and worktree analysis](10-git-safety-worktree-analysis.md#unpushed-definition).
+
+The default is `["refs/remotes/origin/*"]`. Setting the key replaces that default outright rather
+than adding to it: a workspace that pushes to `upstream` as well as `origin` has to name both, and
+one that deliberately trusts only a single mirror can narrow it to exactly that ref. Because it
+resolves through the ordinary precedence above, a repository carrying its own `.wtm.toml` can
+tighten or loosen what the workspace decided, and `wtm explain` reports the winning value under
+`git.allowed_remote_refs` with the file and line it came from.
+
+Every pattern must:
+
+- start with `refs/remotes/`, since only a remote-tracking ref is evidence of a push;
+- use at most one `*`, and only as the final character — `refs/remotes/origin/*` is a pattern,
+  `refs/remotes/*/main` is not;
+- be one of at least one entry — an empty list is refused rather than read as "trust nothing",
+  which would silently make every worktree undeletable.
+
+A pattern that breaks these rules is refused at config load as `WTM_CONFIG_INVALID`, naming the
+offending pattern, rather than surfacing later as a crash from inside the analysis.
+
+The segment after `refs/remotes/` also names which remotes `--refresh-remotes` fetches from, so
+narrowing this list narrows what a refresh talks to.
+
 ## Capability provider override
 
 ```toml

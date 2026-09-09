@@ -237,13 +237,14 @@ export interface RepositoryOperationLeaseRequest {
   adopt?: boolean | undefined;
   /**
    * Whether the process holding a colliding, expired lease is still alive. The store cannot
-   * run `ps`, and core must not spawn one per row, so the verdict is the caller's — computed
-   * inside the transaction, and asked only of a colliding row that has already expired. A
-   * repository holds at most one row per operation and they all collide with each other, so
-   * this can be asked more than once in a single acquisition; a caller that measured only some
-   * of them must answer `alive` for the rest, never `gone`. `unknown` is a holder on a
-   * different host: this store cannot ask that host anything, and treats `unknown` exactly like
-   * `alive` — never abandoned on the strength of a host mismatch alone.
+   * run `ps`, and core must not spawn one per row, so the verdict is the caller's — asked
+   * inside the transaction for each expired row the acquisition collides with, and never for
+   * a row that is still inside its TTL. Collision is repository-wide: a `gc` row is asked
+   * about when a `remove` is being acquired, so a caller that pre-measures liveness has to
+   * pre-measure every expired row of the repository, not only its own operation's.
+   * `unknown` is a holder on a different host: this store cannot ask that host anything, and
+   * treats `unknown` exactly like `alive` — never abandoned on the strength of a host
+   * mismatch alone.
    */
   ownerLiveness?: ((holder: RepositoryOperationLeaseHolder) => 'alive' | 'unknown' | 'gone') | undefined;
 }
@@ -273,15 +274,18 @@ export interface StateStore extends AdapterTrustStateStore {
   /**
    * Claims the repository for one destructive operation, or reports who holds it.
    *
-   * Exclusion is per *repository*, not per operation: a `gc` running on a repository refuses a
-   * `remove` on it, and the other way round. One destructive operation can delete what another
-   * is walking, so the row that blocks an acquisition is any row the repository has, and the
-   * holder reported names the operation actually in the way.
+   * Exclusion is per repository, not per operation: any live lease on the repository refuses
+   * the request, whichever operation it names, because `remove` and `gc` racing each other is
+   * the failure this lease exists to prevent. The refusal names the holder that got there
+   * first, so `holder.operation` is the operation actually in the caller's way.
    *
    * A lapsed TTL is not evidence that the holder is gone: an expired lease whose owner
    * `ownerLiveness` reports `alive` is still a conflict. An expired lease whose owner is gone
    * is reported `abandoned` rather than taken, because continuing a half-done cleanup is only
-   * safe for a caller that asked to resume one — `adopt` is what takes it over.
+   * safe for a caller that asked to resume one — `adopt` is what takes it over, and it takes
+   * over every dead row of the repository at once so none is left to refuse the next caller.
+   * Only a row of the caller's *own* operation hands its journal on: `adoptedStage` and the
+   * new row's `stage` stay null when what was cleared away was a different operation.
    */
   acquireRepositoryOperationLease(
     input: RepositoryOperationLeaseRequest,
@@ -304,12 +308,13 @@ export interface StateStore extends AdapterTrustStateStore {
   releaseRepositoryOperationLease(key: RepositoryOperationLeaseKey, token: string): boolean;
   readRepositoryOperationLease(key: RepositoryOperationLeaseKey): RepositoryOperationLeaseHolder | null;
   /**
-   * Every operation currently holding this repository, in `operation` order.
+   * Every operation holding this repository, oldest acquisition first.
    *
-   * Exclusion spans operations, so a caller that has to measure the liveness of whoever is in
-   * its way cannot ask about its own operation alone — the row blocking it may be a different
-   * one. This is the read that makes that measurable, and like {@link readRepositoryOperationLease}
-   * it hands back holders rather than leases: a diagnostic is not a capability to release.
+   * A caller has to be able to see all of them, not just its own operation's row, because
+   * liveness is measured outside the transaction: the acquisition below refuses on *any*
+   * colliding row, so the verdicts it is handed have to cover every row it might refuse on.
+   * Reading one operation's row and hoping the store only ever looks at that one is what made
+   * `remove` and `gc` invisible to each other in the first place.
    */
   listRepositoryOperationLeases(repositoryId: string): RepositoryOperationLeaseHolder[];
   /**

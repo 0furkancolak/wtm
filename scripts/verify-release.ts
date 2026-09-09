@@ -12,15 +12,11 @@ export const releaseSigningStatuses = ['signed', 'adhoc', 'unsigned'] as const;
 export type ReleaseSigningStatus = (typeof releaseSigningStatuses)[number];
 
 /**
- * What the release run learned about Apple's notary service, and about what Gatekeeper then made
- * of the result.
- *
- * `skipped` is the honest answer for a run with no Apple credentials configured, and for one whose
- * executable is only ad-hoc signed — an ad-hoc signature cannot be notarized at all, so a
- * prerelease is `skipped` by construction. `rejected` covers both halves of the check failing:
- * the notary service refusing the submission, and `spctl --assess` refusing the result afterwards.
+ * Notarization is binary: the Apple notary service accepted this build, or it was never asked.
+ * `skipped` is what a build with no Apple credentials configured reports, and it is tolerable for
+ * a prerelease only — the same bargain `adhoc` signing already strikes.
  */
-export const releaseNotarizationStatuses = ['notarized', 'skipped', 'rejected'] as const;
+export const releaseNotarizationStatuses = ['notarized', 'skipped'] as const;
 
 export type ReleaseNotarizationStatus = (typeof releaseNotarizationStatuses)[number];
 
@@ -198,18 +194,21 @@ function verifySigning(release: ReleaseVersion, signing: string | undefined): vo
 }
 
 /**
- * Items 5 and 36 (todo.md). A Developer ID signature alone does not get a downloaded executable
- * past Gatekeeper: the quarantine bit makes the kernel `SIGKILL` it at `exec`, before any WTM code
- * runs, which is what item 36's `xattr -d com.apple.quarantine` workaround exists to route around.
- * Only notarization removes the need for that workaround, so a stable release that was not
- * notarized must not be published -- the same rule, and the same shape, as `verifySigning`.
+ * Increment G (todo.md items 5 and 36): a Developer ID signature alone does not get a downloaded
+ * executable past Gatekeeper. On a fresh download the quarantine bit is set and the kernel
+ * `SIGKILL`s at `exec`, before any WTM code runs — which is the whole reason item 36 had to ship
+ * an `xattr -d com.apple.quarantine` workaround in the README. Only a notarization ticket clears
+ * that, so a stable release publishing without one publishes something a first-time user cannot
+ * run.
  *
- * A prerelease is exempt for a stronger reason than it is exempt from signing: a prerelease is
- * ad-hoc signed, and an ad-hoc signature cannot be submitted to the notary service at all. Holding
- * one to this gate would leave no way to publish a release candidate.
+ * A prerelease is exempt for exactly the reason `verifySigning` exempts it from requiring a
+ * signature: it must stay buildable by a contributor who has no Apple credentials configured.
+ * `skipped` is that state named explicitly rather than left as an absent value, so "nobody asked
+ * the notary service" and "the evidence went missing on the way to the gate" cannot be confused
+ * for one another — the second is a wiring bug and is refused outright.
  */
 function verifyNotarization(release: ReleaseVersion, notarization: string | undefined): void {
-  const known = releaseNotarizationStatuses.join(', ').replace(/, (?=[^,]*$)/, ', or ');
+  const known = releaseNotarizationStatuses.join(' or ');
   if (notarization === undefined) {
     throw new Error(`Release verification requires a notarization status of ${known}`);
   }
@@ -217,7 +216,9 @@ function verifyNotarization(release: ReleaseVersion, notarization: string | unde
     throw new Error(`Unknown notarization status "${notarization}": expected ${known}`);
   }
   if (!release.prerelease && notarization !== 'notarized') {
-    throw new Error(`Stable release ${release.tag} requires a notarized executable, found ${notarization}`);
+    throw new Error(
+      `Stable release ${release.tag} requires a notarized executable, found ${notarization}`,
+    );
   }
 }
 

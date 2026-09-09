@@ -97,10 +97,12 @@ Mevcut process-local `Map` mutex ayrı CLI process'leri veya daemon ile CLI aras
 - [x] PID reuse riskine karşı process identity doğrulaması yap.
 - [~] `remove`, `gc`, destructive cleanup ve ileride `repair` gibi operasyonlarda aynı mekanizmayı
       kullan. — `remove` (`remove-worktree.ts`) ve `gc --apply` (`resources/gc.ts`) ikisi de
-      `withRepositoryOperationLease`'i kullanıyor ve **2026-09-07'den beri birbirlerini de
-      dışlıyorlar** (aşağıdaki kabul kriteri). `repair` diye ayrı bir komut hâlâ yok, o yüzden bu
-      satır bilerek `[~]` kalıyor; `RepositoryOperation` tipi zaten `'remove' | 'gc' | 'repair'` ve
-      genişletilmiş conflict kontrolü `repair` eklendiği gün ekstra iş gerektirmeden doğru çalışır.
+      `withRepositoryOperationLease`'i kullanıyor ve artık **birbirlerini de** dışlıyorlar
+      (aşağıdaki kabul kriterine bak); `repair` diye ayrı bir komut henüz yok, o yüzden hâlâ
+      implement edilmemiş — bu satır bilerek açık kalıyor. `RepositoryOperation` tipi zaten
+      `'remove' | 'gc' | 'repair'`, ve genişletilmiş conflict kontrolü satır bazlı değil
+      repository bazlı olduğu için `repair` komutu yazıldığı gün ek bir değişiklik gerektirmeden
+      doğru davranacak.
 - [x] Lock conflict için stable JSON error code ekle.
 
 #### Önerilen hata kodu
@@ -112,21 +114,26 @@ WTM_OPERATION_CONFLICT
 #### Kabul kriterleri
 
 - [x] İki terminal aynı repository üzerinde destructive işlem başlatamıyor.
-- [x] CLI ve daemon aynı repository üzerinde çakışan destructive işlem yapamıyor. — **kapandı,
-      2026-09-07.** Lease satırı hâlâ `{repository_id, operation}` ile saklanıyor (dördüncü bir
-      operasyon tablo migration'ı gerektirmesin diye), ama *conflict kontrolü* artık repository'nin
-      bütün satırlarını okuyor: `sqlite-store.ts`'teki `acquireRepositoryOperationLease` iki geçiş
-      yapıyor — canlı bir sahip her zaman ölü bir sahibi geçersiz kılıyor — ve `operation-lease.ts`
-      liveness'ı `listRepositoryOperationLeases` ile *her* lapsed satır için ölçüyor, yoksa çökmüş
-      bir `gc` o repository'deki her `remove`'u sonsuza kadar bloklardı. Kanıt: `remove-runtime.test.ts`
-      → `daemon-lease-conflict.scenario.ts` artık CLI `remove` tutarken daemon tarafından hem
-      `remove` hem de **`gc`** denemesi yapıyor, ikisi de gerçek ayrı OS process'lerinden
-      `WTM_OPERATION_CONFLICT` alıyor. Ek testler: `sqlite-store.test.ts`
-      (`cross-operation-repository-leases`), `operation-lease.test.ts` (ölü `gc` lease'i
-      adopt edilebiliyor ve journal'ı `remove`'a miras kalmıyor), `removal-lifecycle.test.ts`
-      (canlı `gc` removal'ı durduruyor), `gc-repository-lease.test.ts` (tutulan `remove` bütün
-      apply'ı reddediyor). Hata artık `context.holderOperation` ile *engelleyen* operasyonu da
-      söylüyor (additive alan, `docs/18-errors-json-contract.md`).
+- [x] CLI ve daemon aynı repository üzerinde çakışan destructive işlem yapamıyor. — kapandı:
+      `acquireRepositoryOperationLease` (`packages/core/src/state/sqlite-store.ts`) artık
+      `repository_id`'nin **bütün** lease satırlarına bakıyor, sadece istenen `operation`'ın
+      satırına değil; şema ve primary key (`{repository_id, operation}`) bilerek değişmedi.
+      Liveness ölçümü politika katmanında da genişledi
+      (`packages/core/src/analysis/operation-lease.ts` + yeni
+      `StateStore.listRepositoryOperationLeases`), yoksa ölü bir `gc` satırı bir `remove`'u
+      sonsuza kadar bloke ederdi. Hata bağlamına `holderOperation` eklendi: `remove` isteyen bir
+      kullanıcı artık yolunu kesenin `gc` olduğunu görüyor (`docs/18-errors-json-contract.md`).
+      **Kanıt (CLI `remove` vs daemon `gc`):** `packages/cli/src/__tests__/remove-runtime.test.ts`
+      → "refuses the daemon's own lease acquisition while a CLI remove holds the repository",
+      `daemon-lease-conflict.scenario.ts` üzerinden — gerçek `wtm remove` process'i lease'i
+      tutarken ayrı bir OS process'i olarak çalışan daemon kompozisyonu `gc` istiyor ve
+      `WTM_OPERATION_CONFLICT` / `holderOperation: 'remove'` alıyor (`daemonGc*` alanları).
+      Destekleyen testler: `sqlite-store.test.ts` → "refuses a remove while a gc holds the
+      repository, and never resumes one from the other" (store katmanı, iki ayrı SQLite
+      bağlantısı), `gc-repository-lease.test.ts` → "refuses the whole apply while a CLI remove
+      holds the repository" (`gc --apply` tarafı), `removal-lifecycle.test.ts` → "refuses the
+      removal outright while the daemon's gc holds the repository" (`remove` tarafı),
+      `operation-lease.test.ts` → dört yeni cross-operation testi.
 - [x] Crash olmuş process'in lease'i sonsuza kadar kalmıyor.
 
 ---
@@ -242,57 +249,68 @@ Developer ID signing tek başına stable macOS dağıtımı için yeterli değil
 
 #### Yapılacaklar
 
-- [~] Apple notarization credentials/secrets ekle. — **kod tarafı hazır, secret'lar eklenmedi.**
-      Workflow iki credential şeklini de destekliyor ve hangisinin ekleneceği
-      `docs/superpowers/specs/2026-09-07-macos-notarization-gatekeeper.md`'nin "Credentials"
-      tablosunda yazılı: `MACOS_NOTARIZATION_API_KEY` / `_API_KEY_ID` / `_API_ISSUER` (App Store
-      Connect anahtarı, tercih edilen) veya `MACOS_NOTARIZATION_APPLE_ID` / `_PASSWORD` /
-      `_TEAM_ID`. Bunları GitHub'a yalnızca hesap sahibi ekleyebilir; eklenene kadar adım
-      `notarization=skipped` raporluyor ve stable release bloklu kalıyor.
-- [x] `xcrun notarytool submit` pipeline'ı ekle. — `release.yml`'in `verify` job'unda `notarize`
-      adımı. Credential şekilleri `xcrun notarytool submit --help` (1.1.2) ile doğrulandı, Apple'ın
-      dokümantasyon sayfası değil: `--issuer` team key için zorunlu, individual key için
-      *verilmemeli*, o yüzden yalnızca secret doluysa geçiliyor.
-- [x] Notarization sonucu başarılı olmadan stable release'i yayınlama. —
-      `verify-release.ts`'in `verifyNotarization`'ı, `verifySigning` ile birebir aynı şekil:
-      `WTM_RELEASE_NOTARIZATION` yoksa hata, bilinmeyen değer hata, stable + `notarized` değil
-      hata. Prerelease muaf, çünkü ad-hoc imza notary service'e gönderilemiyor bile.
-- [x] Gerekiyorsa artifact paket formatını notarization'a göre düzenle. — **gerekmedi, kanıtla.**
-      `xcrun stapler staple --help`: desteklenen formatlar "UDIF disk images, code-signed
-      executable bundles, and signed flat installer packages". Çıplak bir Mach-O bunların hiçbiri,
-      yani ticket zaten staple edilemez. Dağıtım formatı değişmiyor; zip sadece submit için
-      kuruluyor ve shipping artifact'ı değil. Bedeli: Gatekeeper ticket'ı ilk çalıştırmada online
-      çözüyor, yani ilk çalıştırma ağ istiyor. Bu not workaround kaldırılırken README'ye yazılacak.
-- [x] `spctl --assess` doğrulaması ekle. — notarytool `Accepted` dedikten sonra
-      `spctl --assess --type execute` koşuyor; Apple'ın verdiği ama Gatekeeper'ın kabul etmediği
-      bir ticket `notarized` değil `rejected` sayılıyor.
-- [x] Gatekeeper verification testleri ekle. — `scripts/__tests__/release-notarization.test.ts`
-      adımın gerçek shell'ini `release.yml`'den çıkarıp scripted `xcrun`/`spctl` ile koşuyor:
-      credential yokken atlama, ad-hoc imzada atlama, iki credential şekli, `--issuer`'ın
-      varlığı/yokluğu, notary reddi, Gatekeeper reddi, ve `.p8`'in `$RUNNER_TEMP`'te
-      bırakılmaması. Apple'a hiç bağlanmadan her dal kanıtlanıyor.
-- [~] Release dokümantasyonunu güncelle. — gate ve secret'lar spec'te belgelendi; README'deki
-      "ilk çalıştırma ağ istiyor" notu workaround kaldırılırken yazılacak (aşağıdaki madde).
+- [~] Apple notarization credentials/secrets ekle. — secret **isimleri seçildi ve workflow'a
+      bağlandı**, ama secret'ları yalnızca repo sahibi ekleyebilir (Apple ID bir agent'ın
+      edinebileceği bir şey değil). GitHub'a eklenecek üç secret:
+      `MACOS_NOTARIZATION_APPLE_ID`, `MACOS_NOTARIZATION_PASSWORD` (**app-specific password** —
+      App Store Connect tüm hesaplarda 2FA zorunlu kıldığı için hesap parolası çalışmaz),
+      `MACOS_NOTARIZATION_TEAM_ID`. Şekil, Apple'ın güncel dokümantasyonuna karşı 2026-09-07'de
+      doğrulandı (spec'in "Credentials" bölümü alıntıları taşıyor); `altool` 1 Kasım 2023'ten beri
+      desteklenmiyor, `notarytool` tek yol.
+- [x] `xcrun notarytool submit` pipeline'ı ekle. — `.github/workflows/release.yml`, "Notarize the
+      executable" adımı. İmzalama adımının desenini birebir izliyor: credential yoksa
+      `notarization=skipped`, iş **başarısız olmuyor** (Apple hesabı olmayan bir katkıcı hâlâ
+      prerelease build edebiliyor). Ad-hoc imza da atlanıyor — notary service yalnızca Developer
+      ID imzalı kodu kabul ediyor. `--wait` kullanılıyor ve dönen `status` açıkça okunuyor;
+      `Accepted` değilse `notarytool log` stderr'a dökülüp adım kırmızıya düşüyor.
+- [x] Notarization sonucu başarılı olmadan stable release'i yayınlama. — `verifyNotarization`
+      (`scripts/verify-release.ts`), `verifySigning` ile aynı kural: stable release
+      `notarization !== 'notarized'` ise publish edilmiyor. `WTM_RELEASE_NOTARIZATION` hem
+      per-architecture `verify` gate'ine hem `publish`'in birleşik gate'ine bağlandı ve
+      `release-workflow.test.ts`'in `required` dizisine eklendi (bağlantı koparsa test kırmızı —
+      negatif olarak doğrulandı).
+- [x] Gerekiyorsa artifact paket formatını notarization'a göre düzenle. — **Gerekmiyor, ve bu
+      Apple dokümantasyonuna karşı doğrulandı, tahmin değil.** Notary service yalnızca UDIF disk
+      image, imzalı flat installer package ve ZIP kabul ediyor, çıplak Mach-O kabul etmiyor —
+      bu yüzden executable *yalnızca submission için* zipleniyor (`ditto -c -k`, `RUNNER_TEMP`
+      altında, yayınlanmıyor). Dağıtım formatı değişmiyor: release hâlâ aynı `.tar.gz`.
+      Stapling bir seçenek değil, Apple'ın kendi ifadesiyle: *"Although tickets are created for
+      standalone binaries, it's not currently possible to staple tickets to them."* Yani
+      Gatekeeper ticket'ı çevrimiçi arayacak — ilk çalıştırmada ağ erişimi gerekiyor. Bu bir
+      kısayol değil, `.pkg`/`.dmg`'ye geçmeden mümkün olan tek şey.
+- [~] `spctl --assess` doğrulaması ekle. — adım yazıldı ("Verify Gatekeeper accepts the
+      executable", `spctl --assess --type execute --verbose=2 dist/sea/wtm`, notarization
+      atlandıysa kendisi de atlanıyor), ama **hiç çalışmadı**: credential olmadan çalıştıracak
+      bir notarize edilmiş artifact yok. Gerçek çıktı ancak secret'lar eklenip bir tag
+      push'landığında görülecek.
+- [~] Gatekeeper verification testleri ekle. — CI tarafındaki test yukarıdaki `spctl` adımı; onun
+      dışında lokal olarak yazılabilecek bir Gatekeeper testi yok (runner'ın kendisi temiz
+      makine rolünü oynuyor). Gate'in mantığı `verify-release.test.ts`'te dört testle kapalı
+      (evidence yok / stable notarize değil / prerelease skipped / stable notarized), ama bunlar
+      gate'i test ediyor, Gatekeeper'ı değil.
+- [ ] Release dokümantasyonunu güncelle. — bilerek yapılmadı: çevrimiçi ticket lookup gereksinimi
+      ("ilk çalıştırma ağ istiyor") ancak notarization gerçekten çalıştığında doğru bir cümle
+      olur. Aşağıdaki workaround kaldırma adımıyla aynı değişikliğe ait.
 - [ ] Quarantine workaround'unu kaldır: `README.md` ve `CHANGELOG.md` içinde
       `<!-- gatekeeper-quarantine:start -->` / `<!-- gatekeeper-quarantine:end -->` ile
       işaretli bölümler. `scripts/__tests__/gatekeeper-workaround.test.ts` yarım kaldırmayı
       kırmızıya düşürür; her iki bölüm de gidince o test dosyası da aynı değişiklikte silinir.
-      — **bilerek yapılmadı.** Workaround gerçek bir kusuru belgeliyor ve o kusur hâlâ duruyor:
-      notarize edilmiş tek bir artifact yok, çünkü secret'lar yok. Kaldırmak, gerçek bir defect'i
-      belgesiz bırakırdı. Secret'lar eklenip bir tag gerçekten notarize olduktan sonra yapılacak.
+      **Bilerek yapılmadı.** Plan'ın kendi "What to hand back if credentials are never added"
+      bölümü tam olarak bu durumu tarif ediyor: gerçek bir `spctl --assess` yeşili olmadan
+      workaround'u kaldırmak, hâlâ var olan bir kusuru belgesiz bırakır. Workaround ve testi
+      olduğu gibi duruyor.
 
 #### Kabul kriterleri
 
-- [ ] Stable artifact temiz macOS makinede Gatekeeper tarafından kabul ediliyor. — **bu kriter
-      ancak gerçek bir tag koşusuyla kapanabilir.** Secret'lar eklenmeden hiçbir artifact notarize
-      edilmiyor, ve notarize edilmemiş bir artifact hakkında "temiz makine kabul ediyor" demek
-      uydurma olur. CI tarafındaki vekil hazır: `verify` job'u `spctl --assess --type execute`
-      koşuyor ve reddi `rejected` olarak kaydediyor.
-- [x] Stable release notarization yoksa publish edilmiyor. — `verifyNotarization` stable + non-
-      `notarized` her durumda hata veriyor; `release-workflow.test.ts` `WTM_RELEASE_NOTARIZATION`'ı
-      her iki gate çağrısında zorunlu kanıt listesine ekledi. Bugünkü fiili sonuç: secret'lar
-      eklenene kadar **stable release hiç yayınlanamıyor** — bilinçli, çünkü alternatifi
-      Gatekeeper'ın öldürdüğü bir binary'yi stable diye yayınlamak.
+- [ ] Stable artifact temiz macOS makinede Gatekeeper tarafından kabul ediliyor. — **doğrulanamadı.**
+      Bunun için gerçek Apple Developer credential'ları GitHub secret olarak eklenmeli ve bir tag
+      push'lanmalı; ikisi de yalnızca repo sahibinin yapabileceği şeyler. Kod ve workflow hazır ve
+      credential'sız hâliyle yeşil.
+- [ ] Stable release notarization yoksa publish edilmiyor. — gate yazıldı, bağlandı ve testlerle
+      kapatıldı (yukarıya bak), ama gerçek bir tag koşusunda hiç çalışmadı. Bugün pratikte şu
+      anlama geliyor: secret'lar eklenene kadar **stable release publish edilemez** (gate
+      `skipped`'ı reddeder); prerelease etkilenmiyor. Bu, kriterin istediği davranış — ama
+      "gerçekten çalıştı" kanıtı bir release koşusundan gelmeli.
 
 ---
 
@@ -347,9 +365,13 @@ hiç anmıyor.
 - [x] Tarayıcıyla indiren kullanıcı README'de ne yapacağını buluyor.
 - [ ] Notarization tamamlandığında bu geçici çözüm dokümandan kaldırılıyor. Kalan tek kriter
       bu; 5. maddede kaldırma adımı ve yarım kaldırmayı yakalayan test yazılı, madde o zaman
-      kapanır. — **2026-09-07 durumu:** notarization pipeline'ı ve gate'i yazıldı (5. madde), ama
-      Apple secret'ları olmadan notarize edilmiş bir artifact yok, yani workaround hâlâ gerçek bir
-      kusuru belgeliyor ve duruyor. `gatekeeper-workaround.test.ts` de duruyor.
+      kapanır. — **Hâlâ açık, bilerek.** Notarization pipeline'ı ve gate'i 5. maddede yazıldı
+      (`release.yml`'de `notarytool submit` + `spctl --assess`, `verify-release.ts`'te
+      `verifyNotarization`), ama notarization henüz *tamamlanmadı*: Apple credential'ları secret
+      olarak eklenmediği için hiç bir artifact notarize edilmedi. Kriterin koşulu ("notarization
+      tamamlandığında") gerçekleşmedi, dolayısıyla workaround `README.md`/`CHANGELOG.md`'de ve
+      `scripts/__tests__/gatekeeper-workaround.test.ts` yerinde duruyor. Kaldırma, gerçek bir
+      notarize edilmiş release koşusundan sonra yapılacak tek bir değişiklik.
 
 ---
 
@@ -716,23 +738,63 @@ wtm create feat/auth --json
 wtm create feat/auth --repos web,api,worker
 ```
 
+**Kısmen kapandı.** Tek repo `wtm create` çalışıyor; multi-repo, veri modelinde olmayan bir kavram
+gerektirdiği için gerekçesiyle açık bırakıldı. Spec
+`docs/superpowers/specs/2026-09-07-create-worktree.md`, plan
+`docs/superpowers/plans/2026-09-07-create-worktree.md`. Başlık, multi-repo satırları açık olduğu
+için madde 2 ve 7'nin kullandığı aynı kuralla `[ ]` kalıyor.
+
+Dokuz alt maddenin üçü zaten yazılmıştı — `create`'in işi onları kurmak değil, tetiklemek: worktree
+var olduktan sonrasının tamamı daemon'da. Bu, uygulamayı yazmadan önce spec'i yazmanın kazandırdığı
+şeydi.
+
 #### Yapılacaklar
 
-- [ ] Branch var/yok kontrolü.
-- [ ] Existing worktree conflict kontrolü.
-- [ ] Target path strategy.
-- [ ] Multi-repo branch alignment.
-- [ ] Worktree oluşturulduktan sonra reconcile.
-- [ ] Eager/lazy resource prepare policy ile uyum.
-- [ ] `worktree.created` event entegrasyonu.
-- [ ] `--json` stable output.
-- [ ] Partial multi-repo creation rollback/recovery.
+- [x] Branch var/yok kontrolü. — `branchExists` (`git show-ref --verify`, exit 1 "hayır" cevabı
+      olarak kabul ediliyor). Var olan dal *yeniden yaratılmıyor*, checkout ediliyor:
+      "an existing branch is checked out rather than restarted somewhere".
+- [x] Existing worktree conflict kontrolü. — iki ayrı ret, ikisi de Git hiçbir şey yazmadan önce:
+      `GIT_BRANCH_IN_USE` (dalı tutan worktree'yi adıyla söylüyor) ve
+      `WTM_WORKTREE_PATH_OCCUPIED`. Her testi kodun yanı sıra **hiçbir şey yaratılmadığını** da
+      doğruluyor — bir reddin taşıyıcı yarısı bu.
+- [x] Target path strategy. — `<workspace>/<repo-dizini>-<branch-slug>`. Kodda hiçbir konvansiyon
+      yoktu; repository'nin içine hiçbir şey yazmayan, `wtm init`'in mevcut keşfinin zaten
+      bulduğu ve deponun kendi senaryosunun (`reconcile-fallback.scenario.ts`) kurduğu düzen
+      seçildi. Slug çakışması (`feat/auth` ve `feat-auth`) üretilmiş bir sonek yerine
+      occupied-path reddiyle karşılanıyor: hesaplanmış bir yol ancak tahmin edilebildiği sürece
+      işe yarar.
+- [ ] Multi-repo branch alignment. — **açık.** Veri modelinde repository'ler arası worktree'leri
+      gruplayan hiçbir şey yok: `WorktreeRecord` tam olarak bir `repositoryId`'ye ait ve
+      `state/store.ts`'te bir gruplama anahtarı bulunmuyor. Bu bir komut değil, veri modeli
+      değişikliği.
+- [x] Worktree oluşturulduktan sonra reconcile. — daemon ayaktaysa `reconcile` isteği (daemon
+      cevaplamadan önce kuyruğunu boşaltıyor, yani cevap geldiğinde iş bitmiş oluyor); değilse
+      CLI kendi reconcile ediyor. **Asla ikisi birden** — bir registry'nin iki yazıcısı olması
+      `reconcileContainingRepository`'nin zaten önlediği hata.
+- [x] Eager/lazy resource prepare policy ile uyum. — `prepareDiscovered` bunu zaten yapıyor;
+      `create` daemon'a devrederek ona ulaşıyor. Daemon kapalıyken **çalışmıyor**, ve bu
+      sessizce geçilmiyor: `WTM_DAEMON_UNAVAILABLE` uyarısı neyin atlandığını adıyla söylüyor.
+- [x] `worktree.created` event entegrasyonu. — `LifecycleEventDispatcher.onReconciled` bunu zaten
+      atıyor. CLI'ya ikinci bir dispatcher konmadı: bir event'in duyurulup duyurulmadığına iki
+      yazıcının karar vermesi tam olarak `claimLifecycleEvent`'in önlemek için var olduğu şey.
+- [x] `--json` stable output. — `registration: 'daemon' | 'local'` alanı dahil, ki `--json`
+      çağıranı hook'ların çalışıp çalışmadığını daemon'u yoklamadan bilebilsin.
+- [ ] Partial multi-repo creation rollback/recovery. — **açık.** Tek repository'lik bir create tek
+      bir `git worktree add`; yarım kalacak bir şey yok. N repository için `remove`'un lease +
+      journal + `--resume` makinesinin create tarafına genişletilmesi ve deterministik bir kilit
+      sırası gerekir (yoksa iki multi-repo create birbirini kilitler) — kendi spec'ini hak eden
+      bir soru.
 
 #### Kabul kriterleri
 
-- [ ] Tek repo create deterministic.
-- [ ] Multi-repo create aynı feature identity altında çalışıyor.
-- [ ] Yarım kalan creation güvenli biçimde recover ediliyor.
+- [x] Tek repo create deterministic. — hesaplanmış yol, çağıranın dizininden bağımsız başlangıç
+      noktası, ve Git yazmadan önce verilen her ret. Yeni dal **main worktree'nin HEAD'inden**
+      başlıyor, kullanıcının içinde durduğu worktree'den değil: "starts a new branch at the main
+      worktree HEAD" hem core hem CLI seviyesinde bunu doğruluyor.
+- [ ] Multi-repo create aynı feature identity altında çalışıyor. — **bu dalganın kapsamı dışında.**
+      Adını verdiği kimlik veri modelinde yok (yukarıya bakınız).
+- [ ] Yarım kalan creation güvenli biçimde recover ediliyor. — **bu dalganın kapsamı dışında.**
+      Tek repository'lik create'te kurtarılacak yarım bir durum yok.
 
 ---
 
@@ -740,16 +802,40 @@ wtm create feat/auth --repos web,api,worker
 
 `wtm analyze --cleanup-candidates` yalnızca linked worktree filtresi olmamalı.
 
+**Kısmen kapandı.** Ranking uygulandı: sekiz girdinin yedisi çalışıyor, reclaimable disk size
+gerekçesiyle açık bırakıldı. Spec `docs/superpowers/specs/2026-09-07-cleanup-candidate-ranking.md`,
+plan `docs/superpowers/plans/2026-09-07-cleanup-candidate-ranking.md`. Sıralama ağırlıklı toplam
+değil, sıralı tier'lar üzerinden leksikografik: her karşılaştırmanın tek cümlelik bir cevabı var,
+ve `reason` tam olarak o cevapları taşıyor. Başlık, reclaimable satırı açık olduğu için madde 2'nin
+`repair` satırında kullanılan aynı kuralla `[ ]` kalıyor.
+
 #### Ranking girdileri
 
-- [ ] deletion readiness
-- [ ] age
-- [ ] merged/reachable state
-- [ ] remote persistence
-- [ ] reclaimable disk size
-- [ ] last WTM activity
-- [ ] running process var/yok
-- [ ] prunable state
+- [x] deletion readiness — 1. tier. `safety.readiness`: SAFE → REVIEW → BLOCKED.
+      `cleanup-ranking.test.ts`, "ranks SAFE above REVIEW above BLOCKED".
+- [x] age — 6. tier. `readGitCommitTimestamp` (yeni, `git/git-runner.ts`) her aday için HEAD'in
+      commit tarihini repository üzerinden okuyor — worktree dizini silinmiş bir adayın da
+      tarihlenebilmesi için. Cevap alınamazsa `last-commit-unknown`.
+- [x] merged/reachable state — 3. tier, `base.merged`.
+- [x] remote persistence — 3. ve 4. tier. 4. tier `remoteKnowledge.source` ile nitelendiriyor:
+      yalnızca yerel ref'lerden bilinen kalıcılık, fetch ile doğrulanmışın altında sıralanıyor.
+      "persistence known only from local refs ranks below the same candidate after a fetch".
+- [ ] reclaimable disk size — **açık.** Bu sayı hiçbir yerde yok: `packages/cli/src/commands/
+      disk.ts` kendi ölçüm temelini `reclaimable: 'not-estimated'` diye ilan ediyor ve core'daki
+      tek reclaimable fonksiyonu (`resources/removal.ts`) bayt değil *yol* döndürüyor. Sayıya
+      çevirmek, kendi yürüme maliyeti/cache/bayatlama kararları olan bir ölçüm özelliği — ranking
+      özelliği değil. Tier sırası, bu girdi sonradan üstündekileri bozmadan eklenebilecek şekilde
+      yazıldı.
+- [x] last WTM activity — 5. tier, ama beklenen alandan değil: `worktrees.last_runtime_at`
+      sütununu **hiçbir production yolu yazmıyor**, migration'dan beri hep NULL. Bu yüzden aktivite
+      managed-process journal'ından türetiliyor (`startedAt`/`stoppedAt`'in en yenisi), o da yoksa
+      taban `createdAt` — "WTM bu worktree'yi şu tarihten beri tanıyor ve o zamandan beri içinde
+      bir şey olduğunu kaydetmedi" ölçülmüş bir boşta kalmadır, bilgi yokluğu değil. Kayıt hiç
+      yoksa `wtm-activity-unknown`.
+- [x] running process var/yok — 2. tier. `listManagedProcesses` + `STARTING|RUNNING|STOPPING`.
+      Bilinmiyor, "yok" ile aynı şey değil ve öyle sıralanmıyor: "not knowing whether anything is
+      running ranks between provably idle and provably busy".
+- [x] prunable state — 7. tier, `identity.prunableReason` ve `identity.pathExists`.
 
 #### Önerilen sonuç
 
@@ -768,15 +854,37 @@ wtm create feat/auth --repos web,api,worker
 
 #### Kabul kriterleri
 
-- [ ] Çıktı deterministic.
-- [ ] Ranking hiçbir zaman otomatik delete yapmıyor.
-- [ ] Human ve JSON output aynı candidate sırasını kullanıyor.
+- [x] Çıktı deterministic. — sıra tam: her tier eşitse worktree yolu ile bozuluyor. "candidates
+      identical on every tier come back in path order" ve "shuffling the input does not change the
+      order" (girdi iki kez karıştırılıp aynı diziyi veriyor).
+- [x] Ranking hiçbir zaman otomatik delete yapmıyor. — `analyze` salt-okunur kaldı, apply yolu ya
+      da flag eklenmedi, ve `BLOCKED` aday listeden düşürülmüyor: en sona, blocker'larıyla
+      birlikte konuyor. Onu gizlemek, sıralama kılığına girmiş bir politika kararı olurdu.
+      `cleanup-ranking.test.ts` (CLI), "a candidate the safety analysis refuses to delete is ranked
+      last, never filtered out".
+- [x] Human ve JSON output aynı candidate sırasını kullanıyor. — sıralama renderer'da değil
+      **zarfın içinde** yapılıyor; `renderEnvelope`, `--json`'ın serialize ettiği aynı
+      `envelope.data`'yı geziyor, dolayısıyla ikisinin sıra konusunda anlaşmazlığa düşmesi yapısal
+      olarak mümkün değil. Yine de varsayılmadı, uçtan uca ölçüldü: "the human rendering lists
+      candidates in the same order as --json" insan çıktısındaki yol offset'lerinin artan olduğunu
+      doğruluyor.
+
+#### Score
+
+`score` (0-100) sıralanan şey **değil**: sortun karşılaştırdığı aynı tier değerlerinden, sabit bir
+fonksiyonla türetiliyor. Tier değerleri karışık tabanlı bir sayının basamakları olarak okunuyor, bu
+yüzden bir aday kendisinden üstte sıralanan bir adaydan yüksek puan alamaz — eşitlik mümkün
+(idleness puanda kovalanmış, sortta tam), anlaşmazlık değil. "score never disagrees with rank".
 
 ---
 
-### [ ] 8. Allowed remote refs configuration ekle
+### [x] 8. Allowed remote refs configuration ekle
 
 Core desteği kullanıcı config katmanına bağlanmalı.
+
+**Kapandı.** Kodun tamamı zaten yazılmış ve testliymiş; bu madde geride kalan tek gerçek boşluk
+olan kullanıcı dokümantasyonu kapatılarak bitirildi. Aşağıdaki her satır çalıştırılıp doğrulandı
+(`allowed-remote-refs-config.test.ts` + `decisions.test.ts` + `schema.test.ts`: 23 test yeşil).
 
 #### Önerilen config
 
@@ -790,12 +898,38 @@ allowed_remote_refs = [
 
 #### Yapılacaklar
 
-- [ ] Schema ekle.
-- [ ] Config validation ekle.
-- [ ] Provenance desteği ekle.
-- [ ] `analyze` ve `remove` resolved config'i kullansın.
-- [ ] Invalid wildcard pattern testleri ekle.
-- [ ] `wtm explain` içinde göster.
+- [x] Schema ekle. — `packages/core/src/config/schema.ts`'te `gitSchema`, `.strict()`; varsayılan
+      `builtInConfig` içinde adıyla duruyor (`config/load.ts`), böylece `wtm explain`'in
+      raporlayacağı bir "WTM'nin kendi varsayılanı" var: `["refs/remotes/origin/*"]`.
+- [x] Config validation ekle. — aynı şemadaki `superRefine`, analiz anındaki kuralın *aynısını*
+      (`normalizeAllowedRemoteRefs`, `analysis/remote-persistence.ts`) config yükleme anında
+      çalıştırıyor. Yani `analyzeRemotePersistence`'ın derinlerinde çıplak bir `TypeError` olarak
+      patlayacak bir pattern, bunun yerine hatalı pattern'i adıyla söyleyen kodlu bir
+      `WTM_CONFIG_INVALID` olarak raporlanıyor.
+- [x] Provenance desteği ekle. — `config/provenance.ts`'in `collectProvenance`'ı ve
+      `config/merge.ts`'in katman birleştirmesi bu anahtarı da taşıyor; kazanan değerin dosyası ve
+      satırı `decisions.test.ts`'te birebir doğrulanıyor
+      (`{ source: '/projects/demo/wtm.toml', line: 60 }`).
+- [x] `analyze` ve `remove` resolved config'i kullansın. — `packages/cli/src/main.ts`'te
+      `resolveConfiguredAllowedRemoteRefs`; `analyze` repo başına tekilleştirip çözüyor, `remove`
+      kendi repo'su için çözüp `commands/remove.ts`'e geçiriyor. İkisi de WTM'nin hiç kaydetmediği
+      bir repository için de çalışıyor: workspace kökü kayıt aranarak değil, yukarı yürünerek
+      bulunuyor.
+- [x] Invalid wildcard pattern testleri ekle. — `packages/core/src/config/__tests__/schema.test.ts`
+      (refs/remotes dışı, trailing olmayan wildcard, boş liste, kodlu hata) ve
+      `packages/cli/src/__tests__/allowed-remote-refs-config.test.ts` (geçersiz pattern `analyze`'ı
+      *crash* değil kodlu hata ile düşürüyor; `remove`'da da aynısı oluyor **ve worktree yerinde
+      kalıyor**).
+- [x] `wtm explain` içinde göster. — `git.allowed_remote_refs` bir `config` kararı olarak çıkıyor,
+      değeri ve provenance'ıyla; `decisions.test.ts` → "surfaces the configured [git]
+      allowed_remote_refs as a config decision, for `wtm explain`".
+- [x] Kullanıcı dokümantasyonuna yaz. — **bu maddede yapılan tek yeni iş.** Anahtar şemada vardı
+      ama hiçbir kullanıcı dokümanında geçmiyordu, yani ayarlanabilir olduğu halde keşfedilemezdi.
+      `docs/03-configuration-spec.md`'e "Git safety" bölümü eklendi: varsayılan, listenin
+      *eklemediği* ama tamamen *değiştirdiği* (dizi birleştirilmiyor, `config/merge.ts` diziyi
+      yaprak sayıyor), üç doğrulama kuralı, `WTM_CONFIG_INVALID` davranışı ve `--refresh-remotes`
+      ile bağı. `docs/10-git-safety-worktree-analysis.md`'in "configuration may expand/restrict
+      this" cümlesi de artık anahtarı adıyla söyleyip oraya bağlanıyor.
 
 ---
 

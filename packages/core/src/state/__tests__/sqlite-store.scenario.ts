@@ -1172,9 +1172,10 @@ function repositoryOperationLeases() {
         hostId: 'this-host',
         ttlMs: 120_000,
       }, '2026-08-31T10:14:03.000Z');
-      // `gc` and `remove` are different rows, and still refuse each other: the primary key
-      // decides where a lease is *stored*, and the conflict check decides what a repository can
-      // have running on it, which is one destructive operation whatever it is called.
+      // `gc` and `remove` are different rows, and the primary key alone would let both be
+      // held at once. Which operations exclude each other is a decision made in code, and the
+      // decision is that all of them do: a `gc` that reclaims what a `remove` is halfway
+      // through releasing is the destructive race this lease exists to prevent.
       const otherOperation = secondStore.acquireRepositoryOperationLease({
         repositoryId: repository.id,
         operation: 'gc',
@@ -1226,9 +1227,12 @@ function repositoryOperationLeases() {
         // A diagnostic read is not a capability to release: the token stays inside the store.
         holderViewKeys: survived === null ? null : Object.keys(survived).sort(),
         otherOperationOutcome: otherOperation.outcome,
-        otherOperationHolderOperation: otherOperation.outcome === 'acquired'
-          ? null
-          : otherOperation.holder.operation,
+        // The refusal names the operation actually in the way, not the one that was asked for.
+        otherOperationHolder: otherOperation.outcome === 'acquired' ? null : otherOperation.holder.operation,
+        otherOperationHolderPid: otherOperation.outcome === 'acquired' ? null : otherOperation.holder.pid,
+        otherOperationRowAbsent: secondStore.readRepositoryOperationLease({
+          repositoryId: repository.id, operation: 'gc',
+        }) === null,
         emptyTokenRejected,
         wrongTokenReleased,
         survivedWrongTokenPid: survived?.pid ?? null,
@@ -1240,168 +1244,6 @@ function repositoryOperationLeases() {
     } finally {
       firstStore.close();
       secondStore.close();
-    }
-  });
-}
-
-/**
- * Two *different* destructive operations on one repository exclude each other.
- *
- * The primary key stays `(repository_id, operation)` — a fourth operation must not need a table
- * rebuild — but the conflict check reads every row the repository has. What a `remove` is told
- * about a running `gc` is what it is told about another `remove`, and the refusal names the
- * operation actually holding the repository, so the message points at the process to wait for.
- */
-function crossOperationRepositoryLeases() {
-  return withDatabase((path, open, close) => {
-    const store = open();
-    const repository = createRepository(store);
-    const worktreeRecord = store.reconcileWorktrees(repository.id, [
-      worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
-    ]).discovered[0];
-    if (worktreeRecord === undefined) throw new Error('Expected discovered worktree');
-    const gcAcquired = store.acquireRepositoryOperationLease({
-      repositoryId: repository.id,
-      operation: 'gc',
-      token: 'gc-token',
-      pid: 61_000,
-      processStartTime: 'Mon Sep  7 09:00:00 2026',
-      hostId: 'this-host',
-      subjectWorktreeId: worktreeRecord.id,
-      ttlMs: 120_000,
-    }, '2026-09-07T09:00:00.000Z');
-    store.advanceRepositoryOperationLease(
-      { repositoryId: repository.id, operation: 'gc' },
-      'gc-token',
-      'gc-quarantined',
-      '2026-09-07T09:00:30.000Z',
-    );
-    // An unexpired holder is a conflict whatever operation it names, and costs no liveness read:
-    // the `ps` a verdict needs is only worth running once a TTL has actually lapsed.
-    let livenessAskedWhileLive = 0;
-    const whileGcLive = store.acquireRepositoryOperationLease({
-      repositoryId: repository.id,
-      operation: 'remove',
-      token: 'remove-token',
-      pid: 61_001,
-      processStartTime: 'Mon Sep  7 09:00:01 2026',
-      hostId: 'this-host',
-      ttlMs: 120_000,
-      ownerLiveness: () => {
-        livenessAskedWhileLive += 1;
-        return 'gone';
-      },
-    }, '2026-09-07T09:00:01.000Z');
-    // Past the TTL liveness decides, and a gc whose process is still running keeps the
-    // repository exactly as an unexpired one did.
-    const whileGcExpiredAndAlive = store.acquireRepositoryOperationLease({
-      repositoryId: repository.id,
-      operation: 'remove',
-      token: 'remove-token',
-      pid: 61_001,
-      processStartTime: 'Mon Sep  7 09:00:01 2026',
-      hostId: 'this-host',
-      ttlMs: 120_000,
-      ownerLiveness: () => 'alive',
-    }, '2026-09-07T09:02:30.000Z');
-    // Dead, but not silently taken: a half-finished gc is reported, with its own journal, so
-    // that only a caller who asked to resume one ever continues past it.
-    const whileGcExpiredAndGone = store.acquireRepositoryOperationLease({
-      repositoryId: repository.id,
-      operation: 'remove',
-      token: 'remove-token',
-      pid: 61_001,
-      processStartTime: 'Mon Sep  7 09:00:01 2026',
-      hostId: 'this-host',
-      ttlMs: 120_000,
-      ownerLiveness: () => 'gone',
-    }, '2026-09-07T09:02:31.000Z');
-    // `adopt` clears it. The dead gc's journal does not cross the operation boundary: its stage
-    // records how far a *gc* got, and its subject is the object *gc* was working on — neither
-    // says anything about the removal now starting, so the new row begins from the request.
-    const adopted = store.acquireRepositoryOperationLease({
-      repositoryId: repository.id,
-      operation: 'remove',
-      token: 'remove-token',
-      pid: 61_001,
-      processStartTime: 'Mon Sep  7 09:00:01 2026',
-      hostId: 'this-host',
-      ttlMs: 120_000,
-      adopt: true,
-      ownerLiveness: () => 'gone',
-    }, '2026-09-07T09:02:32.000Z');
-    const rowsAfterAdopt = store.listRepositoryOperationLeases(repository.id);
-    close();
-
-    // A database written before the conflict check widened can hold one row per operation at
-    // once, so adoption has to clear every row it reclaimed: leaving a sibling behind would make
-    // the very next acquisition conflict with a lease nobody holds.
-    const raw = new Database(path);
-    raw.prepare('DELETE FROM repository_operation_leases WHERE repository_id = ?').run(repository.id);
-    const seed = raw.prepare(`
-      INSERT INTO repository_operation_leases (
-        repository_id, operation, token, pid, process_start_time, host_id, subject_worktree_id,
-        stage, acquired_at, renewed_at, expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    seed.run(
-      repository.id, 'gc', 'stale-gc', 61_000, 'Mon Sep  7 09:00:00 2026', 'this-host',
-      worktreeRecord.id, 'gc-quarantined',
-      '2026-09-07T09:00:00.000Z', '2026-09-07T09:00:00.000Z', '2026-09-07T09:02:00.000Z',
-    );
-    seed.run(
-      repository.id, 'remove', 'stale-remove', 61_002, 'Mon Sep  7 09:01:00 2026', 'this-host',
-      null, 'remove-processes-stopped',
-      '2026-09-07T09:01:00.000Z', '2026-09-07T09:01:00.000Z', '2026-09-07T09:03:00.000Z',
-    );
-    raw.close();
-
-    const reopened = open();
-    const rowsBeforeBothAdopted = reopened.listRepositoryOperationLeases(repository.id);
-    const adoptedBoth = reopened.acquireRepositoryOperationLease({
-      repositoryId: repository.id,
-      operation: 'remove',
-      token: 'remove-token-2',
-      pid: 61_003,
-      processStartTime: 'Mon Sep  7 09:05:00 2026',
-      hostId: 'this-host',
-      ttlMs: 120_000,
-      adopt: true,
-      ownerLiveness: () => 'gone',
-    }, '2026-09-07T09:05:00.000Z');
-    const rowsAfterBothAdopted = reopened.listRepositoryOperationLeases(repository.id);
-    try {
-      return {
-        gcOutcome: gcAcquired.outcome,
-        whileGcLiveOutcome: whileGcLive.outcome,
-        whileGcLiveHolderOperation: whileGcLive.outcome === 'acquired' ? null : whileGcLive.holder.operation,
-        livenessAskedWhileLive,
-        whileGcExpiredAndAliveOutcome: whileGcExpiredAndAlive.outcome,
-        whileGcExpiredAndGoneOutcome: whileGcExpiredAndGone.outcome,
-        whileGcExpiredAndGoneHolderOperation: whileGcExpiredAndGone.outcome === 'acquired'
-          ? null
-          : whileGcExpiredAndGone.holder.operation,
-        whileGcExpiredAndGoneHolderStage: whileGcExpiredAndGone.outcome === 'acquired'
-          ? null
-          : whileGcExpiredAndGone.holder.stage,
-        adoptedOutcome: adopted.outcome,
-        adoptedStage: adopted.outcome === 'acquired' ? adopted.adoptedStage : null,
-        adoptedLeaseStage: adopted.outcome === 'acquired' ? adopted.lease.stage : null,
-        adoptedLeaseSubjectWorktreeId: adopted.outcome === 'acquired' ? adopted.lease.subjectWorktreeId : null,
-        rowsAfterAdopt: rowsAfterAdopt.map(({ operation }) => operation),
-        // A diagnostic listing is not a capability to release: the token stays inside the store.
-        listedHolderKeys: rowsAfterAdopt[0] === undefined ? null : Object.keys(rowsAfterAdopt[0]).sort(),
-        rowsBeforeBothAdopted: rowsBeforeBothAdopted.map(({ operation }) => operation),
-        adoptedBothOutcome: adoptedBoth.outcome,
-        // The request's *own* operation still resumes from its own journal.
-        adoptedBothStage: adoptedBoth.outcome === 'acquired' ? adoptedBoth.adoptedStage : null,
-        adoptedBothSubjectWorktreeId: adoptedBoth.outcome === 'acquired'
-          ? adoptedBoth.lease.subjectWorktreeId
-          : null,
-        rowsAfterBothAdopted: rowsAfterBothAdopted.map(({ operation }) => operation),
-      };
-    } finally {
-      close();
     }
   });
 }
@@ -1554,6 +1396,127 @@ function repositoryOperationLeaseRecovery() {
 }
 
 /**
+ * The cross-operation half of the exclusion, which the primary key cannot express.
+ *
+ * A repository holds one row per operation, so a live `gc` and a live `remove` are two different
+ * rows and nothing in the schema keeps them apart — a `remove` could delete the worktree the `gc`
+ * was walking. The refusal has to come from the code, and it has to name the operation that is
+ * actually in the way rather than the one the caller asked for, which is the only thing that makes
+ * "wtm remove says a gc is running" a sentence a user can act on.
+ *
+ * The second half is what a dead cross-operation row may hand over. Nothing: the row *is* one
+ * operation's journal, so `gc`'s half-finished stage is not a `remove`'s progress. It is cleared
+ * out of the way, not resumed from.
+ */
+function crossOperationLeaseExclusion() {
+  return withDatabase((path, open, close) => {
+    const first = open();
+    const repository = createRepository(first);
+    const worktreeRecord = first.reconcileWorktrees(repository.id, [
+      worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
+    ]).discovered[0];
+    if (worktreeRecord === undefined) throw new Error('Expected discovered worktree');
+    close();
+    const gcStore = new SQLiteStateStore(path);
+    const removeStore = new SQLiteStateStore(path);
+    const gcKey = { repositoryId: repository.id, operation: 'gc' } as const;
+    const removeKey = { repositoryId: repository.id, operation: 'remove' } as const;
+    try {
+      // The daemon's `gc`, holding the repository and journalling its way through.
+      const gcHeld = gcStore.acquireRepositoryOperationLease({
+        repositoryId: repository.id,
+        operation: 'gc',
+        token: 'gc-token',
+        pid: 7001,
+        processStartTime: 'Sun Sep  6 09:00:00 2026',
+        hostId: 'this-host',
+        ttlMs: 120_000,
+      }, '2026-09-07T09:00:00.000Z');
+      gcStore.advanceRepositoryOperationLease(gcKey, 'gc-token', 'quarantine', '2026-09-07T09:00:01.000Z');
+
+      // A `wtm remove` from another process, while that `gc` is live and unexpired.
+      const removeRefused = removeStore.acquireRepositoryOperationLease({
+        repositoryId: repository.id,
+        operation: 'remove',
+        token: 'remove-token',
+        pid: 7002,
+        processStartTime: 'Sun Sep  6 09:00:02 2026',
+        hostId: 'this-host',
+        subjectWorktreeId: worktreeRecord.id,
+        ttlMs: 120_000,
+        // Never reached: an unexpired row is a conflict without anybody being asked about it.
+        ownerLiveness: () => 'gone',
+      }, '2026-09-07T09:00:02.000Z');
+      const removeRowAfterRefusal = removeStore.readRepositoryOperationLease(removeKey);
+
+      // The same `gc`, now past its TTL with its owner provably gone: reported, not taken.
+      const removeToldItIsAbandoned = removeStore.acquireRepositoryOperationLease({
+        repositoryId: repository.id,
+        operation: 'remove',
+        token: 'remove-token',
+        pid: 7002,
+        processStartTime: 'Sun Sep  6 09:00:02 2026',
+        hostId: 'this-host',
+        ttlMs: 120_000,
+        ownerLiveness: () => 'gone',
+      }, '2026-09-07T09:05:00.000Z');
+
+      // And with `adopt`, cleared away — but never resumed from. The `remove` starts with its own
+      // subject and no stage at all, because "quarantine" is a thing `gc` was doing.
+      const removeAdopted = removeStore.acquireRepositoryOperationLease({
+        repositoryId: repository.id,
+        operation: 'remove',
+        token: 'remove-token',
+        pid: 7002,
+        processStartTime: 'Sun Sep  6 09:00:02 2026',
+        hostId: 'this-host',
+        subjectWorktreeId: worktreeRecord.id,
+        ttlMs: 120_000,
+        adopt: true,
+        ownerLiveness: () => 'gone',
+      }, '2026-09-07T09:05:00.000Z');
+      // The dead sibling went with it: a `gc` row left behind would refuse the very next caller.
+      const gcRowAfterAdoption = removeStore.readRepositoryOperationLease(gcKey);
+      // And the `remove` now holds the repository against the daemon's next `gc`.
+      const gcRefusedAfterwards = gcStore.acquireRepositoryOperationLease({
+        repositoryId: repository.id,
+        operation: 'gc',
+        token: 'gc-token-2',
+        pid: 7003,
+        processStartTime: 'Sun Sep  6 09:05:01 2026',
+        hostId: 'this-host',
+        ttlMs: 120_000,
+      }, '2026-09-07T09:05:01.000Z');
+
+      return {
+        gcHeldOutcome: gcHeld.outcome,
+        removeRefusedOutcome: removeRefused.outcome,
+        removeRefusedHolderOperation: removeRefused.outcome === 'acquired' ? null : removeRefused.holder.operation,
+        removeRefusedHolderPid: removeRefused.outcome === 'acquired' ? null : removeRefused.holder.pid,
+        removeRefusedHolderStage: removeRefused.outcome === 'acquired' ? null : removeRefused.holder.stage,
+        removeRowAfterRefusal,
+        removeToldItIsAbandonedOutcome: removeToldItIsAbandoned.outcome,
+        removeToldItIsAbandonedHolder: removeToldItIsAbandoned.outcome === 'acquired'
+          ? null : removeToldItIsAbandoned.holder.operation,
+        removeAdoptedOutcome: removeAdopted.outcome,
+        // Nothing is inherited across operations: neither the journal nor the subject.
+        removeAdoptedStage: removeAdopted.outcome === 'acquired' ? removeAdopted.adoptedStage : 'unreachable',
+        removeAdoptedLeaseStage: removeAdopted.outcome === 'acquired' ? removeAdopted.lease.stage : 'unreachable',
+        removeAdoptedSubjectIsOwn: removeAdopted.outcome === 'acquired'
+          && removeAdopted.lease.subjectWorktreeId === worktreeRecord.id,
+        gcRowAfterAdoption,
+        gcRefusedAfterwardsOutcome: gcRefusedAfterwards.outcome,
+        gcRefusedAfterwardsHolder: gcRefusedAfterwards.outcome === 'acquired'
+          ? null : gcRefusedAfterwards.holder.operation,
+      };
+    } finally {
+      gcStore.close();
+      removeStore.close();
+    }
+  });
+}
+
+/**
  * Removal has to give a worktree's ports back before Git deletes it, and be able to say how
  * many it gave back. Reconciliation's own release stays where it is; the two agree.
  */
@@ -1668,7 +1631,7 @@ const scenarios: Record<string, () => unknown> = {
   'orphaned-endpoint-release': orphanedEndpointRelease,
   'repository-operation-leases': repositoryOperationLeases,
   'repository-operation-lease-recovery': repositoryOperationLeaseRecovery,
-  'cross-operation-repository-leases': crossOperationRepositoryLeases,
+  'cross-operation-lease-exclusion': crossOperationLeaseExclusion,
   'worktree-endpoint-release': worktreeEndpointRelease,
   'operation-lease-retirement': operationLeaseRetirement,
 };

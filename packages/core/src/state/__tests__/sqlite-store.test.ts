@@ -247,8 +247,12 @@ describe('SQLiteStateStore', () => {
         'acquiredAt', 'expiresAt', 'hostId', 'operation', 'pid', 'processStartTime',
         'renewedAt', 'repositoryId', 'stage', 'subjectWorktreeId',
       ],
+      // A `gc` asked for while a live `remove` holds the repository is refused, and told which
+      // operation is holding it: exclusion is repository-wide, not per operation.
       otherOperationOutcome: 'conflict',
-      otherOperationHolderOperation: 'remove',
+      otherOperationHolder: 'remove',
+      otherOperationHolderPid: 51422,
+      otherOperationRowAbsent: true,
       emptyTokenRejected: true,
       wrongTokenReleased: false,
       survivedWrongTokenPid: 51422,
@@ -256,33 +260,6 @@ describe('SQLiteStateStore', () => {
       releasedTwice: false,
       readAfterRelease: null,
       reacquiredOutcome: 'acquired',
-    });
-  });
-
-  test('refuses a destructive operation while a different one holds the same repository', () => {
-    expect(runScenario('cross-operation-repository-leases')).toEqual({
-      gcOutcome: 'acquired',
-      whileGcLiveOutcome: 'conflict',
-      whileGcLiveHolderOperation: 'gc',
-      livenessAskedWhileLive: 0,
-      whileGcExpiredAndAliveOutcome: 'conflict',
-      whileGcExpiredAndGoneOutcome: 'abandoned',
-      whileGcExpiredAndGoneHolderOperation: 'gc',
-      whileGcExpiredAndGoneHolderStage: 'gc-quarantined',
-      adoptedOutcome: 'acquired',
-      adoptedStage: null,
-      adoptedLeaseStage: null,
-      adoptedLeaseSubjectWorktreeId: null,
-      rowsAfterAdopt: ['remove'],
-      listedHolderKeys: [
-        'acquiredAt', 'expiresAt', 'hostId', 'operation', 'pid', 'processStartTime',
-        'renewedAt', 'repositoryId', 'stage', 'subjectWorktreeId',
-      ],
-      rowsBeforeBothAdopted: ['gc', 'remove'],
-      adoptedBothOutcome: 'acquired',
-      adoptedBothStage: 'remove-processes-stopped',
-      adoptedBothSubjectWorktreeId: null,
-      rowsAfterBothAdopted: ['remove'],
     });
   });
 
@@ -328,6 +305,31 @@ describe('SQLiteStateStore', () => {
       adoptOnLiveHolderOutcome: 'conflict',
       unknownVerdictOutcome: 'conflict',
       finalRelease: true,
+    });
+  });
+
+  test('refuses a remove while a gc holds the repository, and never resumes one from the other', () => {
+    expect(runScenario('cross-operation-lease-exclusion')).toEqual({
+      gcHeldOutcome: 'acquired',
+      // The CLI's `remove` is refused by the daemon's `gc`, and told so by name. This is the
+      // case `todo.md` item 2 carried as open: two different operations on one repository.
+      removeRefusedOutcome: 'conflict',
+      removeRefusedHolderOperation: 'gc',
+      removeRefusedHolderPid: 7001,
+      removeRefusedHolderStage: 'quarantine',
+      // A refusal writes nothing: there is no half-created `remove` row left behind.
+      removeRowAfterRefusal: null,
+      // Expired and provably gone is still not free to take — only `adopt` takes it.
+      removeToldItIsAbandonedOutcome: 'abandoned',
+      removeToldItIsAbandonedHolder: 'gc',
+      removeAdoptedOutcome: 'acquired',
+      // `gc`'s journal is `gc`'s. The `remove` starts from nothing, with its own subject.
+      removeAdoptedStage: null,
+      removeAdoptedLeaseStage: null,
+      removeAdoptedSubjectIsOwn: true,
+      gcRowAfterAdoption: null,
+      gcRefusedAfterwardsOutcome: 'conflict',
+      gcRefusedAfterwardsHolder: 'remove',
     });
   });
 

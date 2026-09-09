@@ -2,6 +2,7 @@ export {
   GitCommandError,
   defaultGitTimeoutMs,
   listGitWorktrees,
+  readGitCommitTimestamp,
   readGitRemoteOrigin,
   readGitRepositoryIdentity,
   remoteFetchTimeoutMs,
@@ -37,6 +38,23 @@ export {
 } from './analysis/remote-persistence';
 export type { RemotePersistenceAnalysis, RemoteRefreshResult } from './analysis/remote-persistence';
 export { assertRemovable, WorktreeRemovalBlockedError } from './analysis/remove-policy';
+export {
+  branchExists,
+  createWorktree,
+  planWorktreeCreation,
+  worktreeDirectoryName,
+} from './analysis/create-worktree';
+export type {
+  WorktreeCreationDecision,
+  WorktreeCreationInput,
+  WorktreeCreationPlan,
+} from './analysis/create-worktree';
+export { rankCleanupCandidates } from './analysis/cleanup-ranking';
+export type {
+  CleanupCandidateInput,
+  CleanupRankingOptions,
+  RankedCleanupCandidate,
+} from './analysis/cleanup-ranking';
 export {
   ManagedProcessResidueError,
   removalStages,

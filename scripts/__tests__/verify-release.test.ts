@@ -286,18 +286,24 @@ describe('release artifact gate', () => {
     ]);
   });
 
-  test('rejects an absent or unknown notarization status', () => {
+  test('rejects a release with no notarization evidence at all', () => {
+    // Not the same thing as "notarization was skipped": an absent value is the workflow having
+    // failed to hand the gate what it produced, which is exactly the silent wiring bug the
+    // structural test in release-workflow.test.ts exists to catch. Refused for a prerelease too.
     const directory = stage();
 
     expect(() => verifyReleaseArtifacts(request(directory, { notarization: undefined }))).toThrow(
-      'Release verification requires a notarization status of notarized, skipped, or rejected',
+      'Release verification requires a notarization status of notarized or skipped',
     );
-    expect(() => verifyReleaseArtifacts(request(directory, { notarization: 'probably-fine' }))).toThrow(
-      'Unknown notarization status "probably-fine": expected notarized, skipped, or rejected',
+    expect(() => verifyReleaseArtifacts(request(directory, { notarization: 'maybe' }))).toThrow(
+      'Unknown notarization status "maybe": expected notarized or skipped',
     );
   });
 
-  test('rejects a stable release whose executable was never notarized', () => {
+  test('rejects a stable release that was not notarized', () => {
+    // Item 5's acceptance criterion, as a test: a stable release does not publish without
+    // notarization. Without a ticket, a first-time user's download is killed by Gatekeeper
+    // before any WTM code runs.
     const directory = stage();
 
     expect(() => verifyReleaseArtifacts(request(directory, { notarization: 'skipped' }))).toThrow(
@@ -305,17 +311,9 @@ describe('release artifact gate', () => {
     );
   });
 
-  test('rejects a stable release the notary service or Gatekeeper turned down', () => {
-    const directory = stage();
-
-    expect(() => verifyReleaseArtifacts(request(directory, { notarization: 'rejected' }))).toThrow(
-      'Stable release v1.2.3 requires a notarized executable, found rejected',
-    );
-  });
-
-  test('accepts a prerelease that skipped notarization', () => {
-    // A prerelease is ad-hoc signed, and an ad-hoc signature cannot be notarized at all. Holding
-    // one to this gate would leave no way to publish a release candidate.
+  test('accepts a prerelease whose build skipped notarization', () => {
+    // A contributor with no Apple credentials configured must still be able to cut a prerelease,
+    // the same way an ad-hoc signature is tolerated for one.
     const directory = stage();
 
     const manifest = verifyReleaseArtifacts(request(directory, {
@@ -328,10 +326,12 @@ describe('release artifact gate', () => {
     expect(manifest.tag).toBe('v1.2.3-rc.1');
   });
 
-  test('accepts a stable release whose executable is notarized', () => {
+  test('accepts a stable release that was notarized', () => {
     const directory = stage();
 
-    expect(verifyReleaseArtifacts(request(directory, { notarization: 'notarized' })).tag).toBe('v1.2.3');
+    const manifest = verifyReleaseArtifacts(request(directory, { notarization: 'notarized' }));
+
+    expect(manifest.tag).toBe('v1.2.3');
   });
 
   test('rejects a release without performance results', () => {

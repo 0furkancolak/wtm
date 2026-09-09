@@ -158,6 +158,28 @@ export async function readGitRemoteOrigin(repoPath: string): Promise<string | nu
   }
 }
 
+/**
+ * When the commit at `revision` was last committed, or null when Git cannot answer.
+ *
+ * Cleanup ranking reads this as the age of a worktree's own work. A repository with no commits,
+ * a revision Git cannot resolve, or a worktree whose directory is gone all answer "unknown"
+ * rather than failing: an unavailable input ranks neutral, and refusing a whole analysis over a
+ * missing timestamp would cost more than ranking without it.
+ */
+export async function readGitCommitTimestamp(
+  repoPath: string,
+  revision: string,
+): Promise<string | null> {
+  try {
+    const result = await runGit(repoPath, ['log', '-1', '--format=%cI', revision, '--']);
+    const value = result.stdout.toString('utf8').trim();
+    return value.length === 0 ? null : value;
+  } catch (error) {
+    if (error instanceof GitCommandError) return null;
+    throw error;
+  }
+}
+
 export function runGit(
   repoPath: string,
   args: readonly string[],

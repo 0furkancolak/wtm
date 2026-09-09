@@ -156,7 +156,7 @@ describe('runtime-aware wtm remove', () => {
     });
   }, scenarioTestTimeoutMs);
 
-  test('refuses the daemon\'s own remove *and* gc while a CLI remove holds the repository', () => {
+  test('refuses the daemon\'s own lease acquisition while a CLI remove holds the repository', () => {
     const result = runScenario('node', ['--import', 'tsx', daemonConflictScenarioPath]);
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
@@ -170,9 +170,14 @@ describe('runtime-aware wtm remove', () => {
       daemonAbandoned: false,
       daemonRepositoryId: expect.any(String),
       daemonOperation: 'remove',
+      daemonHolderOperation: 'remove',
+      // The cross-operation case (`todo.md` item 2): the daemon's `gc` is a different row from
+      // the CLI's `remove` and used to be granted alongside it. Two real OS processes, one
+      // `state.db`, and the second one is refused.
       daemonGcOutcome: 'conflict',
       daemonGcCode: 'WTM_OPERATION_CONFLICT',
       daemonGcAbandoned: false,
+      daemonGcRepositoryId: expect.any(String),
       daemonGcOperation: 'gc',
       daemonGcHolderOperation: 'remove',
     });

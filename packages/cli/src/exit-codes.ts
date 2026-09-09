@@ -50,6 +50,12 @@ export function exitCodeForError(code: WtmErrorCode): number {
     || code === 'GIT_UNTRACKED'
     || code === 'GIT_UNMERGED'
     || code === 'GIT_HEAD_NOT_REMOTE_PERSISTED'
+    // `wtm create`'s two refusals. Both are decided before Git writes anything, so nothing was
+    // created and the caller has somewhere to look -- the worktree already holding the branch,
+    // or the directory already at the path. That is the same class as a Git blocker, not a
+    // configuration error the user must edit a file to clear.
+    || code === 'GIT_BRANCH_IN_USE'
+    || code === 'WTM_WORKTREE_PATH_OCCUPIED'
     // A second process already destroying this repository is a safety refusal, in the same
     // class as a Git blocker: nothing was done, and the caller has somewhere to look.
     || code === 'WTM_OPERATION_CONFLICT'
