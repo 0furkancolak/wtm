@@ -16,6 +16,7 @@ import {
   type WorkspaceRecord,
 } from '@wtm/core';
 import type { JsonEnvelope, WtmError } from '@wtm/protocol';
+import type { FileTrustPolicy } from '@wtm/platform/ports';
 import { inspectRuntimeResources, resolveWorktreeRuntime } from '@wtm/daemon';
 import { runDiskCommand, type DiskCommandResult, type DiskUsageSummary } from './disk';
 import { runGcCommand, type GcCommandResult } from './gc';
@@ -113,6 +114,8 @@ export async function runProductionGcCommand(input: {
   databasePath: string;
   cwd: string;
   apply: boolean;
+  /** The composition root's selected policy must reach guard, apply, and recovery alike. */
+  fileTrust: FileTrustPolicy;
   globalConfigPath?: string;
   /**
    * How the repository operation lease learns whether a colliding holder is still alive. Required
@@ -170,6 +173,7 @@ export async function runProductionGcCommand(input: {
           workspaceRoot,
           repositoryRoots,
           gitDirectoryPaths: repositories.map((repository) => resolve(repository.commonGitDir)),
+          fileTrust: input.fileTrust,
         });
       } catch (error) {
         return resourceFailureEnvelope('gc', error);
@@ -185,7 +189,7 @@ export async function runProductionGcCommand(input: {
           for (const entry of recoverable) {
             if (entry.phase === 'finalized' && entry.quarantineContainer !== null
               && !await lstat(entry.quarantineContainer.path).then(() => true).catch(() => false)) continue;
-            const recovered = await recoverGcJournalEntry(entry, { guard, lease, journal });
+            const recovered = await recoverGcJournalEntry(entry, { guard, lease, journal, fileTrust: input.fileTrust });
             items.push(recovered);
             if (recovered.outcome === 'failed' || recovered.outcome === 'lease-contended') {
               errors.push({
@@ -208,6 +212,7 @@ export async function runProductionGcCommand(input: {
         const envelope = await runGcCommand({
           plan,
           guard,
+          fileTrust: input.fileTrust,
           ...(input.apply ? {
             apply: true,
             lease,

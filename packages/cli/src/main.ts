@@ -447,6 +447,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
         globalConfigPath: defaultProductionRuntimePaths().globalConfigPath,
         cwd,
         apply,
+        fileTrust: hostPlatformRuntime().fileTrust,
         readProcessStartTime: (pid) => hostPlatformRuntime().process.readStartTime(pid),
         hostId: hostname(),
       })
