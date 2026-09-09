@@ -138,6 +138,8 @@ export interface ResourcePathAuthorization {
 
 export interface ResourceGuard {
   readonly sandboxRoot: string;
+  /** Drain in-flight checks, release inode pins, and refuse any later authorization. */
+  close(): Promise<void>;
   authorize(path: string, intent: ResourceGuardIntent): Promise<ResourcePathAuthorization>;
   authorizeParent(path: string, intent: ResourceGuardIntent): Promise<ResourcePathAuthorization>;
   revalidateParent(authorization: ResourcePathAuthorization): Promise<void>;
@@ -205,16 +207,32 @@ export async function createResourceGuard(options: ResourceGuardOptions): Promis
    *
    * Keyed by path, so the cost is one descriptor per distinct directory a guard touches and not
    * one per `authorize` call: a GC sweep of a thousand objects under one parent holds one. Guards
-   * are built per command and per operation, and the descriptors go with them.
+   * are built per command and per operation; their owner must close the guard in a finally block.
    */
   const directoryPins = new Map<string, { readonly id: number; readonly pin: InodePin }>();
   const pinChain = new Map<string, Promise<void>>();
   let nextPinId = 1;
 
   const sandboxPin = await pinInode(sandboxRoot);
-  if (sandboxPin === null || !await sandboxPin.holds(sandboxStat)) {
-    deny('The configured resource sandbox could not be held for inspection.', { sandboxRoot });
+  try {
+    if (sandboxPin === null || !await sandboxPin.holds(sandboxStat)) {
+      deny('The configured resource sandbox could not be held for inspection.', { sandboxRoot });
+    }
+  } catch (error) {
+    await sandboxPin?.close();
+    throw error;
   }
+
+  let closed = false;
+  let closing: Promise<void> | undefined;
+  const operations = new Set<Promise<unknown>>();
+  const withGuard = <T>(body: () => Promise<T>): Promise<T> => {
+    if (closed) return Promise.reject(new ResourcePathGuardError('RESOURCE_PATH_DENIED', 'The resource guard is closed.', { sandboxRoot }));
+    const operation = Promise.resolve().then(body);
+    operations.add(operation);
+    void operation.then(() => operations.delete(operation), () => operations.delete(operation));
+    return operation;
+  };
 
   /**
    * Pins `path`, or reuses the pin already held for it.
@@ -246,9 +264,13 @@ export async function createResourceGuard(options: ResourceGuardOptions): Promis
       await cached.pin.close();
     }
     const pin = await pinInode(path);
-    if (pin === null || !await pin.holds(expected)) {
+    try {
+      if (pin === null || !await pin.holds(expected)) {
+        deny('A resource parent changed while it was being authorized.', { path });
+      }
+    } catch (error) {
       await pin?.close();
-      deny('A resource parent changed while it was being authorized.', { path });
+      throw error;
     }
     const id = nextPinId++;
     directoryPins.set(path, { id, pin });
@@ -320,14 +342,27 @@ export async function createResourceGuard(options: ResourceGuardOptions): Promis
 
   return {
     sandboxRoot,
-    authorize,
-    async authorizeParent(path, intent) {
-      return authorize(path, intent, true);
+    close() {
+      if (closing !== undefined) return closing;
+      closed = true;
+      closing = (async () => {
+        await Promise.allSettled([...operations]);
+        await Promise.all([sandboxPin.close(), ...[...directoryPins.values()].map(({ pin }) => pin.close())]);
+        directoryPins.clear();
+        pinChain.clear();
+      })();
+      return closing;
     },
-    revalidateParent,
-    async revalidate(token) {
-      await revalidateParent(token);
-      return authorize(token.path, token.intent);
+    authorize(path, intent) { return withGuard(() => authorize(path, intent)); },
+    authorizeParent(path, intent) {
+      return withGuard(() => authorize(path, intent, true));
+    },
+    revalidateParent(token) { return withGuard(() => revalidateParent(token)); },
+    revalidate(token) {
+      return withGuard(async () => {
+        await revalidateParent(token);
+        return authorize(token.path, token.intent);
+      });
     },
   };
 }
@@ -337,7 +372,9 @@ export async function authorizeResourcePath(
   path: string,
   intent: ResourceGuardIntent,
 ): Promise<ResourcePathAuthorization> {
-  return (await createResourceGuard(options)).authorize(path, intent);
+  const guard = await createResourceGuard(options);
+  try { return await guard.authorize(path, intent); }
+  finally { await guard.close(); }
 }
 
 const controlledGitTrackingInspector: GitTrackingInspector = {

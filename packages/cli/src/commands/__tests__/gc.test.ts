@@ -11,8 +11,12 @@ import { fileURLToPath } from 'node:url';
 import { runScenario } from '../../../../testkit/src/scenario-child';
 
 const roots: string[] = [];
+const guards: Array<Awaited<ReturnType<typeof createResourceGuard>>> = [];
 const productionScenario = fileURLToPath(new URL('./resource-cli.scenario.ts', import.meta.url));
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+afterEach(async () => {
+  await Promise.all(guards.splice(0).map((guard) => guard.close()));
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'wtm-cli-gc-'));
@@ -29,6 +33,7 @@ async function fixture() {
     sandboxRoot, workspaceRoot, repositoryRoots: [workspaceRoot],
     git: { async isTracked() { return false; } },
   });
+  guards.push(guard);
   const target = join(sandboxRoot, 'stale');
   await writeFile(target, '1234');
   const targetStat = await lstat(target);
