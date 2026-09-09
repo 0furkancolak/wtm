@@ -200,6 +200,16 @@ deadline aşılması ve exit/stdio olay sırasının timeout sonucunu kaybettirm
 Tam testte bulunan gerçek SEA migration registry regresyonu düzeltildi; kaynak asset'leriyle
 birebir byte-order karşılaştırması korunarak migration 012 beklentisi eklendi.
 
+Son bağımsız kapanış review'inde incelenen kapsamda açık P1/P2 kalmadı. Local implementation
+commit'leri: `22a38fe`, `e02ce15`, `b3e89f4`, `e40d417`, `02dfaa4`, `9a30d05`; ilk ilerleme
+kaydı `5541fb8`. `git push -u origin codex/todo-safety-docs-parity` denendi fakat
+`could not read Username for 'https://github.com': No such device or address` ile reddedildi.
+Terminalde Git credential helper yok. Bağlı GitHub hesabı `0furkancolak` olarak doğrulandı;
+sunulan commit oluşturma API'si author/committer alanlarını veya mevcut yerel Git nesnelerini
+yüklemeyi desteklemiyor. İstenen yapılandırılmış Git kimliği ve commit geçmişi değiştirilerek
+bu engel aşılmadı. Mevcut yerel commit'lerin push'ı için terminal Git yazma kimlik doğrulaması
+gerekli; uzak dal oluşturulmuş veya commit'ler GitHub'a gönderilmiş sayılmamalı.
+
 ### Bu ortamın sınırları ve sonraki iş
 
 Son doğrulama kaydı (Bun 1.3.14, Node 24.19.0; komutlar seri çalıştırıldı):
