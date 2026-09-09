@@ -93,6 +93,48 @@ The daemon owns:
 
 The daemon never interprets a framework-specific lockfile itself; it calls the core/adapter layer.
 
+## Shared finite-task queue
+
+`wtm run <task> --enqueue` sends a configured finite task to the existing daemon. SQLite commits
+the job before the CLI receives its identifier. A transaction claims the FIFO head and its
+concurrency slot together; the default is one heavy task across every registered repository in
+this state database. Jobs in the same worktree never hold slots together. A blocked FIFO head
+deliberately holds back later jobs. Ordinary foreground `run` and background `start` retain
+their separate execution paths.
+
+The queue uses the existing process anchor, managed-process store and log safety rules. The
+job is bound to its process before the anchor receives GO. Numeric completion evidence is
+written by the anchor, including timeout information when the daemon is unavailable. Recovery
+never retries a command with an uncertain outcome. A job keeps its slot until the complete
+process group is confirmed absent; neither a STOPPED label nor a cancellation request alone
+proves that condition. Destructive repository leases and queued/running jobs exclude one
+another in the same database transaction.
+
+Queue state binds to a machine/user identity before managed process recovery. Subsequent use
+of that database by another host or user is rejected; machines with a shared HOME must use
+separate, host-local state. Legacy unscoped process records are adopted once under the existing
+host-local-state assumption; migration cannot establish which host originally created them.
+Cloned operating system images must have distinct machine identities. The queue scope is an
+application-specific HMAC of these inputs; raw machine/user identifiers are not published:
+
+| Platform | Machine identity | User identity | Reference |
+| --- | --- | --- | --- |
+| Linux | machine-id | UID | [systemd machine-id](https://www.freedesktop.org/software/systemd/man/249/machine-id.html) |
+| macOS | IOPlatformUUID | UID | [Apple platform UUID key](https://developer.apple.com/documentation/iokit/kioplatformuuidkey) |
+| Windows | SMBIOS system UUID | SID | [Microsoft system product UUID](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-computersystemproduct) |
+
+This remains a cooperative scheduling limit, not a memory quota. Distinct state directories,
+direct terminal commands and a task's internal workers operate outside the shared slot count.
+No periodic host memory scanner is added. The queue wakes for admission/completion and checks
+outstanding jobs at bounded intervals; an empty queue has no recurring scheduler timer.
+
+Source evidence covers HEAD, index and Git-visible tracked/untracked content, including file
+identity/time metadata. It is checked before launch, on completion and on result lookup. It
+does not freeze sources or measure ignored/external dependencies. File, byte and elapsed-time
+budgets fail closed; symlinks/submodules are refused. See the
+[measurement procedure](development/2026-09-09-heavy-job-memory-measurement.md) for the separate
+native two-session RAM experiment still required before claiming a saving.
+
 ## CLI responsibilities
 
 The CLI is a thin client. For commands requiring daemon state it connects to the Unix socket. If the daemon is unavailable, read-only diagnostic commands may run a local reconciliation.

@@ -64,7 +64,7 @@ and `reused`. Queries preserve the recorded task exit code independently of the 
 | Error | CLI exit | Meaning |
 | --- | --- | --- |
 | `WTM_JOB_NOT_FOUND` | 2 | No visible retained job has that identifier in this queue scope. |
-| `WTM_JOB_NOT_QUEUEABLE` | 2 | The task is not explicitly queueable or lacks an eligible finite timeout. |
+| `WTM_JOB_NOT_QUEUEABLE` | 2 | The task is not eligible, local machine/user identity is unavailable, or state belongs to a different host/user. |
 | `WTM_JOB_QUEUE_FULL` | 3 | The bounded queue/history cannot accept another job. |
 | `WTM_JOB_IDEMPOTENCY_CONFLICT` | 3 | The key already belongs to a different request; no second job ran. |
 | `WTM_JOB_SOURCE_CHANGED` | 3 | The job's source/configuration evidence changed or cannot be verified. |

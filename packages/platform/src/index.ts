@@ -1,4 +1,5 @@
 export type * from './ports';
+export { readHeavyJobScope } from './job-scope';
 export * from './paths';
 export * from './socket';
 export * from './process';
