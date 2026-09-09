@@ -307,8 +307,10 @@ export class HeavyJobQueue {
       this.#options.store.setError(job.jobId, group.status === 'failed' ? 'PROCESS_INSPECTION_FAILED' : 'PROCESS_TREE_STILL_RUNNING');
       return;
     }
-    const exitCode = completion?.exitCode ?? observed?.exitCode ?? null;
-    const signal = completion?.signal ?? observed?.signal ?? null;
+    // Null is task evidence too: a signal-ended child has no numeric exit code, and a
+    // successful child has no signal. The anchor's separate outcome cannot fill either field.
+    const exitCode = completion !== null ? completion.exitCode : observed?.exitCode ?? null;
+    const signal = completion !== null ? completion.signal : observed?.signal ?? null;
     const state = job.stopReason ?? (completion?.logFailed === true ? 'FAILED'
       : exitCode === 0 && signal === null ? 'SUCCEEDED' : completion !== null || observed !== undefined ? 'FAILED' : 'INTERRUPTED');
     await this.#finish(job, state, exitCode, signal, job.stopReason === 'CANCELLED' ? 'USER_CANCELLED'
