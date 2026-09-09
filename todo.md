@@ -307,7 +307,9 @@ uçtan uca çalıştırılarak bulundu. Aracın kendisi çalışıyor: `init`, `
 Numaralandırma dosyanın sonundan devam ediyor; mevcut madde numaraları kasıtlı olarak
 değiştirilmedi.
 
-**Bir sonraki tag'den önce:** 36 ve 37. Bunlar kod değil, paketleme ve dokümantasyon işi.
+**Bir sonraki tag'den önce:** 36 ve 45; 37 kapandı. 36 kod değil, paketleme ve dokümantasyon
+işi. 45 kod işi ve tek başına daemon'ı kullanılamaz bırakıyor: bulunduğu makinede yedi gün
+boyunca hiç ayağa kalkmamıştı ve bunu söyleyen bir çıktı yoktu.
 
 ---
 
@@ -611,6 +613,86 @@ Bu 39. maddenin aynı sınıfı: kullanıcıya giden bir hata, alt katmanın ham
 - [x] Hiçbir kullanıcı çıktısında çevrilmiş `git` hata metni görünmüyor.
 
 **Çözüldü:** `b5395ae` — `WTM_WORKSPACE_NOT_FOUND` artık bulunan repoları listeleyerek üretiliyor.
+
+---
+
+### [ ] 45. Soket olmayan bir IPC yolu daemon'ı süresiz crash döngüsünde bırakıyor
+
+2026-09-09'da, bu repodan temiz bir `make install` yapılırken bulundu. Kurulum başarılı raporladı,
+ama daemon hiç ayağa kalkmadı ve bunu söyleyen bir çıktı yoktu.
+
+`~/Library/Application Support/WTM/.tmd.sock` yolunda soket yerine 0 baytlık normal bir dosya
+duruyordu (2026-09-02 tarihli; nasıl oluştuğu bilinmiyor — muhtemelen o gün koşan bir testin ya da
+yarıda kalan bir daemon'ın artığı). Daemon her açılışta bağlanmayı reddetti, launchd her seferinde
+yeniden başlattı, ve bu yedi gün boyunca sürdü.
+
+#### Kanıt
+
+```text
+$ wtm daemon status
+runState: spawn scheduled
+reachable: false
+
+$ launchctl print gui/$(id -u)/dev.wtm.daemon.<hash>
+last exit code = 1
+
+$ ls -la ~/Library/Application\ Support/WTM/.tmd.sock
+-rw-------  1 furkan  staff          0 Sep  2 14:16 .tmd.sock
+
+$ ls -la ~/Library/Logs/WTM/daemon.error.log
+-rw-------  1 furkan  staff  162321745 Sep  9 11:38 daemon.error.log
+```
+
+162 MB, denemesi başına ~2.7 KB stack trace demek ~60.000 yeniden başlatma — launchd'nin 10 sn'lik
+varsayılan `ThrottleInterval`'ı ile yedi güne tam oturuyor. Yani sayı tahmini değil, ölçülen
+dosya boyutu ile takvim birbirini doğruluyor.
+
+Kullanıcının gördüğü tek şey `reachable: false`. `wtm doctor` da `daemonReachable: false` diyor,
+sebebini söylemiyor. Log 162 MB olduğu için okunması da kolay değil.
+
+#### İki ayrı kusur
+
+**1. Soket olmayan yol için kurtarma yolu yok.** `prepareSocketPath`
+(`packages/platform/src/ipc/unix.ts:295-322`) bayat bir *soket* için eksiksiz bir kurtarma taşıyor:
+sahiplik doğrulaması, canlılık probe'u, quarantine, unlink. Ama ilk kontrol `initial.isSocket()` ve
+başarısızlığı koşulsuz `throw`. Yolda normal bir dosya varsa hiçbir kurtarma denenmiyor. Mesaj da
+eyleme dönük değil: dosyanın silinebileceğini söylemiyor, bir komut önermiyor, stable bir error code
+taşımıyor. 39. ve 43. maddelerin sınıfı burada tekrar ediyor — doğru teşhis edilmiş bir durum,
+kullanıcıya ne yapacağını söylemeyen bir mesajla bildiriliyor.
+
+**2. Kalıcı açılış hatası geçici hata gibi ele alınıyor.** `packages/platform/src/service/darwin.ts:167`
+`KeepAlive{SuccessfulExit:false}` yazıyor ve `ThrottleInterval` vermiyor; stderr doğrudan
+`daemon.error.log`'a bağlı (`service-lifecycle.ts:336`), rotation yok, üst sınır yok. Her deneme tam
+stack trace basıyor. `linux.ts:173`'teki `Restart=on-failure` aynı yapı, dolayısıyla aynı davranış.
+Sonuç: hiç açılamayan bir daemon, kullanıcı fark etmeden diski dolduran bir log üretiyor. Managed
+task logları için rotation var; daemon'ın kendi stderr'i için yok.
+
+Ayrıca aynı logda, diskte olmayan kayıtlı depolar için de her turda birer stack trace basılıyor
+(`missingDirectory`). Bunlar ölümcül değil ve mesajları doğru, ama uyarı seviyesinde bir durum
+tam stack trace ile yazıldığı için log hacmini büyütüyorlar.
+
+#### Yapılacaklar
+
+- [ ] Soket olmayan bir IPC yolunu, aynı sahiplik/identity doğrulamasından geçirdikten sonra bayat
+      soketle aynı quarantine yolundan geçir. Fail-closed kalması gereken durumları (başkasına ait,
+      dizin, symlink) ayır ve gerekçesini yaz.
+- [ ] Reddedilen her durum için eyleme dönük mesaj ve stable JSON error code üret: hangi yol, neden
+      reddedildi, kullanıcı ne yapmalı.
+- [ ] `wtm doctor`, daemon `reachable: false` olduğunda sebebini raporlasın. Bugün ulaşılamadığını
+      biliyor, nedenini bilmiyor — oysa neden daemon'ın kendi log'unda yazılı.
+- [ ] Daemon'ın kendi stderr'ine rotation ve üst sınır ekle.
+- [ ] Tekrarlayan açılış hatasına backoff ver; aynı hata üst üste tekrarlıyorsa tam stack trace'i
+      her turda yeniden basma.
+- [ ] Diskte olmayan kayıtlı depoları stack trace ile değil, tek satırlık uyarı ile bildir.
+- [ ] Regresyon testi: IPC yolunda normal bir dosya varken daemon'ın davranışını sabitle.
+
+#### Kabul kriterleri
+
+- [ ] IPC yolunda soket olmayan bir dosya varken daemon ya kendiliğinden toparlanıyor ya da ne
+      yapılacağını söyleyen tek bir hata veriyor.
+- [ ] Hiçbir açılış hatası sınırsız log büyümesi üretmiyor.
+- [ ] `wtm doctor` ulaşılamayan bir daemon'ın sebebini söylüyor.
+- [ ] Yeni kurulum yapan kullanıcı, daemon ayağa kalkmadığında bunu kurulum çıktısından anlıyor.
 
 ---
 
