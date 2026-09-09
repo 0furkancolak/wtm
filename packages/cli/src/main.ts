@@ -81,6 +81,7 @@ import { createProductionRemovalCoordinator } from './removal-coordinator';
 import { toGitSafetyError } from './commands/git-error';
 import { runResolveCommand, toRuntimeCommandError } from './commands/resolve';
 import { runRunCommand } from './commands/run';
+import { registerJobCommands, runEnqueueCommand } from './commands/jobs';
 import {
   runProductionInitCommand,
   type ProductionInitCommandInput,
@@ -212,10 +213,23 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     renderRuntime(envelope, runtimeJson(program, options));
   });
 
-  const runTaskCommand = program.command('run <task>').description('Run a configured task in the foreground.');
+  const runTaskCommand = program.command('run <task>').description('Run a configured task in the foreground or enqueue a finite heavy task.');
   addJsonOption(runTaskCommand);
-  runTaskCommand.action(async (taskName: string, options: ScopeOptions) => {
-    renderRuntime(await runProductionRun({ cwd, taskName }), runtimeJson(program, options));
+  runTaskCommand.option('--enqueue', 'durably enqueue a configured finite task and return its job ID');
+  runTaskCommand.option('--idempotency-key <key>', 'reuse a request key after ambiguous acceptance; requires --enqueue');
+  runTaskCommand.action(async (taskName: string, options: ScopeOptions & { enqueue?: boolean; idempotencyKey?: string }) => {
+    if (options.idempotencyKey !== undefined && options.enqueue !== true) {
+      throw new InvalidArgumentError('--idempotency-key requires --enqueue');
+    }
+    const envelope = options.enqueue === true
+      ? await runEnqueueCommand({ cwd, taskName, ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }) }, dependencies.runtimeClient)
+      : await runProductionRun({ cwd, taskName });
+    renderRuntime(envelope, runtimeJson(program, options));
+  });
+
+  registerJobCommands(program, {
+    ...(dependencies.runtimeClient === undefined ? {} : { client: dependencies.runtimeClient }),
+    render: (envelope, json) => renderRuntime(envelope, json),
   });
 
   const analyze = program.command('analyze [selector]').description('Analyze worktree removal safety.');
@@ -1791,7 +1805,10 @@ function isRuntimeInvocation(argv: readonly string[]): boolean {
   // `remove` is here because stopping this worktree's managed processes is the daemon's job and
   // no other process may do it: the supervisor holds the child handle, the start reservation and
   // the identity quadruple its escalation ladder depends on.
-  return command !== undefined && ['start', 'stop', 'restart', 'ps', 'logs', 'exec', 'init', 'remove'].includes(command);
+  return command !== undefined && (
+    ['start', 'stop', 'restart', 'ps', 'logs', 'exec', 'init', 'remove', 'jobs'].includes(command)
+    || command === 'run' && hasOptionIntent(argv, '--enqueue')
+  );
 }
 
 

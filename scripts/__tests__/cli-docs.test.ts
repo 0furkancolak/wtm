@@ -26,6 +26,12 @@ describe('documented CLI commands', () => {
     expect(validateReference('wtm create feat/auth --from main --json')).toEqual([]);
     expect(validateReference('wtm exec -- node --unknown-child-option')).toEqual([]);
     expect(validateReference('wtm start/stop/restart <task>')).toEqual([]);
+    expect(validateReference('wtm run typecheck --enqueue --idempotency-key check-1 --json')).toEqual([]);
+    expect(validateReference('wtm jobs list --limit 50 --json')).toEqual([]);
+    expect(validateReference('wtm jobs logs <job-id> --tail 100 --json')).toEqual([]);
+    expect(validateReference('wtm jobs result <job-id> --json')).toEqual([]);
+    expect(validateReference('wtm jobs missing')).toEqual(['unknown command: wtm jobs missing']);
+    expect(validateReference('wtm jobs logs <job-id> --follow')).toEqual(['unknown option: wtm jobs logs --follow']);
   });
 
   test('reads fenced examples and inline references, preserving source locations', () => {

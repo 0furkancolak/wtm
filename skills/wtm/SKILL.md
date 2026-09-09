@@ -32,6 +32,88 @@ Prefer WTM task execution over invoking a project command directly:
 wtm run <task>
 ```
 
+### Heavy builds, tests, and typechecks
+
+Use the shared job queue when the task is explicitly configured with `queue = true` and a
+finite `timeout` (for example `timeout = "10m"`). Queue support applies to configured tasks;
+do not guess that an inherited adapter task is queueable. A long-running development server
+belongs under `wtm start <task>` and must not be marked queueable.
+
+```bash
+wtm run typecheck --enqueue --idempotency-key <unique-request-key> --json
+```
+
+1. Choose and save a unique request key **before** sending. Store `data.jobId` after acceptance.
+   Reuse that request key only when retrying this same submission after an ambiguous response;
+   use a new key for a genuinely new run. If WTM generated a key, an ambiguous failure returns
+   it in the error context. A successful enqueue response means the job was accepted, not that
+   the task passed. The daemon continues after the submitting CLI exits.
+   Deduplication lasts only while the job record is retained; an old key can run again after
+   pruning. Never retry an expired key as though it guarantees exactly-once execution.
+2. Continue with code reading, planning, or independent work in another worktree. While a job
+   is queued or running, do not edit its input files, shared configuration, dependency files,
+   or another worktree's files if the task reads them. Coordinate with other agents that can
+   write those inputs; the submission's HEAD alone does not identify the source being tested.
+3. Check status when useful, with at least 10 seconds between checks and longer intervals for
+   long jobs. Inspect a bounded log tail when diagnosing progress. Do not create a tight polling
+   loop or occupy a tool call waiting while independent work remains.
+
+   ```bash
+   wtm jobs status <job-id> --json
+   wtm jobs logs <job-id> --tail 100 --json
+   ```
+
+4. Before any dependent step or claim that a test/build passed, read the result:
+
+   ```bash
+   wtm jobs result <job-id> --json
+   ```
+
+   Require `ok: true`, `data.terminal: true`, `data.successful: true`,
+   `data.job.state: "SUCCEEDED"`, `data.job.exitCode: 0`, and
+   `data.job.slotHeld: false`, `data.sourceValidity: "UNCHANGED"`. Pending, failed, cancelled, timed-out, interrupted,
+   changed-source and unknown-source results are not successful validation. Preserve their
+   exit code and diagnostics. After editing inputs again, the old result cannot validate those
+   edits; submit a new job when validation is needed.
+5. Cancel an obsolete queued/running job explicitly:
+
+   ```bash
+   wtm jobs cancel <job-id> --json
+   ```
+
+   Cancellation can remain pending while WTM verifies process-tree termination; inspect its
+   state and `slotHeld`. Do not kill managed processes yourself to release a slot.
+
+The queue accepts at most 128 pending/slot-owning jobs and at most 384 total records. Enqueue
+opportunistically prunes finished history toward 256 jobs and a seven-day retention period;
+unverified cleanup prevents deletion. Each job stream rotates at 1 MiB with one archive, and
+log queries return at most 32 KiB per stream before applying the requested line count.
+Inspect failures while their records/logs remain available; older full output is not retained.
+
+Source evidence covers Git tracked/untracked file bytes, index and HEAD, and file identity /
+modification metadata. Existing-file change-and-revert operations change that metadata too.
+It does not measure ignored dependencies or external inputs. Snapshot scans are bounded
+(10,000 files, 64 MiB, 4 seconds per snapshot) and reject symlinks/submodules rather than
+pretending to validate their contents. A scan is not an atomic snapshot; transient files
+created and deleted between observations may escape it. `UNCHANGED` is scoped evidence, not
+an immutable worktree guarantee. Keep input writers coordinated and do not claim it covers
+unmeasured dependencies.
+Ancestor metadata is conservative: creating ignored output inside a tracked source directory
+can invalidate the result. Do not dismiss a changed result merely because tracked bytes match.
+
+The queue coordinates WTM submissions across repositories for the same host, OS user and
+state store. The database has one machine/user owner, claimed before process recovery;
+foreign-host/user state is refused. Use host-local state when HOME is shared, and do not
+remove its ownership record to bypass a refusal. Separately configured state stores have
+independent limits. Its concurrency limit is not a hard RAM limit, and a task can still launch its
+own worker pool. Directly launched commands bypass the queue. This skill neither intercepts
+all terminal commands nor automatically wakes an agent when a job completes. Agent-specific
+notifications/hooks require a separate verified integration.
+
+The first upgrade adopts older unscoped state under the existing host-local-state assumption.
+Its old records cannot prove their originating host. Upgrade only state already local to
+this host; do not treat legacy shared-host adoption as verified or supported.
+
 For a long-running task WTM should supervise, and for raw argv that is not a configured task:
 
 ```bash
@@ -123,6 +205,11 @@ wtm remove <selector> --resume            # only after WTM asks for it, see belo
 releases its ports before Git deletes anything. Do not stop tasks or delete resource directories by
 hand first.
 
+Queued jobs and occupied job slots are a separate precondition: any such job in the repository
+blocks removal, cleanup and registration retirement. Let it finish or explicitly cancel it
+through `wtm jobs cancel <job-id> --json`, then confirm the terminal state and `slotHeld: false`
+before retrying. Removal does not silently cancel jobs.
+
 Never replace a blocked WTM removal with:
 
 ```bash
@@ -134,7 +221,8 @@ Read `errors[].code` and handle the refusal, do not work around it:
 | `errors[].code` | Exit | What it means, and what to do |
 | --- | --- | --- |
 | `GIT_DIRTY_*`, `GIT_UNTRACKED`, `GIT_IGNORED_CONTENT`, `GIT_UNMERGED`, `GIT_HEAD_NOT_REMOTE_PERSISTED`, `GIT_WORKTREE_LOCKED`, `GIT_MAIN_WORKTREE` | 3 | Real work would be lost. Report the blocker and its remediation. Ignored content is separate from untracked content; inspect both `workingTree.paths.ignored` and `workingTree.paths.untracked`. |
-| `WTM_OPERATION_CONFLICT` | 3 | Another process is removing in this repository. `context` names `holderPid` and `acquiredAt`. Do not retry in a loop; report the holder. |
+| `WTM_OPERATION_CONFLICT` with `context.jobId` | 3 | A queued job or held slot protects this repository. Inspect the job; let it finish or cancel it explicitly and verify slot release before retrying. `--resume` does not bypass this conflict. |
+| `WTM_OPERATION_CONFLICT` with `context.holderPid` | 3 | Another process holds a repository operation lease. Inspect `holderPid` and `acquiredAt`; do not retry in a loop. |
 | `WTM_OPERATION_CONFLICT` with `context.abandoned: true` | 3 | The previous removal's process died at `context.stage`. This is the only case for `--resume`; the error's remediation carries the exact command. |
 | `WTM_DAEMON_UNAVAILABLE` | 4 | The daemon owns running processes here and cannot be reached. Start it with `wtm daemon install` — never `kill`/`pkill` them yourself. |
 | `RUNTIME_STOP_FAILED` | 1 | Managed process records outlived their stop. The worktree is intact. Check `wtm ps --json` and `wtm doctor --json`. |

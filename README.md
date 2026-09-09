@@ -33,6 +33,7 @@ Git worktrees solve the checkout problem. They do not solve the *runtime* proble
 | Which `next dev` belongs to which branch? | Supervises processes, attributes them, and streams their logs |
 | `worktree remove` can destroy unpushed work | Analyzes safety first and refuses when work would be lost |
 | An AI agent rediscovers your project every session | Ships an Agent Skill and stable `--json` output for every command |
+| Several AI sessions run expensive builds at once | Queues opted-in finite tasks behind one shared concurrency limit |
 
 WTM does not replace Git, Make, Bun, npm, pnpm, uv, Cargo, Go, or Docker. It is a
 context-aware orchestration layer around them.
@@ -46,6 +47,7 @@ context-aware orchestration layer around them.
   - [2. See where you are](#2-see-where-you-are)
   - [3. Define or inherit tasks](#3-define-or-inherit-tasks)
   - [4. Run a task in the foreground](#4-run-a-task-in-the-foreground)
+  - [Queue heavy tasks across AI sessions](#queue-heavy-tasks-across-ai-sessions)
   - [5. Supervise a long-running task](#5-supervise-a-long-running-task)
   - [6. Remove a worktree safely](#6-remove-a-worktree-safely)
   - [7. Reclaim disk](#7-reclaim-disk)
@@ -260,6 +262,50 @@ wtm run test        # run it in the foreground, streaming its output
 
 `resolve` before `run` is the habit worth forming: it shows precisely what will execute,
 which is far easier to reason about than a failure after the fact.
+
+### Queue heavy tasks across AI sessions
+
+Opt finite build/test/typecheck tasks into the daemon's persistent queue:
+
+```toml
+[tasks.typecheck]
+run = ["bun", "run", "typecheck"]
+queue = true
+timeout = "10m"
+```
+
+```bash
+wtm run typecheck --enqueue --idempotency-key <unique-request-key> --json
+wtm jobs list --json
+wtm jobs status <job-id> --json
+wtm jobs logs <job-id> --tail 100 --json
+wtm jobs result <job-id> --json
+wtm jobs cancel <job-id> --json
+```
+
+The enqueue call returns a `jobId` after durable acceptance and the daemon continues after
+the CLI exits. Keep the request key for safe retries when acceptance is ambiguous. An agent
+can read code, plan, or work in another worktree while the job runs. Keep the job's inputs
+stable across **all** sessions, and read the result before claiming success: acceptance and
+status lookup are not test results. `jobs result` exits successfully only for a successful
+zero-exit task with unchanged source evidence; it preserves failure details otherwise.
+
+By default only one heavy job runs across this host, OS user and state store. Set
+`[jobs] max_concurrent_heavy` in the daemon's global config to change that limit; repository
+config cannot raise it. The state database belongs to one machine/user identity, claimed
+before process recovery. A different host/user is refused; use host-local state even when
+HOME is shared. The first upgrade adopts legacy unbound state under the existing host-local
+assumption; old records cannot prove their host retrospectively. Independent state stores
+have independent limits. Long-running dev
+servers stay under `wtm start` and do not hold this queue's slots. The limit controls task
+concurrency, not a strict RAM ceiling or the task's own worker count. RAM-aware scheduling and
+automatic agent wakeups are separate future integrations.
+
+Cleanup/removal is refused while the repository has queued jobs or occupied job slots.
+Cancel those jobs and confirm their slots are released before retrying cleanup. Queue history
+and logs are bounded; request-key deduplication lasts only while the job record is retained.
+See the
+[queue contract](docs/04-cli-reference.md#shared-job-queue) and [Agent Skill](skills/wtm/SKILL.md).
 
 ### 5. Supervise a long-running task
 
@@ -499,7 +545,8 @@ tables the file does not already define. Anything already decided is reported an
 `wtm.toml` lives at the workspace root — the directory `wtm init` was run in, which in a
 multi-repository setup is above all of them. A user-level config file is merged underneath it —
 `~/Library/Application Support/WTM/config.toml` on macOS, `~/.config/wtm/config.toml` on Linux —
-and a repository may override anything in its own `.wtm.toml`.
+and a repository may override workspace behavior in its own `.wtm.toml`. The shared
+`[jobs]` scheduler settings are read only from the daemon's global config.
 
 ```toml
 version = 1
@@ -541,7 +588,7 @@ schema is in [docs/03-configuration-spec.md](docs/03-configuration-spec.md).
 
 ## The daemon
 
-Background supervision (`start`, `stop`, `restart`, `ps`, `logs`) needs a per-user daemon,
+Background supervision (`start`, `stop`, `restart`, `ps`, `logs`) and the shared heavy-job queue need a per-user daemon,
 registered with the platform's own service manager — a LaunchAgent under launchd on macOS, a
 systemd user unit driven by `systemctl --user` on Linux. `make install` registers it for you.
 
@@ -555,8 +602,9 @@ wtm daemon uninstall   # remove it
 `platform` check names the service manager in force, so you can always find the file WTM published
 and the tool that loads it.
 
-Foreground commands — `status`, `analyze`, `resolve`, `run`, `exec`, `init` — work without
-the daemon on either platform. Installing WTM never starts your tasks; only `wtm start` does.
+Foreground task execution with `wtm run <task>` does not require the daemon. Enqueueing with
+`wtm run <task> --enqueue` does. Installing WTM never submits a task; explicit task execution
+starts it, and already accepted queued work resumes reconciliation when the daemon starts.
 
 ### On Linux: `systemctl --user` needs a user session bus
 
@@ -594,7 +642,9 @@ Every command accepts `--json` and answers with the same envelope:
 }
 ```
 
-`ok` is the single field to branch on; `errors[].code` is stable and documented in
+`ok` reports whether the requested operation succeeded; for enqueue it means acceptance,
+and for status it means lookup. Read `wtm jobs result <job-id> --json` before interpreting a
+queued task as successful validation. `errors[].code` is stable and documented in
 [docs/18-errors-json-contract.md](docs/18-errors-json-contract.md). Attribution and human
 formatting never leak into JSON or into a task's own output streams.
 
@@ -615,6 +665,10 @@ wtm skill install
 | `wtm remove <selector>` | Remove a linked worktree, refusing when unsafe |
 | `wtm resolve <task>` | The exact argv, cwd, and environment for a task |
 | `wtm run <task>` | Run a task in the foreground |
+| `wtm run <task> --enqueue` | Accept a finite heavy task into the shared queue |
+| `wtm jobs list` / `wtm jobs status <job-id>` | Inspect queued/running/completed jobs |
+| `wtm jobs logs <job-id>` / `wtm jobs result <job-id>` | Read bounded logs and verified results |
+| `wtm jobs cancel <job-id>` | Cancel a queued job or safely stop its process tree |
 | `wtm start/stop/restart <task>` | Supervise a task in the background |
 | `wtm ps` | Every WTM-managed process group |
 | `wtm logs [task] --follow` | Rotating per-task logs |
