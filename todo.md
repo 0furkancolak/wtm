@@ -16,7 +16,8 @@ göre listeler.
 [`docs/development/2026-09-09-todo-analysis.md`](docs/development/2026-09-09-todo-analysis.md).
 Madde 16 ve 34 tamamlandı; kalan P0/P1 bağımlılıkları ve doğrulama sınırları bu notta.
 Eşzamanlı AI oturumlarının ağır komutlarından doğan RAM baskısı için madde 45, P1'e eklendi;
-bir sonraki ürün geliştirme dilimi ortak iş kuyruğu olacak.
+ortak iş kuyruğunun sabit eşzamanlılık dilimi uygulandı. Devamında iptal/finalizasyon yarışı,
+GC descriptor sızıntısı ve native CI fixture uyumsuzlukları giderildi; bekleme nedenleri eklendi.
 
 ## P0 — Stable öncesi zorunlu
 
@@ -724,9 +725,12 @@ wtm jobs cancel <job-id>
       belleği/bellek baskısıyla yeni iş kabulünü değerlendir. İşletim sistemi, Claude/AI ve diğer
       uygulamalar için pay bırak. Tek build'in kendi worker paralelliği için task'a özel ayar
       sun; yalnızca kuyruk uzunluğunu azaltmayı kesin bir RAM üst sınırı gibi sunma.
-- [ ] Bekleme nedenini (`concurrency`, `memory_budget`, `worktree_busy`) görünür yap.
-      Bütçeye hiçbir zaman sığmayacak talebi açıkça reddet; kuyruğun sessizce tıkanmasını önle.
-      Bellek yüzünden bekleyen işlerin ilerleme ve adalet politikasını tanımla.
+- [x] Uygulanan sabit sınırın bekleme nedenlerini list/status/result/cancel içinde görünür yap:
+      `concurrency`, `worktree_busy`, `fifo`, `dispatch_pending`. Tanı ve atomik claim aynı
+      FIFO/slot kararını kullanır; sorgu state'i değiştirmez. Bu gözlem slot rezervasyonu değildir.
+- [ ] RAM kabul kontrolüyle birlikte `memory_budget` nedenini ekle. Bütçeye hiçbir zaman
+      sığmayacak talebi açıkça reddet; kuyruğun sessizce tıkanmasını önle. Bellek yüzünden
+      bekleyen işlerin ilerleme ve adalet politikasını tanımla.
 - [ ] Uzun ömürlü `wtm start` servislerini sonlanan ağır işlerden ayrı ele al; dev server
       tek ağır iş slotunu süresiz tutmasın, fakat belleği kabul hesabında dikkate alınsın.
 - [ ] Süreç ağacının bellek ölçüm maliyetini sınırla. RSS toplamını paylaşılan sayfalar nedeniyle
@@ -2260,9 +2264,11 @@ Hedef `v0.2.0` tag'i aşağıdakiler tamamlanmadan çıkarılmamalı:
 # Önerilen geliştirme sırası
 
 **2026-09-09 güncellemesi:** Tamamlanan madde 16/34'ün native CI doğrulamasıyla birlikte
-bir sonraki ürün geliştirmesi madde 45'in ilk dilimi: kalıcı kuyruk, sabit ağır iş sınırı,
-asenkron CLI ve agent skill akışı. Bu dilim notarization veya diğer yayın hesabı işlerini
-beklemek zorunda değil. Aşağıdaki genel sıra bu yeni öncelikle okunmalı.
+madde 45'in ilk dilimi (kalıcı kuyruk, sabit ağır iş sınırı, asenkron CLI ve agent skill akışı)
+uygulandı; native CI'da ortaya çıkan regresyonlar ve bekleme nedenleri devam dilimidir.
+Native süreç kanıtı ve gerçek makine bellek ölçümü alınmadan RAM kriterleri kapatılmaz.
+Sonraki ürün dilimi readiness/healthcheck; RAM kabul kontrolü ayrı tasarım/ölçüm gerektirir.
+Bu işler notarization veya diğer yayın hesabı işlerini beklemek zorunda değil.
 
 ```text
 1. repository operation leases
@@ -2278,7 +2284,7 @@ beklemek zorunda değil. Aşağıdaki genel sıra bu yeni öncelikle okunmalı.
 11. wtm create
 12. cleanup candidate ranking
 13. allowed remote refs config
-14. shared heavy-job queue + async agent flow (madde 45; sıradaki ürün dilimi)
+14. shared heavy-job queue + async agent flow (uygulandı; native kanıt ve RAM dilimi açık)
 15. readiness/healthcheck
 16. local domains
 17. GitHub/PR awareness

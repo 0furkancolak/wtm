@@ -26,6 +26,9 @@ binaries are Developer ID signed and notarized.
 
 ### Added
 
+- Queue records expose current `waitingReason` in list/status/result/cancel: concurrency,
+  same-worktree occupancy, FIFO position or pending dispatch. This observation shares the
+  claim policy and does not reserve a slot; RAM-based admission remains a separate task.
 - Persistent FIFO heavy-task queue on the existing daemon and SQLite state. `wtm run <task>
   --enqueue` returns a durable job ID; `wtm jobs list/status/logs/result/cancel` manages it.
   Tasks opt in with `queue = true` and a finite timeout. Daemon global
@@ -144,6 +147,18 @@ binaries are Developer ID signed and notarized.
 
 ### Fixed
 
+- Job finalization honors cancellation committed during asynchronous source validation,
+  retaining numeric exit evidence without reporting the cancelled job as successful.
+  Authenticated timeout precedence and terminal result immutability are preserved.
+- Resource guards explicitly close inode pins after GC, including failures and one-shot
+  authorization. Closing drains in-flight checks and rejects later use without weakening
+  path identity checks; callers of `createResourceGuard` must close their guard in `finally`.
+- Native queue fixtures execute fingerprinted script files instead of JavaScript embedded in
+  template argv. SQLite upgrade and ignored-removal assertions match migration 012 and
+  `GIT_IGNORED_CONTENT`, retaining exact safety checks.
+- Managed completion and generation reads verify the regular path before and after opening,
+  and compare it with the held descriptor. Symlinks and swapped files are refused even when
+  the platform's `O_NOFOLLOW` does not prevent following a link.
 - **The file-identity check that guards every destructive operation did not hold on Linux.** WTM
   answers "is the object at this path still the object I inspected?" by comparing `(dev, ino, uid)`,
   in fourteen files: the destructive-operation core behind `wtm remove`, the resource sandbox, the

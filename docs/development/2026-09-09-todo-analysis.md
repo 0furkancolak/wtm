@@ -278,3 +278,103 @@ sonra kullanılabilir bellek, task tahmini, diğer uygulamalara bırakılan pay 
 paralelliğini birlikte kullanan RAM dilimi. Otomatik agent bildirimi ayrı entegrasyondur.
 Readiness (madde 10) sonraki ürün önceliği olarak kalır; native veya RAM kriteri tamamlanmış
 gösterilerek başka başlık kapatılmaz. macOS/Windows/Linux ARM64 kanıtları ve registry release erişimi açık.
+
+## Devam dilimi: native CI düzeltmeleri ve kuyruk bekleme nedenleri
+
+Başlangıç: GitHub'daki `e79b625` ile temiz ve eşit yerel dal. İlk hedefli
+protocol/config/state/daemon kontrolü 4 dosyada 9 pass / 0 fail verdi. Önceki doğrulama
+sınırları devralınmadan yeniden ölçüldü: Node 24.19.0 `process.pid=5` bildirirken
+`/proc/self/stat` PID 384210 verdi; yeni Unix listener yine `EPERM` ile reddedildi.
+Bu ortamdan kullanıcının Claude/Codex RAM tüketimine ilişkin sonuç çıkarılmadı.
+
+Bağlı GitHub hesabıyla önceki gönderimin [CI koşusu](https://github.com/0furkancolak/wtm/actions/runs/34351667016)
+ve gerçek job logları okundu. Linux x64 1464 pass / 5 fail, macOS ARM64 ve x64
+1468 pass / 5 fail bildirdi. Üçünde de aynı beş hata vardı; bunlar ortam sorunu sayılmadı:
+
+| Bulgu | Kök neden ve düzeltme |
+| --- | --- |
+| İki SQLite test hatası | Tam migration listesi 11'de kalmıştı; migration 012 eklenerek tam sıralı eşitlik korunuyor. |
+| Kuyruk native senaryosu | `node -e` içindeki JavaScript parantezleri WTM argv template'i olarak okunuyordu. Program her repo'da kaynak fingerprint'ine dahil `queue-check.cjs` dosyasına taşındı; production resolver değiştirilmedi. İki CLI kabul isteği bitmeden fixture cleanup başlamıyor. |
+| Ignored removal testi | Eski `GIT_UNTRACKED` beklentisi `GIT_IGNORED_CONTENT` sözleşmesine geçirildi; exact count/path ve içerik/topoloji koruma kontrolleri tutuldu. |
+| GC stderr uyarısı | Gerçek FileHandle sızıntısı: resource guard'ın sandbox/parent inode pinleri kapatılmıyordu. Guard `close()` kazandı; üretim GC ve tek seferlik authorization `finally` içinde kapatıyor. Test fixture'ları da aynı sahipliği izliyor. |
+
+GC kapanışı yeni kontrolleri hemen reddeder, kabul edilmiş kontroller bitene kadar pinleri
+tutar, sonra tamamını kapatır. Yol/inode güvenliği korunur. İzole Node testi gerçek açık
+FileHandle nesnelerini izler; eski üretim GC senaryosunda 7 açık descriptor yakaladı.
+Başarısız kurulum/inspection yolunda yeni açılmış pinler de kapatılır. Bağımsız review'ın
+bulduğu boş test başarısı riski giderildi: test hem gerçek descriptor açılmasını hem de
+üretim dry-run/apply sonuçlarının başarıyla tamamlanmasını şart koşar.
+
+Bağımsız inceleme ayrıca iptal/finalizasyon yarışını yeniden üretti: süreç exit 0 verdikten
+sonra son kaynak kontrolü beklerken kabul edilen iptal, eski `SUCCEEDED` kararıyla ezilebiliyordu.
+`finish()` aynı `BEGIN IMMEDIATE` içinde güncel `stopReason` okur; iptal, doğrulanmış timeout
+ve interruption sırası korunur. Exit code/signal kaybolmaz; sonuç kalıcılaştıktan sonraki iptal
+geçmişi yeniden yazmaz. Eski sürümün bırakmış olabileceği `SUCCEEDED` + non-null `stopReason`
+kaydı da sonuç okurken başarı sayılmaz; daemon ve CLI bağımsız olarak reddeder.
+
+Madde 45'in sonraki küçük ürün dilimi `waitingReason` oldu. Atomik claim ve salt okunur
+tanı aynı karar fonksiyonunu kullanır: önce `concurrency`, sonra `fifo`, sonra
+`worktree_busy`, aksi hâlde `dispatch_pending`. Aktif kayıt sayısı admission ile 128'e
+sınırlı; tek SQL snapshot kullanılır. Yeni migration, dependency, scheduler veya sürekli
+bellek taraması eklenmedi. `dispatch_pending` repository/source kontrollerinin geçtiği
+anlamına gelmez. Running/terminal kayıtlar `null`; eski daemon alanı atlıyorsa sebep bilinmez.
+README, CLI reference, architecture, changelog ve dağıtılan skill aynı sözleşmeyi anlatır.
+
+İki subagent analiz/implementasyon ve çapraz review yaptı; dosya sahiplikleri devredilmeden
+aynı dosyada paralel yazılmadı. Ağır kontroller yalnız ana agent tarafından sırayla yürütüldü.
+İptal yarışının yeni testleri düzeltme öncesi 3 pass / 5 fail, guard lifecycle 0 pass / 4 fail,
+native task fixture 0 pass / 1 fail, waiting state/daemon 0 pass / 2 fail verdi; beklenen
+eksik davranışları yakaladıkları doğrulandı. Düzeltmelerden sonra ilgili 12 test, GC/state/
+fixture grubundaki 89 test ve kuyruk integration grubundaki 19 test başarılı oldu. Gruplar
+örtüştüğü için sayıları benzersiz test toplamı gibi toplanmamalı.
+
+Madde 45 bütünü, RAM ölçümü ve RAM tabanlı admission açık kalır. Readiness/healthcheck için
+mevcut kod incelendi: task probe'u yok, IPC isteği varsayılan 5 saniyede kesiliyor ve managed
+PID uygulama yerine ownership anchor'ını gösteriyor. Sonraki HTTP/TCP readiness dilimi bu
+sınırları birlikte ele almalı; yalnız PID canlılığından “servis hazır” sonucu çıkarmamalı.
+
+Önceki koşunun Windows x64 sonucu 1167 pass / 199 mevcut skip / 107 fail oldu.
+Bu platform yeşil veya destek doğrulaması tamamlanmış sayılmadı. Native log incelemesi,
+completion marker açılırken yalnız `O_NOFOLLOW` ve descriptor sahibine güvenmenin Windows'ta
+symlink'i reddetmediğini gösterdi. Yeni izole Node testi bu davranışı Linux'ta da yalnızca
+ilgili open çağrısının `O_NOFOLLOW` bayrağını kaldırarak yeniden üretti: gerçek symlink,
+geçici symlink ve dosya değişimi testleri 4 fail; normal okuma/rotation kontrolleri 2 pass.
+Üretim düzeltmesi explicit lstat ve açık descriptor/path kimliği karşılaştırması kullanır.
+Kaynak parent yarış fixture'ı Windows için `dir` türü belirtir; open ve restoration gerçekten
+olmadan geçmez. Kaynak snapshot'ın güvenli ret davranışı değiştirilmedi.
+
+Windows'un diğer hata kümeleri önceki kuyruk kodundan önce de vardı: private-directory
+ownership, POSIX anchor mode kontrolü, `/usr/bin/git`, Unix socket/path ve signal varsayımları.
+Bu bulgular madde 9'daki açık platform işine aittir; yeni güvenlik hatasını bunlara bağlayıp
+görmezden gelmek için kullanılmadı.
+
+Bu dilimin geniş yerel test koşusu 300 saniye dış sınırında exit 124 verdi: 459 pass,
+69 fail, 11 mevcut skip satırı. Bağımsız inceleme 43 socket/IPC hazırlık hatası, 18 process
+kimliği/anchor hatası, 6 fail-closed registered removal sonucu ve 2 blocked-marker timeout'u
+ayırdı. 49 hata önceki yerel baseline'da da vardı. Aynı isimli 68 test, önceki head'in üç
+Linux/macOS native logunda başarılıydı; kalan yeni CLI kuyruk senaryosu burada `listen EPERM`
+ile daha erken durdu. Bu karşılaştırma yeni head'in native kanıtının yerine geçmez.
+`test:e2e` 0 pass / 2 fail (`GIT_REPOSITORY_DEGRADED`, `listen EPERM`), `test:perf`
+19 pass / 2 fail (production socket `EPERM`) verdi. Nihai performans raporu üretilmedi.
+
+Son kuyruk/GC/protocol/CLI/docs parity seçimi 10 dosyada 45 pass / 1 fail verdi; tek hata
+production CLI'ın gerçek socket açtığı mevcut testte `listen EPERM`. Yeni bekleme nedeni,
+geçmiş çelişkili sonuç, iptal/finalizasyon, descriptor lifecycle ve docs parity kontrolleri
+başarılı. Source snapshot grubu 5 pass / 0 fail verdi. Test atlanarak yeşil sonuç üretilmedi.
+
+Log güvenliğinin bağımsız review'ı ek bir rotation yarışı buldu: anchor `.generation`
+dosyasını atomik değiştirirken yeni inode kontrolü normal cursor okumasını kesebiliyordu.
+İlk/son marker açılışı ve segment kayması için yeni testler 6 pass / 4 fail ile bunu yakaladı.
+Cursor okumasında yalnız tanımlı identity conflict mevcut üç denemelik sınır içinde yeniden
+denenir; completion/launch okuması aynı uyuşmazlığı kesin olarak reddeder. Sürekli marker
+değişimi sonsuz retry yapmadan başarısız olur; symlink/unsafe target benign rotation sayılmaz.
+Son log/completion/cursor grubu 3 dosyada 32 pass / 0 fail verdi. Bağımsız takip review'ı
+rotation P2 bulgusunu kapattı; bu dilimde açık P1/P2 bulgusu kalmadı. Fake file-trust kullanan
+taşınabilir saldırı senaryoları native Windows ACL doğrulamasının yerine geçmez.
+
+Son üretim koduyla `bun run lint` ve `bun run typecheck` başarılı. `bun run package:verify`
+build ve npm dry-run adımlarını başarıyla tamamladı (65 dosya); migration 012 ve güncel skill
+pakette yer alıyor. Bu sonuç registry yayını veya tüm native gate'lerin yeşil olduğu anlamına
+gelmez. Yukarıdaki tam test/e2e/performance sınırları korunur; sonraki GitHub gönderiminin
+native CI sonucu ayrıca izlenmelidir. Bu dilim yerel commit'lere ayrıldı; GitHub'a gönderim
+kullanıcının mevcut yetkisiyle bağlı hesap üzerinden, aynı dosya ağaçları korunarak yapılır.
