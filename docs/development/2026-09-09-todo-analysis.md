@@ -378,3 +378,38 @@ pakette yer alıyor. Bu sonuç registry yayını veya tüm native gate'lerin ye�
 gelmez. Yukarıdaki tam test/e2e/performance sınırları korunur; sonraki GitHub gönderiminin
 native CI sonucu ayrıca izlenmelidir. Bu dilim yerel commit'lere ayrıldı; GitHub'a gönderim
 kullanıcının mevcut yetkisiyle bağlı hesap üzerinden, aynı dosya ağaçları korunarak yapılır.
+
+## Gönderim sonrası native doğrulama ve sonuç kanıtı takibi
+
+Yedi commit bağlı GitHub hesabıyla `04b42bb` head'ine gönderildi; her commit'in tree SHA,
+mesaj ve parent zinciri doğrulandı. Yerel dal uzak dalla eşitlendi; önceki yerel zincir
+`codex/todo-safety-docs-parity-continuation-local-20260909` dalında korundu.
+[CI koşusu 34357937422](https://github.com/0furkancolak/wtm/actions/runs/34357937422):
+
+- Linux x64 tüm job adımlarını geçti: tam paket 1499 pass / 0 fail / 14 mevcut skip,
+  e2e 2 pass / 0 fail, binary smoke 9 pass / 0 fail; lint/typecheck/build/package da başarılı.
+  İki gerçek CLI süreci ve iki repository'nin tek daemon slotunu paylaşması, kalıcı kabul,
+  CLI'ın işten önce çıkması, idempotent tekrar, sıralı yürütme ve gerçek sonuç/log okuması
+  artık bu native Linux runner'da doğrulandı. Bu iki gerçek AI oturumu/RAM ölçümü değildir.
+- macOS ARM64: 1501 pass / 2 fail / 10 mevcut skip. Kuyruk testinde ilk RUNNING/QUEUED ve
+  tekrar kabul kontrolleri geçti; son SUCCEEDED beklemesi süreyi aştı. Diğer hata default HOME
+  client senaryosunda stop yanıtı başarısızken data alanına erişilmesiydi. Gerçek hata zarfı
+  eski fixture tarafından kaybedilmişti; iki hata da otomatik ortam sorunu sayılmadı.
+- macOS x64 ve Windows x64 bu kayıt sırasında sürüyordu; sonuçları henüz başarı kanıtı değil.
+
+İki fixture artık süre sınırı ve güvenlik assertion'larını değiştirmeden başarısız envelope'u
+ve izinli alanlardan oluşan son job durumunu korur. Kuyrukta terminal başarısızlık varsa
+15 saniye boşuna beklemek yerine nedeni bildirir; cleanup yine process slotu bırakılmadan
+worktree silmez. Sonraki native koşu hata sınıfını göstermelidir; tanı düzeltmesi üretim
+macOS sorununun giderildiği anlamına gelmez.
+
+Bu incelemede ayrı ve tekrar üretilebilir sonuç kaybı bulundu: `completion?.exitCode ??
+observed.exitCode` task'a ait geçerli null alanını anchor'ın exit code'uyla dolduruyordu.
+Sinyalle biten task için null yerine 143, hiç çalıştırılmadan deadline nedeniyle reddedilen
+task için null yerine 124 yazılabiliyordu; task'ın null signal alanı da sonraki anchor sinyaliyle
+ezilebiliyordu. Üç yeni test düzeltme öncesi bu kaybı yakaladı. Daemon artık mevcutsa kalıcı
+task completion çiftini bütünüyle kullanır, yalnız completion yoksa gözlenen anchor sonucuna
+başvurur. İptal/timeout önceliği ve process grubu yokluğu kontrolleri korunur. İlgili dört
+dosyada 9 test başarılı; bu hata henüz macOS native deadline'ın nedeni olarak kanıtlanmadı.
+Bağımsız review'ın yeni testte bulduğu yanlış `members` alanı `pids: [101]` olarak düzeltildi;
+son hedefli 3 test ve typecheck başarılı.

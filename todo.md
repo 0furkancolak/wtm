@@ -18,6 +18,9 @@ Madde 16 ve 34 tamamlandı; kalan P0/P1 bağımlılıkları ve doğrulama sını
 Eşzamanlı AI oturumlarının ağır komutlarından doğan RAM baskısı için madde 45, P1'e eklendi;
 ortak iş kuyruğunun sabit eşzamanlılık dilimi uygulandı. Devamında iptal/finalizasyon yarışı,
 GC descriptor sızıntısı ve native CI fixture uyumsuzlukları giderildi; bekleme nedenleri eklendi.
+`04b42bb` Linux x64 CI tam test/e2e/binary/package adımlarını geçti; macOS takip bulguları
+ve gerçek iki AI oturumlu RAM ölçümü açık. Kalıcı task exit code/signal çiftinin anchor
+sonucuyla karışması ayrıca düzeltildi; yeni native koşu kanıtı takip ediliyor.
 
 ## P0 — Stable öncesi zorunlu
 
@@ -652,7 +655,8 @@ tüketimi gözleniyor. Araştırılacak çözüm, eşzamanlı build/test/typeche
 skill ağır komutları WTM'ye göndermeli; WTM bunları ortak bir kuyruğa alırken AI bağımsız
 işlerine devam edebilmeli. Belleğin ne kadarının bu alt süreçlerden geldiği henüz ölçülmedi.
 
-**Durum: sabit eşzamanlılık dilimi uygulandı; native uçtan uca kanıt ve RAM dilimi açık.**
+**Durum: sabit eşzamanlılık dilimi uygulandı; Linux native uçtan uca kanıt alındı.**
+macOS takip bulguları, Windows doğrulaması ve RAM dilimi açık.
 Migration 012, daemon scheduler, CLI/IPC ve skill birlikte eklendi. `wtm run` foreground
 davranışı korundu; `--enqueue` kalıcı kabulden sonra döner. `wtm start` servisleri bu slotu
 kullanmaz. Bu bir RAM kotası değildir. Ayrıntılar ve doğrulama sınırları:
@@ -745,7 +749,8 @@ wtm jobs cancel <job-id>
 - [x] FIFO sırası, eşzamanlı gönderim, idempotent tekrar, dolu kuyruk ve daemon restart testli.
       Yeniden başlatma veya kimlik belirsizliği aynı komutu ikinci kez başlatmaz.
       SQLite eşzamanlılığı gerçek Node süreçlerinde; restart/scheduler kontrollü supervisor ile
-      doğrulandı. Gerçek daemon/CLI/süreç ağacı senaryosu eklendi, native kanıtı açık.
+      doğrulandı. Gerçek iki CLI/iki repo/tek slot ve sonuç/log senaryosu Linux x64'te geçti
+      (`04b42bb`); native iptal/timeout/restart birleşik senaryoları ve macOS takibi açık.
 - [ ] Başarısız işin exit code'u ve log'u korunur; iptal, timeout ve süreç ağacı cleanup'ı
       slot sızdırmaz. Kuyrukta bekleyen iş worktree silme güvenliğini aşamaz.
 - [ ] İşin kaynakları değiştiğinde eski sonuç güncel doğrulama gibi sunulmaz. Skill'in
@@ -2284,7 +2289,7 @@ Bu işler notarization veya diğer yayın hesabı işlerini beklemek zorunda de�
 11. wtm create
 12. cleanup candidate ranking
 13. allowed remote refs config
-14. shared heavy-job queue + async agent flow (uygulandı; native kanıt ve RAM dilimi açık)
+14. shared heavy-job queue + async agent flow (uygulandı; Linux e2e geçti, native takip ve RAM dilimi açık)
 15. readiness/healthcheck
 16. local domains
 17. GitHub/PR awareness

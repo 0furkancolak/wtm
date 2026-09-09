@@ -150,6 +150,9 @@ binaries are Developer ID signed and notarized.
 - Job finalization honors cancellation committed during asynchronous source validation,
   retaining numeric exit evidence without reporting the cancelled job as successful.
   Authenticated timeout precedence and terminal result immutability are preserved.
+- Durable task completion preserves null exit codes and signals. The supervising anchor's
+  separate exit status no longer replaces a signal-ended task's missing numeric code or
+  invents an exit code for a task refused before launch.
 - Resource guards explicitly close inode pins after GC, including failures and one-shot
   authorization. Closing drains in-flight checks and rejects later use without weakening
   path identity checks; callers of `createResourceGuard` must close their guard in `finally`.
