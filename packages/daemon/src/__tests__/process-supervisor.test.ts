@@ -1231,3 +1231,42 @@ function sameIdentity(left: ProcessIdentity, right: ProcessIdentity): boolean {
     && left.processStartTime === right.processStartTime
     && left.commandFingerprint === right.commandFingerprint;
 }
+
+test('retries durable cleanup after transient inspection failure without releasing live ownership', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wtm-cleanup-retry-'));
+  const store = new MemoryProcessStore();
+  let inspectFailed = true;
+  let alive = true;
+  const identity = { pid: 999999, pgid: 999999, processStartTime: 'fixture-identity', commandFingerprint: 'fixture-fingerprint' };
+  const record = store.createManagedProcess({ ...identity, worktreeId: 'worktree', taskName: 'job-retry', state: 'RUNNING', startedAt: new Date().toISOString(), stoppedAt: null, stdoutPath: join(root, 'stdout'), stderrPath: join(root, 'stderr') });
+  const supervisor = createSupervisor({
+    stateStore: store, logs: new ManagedLogStore({ root: join(root, 'logs') }), gracePeriodMs: 0, pollIntervalMs: 1,
+    inspectProcess: async () => inspectFailed ? { status: 'failed', reason: 'TRANSIENT' } : alive ? { status: 'present', identity } : { status: 'absent' },
+    inspectProcessGroup: async () => alive ? { status: 'present', pids: [identity.pid] } : { status: 'absent' },
+    signalProcessGroup: () => { alive = false; },
+  });
+  try {
+    await expect(supervisor.stopRecord(record)).rejects.toThrow('safely');
+    expect(store.getManagedProcess(record.id)?.cleanupRequired).toBe(true);
+    inspectFailed = false;
+    await supervisor.stopRecord(record);
+    expect(alive).toBe(false);
+    expect(store.getManagedProcess(record.id)?.cleanupRequired).toBe(false);
+  } finally { await supervisor.close(); await removeRootDirectory(root); }
+});
+
+test('rolls back a spawned anchor when durable ownership binding rejects before handshake', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wtm-anchor-binding-'));
+  const store = new MemoryProcessStore();
+  const supervisor = createSupervisor({ stateStore: store, logs: new ManagedLogStore({ root: join(root, 'logs') }), gracePeriodMs: 0 });
+  let anchorPid: number | null = null;
+  try {
+    let failure: unknown;
+    try { await supervisor.start({ worktreeId: 'worktree', taskName: 'job-binding', argv: immediateExitArgv, cwd: root, onSpawned: (pid) => { anchorPid = pid; throw new Error('JOB_BIND_REJECTED'); } }); }
+    catch (error) { failure = error; }
+    expect(anchorPid).not.toBeNull();
+    expect(failure).toMatchObject({ context: { spawnOutcome: 'cleaned' } });
+    expect(store.listManagedProcesses()).toEqual([]);
+    expect(pidExists(anchorPid!)).toBe(false);
+  } finally { await supervisor.close(); await removeRootDirectory(root); }
+}, 15_000);

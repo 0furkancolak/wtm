@@ -5,11 +5,14 @@ import {
   mkdir,
   open,
   realpath,
+  readdir,
   rename,
   rm,
+  rmdir,
   type FileHandle,
 } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { z } from 'zod';
 import { selectPlatformRuntime } from '@wtm/platform';
 import type { FileTrustPolicy } from '@wtm/platform/ports';
 
@@ -61,9 +64,20 @@ export interface PreparedManagedLogs {
   stdoutPath: string;
   stderrPath: string;
   launchMarkerPath: string;
+  completionMarkerPath: string;
   rotationBytes: number;
   retainedFiles: number;
 }
+
+const completionSchema = z.object({
+  pid: z.number().int().positive(),
+  exitCode: z.number().int().nonnegative().nullable(),
+  signal: z.string().regex(/^SIG[A-Z0-9]+$/).max(32).nullable(),
+  completedAt: z.string().datetime(),
+  logFailed: z.boolean(),
+  timedOut: z.boolean().optional(),
+}).strict();
+export type ManagedProcessCompletion = z.infer<typeof completionSchema>;
 
 export interface ManagedLogCursor {
   dev: number;
@@ -104,11 +118,13 @@ export class ManagedLogStore {
     const opened = await this.#open(worktreeId, taskName, false);
     await opened.close();
     const launchMarkerPath = join(resolve(opened.stdoutPath, '..'), 'launch.json');
+    const completionMarkerPath = join(resolve(opened.stdoutPath, '..'), 'completion.json');
     const directory = resolve(launchMarkerPath, '..');
     const parent = await directoryIdentity(directory, this.#fileTrust);
-    if (await safeLogStat(launchMarkerPath, this.#fileTrust) !== null) {
+    for (const marker of [launchMarkerPath, completionMarkerPath]) {
+      if (await safeLogStat(marker, this.#fileTrust) === null) continue;
       await assertDirectoryIdentity(directory, parent, this.#fileTrust);
-      await rm(launchMarkerPath);
+      await rm(marker);
       await assertDirectoryIdentity(directory, parent, this.#fileTrust);
     }
     return {
@@ -116,6 +132,7 @@ export class ManagedLogStore {
       stdoutPath: opened.stdoutPath,
       stderrPath: opened.stderrPath,
       launchMarkerPath,
+      completionMarkerPath,
       rotationBytes: this.#rotationBytes,
       retainedFiles: this.#retainedFiles,
     };
@@ -247,6 +264,48 @@ export class ManagedLogStore {
     } finally {
       await handle.close();
     }
+  }
+
+  /** Completion belongs to this unique job log directory and the exact recorded anchor PID. */
+  async readCompletion(stdoutPath: string, pid: number): Promise<ManagedProcessCompletion | null> {
+    const directory = resolve(stdoutPath, '..');
+    assertContained(this.#root, directory);
+    await assertSecureDirectoryChain(this.#root, directory, this.#fileTrust);
+    const parent = await directoryIdentity(directory, this.#fileTrust);
+    let handle: FileHandle;
+    try { handle = await openExistingSafeLog(join(directory, 'completion.json'), this.#fileTrust); }
+    catch (error) { if (isMissing(error)) return null; throw error; }
+    try {
+      const stat = await handle.stat();
+      if (stat.size > 1024) throw new Error('Invalid completion marker');
+      const bytes = Buffer.alloc(stat.size);
+      const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+      const parsed = completionSchema.safeParse(JSON.parse(bytes.subarray(0, bytesRead).toString('utf8')));
+      await assertDirectoryIdentity(directory, parent, this.#fileTrust);
+      if (!parsed.success || parsed.data.pid !== pid) throw new Error('Invalid completion identity');
+      return parsed.data;
+    } finally { await handle.close(); }
+  }
+
+  /** Only terminal queue jobs call this, after their full process group was confirmed absent. */
+  async removeJob(worktreeId: string, jobId: string): Promise<void> {
+    assertSafeIdentifier(worktreeId); assertSafeIdentifier(jobId);
+    const directory = join(this.#root, worktreeId, `job-${jobId}`);
+    try { await assertSecureDirectoryChain(this.#root, directory, this.#fileTrust); }
+    catch (error) { if (isMissing(error)) return; throw error; }
+    const parent = await directoryIdentity(directory, this.#fileTrust);
+    const files = await readdir(directory);
+    if (files.length > 64 || files.some((file) => !/^(?:stdout\.log|stderr\.log)(?:\.\d+|\.generation)?$|^(?:launch|completion)\.json$/.test(file))) {
+      throw new Error('Unexpected file in job log directory');
+    }
+    for (const file of files) {
+      const path = join(directory, file);
+      await safeLogStat(path, this.#fileTrust);
+      await assertDirectoryIdentity(directory, parent, this.#fileTrust);
+      await rm(path);
+    }
+    await assertDirectoryIdentity(directory, parent, this.#fileTrust);
+    await rmdir(directory);
   }
 
   async readCursor(

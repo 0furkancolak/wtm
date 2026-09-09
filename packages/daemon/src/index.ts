@@ -26,6 +26,8 @@ export type {
   WorkspaceWatchRegistration,
 } from './watcher';
 export { ManagedLogStore } from './logs';
+export { HeavyJobQueue } from './heavy-job-queue';
+export type { HeavyJobQueueOptions, ResolvedHeavyJob } from './heavy-job-queue';
 export type { ManagedLogStoreOptions, OpenedManagedLogs } from './logs';
 export {
   ManagedProcessError,

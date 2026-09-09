@@ -391,6 +391,29 @@ let stdoutDrained = false;
 let stderrDrained = false;
 let logFailed = false;
 let finished = false;
+let timedOut = false;
+function signalOwnedGroup(signal) {
+  // This code is executing inside the verified ownership anchor itself: its PID cannot
+  // have been recycled while it is making this call.
+  if (spec.platform === 'win32') {
+    require('node:child_process').execFile('taskkill.exe', ['/PID', String(process.pid), '/T', '/F'], { timeout: 5000 }, () => {});
+  } else {
+    try { process.kill(-process.pid, signal); }
+    catch (error) { if (error.code !== 'ESRCH') setTimeout(() => signalOwnedGroup(signal), 1000).unref(); }
+  }
+}
+function enforceDeadline() {
+  if (finished) return;
+  timedOut = true;
+  try {
+    publishLaunch(spec.logs.completionMarkerPath, spec.logs.root, {
+      pid: process.pid, exitCode: null, signal: null, completedAt: new Date().toISOString(),
+      logFailed, timedOut: true
+    });
+  } catch { logFailed = true; }
+  signalOwnedGroup('SIGTERM');
+  setTimeout(() => { if (!finished) signalOwnedGroup('SIGKILL'); }, 5000).unref();
+}
 function assertSecureDirectoryChain(root, directory) {
   const resolvedRoot = pathModule.resolve(root);
   const resolvedDirectory = pathModule.resolve(directory);
@@ -487,13 +510,15 @@ function publishGeneration(path, value) {
   try { fs.renameSync(temporary, path); }
   catch (error) { try { fs.rmSync(temporary); } catch {} throw error; }
 }
-function publishLaunch(path, root) {
+function publishLaunch(path, root, value = { pid: process.pid }) {
   const directory = pathModule.dirname(path);
   assertSecureDirectoryChain(root, directory);
   const parent = checkDirectory(directory);
   checkFile(path);
   const temporary = path + '.tmp-' + process.pid + '-' + Math.random().toString(16).slice(2);
-  fs.writeFileSync(temporary, JSON.stringify({ pid: process.pid }), { flag: 'wx', mode: 0o600 });
+  const fd = fs.openSync(temporary, 'wx', 0o600);
+  try { fs.writeFileSync(fd, JSON.stringify(value)); fs.fsyncSync(fd); }
+  finally { fs.closeSync(fd); }
   try {
     assertDirectoryIdentity(directory, parent);
     fs.renameSync(temporary, path);
@@ -650,7 +675,26 @@ class RotatingLog extends Writable {
     assertDirectoryIdentity(this.directory, this.parentIdentity);
   }
 }
+function refuseExpiredDeadline() {
+  if (!Number.isSafeInteger(spec.deadlineAt) || Date.now() < spec.deadlineAt) return false;
+  timedOut = true;
+  finished = true;
+  try {
+    publishLaunch(spec.logs.completionMarkerPath, spec.logs.root, {
+      pid: process.pid, exitCode: null, signal: null, completedAt: new Date().toISOString(),
+      logFailed, timedOut: true
+    });
+  } catch { logFailed = true; }
+  // Nothing ran: a zero-delay timer would still allow synchronous spawn before it fires.
+  reportLaunch('ERROR ANCHOR_DEADLINE_EXPIRED');
+  process.exitCode = 124;
+  return true;
+}
 function launch() {
+  if (refuseExpiredDeadline()) return;
+  if (Number.isSafeInteger(spec.deadlineAt)) {
+    setTimeout(enforceDeadline, Math.max(0, spec.deadlineAt - Date.now())).unref();
+  }
   let stdoutLog;
   let stderrLog;
   try {
@@ -659,6 +703,10 @@ function launch() {
   } catch {
     logFailed = true; stdoutDrained = true; stderrDrained = true; taskExited = true;
     reportLaunch('ERROR LOG_SETUP_FAILED'); checkGroup(); return;
+  }
+  if (refuseExpiredDeadline()) {
+    stdoutLog.destroy(); stderrLog.destroy();
+    return;
   }
   const child = spawn(spec.argv[0], spec.argv.slice(1), {
     cwd: process.cwd(), env: process.env, shell: spec.shell === true, stdio: ['ignore', 'pipe', 'pipe']
@@ -696,6 +744,14 @@ function checkGroup() {
     if (error) return setTimeout(checkGroup, 25);
     if (Date.now() >= anchorReadyAt && members.every((pid) => pid === process.pid)) {
       finished = true;
+      if (spec.logs.completionMarkerPath) {
+        try {
+          publishLaunch(spec.logs.completionMarkerPath, spec.logs.root, {
+            pid: process.pid, exitCode: taskExit.code, signal: taskExit.signal,
+            completedAt: new Date().toISOString(), logFailed, timedOut
+          });
+        } catch { logFailed = true; }
+      }
       process.exitCode = logFailed ? 1
         : taskExit.signal ? 128 + (signalNumbers[taskExit.signal] || 0) : (taskExit.code === null ? 1 : taskExit.code);
       return;

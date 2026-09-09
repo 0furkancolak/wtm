@@ -73,6 +73,12 @@ export interface ManagedProcessStartInput {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   shell?: boolean;
+  /** Queue ownership is committed before GO permits any task side effects. */
+  onRecorded?: (record: ManagedProcessRecord) => void;
+  onSpawned?: (pid: number) => void;
+  logRotationBytes?: number;
+  logRetainedFiles?: number;
+  deadlineAt?: number;
 }
 
 export interface ManagedProcessStartResult { record: ManagedProcessRecord; existing: boolean }
@@ -88,6 +94,7 @@ export interface ManagedProcessSupervisorOptions {
   signalProcessGroup?: (pgid: number, signal: NodeJS.Signals) => void;
   now?: () => Date;
   onError?: (error: unknown) => void;
+  onExit?: (record: ManagedProcessRecord, outcome: { exitCode: number | null; signal: NodeJS.Signals | null; groupAbsent: boolean; exitedAt: string }) => void;
   runtimeInvocation?: RuntimeInvocation;
   /**
    * The platform whose identity dialect the anchor is told to report in. It belongs beside
@@ -152,6 +159,7 @@ export class ManagedProcessSupervisor {
   readonly #signalGroup: (pgid: number, signal: NodeJS.Signals) => void;
   readonly #now: () => Date;
   readonly #onError: (error: unknown) => void;
+  readonly #onExit: NonNullable<ManagedProcessSupervisorOptions['onExit']>;
   readonly #anchorIgnoresAbort: boolean;
   readonly #runtimeInvocation: RuntimeInvocation;
   readonly #platform: PlatformId | undefined;
@@ -169,6 +177,7 @@ export class ManagedProcessSupervisor {
     this.#signalGroup = options.signalProcessGroup ?? signalProcessGroup;
     this.#now = options.now ?? (() => new Date());
     this.#onError = options.onError ?? (() => {});
+    this.#onExit = options.onExit ?? (() => {});
     this.#anchorIgnoresAbort = options.anchorIgnoresAbort ?? false;
     this.#runtimeInvocation = options.runtimeInvocation ?? defaultRuntimeInvocation();
     this.#platform = options.platform;
@@ -192,7 +201,12 @@ export class ManagedProcessSupervisor {
     this.#assertOpen();
     return await this.#serialize(ownerKey(record.worktreeId, record.taskName), async () => {
       const current = this.#stateStore.getManagedProcess(record.id);
-      if (current === null || !isActiveState(current.state)) return current ?? record;
+      if (current === null) return record;
+      if (!isActiveState(current.state)) {
+        if (current.cleanupRequired && await this.#terminateCleanupOwned(current)
+          && (await this.#inspectGroup(current.pgid)).status === 'absent') return this.#transition(current, current.state, false);
+        return current;
+      }
       return await this.#stopLocked(current);
     });
   }
@@ -203,6 +217,16 @@ export class ManagedProcessSupervisor {
       stopped.push(await this.stopRecord(record));
     }
     return stopped;
+  }
+
+  /** Reconcile a queue completion after the callback was missed or a transient cleanup failure. */
+  async confirmStopped(record: ManagedProcessRecord): Promise<void> {
+    await this.#serialize(ownerKey(record.worktreeId, record.taskName), async () => {
+      const current = this.#stateStore.getManagedProcess(record.id);
+      if (current === null) throw new Error('PROCESS_RECORD_MISSING');
+      if ((await this.#inspectGroup(current.pgid)).status !== 'absent') throw new Error('PROCESS_CLEANUP_UNCONFIRMED');
+      this.#transition(current, isActiveState(current.state) ? 'STOPPED' : current.state, false);
+    });
   }
 
   async restart(input: ManagedProcessStartInput): Promise<ManagedProcessStartResult> {
@@ -379,8 +403,12 @@ export class ManagedProcessSupervisor {
   }
 
   async #spawn(input: ManagedProcessStartInput, reservationToken: string): Promise<ManagedProcessStartResult> {
-    if (input.argv[0] === undefined || input.argv[0].length === 0) throw startFailure(input, new Error('EMPTY_COMMAND'));
-    const logs = await this.#logs.prepare(input.worktreeId, input.taskName);
+    if (input.argv[0] === undefined || input.argv[0].length === 0) throw startFailure(input, new Error('EMPTY_COMMAND'), 'not-started');
+    let logs: PreparedManagedLogs;
+    try { logs = await this.#logs.prepare(input.worktreeId, input.taskName); }
+    catch (error) { throw startFailure(input, error, 'not-started'); }
+    if (input.logRotationBytes !== undefined) logs.rotationBytes = positiveInteger(input.logRotationBytes, 'Job log rotation bound');
+    if (input.logRetainedFiles !== undefined) logs.retainedFiles = positiveInteger(input.logRetainedFiles, 'Job log retained files');
     let child: ChildProcess;
     try {
       child = await spawnAnchor({
@@ -391,10 +419,20 @@ export class ManagedProcessSupervisor {
         platform: this.#platform ?? hostPlatformId(),
       });
     } catch (error) {
-      throw startFailure(input, error);
+      throw startFailure(input, error, 'not-started');
     }
     const pid = child.pid;
-    if (pid === undefined) throw startFailure(input, new Error('NO_PID'));
+    if (pid === undefined) throw startFailure(input, new Error('NO_PID'), 'not-started');
+    try { input.onSpawned?.(pid); }
+    catch (error) {
+      try { await this.#rollbackSpawn(child, pid, child.stdin, null, logs); }
+      catch {
+        throw new ManagedProcessError('RUNTIME_START_FAILED', 'Unconfirmed anchor cleanup requires recovery.', {
+          worktreeId: input.worktreeId, taskName: input.taskName, reason: 'UNCONFIRMED_ANCHOR_CLEANUP', anchorPid: pid,
+        });
+      }
+      throw startFailure(input, error, 'cleaned');
+    }
 
     let pendingExit: { exitCode: number | null; signal: NodeJS.Signals | null } | null = null;
     let recordId: string | null = null;
@@ -410,7 +448,7 @@ export class ManagedProcessSupervisor {
     if (readyIdentity === null || readyIdentity.pid !== pid || readyIdentity.pgid !== pid) {
       child.off('exit', exitListener);
       await this.#rollbackSpawn(child, pid, control, null, logs);
-      throw startFailure(input, new Error('ANCHOR_HANDSHAKE_INVALID'));
+      throw startFailure(input, new Error('ANCHOR_HANDSHAKE_INVALID'), 'cleaned');
     }
     const identity = readyIdentity;
 
@@ -423,6 +461,7 @@ export class ManagedProcessSupervisor {
         cleanupOwnerToken: reservationToken,
       }, { reservationToken });
       recordId = record.id;
+      input.onRecorded?.(record);
       this.#owned.set(record.id, { child, exitListener });
       const inspection = await waitForIdentity(pid, this.#inspectProcess, this.#pollIntervalMs, () => pendingExit !== null);
       if (inspection.status !== 'present') {
@@ -470,7 +509,7 @@ export class ManagedProcessSupervisor {
         }
         throw new DurableCleanupOwnershipError(input, cleanupError ?? repairError);
       }
-      throw startFailure(input, error);
+      throw startFailure(input, error, 'cleaned');
     }
     if (pendingExit !== null) {
       const outcome = pendingExit as { exitCode: number | null; signal: NodeJS.Signals | null };
@@ -562,7 +601,7 @@ export class ManagedProcessSupervisor {
       if (killed !== 'gone') throw new Error(killed === 'failed' ? 'PROCESS_INSPECTION_FAILED' : 'GROUP_REMAINED_ALIVE');
       return this.#transition(stopping, 'STOPPED');
     } catch (error) {
-      const failed = this.#transition(stopping, 'FAILED');
+      const failed = this.#transition(stopping, 'FAILED', true);
       throw new ManagedProcessError('RUNTIME_STOP_FAILED', 'Managed task could not be stopped safely.', {
         worktreeId: stopping.worktreeId, taskName: stopping.taskName, processId: stopping.id,
         reason: safeErrorCode(error), state: failed.state,
@@ -574,17 +613,19 @@ export class ManagedProcessSupervisor {
     recordId: string, worktreeId: string, taskName: string,
     exitCode: number | null, signal: NodeJS.Signals | null,
   ): Promise<void> {
+    const exitedAt = this.#now().toISOString();
     await this.#serialize(ownerKey(worktreeId, taskName), async () => {
       this.#owned.delete(recordId);
       const record = this.#stateStore.getManagedProcess(recordId);
-      if (record === null || !isActiveState(record.state)) return;
+      if (record === null) return;
       const group = await waitForGroupAbsent(
         record.pgid, this.#inspectGroup, this.#gracePeriodMs, this.#pollIntervalMs,
       );
       const state: ManagedProcessState = group === 'gone'
         ? (record.state === 'STOPPING' || (exitCode === 0 && signal === null) ? 'STOPPED' : 'FAILED')
         : 'FAILED';
-      this.#transition(record, state);
+      if (isActiveState(record.state)) this.#transition(record, state, group !== 'gone');
+      this.#onExit(this.#stateStore.getManagedProcess(recordId) ?? record, { exitCode, signal, groupAbsent: group === 'gone', exitedAt });
     }).catch((error) => this.#reportError(error));
   }
 
@@ -908,6 +949,7 @@ async function spawnAnchor(options: {
             argv: options.input.argv,
             shell: options.input.shell ?? false,
             ignoreAbort: options.ignoreAbort,
+            deadlineAt: options.input.deadlineAt,
             logs: options.logs,
           }),
         },
@@ -940,9 +982,10 @@ function taskNotRunning(selector: ManagedProcessSelector): ManagedProcessError {
   });
 }
 
-function startFailure(input: ManagedProcessStartInput, error: unknown): ManagedProcessError {
+function startFailure(input: ManagedProcessStartInput, error: unknown, spawnOutcome?: 'not-started' | 'cleaned'): ManagedProcessError {
   return new ManagedProcessError('RUNTIME_START_FAILED', 'Managed task could not be started.', {
     worktreeId: input.worktreeId, taskName: input.taskName, reason: safeErrorCode(error),
+    ...(spawnOutcome === undefined ? {} : { spawnOutcome }),
   });
 }
 

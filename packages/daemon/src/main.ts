@@ -10,6 +10,7 @@ import {
 } from '@wtm/core';
 import { UnsupportedPlatformError, supportedPlatforms } from '@wtm/platform';
 import type { IpcRequest, JsonEnvelope } from '@wtm/protocol';
+import { jobCommandNames } from '@wtm/protocol';
 import {
   ReconcilerQueue,
   type ReconcileBatch,
@@ -512,7 +513,7 @@ export class WtmDaemon {
       await this.#queue.flush();
       return successEnvelope('reconcile', { workspaces: this.#snapshot.workspaces.length });
     }
-    if (runtimeCommandNames.has(request.command) && this.#runtimeHandler !== null) {
+    if ((runtimeCommandNames.has(request.command) || jobCommandNames.has(request.command)) && this.#runtimeHandler !== null) {
       return await this.#runtimeHandler(request);
     }
     return {

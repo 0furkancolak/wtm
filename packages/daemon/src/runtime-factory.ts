@@ -1,7 +1,10 @@
 import { homedir } from 'node:os';
+import { readFile, realpath } from 'node:fs/promises';
+import { parse } from 'smol-toml';
+import { jobCommandNames } from '@wtm/protocol';
 import { basename as posixBasename, dirname as posixDirname, join as posixJoin, resolve as posixResolve } from 'node:path/posix';
 import { basename as win32Basename, dirname as win32Dirname, join as win32Join, resolve as win32Resolve } from 'node:path/win32';
-import { selectPlatformRuntime } from '@wtm/platform';
+import { readHeavyJobScope, selectPlatformRuntime } from '@wtm/platform';
 import type { PlatformId, PlatformRuntime } from '@wtm/platform/ports';
 import {
   assertDaemonSocketPathFits,
@@ -13,12 +16,17 @@ import {
   ensurePrivateDirectory,
   verifyPrivateDirectory,
   resolveTask,
+  containsPath,
+  HeavyJobError,
+  parseWtmConfig,
+  queueTaskTimeoutMs,
   type DaemonStateStore,
   type LifecycleEventStore,
 } from '@wtm/core';
 import { LifecycleEventDispatcher } from './events';
 import { WtmDaemon } from './main';
 import { ManagedLogStore } from './logs';
+import { HeavyJobQueue, type ResolvedHeavyJob } from './heavy-job-queue';
 import { ManagedProcessSupervisor, type RuntimeInvocation } from './process-supervisor';
 import { DaemonRuntimeController, type DaemonRuntimeResolver } from './runtime-controller';
 import {
@@ -62,6 +70,7 @@ export interface ProductionDaemonRuntime {
   supervisor: ManagedProcessSupervisor;
   controller: DaemonRuntimeController;
   daemon: WtmDaemon;
+  jobs: HeavyJobQueue | null;
   start(): Promise<void>;
   close(): Promise<void>;
 }
@@ -176,6 +185,11 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
       throw error;
     }
   }
+  let queueScope: string | null = null;
+  if (stateStore.jobs !== undefined) {
+    try { queueScope = await readHeavyJobScope(platformRuntime.id); stateStore.jobs.assertScope(queueScope); }
+    catch (error) { if (ownedStore) (stateStore as SQLiteStateStore).close(); throw error; }
+  }
   const logs = new ManagedLogStore({
     root: paths.logRoot,
     // The same reason `supervisor` below is handed `platformRuntime.process` rather than reading
@@ -185,9 +199,11 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     fileTrust: platformRuntime.fileTrust,
     ...(options.onError === undefined ? {} : { onError: options.onError }),
   });
+  let jobs: HeavyJobQueue | null = null;
   const supervisor = new ManagedProcessSupervisor({
     stateStore,
     logs,
+    onExit: (record, outcome) => { jobs?.recordExit(record, outcome); },
     // The supervisor's own defaults read the host, which is right for a daemon nobody handed a
     // runtime to and wrong for this one: the composition root has already chosen a platform, and
     // a supervisor inspecting processes through a different one than the daemon was built for is
@@ -232,11 +248,24 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
       void events.dispatchForWorktree(event, worktreeId).catch(onError);
     },
   });
+  if (stateStore.jobs !== undefined) {
+    const maxConcurrent = await globalJobConcurrency(paths.globalConfigPath);
+    jobs = new HeavyJobQueue({
+      store: stateStore.jobs,
+      scope: queueScope!,
+      supervisor, logs, maxConcurrent, onError,
+      inspectGroup: async (pgid) => await platformRuntime.process.inspectProcessGroup(pgid),
+      resolveTask: async (cwd, taskName) => resolveHeavyJob(stateStore, paths.globalConfigPath, cwd, taskName),
+    });
+  }
   const daemon = new WtmDaemon({
     stateStore,
     socketPath: paths.socketPath,
-    processSupervisor: supervisor,
-    runtimeHandler: async (request) => controller.handle(request),
+    processSupervisor: {
+      recover: async () => supervisor.recover(),
+      close: async () => { await jobs?.close(); await supervisor.close(); },
+    },
+    runtimeHandler: async (request) => jobCommandNames.has(request.command) && jobs !== null ? jobs.handle(request) : controller.handle(request),
     // Preparation and lifecycle events belong to the pass that noticed the change, so a
     // worktree created while WTM is watching is prepared before anybody runs anything in it.
     onReconciled: async ({ repository, result }) => {
@@ -256,13 +285,43 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     supervisor,
     controller,
     daemon,
-    start: async () => daemon.start(),
+    jobs,
+    start: async () => { await daemon.start(); await jobs?.start(); },
     close: async () => {
       if (closed) return;
       closed = true;
       try { await daemon.close(); }
       finally { if (ownedStore) (stateStore as SQLiteStateStore).close(); }
     },
+  };
+}
+
+async function globalJobConcurrency(path: string): Promise<number> {
+  let value: string;
+  try { value = await readFile(path, 'utf8'); }
+  catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return 1;
+    throw error;
+  }
+  return parseWtmConfig(parse(value), path).jobs?.max_concurrent_heavy ?? 1;
+}
+
+async function resolveHeavyJob(store: DaemonStateStore, globalConfigPath: string, cwd: string, taskName: string): Promise<ResolvedHeavyJob> {
+  const runtime = await resolveWorktreeRuntime({ store, globalConfigPath, cwd, allocate: false });
+  const configured = runtime.config.tasks?.[taskName];
+  const timeoutMs = queueTaskTimeoutMs(configured?.timeout);
+  if (configured?.queue !== true || configured.background === true || timeoutMs === null) {
+    throw new HeavyJobError('WTM_JOB_NOT_QUEUEABLE', 'Queue tasks require queue=true, a finite timeout, and background=false.', { taskName });
+  }
+  const task = resolveTask(taskResolutionInput(runtime, taskName));
+  const root = await realpath(runtime.registration.worktree.path);
+  const taskCwd = await realpath(task.cwd);
+  if (!containsPath(root, taskCwd)) throw new HeavyJobError('WTM_JOB_NOT_QUEUEABLE', 'Queued task working directory must stay inside its worktree.', { taskName });
+  return {
+    workspaceId: runtime.registration.workspace.id, repositoryId: runtime.registration.repository.id,
+    worktreeId: runtime.registration.worktree.id, worktreePath: runtime.registration.worktree.path,
+    taskName, timeoutMs, argv: task.argv, cwd: taskCwd, shell: task.shell,
+    env: { ...process.env, ...task.envDelta },
   };
 }
 
