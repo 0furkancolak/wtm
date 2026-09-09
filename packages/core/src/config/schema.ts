@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { normalizeAllowedRemoteRefs } from '../analysis/remote-persistence';
+import { queueTaskTimeoutMs } from './task-timeout';
 
 const commandSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
 
@@ -12,6 +13,7 @@ const taskSchema = z.object({
   shell: z.boolean().optional(),
   cwd: z.string().min(1).optional(),
   background: z.boolean().optional(),
+  queue: z.boolean().optional(),
   singleton: z.boolean().optional(),
   grace_period: z.string().min(1).optional(),
   timeout: z.string().min(1).optional(),
@@ -19,6 +21,9 @@ const taskSchema = z.object({
   requires: z.array(z.string().min(1)).optional(),
   env: z.record(z.string(), z.string()).optional(),
 }).strict().superRefine((task, context) => {
+  if (task.queue === true && (task.background === true || queueTaskTimeoutMs(task.timeout) === null)) {
+    context.addIssue({ code: 'custom', message: 'queued tasks require background != true and a positive timeout (ms, s, m, h), at most 24h' });
+  }
   if (task.run !== undefined && (task.main !== undefined || task.worktree !== undefined)) {
     context.addIssue({ code: 'custom', message: 'tasks may not combine run with main or worktree' });
   }
@@ -128,6 +133,7 @@ const gitSchema = z.object({
 });
 
 export const wtmConfigSchema = z.object({
+  jobs: z.object({ max_concurrent_heavy: z.number().int().min(1).max(64).optional() }).strict().optional(),
   git: gitSchema.optional(),
   version: z.literal(1).optional(),
   workspace: z.object({ name: z.string().min(1).optional() }).strict().optional(),

@@ -45,6 +45,38 @@ A remediation command is a suggestion, not an automatically approved action.
 
 ## Stable V1 error families
 
+### Persistent jobs
+
+```text
+WTM_JOB_NOT_FOUND
+WTM_JOB_QUEUE_FULL
+WTM_JOB_IDEMPOTENCY_CONFLICT
+WTM_JOB_NOT_QUEUEABLE
+WTM_JOB_NOT_COMPLETE
+WTM_JOB_UNSUCCESSFUL
+WTM_JOB_SOURCE_CHANGED
+```
+
+Job commands retain the V1 JSON envelope. A successful enqueue is durable acceptance, not a
+successful task result. The acceptance includes `jobId`, `state`, `accepted`, `idempotencyKey`
+and `reused`. Queries preserve the recorded task exit code independently of the CLI exit code.
+
+| Error | CLI exit | Meaning |
+| --- | --- | --- |
+| `WTM_JOB_NOT_FOUND` | 2 | No visible retained job has that identifier in this queue scope. |
+| `WTM_JOB_NOT_QUEUEABLE` | 2 | The task is not explicitly queueable or lacks an eligible finite timeout. |
+| `WTM_JOB_QUEUE_FULL` | 3 | The bounded queue/history cannot accept another job. |
+| `WTM_JOB_IDEMPOTENCY_CONFLICT` | 3 | The key already belongs to a different request; no second job ran. |
+| `WTM_JOB_SOURCE_CHANGED` | 3 | The job's source/configuration evidence changed or cannot be verified. |
+| `WTM_JOB_NOT_COMPLETE` | 1 | The job has not reached a completed, released state. |
+| `WTM_JOB_UNSUCCESSFUL` | 1 | The completed task failed, was interrupted/cancelled, or timed out. |
+
+`jobs result` preserves its data on refusal. Agents must read the terminal state, `exitCode`,
+slot ownership and `sourceValidity`; an accepted/queued job is never evidence that tests passed.
+`UNCHANGED` describes the documented Git-visible input snapshot, not ignored/external inputs
+or an immutable source sandbox. Metadata carries command fingerprints, not resolved environment
+values or secret-bearing argv. Task output may itself contain secrets, as with ordinary logs.
+
 ### Scope/config
 
 ```text

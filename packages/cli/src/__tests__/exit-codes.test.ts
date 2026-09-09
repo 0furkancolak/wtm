@@ -16,6 +16,13 @@ import { exitCodeForError } from '../exit-codes';
  * meaning to fails the second. Neither can be satisfied by a regex or by a default.
  */
 const expectedExitCodes: Readonly<Record<WtmErrorCode, number>> = {
+  WTM_JOB_NOT_FOUND: 2,
+  WTM_JOB_NOT_QUEUEABLE: 2,
+  WTM_JOB_QUEUE_FULL: 3,
+  WTM_JOB_IDEMPOTENCY_CONFLICT: 3,
+  WTM_JOB_SOURCE_CHANGED: 3,
+  WTM_JOB_NOT_COMPLETE: 1,
+  WTM_JOB_UNSUCCESSFUL: 1,
   // 2 — the user has to change something outside WTM. No retry helps.
   WTM_NOT_INITIALIZED: 2,
   WTM_WORKSPACE_NOT_FOUND: 2,
