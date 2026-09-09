@@ -500,3 +500,43 @@ native test review'ında PID işaretinin başlangıç logundan önce görünmesi
 işaret artık stdout yazma callback'inde yayımlanır. İptal/timeout süreleri ve log assertion'ları
 değişmedi. Yeni native koşu tamamlanana kadar yukarıdaki macOS/Windows doğrulama sınırları
 geçerlidir; eski başarılı Linux koşusu son değişikliklere otomatik aktarılmaz.
+
+## Üç native platformda kuyruk kanıtı ve completion doğrulama düzeltmesi
+
+Altı commit bağlı GitHub hesabıyla `dbf7734` head'ine gönderildi. Her tree SHA, mesaj ve
+parent zinciri yerel karşılığıyla doğrulandı; çalışma dalı uzak dalla 0 ahead / 0 behind
+olarak eşitlendi. Yerel özgün commit'ler `codex/todo-safety-docs-parity-native-local-20260909`
+dalında korundu. [CI koşusu 34364462861](https://github.com/0furkancolak/wtm/actions/runs/34364462861):
+
+| Native runner | Tam test | E2E | Binary smoke | Job sonucu |
+| --- | --- | --- | --- | --- |
+| Linux x64 | 1517 pass, 0 fail, 14 mevcut skip | 2 pass | 9 pass | Başarılı |
+| macOS ARM64 | 1521 pass, 0 fail, 10 mevcut skip | 2 pass | 9 pass | Başarılı |
+| macOS x64 | 1521 pass, 0 fail, 10 mevcut skip | 2 pass | 9 pass | Başarılı |
+
+Her üç job lint, typecheck, build ve package adımlarını da geçti. Cache kapalı iki CLI/iki
+repo kuyruğu ve gerçek descendant içeren dört iptal/timeout/restart/downtime senaryosu üç
+platformda da başarılı. Önceki macOS kuyruk timeout'u task deadline yükseltilmeden giderildi.
+Madde 45'in süreç ağacı kriteri mevcut macOS/Linux kapsamı belirtilerek kapatıldı. Windows
+bu kayıt sırasında sürüyordu; önceki `4939b93` Windows sonucu 1203 pass / 104 fail / 199
+mevcut skip'ti. Windows ve gerçek iki AI oturumu RAM ölçümü yeşil kabul edilmedi.
+
+Son bağımsız doğruluk incelemesi başka bir P1 buldu: completion okumasının JSON/kimlik/dosya
+hatası `COMPLETION_UNREADABLE` olarak kaydediliyor, fakat gözlenen anchor exit code 0 daha
+sonra SUCCEEDED ve error=null yazabiliyordu. İlk geçerli completion'dan sonra son okumanın
+hata vermesi de aynı yanlış başarıya gidiyordu. Yeni yedi senaryo ilk koşuda 3 pass / 4 fail
+verdi; başarısızlıklardan biri exit callback'i yokken ölmüş grubun slotunu bırakamamaktı.
+
+Kuyruk artık okunamama kanıtını polling arasında korur; yalnız doğrulanmış, non-null bir
+completion bunu temizler. Dosyanın sonradan kaybolması doğrulama sayılmaz. Grup yokluğu ve
+supervisor confirmation sonrasında belirsiz iş INTERRUPTED/COMPLETION_UNREADABLE olur;
+bilinen exit/signal korunur, kabul edilmiş cancel/timeout önceliği değişmez. Boşalmış slot
+sonraki FIFO işine geçer ve başarısız sonuç tekrar çalıştırılmaz. Bağımsız review'ın bulduğu
+cross-poll test boşluğu sekizinci `missing-next-poll` senaryosuyla giderildi; açık P1/P2
+bulgu kalmadı. CLI reference ve architecture aynı sonucu anlatır. Bellek ölçüm tarifindeki
+poll aralığı dağıtılan skill'in en az 10 saniyelik aralığıyla eşitlendi.
+
+Son hedefli doğrulama 5 dosyada 35 pass / 0 fail; lint, typecheck ve package:verify başarılı
+(66 dosya). Yukarıdaki native sonuçlar `dbf7734` içindir; bu son completion düzeltmesinin
+yeni native koşusu ayrı izlenmelidir. Tam yerel paket/e2e/performance için önce kaydedilmiş
+PID/proc ve socket sınırları geçerlidir; test beklentileri gevşetilmedi veya test atlanmadı.

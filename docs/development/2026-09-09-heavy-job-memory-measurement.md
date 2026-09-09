@@ -25,7 +25,8 @@ kendi içindeki worker sayısını sınırlamaz. Bu ilk dilim yeni bir bellek ta
    task'ı `wtm run typecheck --enqueue --json` kullanarak gönderin. İki yanıtın jobId ve
    idempotencyKey alanlarını saklayın. Kabul gecikmesini task'ın toplam çalışma süresinden
    ayrı ölçün. Task'lar sürerken AI kod okuyabilir veya farklı worktree'de bağımsız iş yapabilir.
-5. Gerekli olduğunda 5–15 saniye aralıklarla `jobs status` kontrol edin; tamamlanınca her iki
+5. Gerekli olduğunda en az 10 saniye aralıklarla `jobs status` kontrol edin; uzun işler için
+   daha seyrek kontrol edin. Tamamlanınca her iki
    `jobs result` JSON'unu ve gerekirse `jobs logs` çıktısını kaydedin. Başarı için terminal
    durum, sıfır exit code, bırakılmış slot ve değişmemiş kaynak kanıtı birlikte gereklidir.
    Sonuç başarısızken kabul yanıtını başarı kanıtı saymayın.

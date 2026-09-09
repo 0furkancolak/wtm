@@ -655,8 +655,8 @@ tüketimi gözleniyor. Araştırılacak çözüm, eşzamanlı build/test/typeche
 skill ağır komutları WTM'ye göndermeli; WTM bunları ortak bir kuyruğa alırken AI bağımsız
 işlerine devam edebilmeli. Belleğin ne kadarının bu alt süreçlerden geldiği henüz ölçülmedi.
 
-**Durum: sabit eşzamanlılık dilimi uygulandı; Linux native uçtan uca kanıt alındı.**
-macOS takip bulguları, Windows doğrulaması ve RAM dilimi açık.
+**Durum: sabit eşzamanlılık dilimi uygulandı; Linux ve iki macOS mimarisinde native kanıt alındı.**
+Windows doğrulaması ve RAM dilimi açık. Son completion güvenliği düzeltmesi ayrıca test edildi.
 Migration 012, daemon scheduler, CLI/IPC ve skill birlikte eklendi. `wtm run` foreground
 davranışı korundu; `--enqueue` kalıcı kabulden sonra döner. `wtm start` servisleri bu slotu
 kullanmaz. Bu bir RAM kotası değildir. Ayrıntılar ve doğrulama sınırları:
@@ -686,16 +686,18 @@ kullanmaz. Bu bir RAM kotası değildir. Ayrıntılar ve doğrulama sınırları
 - [x] Tekrar gönderim için açık idempotency anahtarı destekle. Aynı task adına ait farklı
       talepleri kendiliğinden birleştirme. Durumlar `QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`,
       `CANCELLED`, `TIMED_OUT`, `INTERRUPTED` olarak açıkça ayrışsın.
-- [ ] İptal/timeout bütün süreç ağacını mevcut process identity kontrolleriyle sonlandırsın;
+- [x] İptal/timeout bütün süreç ağacını mevcut process identity kontrolleriyle sonlandırsın;
       slot ancak süreçlerin durduğu doğrulanınca serbest kalsın. Daemon yeniden başladığında
       kimliği doğrulanmış çalışan işi uzlaştırsın; sonucu belirsiz işi otomatik tekrar çalıştırmasın.
 - [x] Kuyruktaki iş ile `remove`/cleanup yarışı mevcut lease ve runtime güvenlik zincirine
       bağlansın. Silinen/değişen worktree'ye iş başlatılmasın; pending ve running işler
       removal sırasında açıkça ele alınsın. Aynı worktree'de çakışan işler eşzamanlı başlamasın.
 
-İptal/timeout/restart kodu ve kontrollü senaryolar mevcut; yukarıdaki süreç ağacı kriteri
-normal PID/proc görünürlüğüne sahip native runner kanıtı alınmadan kapatılmadı. İlk eski-state
-geçişi mevcut host-local varsayımını devralır; legacy kayıtların host kimliği geriye dönük kanıtlanamaz.
+İptal/timeout/restart ve downtime completion senaryoları `dbf7734` için Linux x64, macOS ARM64
+ve macOS x64 native runner'larında geçti; PID/grup incelemesi ve gerçek descendant yokluğu
+doğrulandı. Bu kriter mevcut macOS/Linux kapsamı için kapandı; Windows native kanıtı açık.
+İlk eski-state geçişi mevcut host-local varsayımını devralır; legacy kayıtların host kimliği
+geriye dönük kanıtlanamaz.
 
 #### Uygulanan CLI ve agent skill akışı
 
@@ -749,8 +751,9 @@ wtm jobs cancel <job-id>
 - [x] FIFO sırası, eşzamanlı gönderim, idempotent tekrar, dolu kuyruk ve daemon restart testli.
       Yeniden başlatma veya kimlik belirsizliği aynı komutu ikinci kez başlatmaz.
       SQLite eşzamanlılığı gerçek Node süreçlerinde; restart/scheduler kontrollü supervisor ile
-      doğrulandı. Gerçek iki CLI/iki repo/tek slot ve sonuç/log senaryosu Linux x64'te geçti
-      (`04b42bb`); native iptal/timeout/restart birleşik senaryoları ve macOS takibi açık.
+      doğrulandı. Gerçek iki CLI/iki repo/tek slot, sonuç/log ve native iptal/timeout/restart/
+      downtime completion senaryoları Linux x64 ve iki macOS mimarisinde geçti (`dbf7734`).
+      Windows ve kullanıcının gerçek iki AI oturumu deneyi açık.
 - [ ] Başarısız işin exit code'u ve log'u korunur; iptal, timeout ve süreç ağacı cleanup'ı
       slot sızdırmaz. Kuyrukta bekleyen iş worktree silme güvenliğini aşamaz.
 - [ ] İşin kaynakları değiştiğinde eski sonuç güncel doğrulama gibi sunulmaz. Skill'in
