@@ -307,12 +307,22 @@ export class HeavyJobQueue {
       this.#options.store.setError(job.jobId, group.status === 'failed' ? 'PROCESS_INSPECTION_FAILED' : 'PROCESS_TREE_STILL_RUNNING');
       return;
     }
+    // Exit callbacks share the supervisor lifecycle lock with stop confirmation. Drain
+    // that confirmation before selecting evidence which may have arrived while awaiting it.
+    await this.#options.supervisor.confirmStopped?.(process);
+    // Stopping and group inspection yield while the anchor can publish its final task
+    // outcome (including replacement of a provisional deadline marker). Read that evidence
+    // after confirmed group absence, before making the immutable terminal record.
+    try { completion = await this.#options.logs?.readCompletion(process.stdoutPath, process.pid) ?? completion; }
+    catch { this.#options.store.setError(job.jobId, 'COMPLETION_UNREADABLE'); }
+    if (completion?.timedOut === true) job = this.#options.store.confirmTimeout(job.jobId, this.#options.scope);
+    const finalObserved = this.#exits.get(job.jobId);
     // Null is task evidence too: a signal-ended child has no numeric exit code, and a
     // successful child has no signal. The anchor's separate outcome cannot fill either field.
-    const exitCode = completion !== null ? completion.exitCode : observed?.exitCode ?? null;
-    const signal = completion !== null ? completion.signal : observed?.signal ?? null;
+    const exitCode = completion !== null ? completion.exitCode : finalObserved?.exitCode ?? null;
+    const signal = completion !== null ? completion.signal : finalObserved?.signal ?? null;
     const state = job.stopReason ?? (completion?.logFailed === true ? 'FAILED'
-      : exitCode === 0 && signal === null ? 'SUCCEEDED' : completion !== null || observed !== undefined ? 'FAILED' : 'INTERRUPTED');
+      : exitCode === 0 && signal === null ? 'SUCCEEDED' : completion !== null || finalObserved !== undefined ? 'FAILED' : 'INTERRUPTED');
     await this.#finish(job, state, exitCode, signal, job.stopReason === 'CANCELLED' ? 'USER_CANCELLED'
       : job.stopReason === 'TIMED_OUT' ? 'TIMEOUT' : job.stopReason === 'INTERRUPTED' ? job.error ?? 'DAEMON_INTERRUPTED'
         : completion?.logFailed === true ? 'LOG_WRITE_FAILED' : null);
@@ -328,8 +338,6 @@ export class HeavyJobQueue {
   }
 
   async #finish(job: HeavyJobRecord, state: Exclude<HeavyJobRecord['state'], 'QUEUED' | 'RUNNING'>, exitCode: number | null, signal: string | null, error: string | null): Promise<void> {
-    const record = this.#process(job);
-    if (record !== null) await this.#options.supervisor.confirmStopped?.(record);
     const sourceValidity = await this.#sourceValidity(job);
     this.#options.store.finish(job.jobId, { state, exitCode, signal, error, sourceValidity, now: this.#now().toISOString() });
     this.#recovering.delete(job.jobId); this.#exits.delete(job.jobId); this.#stopAttempts.delete(job.jobId);
