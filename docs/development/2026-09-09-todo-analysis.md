@@ -34,12 +34,13 @@ kriteri nedeniyle açık. Dokümandaki eski tasarım dosyaları da uygulama tama
 | 6: create | Tek depoda yeni/var olan branch, `--from`, çakışma kontrolleri, local reconcile mevcut. CLI create testleri başarılı. | Çok depolu feature identity, kalıcı creation journal, lock sırası ve partial failure recovery tasarlanmalı. |
 | 7: cleanup ranking | Güvenlik, çalışan process, persistence, aktivite, commit yaşı ve prunable bilgisi sıralamaya giriyor. | Reclaimable disk ölçümü yok; recursive tarama bütçesi ve hardlink/symlink/shared storage semantiği belirlenmeden sayı eklenmemeli. |
 | 9: platformlar | Üç platform için katmanlar ve CI matrix girdileri var. | TODO'nun Windows native doğrulama ve Linux ARM64 açık kriterleri korunmalı; matrix satırı tek başına destek kanıtı değil. |
-| 10: readiness | `start` ve supervisor mevcut; task healthcheck config'i ve readiness sonucu henüz yok. | Sonraki bağımsız ürün geliştirmesi olarak öneriliyor. |
+| 10: readiness | `start` ve supervisor mevcut; task healthcheck config'i ve readiness sonucu henüz yok. | Madde 45'in ilk diliminden sonra ele alınacak. |
 | 16: ignored ayrımı | Ignored `!` kayıtları untracked `?` kayıtlarıyla birleşiyordu. | Bu dilimde tamamlandı. |
 | 18: port probing | `endpoint-probe.ts` bir candidate için bind kontrolü yapıyor. | Transaction ve helper iletişimi birlikte incelenerek batch tasarlanmalı; bu dilimde değiştirilmedi. |
 | 22–33: sunum/dağıtım | Bazı metadata ve doküman değişiklikleri zaten var. | Gerçek platform kanıtlarına göre güncellenmeli; Windows desteği doğrulanmadan sunumda tamamlanmış gösterilmemeli. |
 | 34: docs parity | Hata kodları için parity testi vardı; komut/flag referansları için eşdeğer kontrol yoktu. | Bu dilimde eklendi; gerçek README hatası yakalandı. |
 | 35: lifecycle parity | Removal, ranking, release ve event testleri farklı dosyalara dağılmış. | İlgili kabul kriterlerini testlerle eşleştirmek gerekiyor; tek bir başarılı testle başlık kapatılmamalı. |
+| 45, 19: ortak iş kuyruğu ve RAM | `run` foreground bekliyor; `start` background supervision sağlıyor. Kalıcı job kuyruğu, hemen dönen `jobId` ve host genelinde ağır iş limiti yok. | Kullanıcının eşzamanlı AI oturumları ihtiyacıyla P1'e alındı. Önce sabit eşzamanlılık, ardından belleğe göre iş başlatma. |
 
 ## Uygulanan değişiklikler
 
@@ -82,17 +83,53 @@ kriteri nedeniyle açık. Dokümandaki eski tasarım dosyaları da uygulama tama
 - macOS Gatekeeper, Windows native davranışı, Linux ARM64 ve gerçek npm publish bu çalışma
   ortamında doğrulanmadı. Bu değişiklik bir release onayı değildir.
 
+## Yeni ihtiyaç: eşzamanlı AI oturumlarında RAM baskısı
+
+**2026-09-09 ek talep:** Claude/AI oturumları ağır komutlarını bir skill üzerinden WTM'ye
+göndersin; WTM sırayla çalıştırırken AI bağımsız işlere devam etsin. Bu ihtiyaç `todo.md`
+madde 45 olarak P1'e eklendi. Bu ekleme planlama değişikliğidir; kuyruk kodu henüz yazılmadı.
+
+Kod incelemesi: `packages/cli/src/commands/run.ts` içindeki `runForegroundTask`, task'ı
+`spawn` ile başlatıp exit olayına kadar bekliyor ve stdio'yu CLI'a bağlıyor. `start.ts`
+daemon'a runtime isteği gönderiyor. `packages/core/src/state/store.ts` managed process
+kayıtları barındırıyor; ayrı bir kalıcı job kuyruğu ve iş kabul sözleşmesi tanımlamıyor.
+Bu nedenle yalnızca skill değişikliği yetmez; CLI, protocol, state ve daemon birlikte gelişmeli.
+
+İlk dilim için mevcut daemon/SQLite üzerinde, aynı host ve kullanıcıdaki bütün repoların
+paylaştığı kalıcı FIFO kuyruk ve varsayılan tek ağır iş slotu öneriliyor. Taslak
+`wtm run <task> --enqueue --json` kabulden sonra `jobId` döndürür; agent durum, log ve
+sonucu daha sonra okur. Mevcut foreground kullanım korunur. Her AI'ın kendi semaforunu
+tutması oturumlar arası yükü sınırlamaz; ek kuyruk servisi ise yerel araca gereksiz yük ekler.
+
+Bu tasarım build/test/typecheck gibi alt süreçlerin aynı anda çalışmasından doğan bellek
+baskısını azaltmayı hedefler. Kullanıcının yaşadığı yükün ne kadarının bu komutlardan geldiği
+henüz ölçülmedi; ilk adım temsili iki oturumda bellek dağılımını çıkarmaktır.
+Claude'un kendi süreçlerinin RAM tüketimini doğrudan sınırlamaz;
+WTM dışında başlatılan işler de bu kuyruğa dahil olmaz. Bir task kendi içinde çok sayıda worker
+açabilir; ikinci dilimde task ayarları, bellek tahmini ve host'ta bırakılacak pay birlikte
+değerlendirilmeli. Kesin RAM sınırı ve tasarruf oranı ancak platform desteği/ölçümle söylenebilir.
+
+Agent'ın devam edebilmesi doğrulamanın doğruluğunu bozmamalı: queued/running işin okuduğu
+dosyaları değiştirmek yerine kod okuma, planlama veya başka worktree'de bağımsız çalışma
+sürer. Kaynaklar değişirse sonuç geçersiz sayılabilir; yalnızca HEAD kontrolü yeterli değildir.
+Başarılı kabul yanıtı testin geçtiği anlamına gelmez; son durum ve exit code ayrıca okunur.
+İptal, daemon restart, removal yarışı, sınırlı log/state ve iki oturumlu bellek ölçümleri
+madde 45'in kabul kriterlerine dahil edildi. Otomatik agent bildirimi ayrı entegrasyon dilimidir.
+
 ## Önerilen sonraki geliştirme sırası
 
 1. **Native CI doğrulaması:** Bu dalın Git analizi ve removal değişikliklerini normal Linux,
    macOS ve Windows runner'larında çalıştır. Mevcut Windows sorunlarını ayrı takip et.
-2. **Madde 10, readiness:** Config şeması, template çözümleme, supervisor sonucu ve CLI
+2. **Madde 45, ortak ağır iş kuyruğu:** Kalıcı job/IPC sözleşmesi, atomik slot yönetimi,
+   hemen dönen CLI ve agent skill akışı. İlk dilimde sabit eşzamanlılık sınırı; sonra bellek
+   farkındalığı. Native process doğrulaması gerekir; yayın hesabı işleri bunu bloke etmez.
+3. **Madde 10, readiness:** Config şeması, template çözümleme, supervisor sonucu ve CLI
    `start --wait --timeout` tek bir sözleşmede tanımlansın. Timeout, erken process çıkışı,
    iptal ve tekrar start senaryoları kapsansın. HTTP/TCP ile process-liveness ayrımı açık olsun.
-3. **Madde 7, disk tahmini:** Önce ölçüm semantiği ve I/O bütçesi, sonra ranking entegrasyonu.
-4. **Madde 6, multi-repo create:** Feature identity, deterministik kilit sırası ve kalıcı
+4. **Madde 7, disk tahmini:** Önce ölçüm semantiği ve I/O bütçesi, sonra ranking entegrasyonu.
+5. **Madde 6, multi-repo create:** Feature identity, deterministik kilit sırası ve kalıcı
    recovery planı; kullanıcı verisini silebilecek kör rollback yapılmamalı.
-5. **Platform/yayın kapanışı:** Windows ve Linux ARM64 kanıtlarıyla doküman/metadata eşleştirmesi,
+6. **Platform/yayın kapanışı:** Windows ve Linux ARM64 kanıtlarıyla doküman/metadata eşleştirmesi,
    ardından Apple ve npm hesap erişimi gerektiren gerçek dağıtım kontrolleri.
 
 P2 local domains, PR awareness, idle suspension ve TUI işleri bu temel doğrulamalardan sonra ele

@@ -15,6 +15,8 @@ göre listeler.
 **2026-09-09 analiz ve ilk geliştirme dilimi:**
 [`docs/development/2026-09-09-todo-analysis.md`](docs/development/2026-09-09-todo-analysis.md).
 Madde 16 ve 34 tamamlandı; kalan P0/P1 bağımlılıkları ve doğrulama sınırları bu notta.
+Eşzamanlı AI oturumlarının ağır komutlarından doğan RAM baskısı için madde 45, P1'e eklendi;
+bir sonraki ürün geliştirme dilimi ortak iş kuyruğu olacak.
 
 ## P0 — Stable öncesi zorunlu
 
@@ -641,6 +643,100 @@ Bu 39. maddenin aynı sınıfı: kullanıcıya giden bir hata, alt katmanın ham
 ---
 
 ## P1 — V1 deneyimini tamamlayacak işler
+
+### [ ] 45. AI oturumları için ortak ağır iş kuyruğu ve RAM bütçesi
+
+**2026-09-09 kullanıcı ihtiyacı:** Birden fazla Claude/AI oturumu kullanıldığında yüksek RAM
+tüketimi gözleniyor. Araştırılacak çözüm, eşzamanlı build/test/typecheck yükünü sınırlamak:
+skill ağır komutları WTM'ye göndermeli; WTM bunları ortak bir kuyruğa alırken AI bağımsız
+işlerine devam edebilmeli. Belleğin ne kadarının bu alt süreçlerden geldiği henüz ölçülmedi.
+
+**Durum: planlandı, henüz uygulanmadı.** Aşağıdaki komut ve config isimleri taslaktır.
+Mevcut `wtm run` foreground çalışır ve komutun bitmesini bekler. `wtm start` background
+process yönetir; ikisinde de oturumlar arasında ortak ağır iş kuyruğu veya RAM kotası yok.
+
+#### Kapsam ve ilk dilim
+
+- [ ] Önce temsili iki oturumda süreç ağacını ölç; Claude'un kendi belleği, ağır komutlar ve
+      uzun ömürlü servislerin payını ayır. Kuyruğun hedeflediği yükü bu başlangıç ölçümüyle doğrula.
+- [ ] Aynı host ve işletim sistemi kullanıcısının WTM oturumları, repository/worktree'den
+      bağımsız ortak ağır iş kotasını paylaşsın. Paylaşılan `HOME` farklı host'ların RAM
+      bütçelerini birleştirmesin. Ayrı state diziniyle kota aşmanın kapsamı açıkça belgelensin.
+- [ ] İlk dilimde ayarlanabilir `max_concurrent_heavy = 1` ile ağır işleri sırala.
+      Hafif okuma/inceleme işleri bu kuyruğa girmek zorunda olmasın. İlk destek config'te
+      tanımlı, sonlanan task'lar için olsun; mevcut foreground `wtm run` davranışı korunsun.
+- [ ] CLI, iş kalıcı olarak kabul edilince `jobId` ve `QUEUED` durumu döndürüp hemen çıksın.
+      Kabul yanıtı işin başarılı olduğu anlamına gelmesin; CLI kapansa da daemon işi yönetsin.
+- [ ] Mevcut daemon ve SQLite state üzerinde kalıcı FIFO kuyruk kur. İş alma ve slot ayırma
+      atomik olsun; birden fazla CLI aynı işi veya aynı slotu eşzamanlı çalıştıramasın.
+      Ek kuyruk servisi gerektirmesin; kuyruk boyutu, log ve sonuç saklama süresi sınırlı olsun.
+- [ ] İş kimliği, repository/worktree, çözümlenen komut, başlama/bitiş zamanı, exit code,
+      iptal nedeni ve log referansları sorgulanabilsin. JSON sözleşmesi sürümlensin;
+      config/env içindeki sırlar durum çıktısına veya metadata'ya açık olarak taşınmasın.
+- [ ] Tekrar gönderim için açık idempotency anahtarı destekle. Aynı task adına ait farklı
+      talepleri kendiliğinden birleştirme. Durumlar `QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`,
+      `CANCELLED`, `TIMED_OUT`, `INTERRUPTED` olarak açıkça ayrışsın.
+- [ ] İptal/timeout bütün süreç ağacını mevcut process identity kontrolleriyle sonlandırsın;
+      slot ancak süreçlerin durduğu doğrulanınca serbest kalsın. Daemon yeniden başladığında
+      kimliği doğrulanmış çalışan işi uzlaştırsın; sonucu belirsiz işi otomatik tekrar çalıştırmasın.
+- [ ] Kuyruktaki iş ile `remove`/cleanup yarışı mevcut lease ve runtime güvenlik zincirine
+      bağlansın. Silinen/değişen worktree'ye iş başlatılmasın; pending ve running işler
+      removal sırasında açıkça ele alınsın. Aynı worktree'de çakışan işler eşzamanlı başlamasın.
+
+#### Taslak CLI ve agent skill akışı
+
+```bash
+wtm run typecheck --enqueue --json
+wtm jobs list --json
+wtm jobs status <job-id> --json
+wtm jobs logs <job-id> --tail 100
+wtm jobs result <job-id> --json
+wtm jobs cancel <job-id>
+```
+
+- [ ] Skill: ağır işi gönder → `jobId` sakla → bağımsız işe devam et → gerektiğinde durum/log/
+      sonuç sorgula. Sık polling yapma; gerçekten bağımlı adımda sınırlı bekleme politikası kullan.
+      Son durum ve exit code okunmadan test/build başarılı deme veya buna dayanarak commit yapma.
+- [ ] Sonucun hangi kaynak durumuna ait olduğunu takip et. İlk dilimde agent, queued/running
+      işin okuduğu worktree dosyalarını değiştirmesin; kod okuyabilir, planlayabilir veya başka
+      worktree'de çalışabilir. Başka oturumun dosya değişiklikleri sonucu geçersiz kılabilsin;
+      yalnızca HEAD eşitliğini doğrulama kanıtı sayma, commit edilmemiş değişiklikleri de ele al.
+- [ ] Kullanıcının Claude/Codex oturumlarında mevcut WTM skill'ini bu akışla genişlet.
+      Skill yalnızca WTM üzerinden gönderilen işleri sıraya sokar; doğrudan çalıştırılan bütün
+      komutları zorla yakaladığı veya AI'ı kendiliğinden yeniden uyandırdığı iddia edilmesin.
+      Otomatik bildirim/hook entegrasyonu ayrı, desteklenen agent yeteneklerine bağlı bir dilim olsun.
+
+#### RAM farkındalığı: ikinci dilim
+
+- [ ] Sabit eşzamanlılık sınırından sonra, task bellek tahmini ve host'un kullanılabilir
+      belleği/bellek baskısıyla yeni iş kabulünü değerlendir. İşletim sistemi, Claude/AI ve diğer
+      uygulamalar için pay bırak. Tek build'in kendi worker paralelliği için task'a özel ayar
+      sun; yalnızca kuyruk uzunluğunu azaltmayı kesin bir RAM üst sınırı gibi sunma.
+- [ ] Bekleme nedenini (`concurrency`, `memory_budget`, `worktree_busy`) görünür yap.
+      Bütçeye hiçbir zaman sığmayacak talebi açıkça reddet; kuyruğun sessizce tıkanmasını önle.
+      Bellek yüzünden bekleyen işlerin ilerleme ve adalet politikasını tanımla.
+- [ ] Uzun ömürlü `wtm start` servislerini sonlanan ağır işlerden ayrı ele al; dev server
+      tek ağır iş slotunu süresiz tutmasın, fakat belleği kabul hesabında dikkate alınsın.
+- [ ] Süreç ağacının bellek ölçüm maliyetini sınırla. RSS toplamını paylaşılan sayfalar nedeniyle
+      kesin fiziksel RAM tüketimi sayma. Tahmine dayalı kabul kontrolü ile işletim sistemi
+      tarafından zorlanan sert bellek sınırını ayır; platform desteğini doğrulamadan vaat etme.
+      Genel disk/process bütçeleri madde 19'da kalsın; iki ayrı scheduler oluşturma.
+
+#### Kabul kriterleri
+
+- [ ] İki AI oturumu farklı repolardan aynı anda ağır iş gönderdiğinde, limit 1 ise en fazla
+      bir ağır iş çalışır; diğer iş kuyrukta kalır, her iki gönderim de beklemeden `jobId` döndürür.
+- [ ] FIFO sırası, eşzamanlı gönderim, idempotent tekrar, dolu kuyruk ve daemon restart testli.
+      Yeniden başlatma veya kimlik belirsizliği aynı komutu ikinci kez başlatmaz.
+- [ ] Başarısız işin exit code'u ve log'u korunur; iptal, timeout ve süreç ağacı cleanup'ı
+      slot sızdırmaz. Kuyrukta bekleyen iş worktree silme güvenliğini aşamaz.
+- [ ] İşin kaynakları değiştiğinde eski sonuç güncel doğrulama gibi sunulmaz. Skill'in
+      gönderme/devam etme/sonuç okuma akışı gerçek iki oturumlu senaryoyla doğrulanır.
+- [ ] Aynı görev setiyle kuyruk öncesi/sonrası tepe bellek, bellek baskısı/swap, toplam süre
+      ve WTM daemon ek maliyeti ölçülür. Claude'un kendi bellek tüketimindeki değişim ayrıca
+      ayrıştırılır; ölçüm yapılmadan belirli bir RAM tasarrufu oranı vaat edilmez.
+
+---
 
 ### [ ] 6. `wtm create` ekle
 
@@ -1535,7 +1631,11 @@ Rust yalnızca profiler bunun gerçek bottleneck olduğunu gösterirse düşün�
 
 ### [ ] 19. Resource budgets
 
-Opsiyonel:
+**Öncelik güncellemesi (2026-09-09):** Ağır iş eşzamanlılığı ve RAM'e göre kuyruktan iş
+başlatma kısmı P1 madde 45'e taşındı. Bu madde genel process/disk bütçeleri ve platforma
+özel sert sınırları kapsar; madde 45 ile aynı kaynak muhasebesini kullanmalı.
+
+Opsiyonel config taslağı (henüz uygulanmadı):
 
 ```toml
 [runtime.budgets]
@@ -2145,6 +2245,11 @@ Hedef `v0.2.0` tag'i aşağıdakiler tamamlanmadan çıkarılmamalı:
 
 # Önerilen geliştirme sırası
 
+**2026-09-09 güncellemesi:** Tamamlanan madde 16/34'ün native CI doğrulamasıyla birlikte
+bir sonraki ürün geliştirmesi madde 45'in ilk dilimi: kalıcı kuyruk, sabit ağır iş sınırı,
+asenkron CLI ve agent skill akışı. Bu dilim notarization veya diğer yayın hesabı işlerini
+beklemek zorunda değil. Aşağıdaki genel sıra bu yeni öncelikle okunmalı.
+
 ```text
 1. repository operation leases
 2. runtime-aware remove
@@ -2159,11 +2264,12 @@ Hedef `v0.2.0` tag'i aşağıdakiler tamamlanmadan çıkarılmamalı:
 11. wtm create
 12. cleanup candidate ranking
 13. allowed remote refs config
-14. readiness/healthcheck
-15. local domains
-16. GitHub/PR awareness
-17. idle runtime
-18. TUI/menu bar
+14. shared heavy-job queue + async agent flow (madde 45; sıradaki ürün dilimi)
+15. readiness/healthcheck
+16. local domains
+17. GitHub/PR awareness
+18. idle runtime
+19. TUI/menu bar
 ```
 
 Bu sıra özellikle destructive safety ve stable release risklerini önce kapatacak şekilde hazırlanmıştır.
