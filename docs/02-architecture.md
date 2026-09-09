@@ -109,12 +109,19 @@ SQLite transaction so cancellation accepted during asynchronous source validatio
 be overwritten by an earlier success decision.
 
 The queue uses the existing process anchor, managed-process store and log safety rules. The
-job is bound to its process before the anchor receives GO. Numeric completion evidence is
+job is bound to its process before the anchor receives GO. Task exit-code/signal evidence is
 written by the anchor, including timeout information when the daemon is unavailable. Recovery
 never retries a command with an uncertain outcome. A job keeps its slot until the complete
 process group is confirmed absent; neither a STOPPED label nor a cancellation request alone
 proves that condition. Destructive repository leases and queued/running jobs exclude one
 another in the same database transaction.
+
+Final outcome selection follows process-group absence and supervisor stop confirmation, then
+a fresh completion read. An unreadable or invalid completion remains uncertain across polls
+until an authenticated non-null record is read. Observed anchor success cannot override that
+uncertainty. Once the group is absent, the job can release its slot as `INTERRUPTED` with
+`COMPLETION_UNREADABLE`; cancellation and timeout retain their existing precedence. Recovery
+does not replay this terminal job.
 
 Queue state binds to a machine/user identity before managed process recovery. Subsequent use
 of that database by another host or user is rejected; machines with a shared HOME must use

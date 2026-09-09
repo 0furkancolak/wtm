@@ -216,6 +216,12 @@ child has already exited with code zero while source verification is in progress
 exit evidence is retained, but `jobs result` fails. A cancellation after finalization leaves
 the existing terminal result unchanged.
 
+A completion record that fails reading or validation cannot verify success, even when the
+daemon observed the anchor exit with code zero. After confirmed process cleanup, the job is
+`INTERRUPTED` with `error: "COMPLETION_UNREADABLE"`; an already accepted cancellation or timeout
+keeps its priority. Known exit fields are retained. Only a valid completion read before
+finalization clears this uncertainty; a missing file or repeated result lookup does not.
+
 The initial quota is a fixed concurrency limit, default one heavy job across this host, OS
 user and state store. Configure it in the daemon's **global** config file, then restart the
 daemon to apply the change:

@@ -277,8 +277,11 @@ export class HeavyJobQueue {
       job = this.get(job.jobId);
     }
     let completion: ManagedProcessCompletion | null = null;
-    try { completion = await this.#options.logs?.readCompletion(process.stdoutPath, process.pid) ?? null; }
-    catch { this.#options.store.setError(job.jobId, 'COMPLETION_UNREADABLE'); }
+    let completionUnreadable = job.error === 'COMPLETION_UNREADABLE';
+    try {
+      completion = await this.#options.logs?.readCompletion(process.stdoutPath, process.pid) ?? null;
+      if (completion !== null) completionUnreadable = false;
+    } catch { completionUnreadable = true; this.#options.store.setError(job.jobId, 'COMPLETION_UNREADABLE'); }
     // The anchor exit event can win the race with its refusal message. Its durable
     // completion is stronger evidence than that provisional control-channel failure.
     if (completion?.timedOut === true) job = this.#options.store.confirmTimeout(job.jobId, this.#options.scope);
@@ -292,7 +295,7 @@ export class HeavyJobQueue {
     if (job.stopReason === null && recovering && completion === null) {
       job = this.#options.store.requestCancellation(job.jobId, this.#options.scope, 'INTERRUPTED', this.#now().toISOString());
     }
-    if (completion === null && observed === undefined && job.stopReason === null) return;
+    if (completion === null && observed === undefined && job.stopReason === null && !completionUnreadable) return;
     let group = await this.#options.inspectGroup(process.pgid);
     if (group.status !== 'absent' && job.stopReason !== null) {
       const last = this.#stopAttempts.get(job.jobId) ?? -Infinity;
@@ -304,7 +307,8 @@ export class HeavyJobQueue {
       }
     }
     if (group.status !== 'absent') {
-      this.#options.store.setError(job.jobId, group.status === 'failed' ? 'PROCESS_INSPECTION_FAILED' : 'PROCESS_TREE_STILL_RUNNING');
+      this.#options.store.setError(job.jobId, completionUnreadable ? 'COMPLETION_UNREADABLE'
+        : group.status === 'failed' ? 'PROCESS_INSPECTION_FAILED' : 'PROCESS_TREE_STILL_RUNNING');
       return;
     }
     // Exit callbacks share the supervisor lifecycle lock with stop confirmation. Drain
@@ -313,19 +317,23 @@ export class HeavyJobQueue {
     // Stopping and group inspection yield while the anchor can publish its final task
     // outcome (including replacement of a provisional deadline marker). Read that evidence
     // after confirmed group absence, before making the immutable terminal record.
-    try { completion = await this.#options.logs?.readCompletion(process.stdoutPath, process.pid) ?? completion; }
-    catch { this.#options.store.setError(job.jobId, 'COMPLETION_UNREADABLE'); }
+    try {
+      const finalCompletion = await this.#options.logs?.readCompletion(process.stdoutPath, process.pid) ?? null;
+      if (finalCompletion !== null) { completion = finalCompletion; completionUnreadable = false; }
+    } catch { completionUnreadable = true; this.#options.store.setError(job.jobId, 'COMPLETION_UNREADABLE'); }
     if (completion?.timedOut === true) job = this.#options.store.confirmTimeout(job.jobId, this.#options.scope);
     const finalObserved = this.#exits.get(job.jobId);
     // Null is task evidence too: a signal-ended child has no numeric exit code, and a
     // successful child has no signal. The anchor's separate outcome cannot fill either field.
     const exitCode = completion !== null ? completion.exitCode : finalObserved?.exitCode ?? null;
     const signal = completion !== null ? completion.signal : finalObserved?.signal ?? null;
-    const state = job.stopReason ?? (completion?.logFailed === true ? 'FAILED'
+    // A missing marker permits the observed fallback; a marker that failed authentication
+    // or parsing does not. Only a later valid completion clears that failure, even across polls.
+    const state = job.stopReason ?? (completionUnreadable ? 'INTERRUPTED' : completion?.logFailed === true ? 'FAILED'
       : exitCode === 0 && signal === null ? 'SUCCEEDED' : completion !== null || finalObserved !== undefined ? 'FAILED' : 'INTERRUPTED');
     await this.#finish(job, state, exitCode, signal, job.stopReason === 'CANCELLED' ? 'USER_CANCELLED'
       : job.stopReason === 'TIMED_OUT' ? 'TIMEOUT' : job.stopReason === 'INTERRUPTED' ? job.error ?? 'DAEMON_INTERRUPTED'
-        : completion?.logFailed === true ? 'LOG_WRITE_FAILED' : null);
+        : completionUnreadable ? 'COMPLETION_UNREADABLE' : completion?.logFailed === true ? 'LOG_WRITE_FAILED' : null);
   }
 
   async #sourceValidity(job: HeavyJobRecord): Promise<SourceValidity> {
