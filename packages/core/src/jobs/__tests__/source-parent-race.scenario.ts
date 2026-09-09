@@ -20,21 +20,32 @@ try {
   git('add', '.');
   git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture');
   let swapped = false;
+  let openedThroughLink = false;
+  let restored = false;
   fs.promises.open = (async (...args: Parameters<typeof originalOpen>) => {
     if (!swapped && String(args[0]) === source) {
       swapped = true;
       fs.renameSync(sourceDir, moved);
-      fs.symlinkSync(moved, sourceDir);
-      const handle = await originalOpen(...args);
-      fs.unlinkSync(sourceDir);
-      fs.renameSync(moved, sourceDir);
-      return handle;
+      fs.symlinkSync(moved, sourceDir, 'dir');
+      try {
+        const handle = await originalOpen(...args);
+        openedThroughLink = true;
+        return handle;
+      } finally {
+        fs.unlinkSync(sourceDir);
+        fs.renameSync(moved, sourceDir);
+        restored = true;
+      }
     }
     return await originalOpen(...args);
   }) as typeof originalOpen;
   syncBuiltinESMExports();
   await assert.rejects(captureSourceSnapshot(root), /Source.*(ancestor|parent|changed)/);
   assert.equal(swapped, true);
+  assert.equal(openedThroughLink, true);
+  assert.equal(restored, true);
+  assert.equal(fs.lstatSync(sourceDir).isSymbolicLink(), false);
+  assert.equal(fs.readFileSync(source, 'utf8'), 'export const value = 1;');
 } finally {
   fs.promises.open = originalOpen;
   syncBuiltinESMExports();

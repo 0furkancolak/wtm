@@ -14,10 +14,10 @@ fs.open = async (...args: Parameters<typeof fs.open>) => {
   const handle = await originalOpen(...args);
   handles.add(handle);
   openedHandles += 1;
-  handle.once('close', () => handles.delete(handle));
   return handle;
 };
 syncBuiltinESMExports();
+const activeHandles = () => [...handles].filter((handle) => handle.fd >= 0);
 const { authorizeResourcePath, createResourceGuard } = await import('../guard');
 const mode = process.argv[2];
 const root = await fs.mkdtemp(join(tmpdir(), 'wtm-guard-lifecycle-'));
@@ -39,17 +39,17 @@ try {
   if (mode === 'production-gc') {
     await import('../../../../cli/src/commands/__tests__/resource-cli.scenario');
     assert.ok(openedHandles >= 2, 'production GC must actually acquire resource identity descriptors');
-    assert.equal(handles.size, 0, 'production GC must release every sandbox and parent descriptor');
+    assert.equal(activeHandles().length, 0, 'production GC must release every sandbox and parent descriptor');
   } else if (mode === 'one-shot') {
     await authorizeResourcePath(options, target, 'write');
-    assert.equal(handles.size, 0, 'one-shot authorization must not retain an inaccessible guard');
+    assert.equal(activeHandles().length, 0, 'one-shot authorization must not retain an inaccessible guard');
     await assert.rejects(authorizeResourcePath(options, workspaceRoot, 'delete'));
-    assert.equal(handles.size, 0, 'rejected one-shot authorization must also release descriptors');
+    assert.equal(activeHandles().length, 0, 'rejected one-shot authorization must also release descriptors');
   } else {
     guard = await createResourceGuard(options);
     const token = await guard.authorize(target, 'write');
     await guard.revalidate(token);
-    assert.ok(handles.size >= 2, 'real descriptors must hold both sandbox and parent identities');
+    assert.ok(activeHandles().length >= 2, 'real descriptors must hold both sandbox and parent identities');
     assert.equal(typeof guard.close, 'function', 'guard must expose explicit descriptor ownership disposal');
     if (mode === 'in-flight') {
       pause = true;
@@ -64,11 +64,11 @@ try {
       await pending;
       await closing;
     } else await guard.close();
-    assert.equal(handles.size, 0, 'all real inode descriptors must close');
+    assert.equal(activeHandles().length, 0, 'all real inode descriptors must close');
     await guard.close();
     await assert.rejects(guard.authorize(target, 'write'), { code: 'RESOURCE_PATH_DENIED' });
     await assert.rejects(guard.revalidate(token), { code: 'RESOURCE_PATH_DENIED' });
-    assert.equal(handles.size, 0, 'a disposed guard must not reacquire descriptors');
+    assert.equal(activeHandles().length, 0, 'a disposed guard must not reacquire descriptors');
   }
 } finally {
   release.resolve();
