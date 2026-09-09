@@ -5,12 +5,14 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listGitWorktrees, readGitRepositoryIdentity } from '@wtm/core';
 import { enqueueAcceptanceSchema, type JsonEnvelope } from '@wtm/protocol';
+import { stringify } from 'smol-toml';
 import { createProductionDaemon } from '../../../daemon/src/runtime-factory';
 import { createWorkspaceFixture } from '../../../testkit/src/workspace-fixture';
 import { developmentRuntimeInvocation } from '../../../testkit/src/runtime-invocation';
 import { shortTmpRoot } from '../../../testkit/src/platform';
 import { DaemonClient } from '../client';
 import { runCli } from '../main';
+import { createQueueTaskFixture } from './jobs-task-fixture';
 
 const fixture = await createWorkspaceFixture();
 const socketRoot = await mkdtemp(join(shortTmpRoot(), 'wtm-jobs-'));
@@ -24,15 +26,15 @@ const client = new DaemonClient({ socketPath: runtime.paths.socketPath });
 let connected = false;
 try {
   // The external barrier is only test coordination. The task never writes its source worktree.
-  const script = `const fs=require('node:fs');console.log('START '+Date.now());const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(releasePath)})){clearInterval(t);setTimeout(()=>console.log('END '+Date.now()),100)}},25);`;
-  await writeFile(join(fixture.root, 'wtm.toml'), [
-    'version = 1', '[tasks.check]', `run = ${JSON.stringify(['node', '-e', script])}`,
-    'queue = true', 'timeout = "10s"',
-  ].join('\n'));
+  const taskFixture = createQueueTaskFixture(releasePath);
+  await writeFile(join(fixture.root, 'wtm.toml'), stringify(taskFixture.config));
   const workspace = runtime.stateStore.upsertWorkspace({
     name: 'jobs-fixture', root: fixture.root, scope: 'local', configPath: join(fixture.root, 'wtm.toml'),
   });
   for (const repoPath of [fixture.firstRepoPath, fixture.secondRepoPath]) {
+    for (const [path, contents] of Object.entries(taskFixture.files)) {
+      await writeFile(join(repoPath, path), contents);
+    }
     const identity = await readGitRepositoryIdentity(repoPath);
     const repository = runtime.stateStore.upsertRepository({
       workspaceId: workspace.id, commonGitDir: identity.commonGitDir, mainRoot: repoPath, remoteIdentity: null,
@@ -42,9 +44,14 @@ try {
   await runtime.start();
   await client.start();
   connected = true;
-  const accepted = await Promise.all([
+  // Settle both submissions before cleanup can inspect the queue or remove their sources.
+  const submissions = await Promise.allSettled([
     submit(fixture.firstRepoPath, 'native-first'), submit(fixture.secondRepoPath, 'native-second'),
   ]);
+  const accepted = submissions.map((submission) => {
+    if (submission.status === 'rejected') throw submission.reason;
+    return submission.value;
+  });
   const ids = accepted.map((entry) => entry.jobId);
   assert.notEqual(ids[0], ids[1]);
   // Both actual CLI children have exited while neither task can have completed.
