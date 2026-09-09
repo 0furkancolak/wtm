@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { SqliteDatabase } from './database';
+import { jobWaitingReasons, type JobSchedulingEntry } from './job-scheduling';
 import {
   HeavyJobError, heavyJobRetentionMs, maxPendingHeavyJobs, maxRetainedHeavyJobs,
   type HeavyJobEnqueueInput, type HeavyJobFinishInput, type HeavyJobRecord, type HeavyJobStore,
@@ -28,6 +29,15 @@ export function assertNoHeavyJobs(database: SqliteDatabase, repositoryId: string
 
 export function createHeavyJobStore(database: SqliteDatabase): HeavyJobStore {
   const transaction = <T>(body: () => T): T => database.transaction(body).immediate();
+  const schedulingSnapshot = (scope: string): JobSchedulingEntry[] => (
+    database.prepare(`SELECT job.job_id, job.state, job.slot_held,
+      EXISTS (SELECT 1 FROM heavy_jobs occupied WHERE occupied.worktree_id = job.worktree_id AND occupied.slot_held = 1) AS worktree_busy
+      FROM heavy_jobs job WHERE job.scope = ? AND (job.state = 'QUEUED' OR job.slot_held = 1)
+      ORDER BY job.sequence`).all(scope) as Row[]
+  ).map((row) => ({
+    jobId: String(row.job_id), state: row.state as JobSchedulingEntry['state'],
+    slotHeld: row.slot_held === 1, worktreeBusy: row.worktree_busy === 1,
+  }));
   const getById = (jobId: string): HeavyJobRecord => {
     const row = database.prepare('SELECT * FROM heavy_jobs WHERE job_id = ?').get(jobId) as Row | undefined;
     if (row === undefined) throw new HeavyJobError('WTM_JOB_NOT_FOUND', 'Job was not found.', { jobId });
@@ -89,16 +99,16 @@ export function createHeavyJobStore(database: SqliteDatabase): HeavyJobStore {
     active(scope) {
       return (database.prepare("SELECT * FROM heavy_jobs WHERE scope = ? AND (state = 'QUEUED' OR slot_held = 1) ORDER BY sequence").all(scope) as Row[]).map(record);
     },
+    waitingReasons(scope, maxConcurrent) {
+      return jobWaitingReasons(schedulingSnapshot(scope), maxConcurrent);
+    },
     claim(scope, maxConcurrent, now) {
       if (!Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1) throw new TypeError('Invalid concurrency limit');
       return transaction(() => {
-        const occupied = database.prepare('SELECT COUNT(*) AS count FROM heavy_jobs WHERE scope = ? AND slot_held = 1').get(scope) as { count: number };
-        if (occupied.count >= maxConcurrent) return null;
-        const row = database.prepare("SELECT * FROM heavy_jobs WHERE scope = ? AND state = 'QUEUED' ORDER BY sequence LIMIT 1").get(scope) as Row | undefined;
-        if (row === undefined) return null;
-        const job = record(row);
-        // Strict FIFO intentionally waits behind the oldest blocked worktree.
-        if (database.prepare('SELECT 1 FROM heavy_jobs WHERE worktree_id = ? AND slot_held = 1 LIMIT 1').get(job.worktreeId) !== undefined) return null;
+        const reasons = jobWaitingReasons(schedulingSnapshot(scope), maxConcurrent);
+        const next = reasons.entries().next().value;
+        if (next?.[1] !== 'dispatch_pending') return null;
+        const job = getById(next[0]);
         try { assertRegistered(job); }
         catch (error) {
           if (!(error instanceof HeavyJobError)) throw error;

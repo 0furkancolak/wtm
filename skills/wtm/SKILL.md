@@ -63,6 +63,19 @@ wtm run typecheck --enqueue --idempotency-key <unique-request-key> --json
    wtm jobs logs <job-id> --tail 100 --json
    ```
 
+   For a queued job, read `data.job.waitingReason` as the current scheduling observation:
+
+   | Value | Meaning |
+   | --- | --- |
+   | `concurrency` | Global slots are occupied, including slots held until process cleanup is verified. |
+   | `worktree_busy` | The FIFO head shares a worktree with a job that still holds a slot. |
+   | `fifo` | An earlier queued job must be considered first. |
+   | `dispatch_pending` | Awaiting scheduler dispatch and preflight checks; launch is not guaranteed. |
+
+   The value is `null` outside `QUEUED`. Older daemons may omit the field; an omitted reason
+   is unknown. Continue independent work at the same polling interval; these observations do
+   not establish available RAM or a successful task result.
+
 4. Before any dependent step or claim that a test/build passed, read the result:
 
    ```bash

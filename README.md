@@ -290,6 +290,11 @@ stable across **all** sessions, and read the result before claiming success: acc
 status lookup are not test results. `jobs result` exits successfully only for a successful
 zero-exit task with unchanged source evidence; it preserves failure details otherwise.
 
+`jobs list` and `jobs status` include `waitingReason` for queued jobs: `concurrency` when
+all shared slots are held, `worktree_busy` when the FIFO head's worktree is occupied, `fifo`
+when an earlier queued job is ahead, or `dispatch_pending` before scheduler/preflight checks.
+This is a current observation; it does not reserve a slot or promise a start time.
+
 By default only one heavy job runs across this host, OS user and state store. Set
 `[jobs] max_concurrent_heavy` in the daemon's global config to change that limit; repository
 config cannot raise it. The state database belongs to one machine/user identity, claimed

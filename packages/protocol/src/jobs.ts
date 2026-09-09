@@ -2,6 +2,18 @@ import { z } from 'zod';
 
 export const jobStateSchema = z.enum(['QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'INTERRUPTED']);
 export type JobState = z.infer<typeof jobStateSchema>;
+export const jobWaitingReasonSchema = z.enum(['concurrency', 'worktree_busy', 'fifo', 'dispatch_pending']);
+export type JobWaitingReason = z.infer<typeof jobWaitingReasonSchema>;
+/** An observation of scheduling, not a reservation or a promise that a job will start. */
+export const jobSchedulingSchema = z.object({
+  state: jobStateSchema,
+  // Older daemons omit this additive field; they must not be assigned an invented reason.
+  waitingReason: jobWaitingReasonSchema.nullable().optional(),
+}).passthrough().superRefine((job, context) => {
+  if (job.state !== 'QUEUED' && job.waitingReason != null) {
+    context.addIssue({ code: 'custom', path: ['waitingReason'], message: 'Only queued jobs can have a waiting reason.' });
+  }
+});
 export const sourceValiditySchema = z.enum(['UNCHANGED', 'CHANGED', 'UNKNOWN']);
 export type SourceValidity = z.infer<typeof sourceValiditySchema>;
 export const jobIdSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/);

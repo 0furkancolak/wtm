@@ -2,6 +2,17 @@ import { describe, expect, test } from 'bun:test';
 import * as protocol from '../index';
 
 describe('heavy-job wire contract', () => {
+  test('waiting evidence accepts only implemented reasons for queued jobs', () => {
+    const schema = (protocol as Record<string, any>).jobSchedulingSchema;
+    expect(schema).toBeDefined();
+    for (const waitingReason of ['concurrency', 'worktree_busy', 'fifo', 'dispatch_pending']) {
+      expect(schema.safeParse({ state: 'QUEUED', waitingReason }).success).toBe(true);
+      expect(schema.safeParse({ state: 'SUCCEEDED', waitingReason }).success).toBe(false);
+    }
+    expect(schema.safeParse({ state: 'QUEUED', waitingReason: 'memory_budget' }).success).toBe(false);
+    expect(schema.safeParse({ state: 'RUNNING', waitingReason: null }).success).toBe(true);
+    expect(schema.safeParse({ state: 'QUEUED' }).success).toBe(true);
+  });
   test('registers strict bounded request schemas for every queue operation', () => {
     const schemas = (protocol as Record<string, any>).jobArgumentSchemas;
     expect(schemas).toBeDefined();

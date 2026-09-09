@@ -23,6 +23,46 @@ function capture() {
 }
 
 describe('persistent job CLI', () => {
+  test('historical success with a persisted stop reason cannot validate sources', async () => {
+    for (const stopReason of ['CANCELLED', 'TIMED_OUT', 'INTERRUPTED', 'invalid-reason']) {
+      const data = { job: { jobId: 'job-1', state: 'SUCCEEDED', exitCode: 0, signal: null, slotHeld: false, stopReason },
+        terminal: true, successful: true, sourceValidity: 'UNCHANGED' };
+      const output = capture();
+      expect(await runCli(['jobs', 'result', 'job-1', '--json'], {
+        runtimeClient: { request: async () => success('jobs.result', data) }, ...output,
+      })).toBeGreaterThan(0);
+      expect(JSON.parse(output.out())).toMatchObject({ ok: false, data,
+        errors: [{ code: stopReason === 'invalid-reason' ? 'WTM_DAEMON_REQUEST_FAILED' : 'WTM_JOB_UNSUCCESSFUL' }] });
+    }
+  });
+  test('refuses unknown or contradictory daemon waiting evidence', async () => {
+    for (const action of ['list', 'status']) {
+      for (const job of [
+        { jobId: 'job-1', state: 'QUEUED', waitingReason: 'memory_budget' },
+        { jobId: 'job-1', state: 'SUCCEEDED', waitingReason: 'concurrency' },
+      ]) {
+        const data = action === 'list' ? { jobs: [job] } : { job };
+        const argv = action === 'list' ? ['jobs', action, '--json'] : ['jobs', action, 'job-1', '--json'];
+        const output = capture();
+        expect(await runCli(argv, { runtimeClient: { request: async () => success(`jobs.${action}`, data) }, ...output })).toBeGreaterThan(0);
+        expect(JSON.parse(output.out()).errors[0].code).toBe('WTM_DAEMON_REQUEST_FAILED');
+      }
+    }
+  });
+
+  test('shows queued waiting reasons in JSON and human output without changing result semantics', async () => {
+    for (const waitingReason of ['concurrency', 'worktree_busy', 'fifo', 'dispatch_pending']) {
+      const job = { jobId: 'job-1', state: 'QUEUED', waitingReason };
+      for (const json of [true, false]) {
+        const output = capture();
+        expect(await runCli(['jobs', 'status', 'job-1', ...(json ? ['--json'] : [])], {
+          runtimeClient: { request: async () => success('jobs.status', { job }) }, ...output,
+        })).toBe(0);
+        if (json) expect(JSON.parse(output.out()).data.job).toEqual(job);
+        else expect(output.out()).toContain(`waitingReason: ${waitingReason}`);
+      }
+    }
+  });
   test('enqueue sends one request, reports acceptance, and does not wait for completion', async () => {
     const calls: Array<{ command: string; args: unknown }> = [];
     const client: RuntimeDaemonClient = {

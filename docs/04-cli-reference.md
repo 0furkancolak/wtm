@@ -182,7 +182,7 @@ wtm jobs cancel <job-id> --json
 | Command | Data and behavior |
 | --- | --- |
 | `wtm jobs list` | `{ jobs }`; default 50 recent jobs, `--limit` from 1 to 100 |
-| `wtm jobs status <job-id>` | `{ job }`; inspect `state`, `exitCode`, `signal`, `error` and `slotHeld` |
+| `wtm jobs status <job-id>` | `{ job }`; inspect `state`, `waitingReason`, `exitCode`, `signal`, `error` and `slotHeld` |
 | `wtm jobs logs <job-id>` | `{ jobId, stdout, stderr, truncated }`; `--tail` from 1 to 1000 lines per stream, default 100; byte limits may shorten the tail |
 | `wtm jobs result <job-id>` | `{ job, terminal, successful, sourceValidity }`; fails unless completion and source evidence confirm success |
 | `wtm jobs cancel <job-id>` | `{ job }`; requests cancellation, with the slot held until process-tree termination is verified |
@@ -193,6 +193,28 @@ failed. Result success requires a terminal `SUCCEEDED` job, `exitCode: 0`, `slot
 and `sourceValidity: "UNCHANGED"`. A pending, unsuccessful, changed or unknown-source result
 returns a nonzero CLI status and keeps the result payload in `data` for inspection. Read the
 child's actual exit code from `data.job.exitCode`; it is not the CLI's status code.
+
+Job records in list/status/result/cancel carry `waitingReason`. It is computed from the
+current queue; reading it does not claim a slot, mutate a job or run another scheduler.
+
+| `waitingReason` | Meaning |
+| --- | --- |
+| `concurrency` | All configured slots are held, including jobs still awaiting verified process cleanup |
+| `worktree_busy` | This job is the FIFO head and its worktree already holds a job slot |
+| `fifo` | An earlier queued job must be considered first |
+| `dispatch_pending` | Capacity/worktree checks permit considering the FIFO head; dispatch and source/repository validation are still pending |
+| `null` | The job is no longer queued |
+
+Capacity takes precedence, then FIFO position, then worktree occupancy. A later job does not
+overtake a blocked head even if its own worktree is free. This observation is not a reservation
+or start-time guarantee. Older daemons may omit the additive field; absence is not evidence
+of any particular reason. Memory-based admission is not implemented, so `memory_budget` is
+not an emitted reason.
+
+Cancellation accepted before the final SQLite transaction remains cancellation even if the
+child has already exited with code zero while source verification is in progress. Its numeric
+exit evidence is retained, but `jobs result` fails. A cancellation after finalization leaves
+the existing terminal result unchanged.
 
 The initial quota is a fixed concurrency limit, default one heavy job across this host, OS
 user and state store. Configure it in the daemon's **global** config file, then restart the

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   enqueueAcceptanceSchema,
   jobArgumentSchemas,
+  jobSchedulingSchema,
   jobStateSchema,
   sourceValiditySchema,
   type JsonEnvelope,
@@ -95,15 +96,24 @@ export async function requestJobCommand(
       return failure(name, envelope.data, 'WTM_DAEMON_REQUEST_FAILED', 'Daemon returned evidence for an invalid job identity.');
     }
   }
+  if (command === 'jobs.list' && !jobListSchema.safeParse(envelope.data).success) {
+    return failure(name, envelope.data, 'WTM_DAEMON_REQUEST_FAILED', 'Daemon returned invalid job scheduling evidence.');
+  }
   if (command === 'jobs.result') return checkedJobResult(envelope);
   return envelope;
 }
 
 // Keep the daemon's complete result intact, but validate every field relied on for success.
 const logIdentitySchema = z.object({ jobId: z.string().min(1) });
-const jobIdentitySchema = z.object({ job: logIdentitySchema });
+const scheduledJobSchema = logIdentitySchema.and(jobSchedulingSchema);
+const jobIdentitySchema = z.object({ job: scheduledJobSchema });
+const jobListSchema = z.object({ jobs: z.array(scheduledJobSchema).max(100) });
 const resultEvidenceSchema = z.object({
-  job: z.object({ jobId: z.string().min(1), state: jobStateSchema, exitCode: z.number().int().nullable(), signal: z.string().nullable(), slotHeld: z.boolean() }).passthrough(),
+  job: z.object({
+    jobId: z.string().min(1), state: jobStateSchema, exitCode: z.number().int().nullable(),
+    signal: z.string().nullable(), slotHeld: z.boolean(),
+    stopReason: z.enum(['CANCELLED', 'TIMED_OUT', 'INTERRUPTED']).nullable().optional(),
+  }).passthrough(),
   terminal: z.boolean(),
   successful: z.boolean(),
   sourceValidity: sourceValiditySchema,
@@ -116,7 +126,7 @@ function checkedJobResult(envelope: JsonEnvelope<unknown>): JsonEnvelope<unknown
   }
   const result = parsed.data;
   const code = !result.terminal || result.job.slotHeld ? 'WTM_JOB_NOT_COMPLETE'
-    : !result.successful || result.job.state !== 'SUCCEEDED' || result.job.exitCode !== 0 || result.job.signal !== null ? 'WTM_JOB_UNSUCCESSFUL'
+    : !result.successful || result.job.state !== 'SUCCEEDED' || result.job.exitCode !== 0 || result.job.signal !== null || result.job.stopReason != null ? 'WTM_JOB_UNSUCCESSFUL'
       : result.sourceValidity !== 'UNCHANGED' ? 'WTM_JOB_SOURCE_CHANGED'
         : null;
   if (code === null) return envelope;

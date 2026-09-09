@@ -1,4 +1,4 @@
-import type { JobState, SourceValidity } from '@wtm/protocol';
+import type { JobState, JobWaitingReason, SourceValidity } from '@wtm/protocol';
 
 export interface HeavyJobRecord {
   jobId: string;
@@ -56,6 +56,8 @@ export interface HeavyJobStore {
   get(jobId: string, scope: string): HeavyJobRecord | null;
   list(scope: string, limit?: number): HeavyJobRecord[];
   active(scope: string): HeavyJobRecord[];
+  /** Current FIFO/capacity observations for queued jobs only; reading does not dispatch. */
+  waitingReasons(scope: string, maxConcurrent: number): ReadonlyMap<string, JobWaitingReason>;
   claim(scope: string, maxConcurrent: number, now: string): HeavyJobRecord | null;
   bindProcess(jobId: string, processId: string): boolean;
   bindAnchor(jobId: string, pid: number): boolean;

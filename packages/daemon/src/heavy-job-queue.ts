@@ -3,7 +3,7 @@ import {
   captureSourceSnapshot, HeavyJobError,
   type HeavyJobRecord, type HeavyJobStore, type ManagedProcessRecord, type SourceSnapshot,
 } from '@wtm/core';
-import { jobArgumentSchemas, jobCommandNames, type EnqueueAcceptance, type IpcRequest, type JsonEnvelope, type SourceValidity, type WtmErrorCode } from '@wtm/protocol';
+import { jobArgumentSchemas, jobCommandNames, type EnqueueAcceptance, type IpcRequest, type JobWaitingReason, type JsonEnvelope, type SourceValidity, type WtmErrorCode } from '@wtm/protocol';
 import type { ManagedProcessCompletion } from './logs';
 import type { ManagedProcessStartInput, ManagedProcessStartResult, ProcessGroupInspection } from './process-supervisor';
 
@@ -160,10 +160,11 @@ export class HeavyJobQueue {
       if (command === 'jobs.enqueue') return success(command, await this.enqueue(args.cwd!, args.taskName!, args.idempotencyKey!));
       if (command === 'jobs.list') {
         const records = this.#options.store.list(this.#options.scope, args.limit);
+        const waiting = this.#options.store.waitingReasons(this.#options.scope, this.#options.maxConcurrent ?? 1);
         const jobs: ReturnType<typeof publicJob>[] = [];
         let bytes = 0;
         for (const record of records) {
-          const job = publicJob(record);
+          const job = publicJob(record, waiting);
           bytes += Buffer.byteLength(JSON.stringify(job)) + 1;
           if (bytes > 128 * 1024) break;
           jobs.push(job);
@@ -179,11 +180,15 @@ export class HeavyJobQueue {
         const stderr = record === null || this.#options.logs === undefined ? '' : await this.#options.logs.read(record.stderrPath, bound);
         return success(command, { jobId: job.jobId, stdout: tailLines(stdout, args.tail ?? 100), stderr: tailLines(stderr, args.tail ?? 100), truncated: Buffer.byteLength(stdout) >= bound || Buffer.byteLength(stderr) >= bound });
       }
+      const waiting = this.#options.store.waitingReasons(this.#options.scope, this.#options.maxConcurrent ?? 1);
       const sourceValidity = await this.#sourceValidity(job);
-      const current = { ...publicJob(job), sourceValidity };
+      const current = { ...publicJob(job, waiting), sourceValidity };
       if (command === 'jobs.status') return success(command, { job: current });
       const terminal = job.state !== 'QUEUED' && job.state !== 'RUNNING' && !job.slotHeld;
-      const successful = terminal && job.state === 'SUCCEEDED' && job.exitCode === 0 && job.signal === null && sourceValidity === 'UNCHANGED';
+      // Old daemons could finalize a stale success after accepting a stop request. Preserve
+      // that immutable history, but never expose it as successful validation to an agent.
+      const successful = terminal && job.state === 'SUCCEEDED' && job.stopReason === null
+        && job.exitCode === 0 && job.signal === null && sourceValidity === 'UNCHANGED';
       const data = { job: current, terminal, successful, sourceValidity };
       if (!terminal) return failure(command, 'WTM_JOB_NOT_COMPLETE', 'Job has not completed; acceptance is not a successful result.', data);
       if (sourceValidity !== 'UNCHANGED') return failure(command, 'WTM_JOB_SOURCE_CHANGED', 'Job result does not verify the current source state.', data);
@@ -345,13 +350,14 @@ function commandFingerprint(task: ResolvedHeavyJob): string {
   return createHash('sha256').update(JSON.stringify([task.argv, task.cwd, task.shell, env, task.timeoutMs])).digest('hex');
 }
 
-function publicJob(job: HeavyJobRecord) {
+function publicJob(job: HeavyJobRecord, waiting?: ReadonlyMap<string, JobWaitingReason>) {
   return {
     jobId: job.jobId, state: job.state, taskName: job.taskName, workspaceId: job.workspaceId,
     repositoryId: job.repositoryId, worktreeId: job.worktreeId, worktreePath: job.worktreePath,
     slotHeld: job.slotHeld, processId: job.processId, createdAt: job.createdAt, startedAt: job.startedAt,
     finishedAt: job.finishedAt, timeoutMs: job.timeoutMs, exitCode: job.exitCode, signal: job.signal,
     error: job.error, stopReason: job.stopReason, sourceValidity: job.sourceValidity,
+    waitingReason: job.state === 'QUEUED' ? waiting?.get(job.jobId) ?? 'dispatch_pending' : null,
     sourceFingerprint: job.sourceFingerprint,
     commandFingerprint: job.commandFingerprint, sourceScope: 'git-tracked-and-untracked',
   };

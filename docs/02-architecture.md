@@ -102,6 +102,12 @@ this state database. Jobs in the same worktree never hold slots together. A bloc
 deliberately holds back later jobs. Ordinary foreground `run` and background `start` retain
 their separate execution paths.
 
+Read-only waiting diagnostics use the same capacity/FIFO/worktree decision as atomic claims.
+The scheduler reports `concurrency`, `worktree_busy`, `fifo`, or `dispatch_pending`; querying
+does not reserve capacity. Terminal finalization rereads the durable stop reason inside its
+SQLite transaction so cancellation accepted during asynchronous source validation cannot
+be overwritten by an earlier success decision.
+
 The queue uses the existing process anchor, managed-process store and log safety rules. The
 job is bound to its process before the anchor receives GO. Numeric completion evidence is
 written by the anchor, including timeout information when the daemon is unavailable. Recovery
