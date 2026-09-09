@@ -202,13 +202,38 @@ birebir byte-order karşılaştırması korunarak migration 012 beklentisi eklen
 
 Son bağımsız kapanış review'inde incelenen kapsamda açık P1/P2 kalmadı. Local implementation
 commit'leri: `22a38fe`, `e02ce15`, `b3e89f4`, `e40d417`, `02dfaa4`, `9a30d05`; ilk ilerleme
-kaydı `5541fb8`. `git push -u origin codex/todo-safety-docs-parity` denendi fakat
+kaydı `5541fb8`. İlk `git push -u origin codex/todo-safety-docs-parity` denemesi
 `could not read Username for 'https://github.com': No such device or address` ile reddedildi.
-Terminalde Git credential helper yok. Bağlı GitHub hesabı `0furkancolak` olarak doğrulandı;
+Terminalde Git credential helper yoktu. Bağlı GitHub hesabı `0furkancolak` olarak doğrulandı;
 sunulan commit oluşturma API'si author/committer alanlarını veya mevcut yerel Git nesnelerini
-yüklemeyi desteklemiyor. İstenen yapılandırılmış Git kimliği ve commit geçmişi değiştirilerek
-bu engel aşılmadı. Mevcut yerel commit'lerin push'ı için terminal Git yazma kimlik doğrulaması
-gerekli; uzak dal oluşturulmuş veya commit'ler GitHub'a gönderilmiş sayılmamalı.
+yüklemeyi desteklemediği için ilk aşamada geçmiş değiştirilmedi.
+
+Kullanıcı daha sonra “Bağlı GitHub hesabımla gönder” diyerek commit SHA ve
+author/committer metadata değişikliğini açıkça yetkilendirdi. Bunun üzerine önceki iki devir
+commit'i ve bu oturumun sekiz commit'i bağlı hesapla GitHub Git Data API üzerinden sırayla
+yeniden oluşturuldu. Her commit'in Git tree SHA değeri yerel karşılığıyla birebir eşleşti:
+dosya içerikleri, yolları ve modları korunuyor. Commit mesajları korundu; yeni coauthor
+eklenmedi. Ortak başlangıç commit'i `2fbdd02b5abec90a79dc661dc9f069726cea9831`;
+hedef geliştirme dalı `codex/todo-safety-docs-parity`. Yeni metadata nedeniyle SHA
+üzerinden devir kontrolü yapan sonraki oturumlar aşağıdaki eşlemeyi kullanmalıdır.
+
+| Önceki yerel commit | Bağlı hesapla oluşturulan GitHub commit'i |
+| --- | --- |
+| `816fb113998cff2f807f624c877ae097f2aa908a` | `6fff01922ff74daca23b746bced9ad2f0170f2b1` |
+| `7962428cc27769c9b7f0500ccd9d269415233062` | `68d0ef2819bef25a6596ec2324bb2676bc83e1a6` |
+| `22a38fe8ae068608a1d0c696e839882ed41f931b` | `5f5e91d997303504db13d586608bc2d926477f0c` |
+| `e02ce1519118af4a4de848001d057af615a56ec4` | `10b087680c612c5d1820c06d75e36051ec8ce80a` |
+| `b3e89f4f274ca732d637c6a39afd4ed9917495c3` | `b8af25aa684ddac3738d12ead11c57eb0d227d76` |
+| `e40d417b64ce79c6815b543a93e0f9cda090f618` | `5c9887ecc60a8980380932445dde9da4acac276b` |
+| `02dfaa4ba40c8bcfcd6f349838b4310a8e4d00aa` | `9435c279bb673a5f128db11f6db6693906db703b` |
+| `9a30d0560ecd6f24a347bc8434e39d8edfc961d1` | `1afe5722c2777db326ed1f65334c4c66cfebd70d` |
+| `5541fb8bed0c4855d3b460b42fb25b034b3fcc50` | `6cf195e804603768a38349097f69887c2b0d02d9` |
+| `1e1a869dfe9384c971cbb3e9f3f5d549f243eb3c` | `a456e4f40105e05e4ab8892395f0adfbc705355f` |
+
+Bu yayın kaydı, yukarıdaki on commit'ten sonra ayrı bir doküman commit'i olarak eklenir.
+Bu işlemde ürün kodu veya test beklentileri değiştirilmedi; aşağıdaki doğrulama sonuçları
+ve açık native platform/RAM kanıtları geçerliliğini korur. GitHub dalına gönderme izni,
+PR açma, merge veya registry release izni anlamına gelmez.
 
 ### Bu ortamın sınırları ve sonraki iş
 
@@ -252,4 +277,4 @@ süreç ağacı, daemon kapalıyken timeout/restart kanıtı; kullanıcının ik
 sonra kullanılabilir bellek, task tahmini, diğer uygulamalara bırakılan pay ve task'ın worker
 paralelliğini birlikte kullanan RAM dilimi. Otomatik agent bildirimi ayrı entegrasyondur.
 Readiness (madde 10) sonraki ürün önceliği olarak kalır; native veya RAM kriteri tamamlanmış
-gösterilerek başka başlık kapatılmaz. macOS/Windows/Linux ARM64 kanıtları ve yayın erişimi açık.
+gösterilerek başka başlık kapatılmaz. macOS/Windows/Linux ARM64 kanıtları ve registry release erişimi açık.
