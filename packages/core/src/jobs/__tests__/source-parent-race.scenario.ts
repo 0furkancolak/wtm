@@ -19,28 +19,44 @@ try {
   git('init', '-q');
   git('add', '.');
   git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture');
+  await captureSourceSnapshot(root); // The same source must be readable before the race is armed.
   let swapped = false;
   let openedThroughLink = false;
   let restored = false;
+  let stage = 'before-swap';
+  const failures: { stage: string; code: string }[] = [];
+  const recordFailure = (error: unknown) => {
+    failures.push({ stage, code: (error as NodeJS.ErrnoException).code ?? 'UNKNOWN' });
+  };
   fs.promises.open = (async (...args: Parameters<typeof originalOpen>) => {
     if (!swapped && String(args[0]) === source) {
       swapped = true;
-      fs.renameSync(sourceDir, moved);
-      fs.symlinkSync(moved, sourceDir, 'dir');
       try {
-        const handle = await originalOpen(...args);
-        openedThroughLink = true;
+        stage = 'rename-out'; fs.renameSync(sourceDir, moved);
+        stage = 'create-directory-link'; fs.symlinkSync(moved, sourceDir, 'dir');
+        let handle;
+        try {
+          stage = 'open-through-link';
+          handle = await originalOpen(...args);
+          openedThroughLink = true;
+        } catch (error) { recordFailure(error); throw error; }
+        finally {
+          try {
+            stage = 'unlink-directory-link'; fs.unlinkSync(sourceDir);
+            stage = 'rename-back'; fs.renameSync(moved, sourceDir);
+            restored = true;
+          } catch (error) { await handle?.close(); throw error; }
+        }
         return handle;
-      } finally {
-        fs.unlinkSync(sourceDir);
-        fs.renameSync(moved, sourceDir);
-        restored = true;
-      }
+      } catch (error) { recordFailure(error); throw error; }
     }
     return await originalOpen(...args);
   }) as typeof originalOpen;
   syncBuiltinESMExports();
-  await assert.rejects(captureSourceSnapshot(root), /Source.*(ancestor|parent|changed)/);
+  await assert.rejects(captureSourceSnapshot(root), (error: unknown) => {
+    assert.match(String(error), /Source.*(ancestor|parent|changed)/, JSON.stringify({ stage, swapped, openedThroughLink, restored, failures }));
+    return true;
+  });
   assert.equal(swapped, true);
   assert.equal(openedThroughLink, true);
   assert.equal(restored, true);

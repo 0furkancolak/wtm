@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import {
   chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
@@ -169,6 +170,10 @@ try {
   const afterReadOnly = stateSnapshot();
   const survivedDryRun = existsSync(target);
   const apply = await run(['gc', '--apply', '--json']);
+  for (const [stage, envelope] of Object.entries({ parentDisk, parentGc, nestedDisk, disk, dry, apply })) {
+    assert.equal(envelope.ok, true, `${stage}: ${JSON.stringify(envelope)}`);
+    assert.ok(envelope.data !== null, `${stage}: successful response is missing data`);
+  }
   const finalStore = new SQLiteStateStore(databasePath, { readonly: true });
   const preparedPhases = finalStore.listResourceGcJournal()
     .filter((entry) => entry.operationId.startsWith('prepared'))
