@@ -1394,6 +1394,10 @@ kapanmalı: bugün ulaşılamaz olmasının tek sebebi Linux'un henüz çalışm
 
 `wtm start dev` process doğduğu için başarılı sayılmamalı; kullanıcı isterse servisin hazır olmasını bekleyebilmeli.
 
+**Aşağıdaki CLI/config taslaktır; henüz uygulanmadı.** Mevcut IPC timeout, process identity
+ve disconnect davranışları incelendi. Sonraki küçük HTTP diliminin sözleşmesi ve test kapsamı:
+`docs/development/2026-09-09-readiness-next-slice.md`.
+
 #### CLI
 
 ```bash

@@ -413,3 +413,90 @@ başvurur. İptal/timeout önceliği ve process grubu yokluğu kontrolleri korun
 dosyada 9 test başarılı; bu hata henüz macOS native deadline'ın nedeni olarak kanıtlanmadı.
 Bağımsız review'ın yeni testte bulduğu yanlış `members` alanı `pids: [101]` olarak düzeltildi;
 son hedefli 3 test ve typecheck başarılı.
+
+## Soğuk geliştirme çalıştırıcısının süreç grubu takibi
+
+`4939b93` için [native koşu 34359907270](https://github.com/0furkancolak/wtm/actions/runs/34359907270)
+Linux x64'te 1502 pass / 0 fail / 14 mevcut skip, e2e 2 pass ve binary smoke 9 pass verdi;
+tüm job adımları başarılıydı. macOS ARM64 ve x64 aynı tek hatayı bildirdi: 1505 pass /
+1 fail / 10 mevcut skip. Kuyruk task'ı exit code 0, signal null ve değişmemiş kaynakla
+bitmişti; slot yaklaşık 10.65 saniye sonra TIMED_OUT olarak kapandı. Önceki default HOME
+stop hatası bu koşuda tekrarlanmadı; nedeni kanıtlanmış veya düzeltilmiş sayılmadı.
+Önceki `04b42bb` macOS x64 job'ı workspace-scale aşamasında 30 dakikalık job sınırında
+iptal edildi; bu ayrı asılma sonraki koşuda tekrarlanmadı ve ortam hatası diye kapatılmadı.
+
+İki bağımsız kod incelemesi `tsx` loader'ının soğuk cache'te başlattığı esbuild servisini
+belirledi. Bu ortamda cache kapalı, yalnız gerçek process-anchor modülünü yükleyen ayrık
+Node sürecinin altında esbuild gözlendi; `/proc` PID/PPID/PGID verisi yardımcı sürecin aynı
+grupta olduğunu gösterdi. Bu ölçüm kullanıcının Claude belleğine ait değildir. esbuild
+handle'larının unref edilmesi servisi kapatmaz; anchor'ın grup boşalma timer'ı da parent
+çıkışını bekleyen servisi hayatta tutan döngüyü sürdürür. Deadline'da grup sinyali helper'ı
+kapatınca task 0/null sonucu timeout ile birlikte kaydedilebilir. Native sonucun bu
+mekanizmadan kaynaklandığı yeni koşuyla ayrıca doğrulanmalıdır.
+
+Testkit artık gerçek özel CLI dispatcher'ını yönetilen grup kurulmadan önce küçük bir
+JavaScript bundle'a derler. Node bu bundle üzerinden anchor, adapter ve endpoint modlarını
+çalıştırır; süreç grubunda TypeScript derleyici servisi oluşmaz. Derleme her çağıran süreçte
+bir kez, 30 saniye/SIGKILL ve sınırlı çıktı ile yapılır; geçici çıktı normal parent çıkışında
+silinir. Paketlenmiş production çalıştırıcı ve süreç kimliği/grup yokluğu kuralları değişmez.
+Native kuyruk e2e testi cache'i kapatarak aynı 10 saniyelik task deadline'ını korur.
+
+Üç yeni regression testi gerçek child spawn'larını Node ve loader worker içinde gözler:
+düzeltme öncesi üçü de esbuild'i yakalayıp başarısız oldu; düzeltmeden sonra üçü de geçti.
+İlgili private dispatch/adapter güvenliği/scenario guard grubunda 48 pass / 0 fail alındı;
+lint ve typecheck başarılı. Canlı native kuyruk sonucu bunlardan ayrı izlenir.
+
+## Durdurma sonrasında gelen completion ve native yaşam döngüsü
+
+Sonraki inceleme iki gerçek sonuç kaybını kontrollü olarak yeniden üretti: `stopRecord`
+beklenirken yazılan completion'ın SIGTERM alanı ve `confirmStopped` lifecycle kilidini
+beklerken gelen callback'in SIGKILL alanı eski null/null tuple yüzünden kaybolabiliyordu.
+İlk iki yeni test 3 pass / 2 fail; bağımsız review'ın eklediği confirmation yarışı 1 fail
+verdi. Kuyruk artık grup yokluğu → supervisor confirmation → taze completion/exit okuması
+sırasını kullanır. Task'a ait null alanlar anchor alanlarıyla doldurulmaz; kabul edilmiş
+iptal ve timeout nedenleri terminal transaction'da korunur. Son ilgili üç dosya 17 pass /
+0 fail verdi; review bulguları giderildi.
+
+Dört yeni native senaryo gerçek daemon, SQLite, fingerprint edilen Node task'ı ve onun
+descendant'ıyla iptal, timeout, çalışan işte restart ve daemon kapalıyken tamamlanma yollarını
+izler. Başlatma sayısı, idempotency, kodlanmış sonuç, kalıcı exit/signal, değişmemiş kaynak,
+grup/çocuk yokluğu ve immutable terminal sonuç kontrol edilir. Kaynaklar ancak process
+kimliğiyle doğrulanmış cleanup sonrasında silinir. POSIX'te gerçek SIGTERM completion
+zorunludur; Windows force-stop'ta marker yoksa yalnız gerçekten gözlenen anchor çıkışı
+veya bilinmeyen null/null kullanılır. Windows socket adresi gerçek named pipe'tır. Testler
+atlamaz; 5/8 saniyelik task ve 30 saniyelik dış sınırlar yükseltilmedi. PowerShell başlatma
+maliyetinin bu native Windows senaryolarını etkileyip etkilemediği henüz doğrulanmadı.
+Bu ortamda ilk dört test socket açılışında `listen EPERM` verdi; task davranışına erişemedi.
+Bu kayıt native başarı kanıtı değildir.
+
+## Windows GC politika aktarımı ve yeni hata kanıtı
+
+`04b42bb` Windows koşusu 1199 pass / 105 fail / 199 mevcut skip ile tamamlandı. Önceki
+107 fail sayısının azalması platformu yeşil yapmaz. Yeni completion path güvenlik testleri
+bu koşuda geçti; kaynak parent yarışı ve production GC fixture'ı hâlâ başarısızdı.
+
+GC hatası üretim wiring'ine kadar izlendi: seçilmiş Windows file-trust politikası guard'a
+aktarılmıyor, POSIX `getuid` fallback'i daha descriptor açılmadan RESOURCE_PATH_DENIED
+veriyordu. CLI artık aynı seçilmiş policy instance'ını guard, apply ve journal recovery'ye
+zorunlu input üzerinden taşır. Yalnız yazma izniyle private quarantine okuma/yazma kuralları
+arasındaki mask farkı korunur; ACL kontrolü atlanmaz. Beş yeni test düzeltme öncesi 0 pass /
+5 fail, düzeltme sonrası ilgili GC grubunda 15 pass / 0 fail verdi. Testler gerçek Windows
+policy mantığını sınırlandırılmış fixture ACL okuyucusuyla çalıştırır; native Windows ACL
+kanıtı değildir. Bağımsız review'da açık P1/P2 bulgu kalmadı.
+
+Kaynak parent yarışının gerçek Windows hatası eski generic mesaj yüzünden henüz bilinmiyor.
+Fixture şimdi yarıştan önce baseline snapshot alır; swap/open/restore aşaması ve yalnız
+hata kodunu raporlar. Rejection regex, gerçekten link üzerinden açılma, restore ve kaynak
+byte kontrolleri korunur. GC fixture'ı da null data erişiminden önce tam coded envelope'u
+kontrol eder. Bu tanı değişikliklerinin bağımsız review'ı temiz; source/guard/docs parity
+grubunda 19 pass / 0 fail alındı. Tanı eklemek native sorunu çözülmüş saymak değildir.
+
+Readiness için `2026-09-09-readiness-next-slice.md` tasarım notu kaydedildi ve TODO 10'daki
+örnekler açıkça uygulanmamış taslak olarak etiketlendi. Çalışan CLI belgelerine readiness
+flag'i eklenmedi; TODO 10 ve madde 45'in RAM/gerçek AI oturumu kriterleri açık kalır.
+
+Son üretim koduyla lint, typecheck ve package:verify başarılı (66 paket dosyası). Bağımsız
+native test review'ında PID işaretinin başlangıç logundan önce görünmesi yarışı bulundu;
+işaret artık stdout yazma callback'inde yayımlanır. İptal/timeout süreleri ve log assertion'ları
+değişmedi. Yeni native koşu tamamlanana kadar yukarıdaki macOS/Windows doğrulama sınırları
+geçerlidir; eski başarılı Linux koşusu son değişikliklere otomatik aktarılmaz.
