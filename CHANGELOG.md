@@ -26,6 +26,21 @@ binaries are Developer ID signed and notarized.
 
 ### Added
 
+- Persistent FIFO heavy-task queue on the existing daemon and SQLite state. `wtm run <task>
+  --enqueue` returns a durable job ID; `wtm jobs list/status/logs/result/cancel` manages it.
+  Tasks opt in with `queue = true` and a finite timeout. Daemon global
+  `[jobs].max_concurrent_heavy` defaults to one across repositories in the same host/user/state
+  scope; this is concurrency admission, not a hard RAM limit. Foreground `run` and background
+  `start` retain their existing roles.
+- Atomic queue claims, idempotency keys, repository lease exclusion, bounded logs/history,
+  durable completion evidence and conservative restart reconciliation. Unconfirmed process
+  cleanup holds its slot. Source/config fingerprints prevent stale results being reported as
+  current validation; ignored/external inputs and filesystem snapshot races remain outside
+  that evidence. Agent Skill documents submit/continue/verify and bounded status checks.
+- State migration 012 binds future recovery to a private digest of the host and user identity.
+  First upgrade adopts legacy state under the existing host-local assumption; legacy host
+  provenance cannot be reconstructed. Native queue/process verification remains required;
+  the current development container refuses Unix socket listeners.
 - Separate ignored-file counts, paths, and classification in worktree analysis, with
   `GIT_IGNORED_CONTENT` (exit 3). Consumers aggregating local-only content must now read both
   `untracked` and `ignored`. Runtime cleanup continues to defer only fully reclaimable content

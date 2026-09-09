@@ -651,39 +651,48 @@ tüketimi gözleniyor. Araştırılacak çözüm, eşzamanlı build/test/typeche
 skill ağır komutları WTM'ye göndermeli; WTM bunları ortak bir kuyruğa alırken AI bağımsız
 işlerine devam edebilmeli. Belleğin ne kadarının bu alt süreçlerden geldiği henüz ölçülmedi.
 
-**Durum: planlandı, henüz uygulanmadı.** Aşağıdaki komut ve config isimleri taslaktır.
-Mevcut `wtm run` foreground çalışır ve komutun bitmesini bekler. `wtm start` background
-process yönetir; ikisinde de oturumlar arasında ortak ağır iş kuyruğu veya RAM kotası yok.
+**Durum: sabit eşzamanlılık dilimi uygulandı; native uçtan uca kanıt ve RAM dilimi açık.**
+Migration 012, daemon scheduler, CLI/IPC ve skill birlikte eklendi. `wtm run` foreground
+davranışı korundu; `--enqueue` kalıcı kabulden sonra döner. `wtm start` servisleri bu slotu
+kullanmaz. Bu bir RAM kotası değildir. Ayrıntılar ve doğrulama sınırları:
+`docs/development/2026-09-09-todo-analysis.md`; tekrarlanabilir gerçek makine ölçümü:
+`docs/development/2026-09-09-heavy-job-memory-measurement.md`.
 
 #### Kapsam ve ilk dilim
 
 - [ ] Önce temsili iki oturumda süreç ağacını ölç; Claude'un kendi belleği, ağır komutlar ve
       uzun ömürlü servislerin payını ayır. Kuyruğun hedeflediği yükü bu başlangıç ölçümüyle doğrula.
-- [ ] Aynı host ve işletim sistemi kullanıcısının WTM oturumları, repository/worktree'den
+- [x] Aynı host ve işletim sistemi kullanıcısının WTM oturumları, repository/worktree'den
       bağımsız ortak ağır iş kotasını paylaşsın. Paylaşılan `HOME` farklı host'ların RAM
       bütçelerini birleştirmesin. Ayrı state diziniyle kota aşmanın kapsamı açıkça belgelensin.
-- [ ] İlk dilimde ayarlanabilir `max_concurrent_heavy = 1` ile ağır işleri sırala.
+- [x] İlk dilimde ayarlanabilir `max_concurrent_heavy = 1` ile ağır işleri sırala.
       Hafif okuma/inceleme işleri bu kuyruğa girmek zorunda olmasın. İlk destek config'te
       tanımlı, sonlanan task'lar için olsun; mevcut foreground `wtm run` davranışı korunsun.
-- [ ] CLI, iş kalıcı olarak kabul edilince `jobId` ve `QUEUED` durumu döndürüp hemen çıksın.
+- [x] CLI, iş kalıcı olarak kabul edilince `jobId` ve ilk kabulde `QUEUED` durumu döndürüp çıksın.
       Kabul yanıtı işin başarılı olduğu anlamına gelmesin; CLI kapansa da daemon işi yönetsin.
-- [ ] Mevcut daemon ve SQLite state üzerinde kalıcı FIFO kuyruk kur. İş alma ve slot ayırma
+      Aynı anahtarla tekrar sorgu mevcut durumu döndürür; kabul öncesi sınırlı kaynak kontrolü yapılır.
+- [x] Mevcut daemon ve SQLite state üzerinde kalıcı FIFO kuyruk kur. İş alma ve slot ayırma
       atomik olsun; birden fazla CLI aynı işi veya aynı slotu eşzamanlı çalıştıramasın.
       Ek kuyruk servisi gerektirmesin; kuyruk boyutu, log ve sonuç saklama süresi sınırlı olsun.
-- [ ] İş kimliği, repository/worktree, çözümlenen komut, başlama/bitiş zamanı, exit code,
-      iptal nedeni ve log referansları sorgulanabilsin. JSON sözleşmesi sürümlensin;
+- [x] İş kimliği, repository/worktree, komut fingerprint'i, başlama/bitiş zamanı, exit code,
+      signal, iptal nedeni ve `jobId` üzerinden log sorgusu sunulsun. JSON zarfı sürüm 1;
       config/env içindeki sırlar durum çıktısına veya metadata'ya açık olarak taşınmasın.
-- [ ] Tekrar gönderim için açık idempotency anahtarı destekle. Aynı task adına ait farklı
+      Karar: çözümlenen argv/env sır içerebilir; yalnızca fingerprint saklanır. Task logları sır içerebilir.
+- [x] Tekrar gönderim için açık idempotency anahtarı destekle. Aynı task adına ait farklı
       talepleri kendiliğinden birleştirme. Durumlar `QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`,
       `CANCELLED`, `TIMED_OUT`, `INTERRUPTED` olarak açıkça ayrışsın.
 - [ ] İptal/timeout bütün süreç ağacını mevcut process identity kontrolleriyle sonlandırsın;
       slot ancak süreçlerin durduğu doğrulanınca serbest kalsın. Daemon yeniden başladığında
       kimliği doğrulanmış çalışan işi uzlaştırsın; sonucu belirsiz işi otomatik tekrar çalıştırmasın.
-- [ ] Kuyruktaki iş ile `remove`/cleanup yarışı mevcut lease ve runtime güvenlik zincirine
+- [x] Kuyruktaki iş ile `remove`/cleanup yarışı mevcut lease ve runtime güvenlik zincirine
       bağlansın. Silinen/değişen worktree'ye iş başlatılmasın; pending ve running işler
       removal sırasında açıkça ele alınsın. Aynı worktree'de çakışan işler eşzamanlı başlamasın.
 
-#### Taslak CLI ve agent skill akışı
+İptal/timeout/restart kodu ve kontrollü senaryolar mevcut; yukarıdaki süreç ağacı kriteri
+normal PID/proc görünürlüğüne sahip native runner kanıtı alınmadan kapatılmadı. İlk eski-state
+geçişi mevcut host-local varsayımını devralır; legacy kayıtların host kimliği geriye dönük kanıtlanamaz.
+
+#### Uygulanan CLI ve agent skill akışı
 
 ```bash
 wtm run typecheck --enqueue --json
@@ -694,17 +703,20 @@ wtm jobs result <job-id> --json
 wtm jobs cancel <job-id>
 ```
 
-- [ ] Skill: ağır işi gönder → `jobId` sakla → bağımsız işe devam et → gerektiğinde durum/log/
+- [x] Skill: ağır işi gönder → `jobId` sakla → bağımsız işe devam et → gerektiğinde durum/log/
       sonuç sorgula. Sık polling yapma; gerçekten bağımlı adımda sınırlı bekleme politikası kullan.
       Son durum ve exit code okunmadan test/build başarılı deme veya buna dayanarak commit yapma.
-- [ ] Sonucun hangi kaynak durumuna ait olduğunu takip et. İlk dilimde agent, queued/running
+- [x] Sonucun hangi kaynak durumuna ait olduğunu takip et. İlk dilimde agent, queued/running
       işin okuduğu worktree dosyalarını değiştirmesin; kod okuyabilir, planlayabilir veya başka
       worktree'de çalışabilir. Başka oturumun dosya değişiklikleri sonucu geçersiz kılabilsin;
       yalnızca HEAD eşitliğini doğrulama kanıtı sayma, commit edilmemiş değişiklikleri de ele al.
-- [ ] Kullanıcının Claude/Codex oturumlarında mevcut WTM skill'ini bu akışla genişlet.
+- [x] Dağıtılan WTM skill'ini Claude/Codex için bu akışla genişlet.
       Skill yalnızca WTM üzerinden gönderilen işleri sıraya sokar; doğrudan çalıştırılan bütün
       komutları zorla yakaladığı veya AI'ı kendiliğinden yeniden uyandırdığı iddia edilmesin.
       Otomatik bildirim/hook entegrasyonu ayrı, desteklenen agent yeteneklerine bağlı bir dilim olsun.
+      Kullanıcının gerçek oturumlarına kurulum ve iki agent ile deneme henüz doğrulanmadı.
+      Kaynak kanıtı tracked/untracked içerik, index/HEAD ve metadata ile sınırlı; ignored/external
+      girdileri veya atomik filesystem snapshot'ını kapsamaz, geçici oluştur/sil değişikliği kaçabilir.
 
 #### RAM farkındalığı: ikinci dilim
 
@@ -726,8 +738,10 @@ wtm jobs cancel <job-id>
 
 - [ ] İki AI oturumu farklı repolardan aynı anda ağır iş gönderdiğinde, limit 1 ise en fazla
       bir ağır iş çalışır; diğer iş kuyrukta kalır, her iki gönderim de beklemeden `jobId` döndürür.
-- [ ] FIFO sırası, eşzamanlı gönderim, idempotent tekrar, dolu kuyruk ve daemon restart testli.
+- [x] FIFO sırası, eşzamanlı gönderim, idempotent tekrar, dolu kuyruk ve daemon restart testli.
       Yeniden başlatma veya kimlik belirsizliği aynı komutu ikinci kez başlatmaz.
+      SQLite eşzamanlılığı gerçek Node süreçlerinde; restart/scheduler kontrollü supervisor ile
+      doğrulandı. Gerçek daemon/CLI/süreç ağacı senaryosu eklendi, native kanıtı açık.
 - [ ] Başarısız işin exit code'u ve log'u korunur; iptal, timeout ve süreç ağacı cleanup'ı
       slot sızdırmaz. Kuyrukta bekleyen iş worktree silme güvenliğini aşamaz.
 - [ ] İşin kaynakları değiştiğinde eski sonuç güncel doğrulama gibi sunulmaz. Skill'in

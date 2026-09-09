@@ -6,7 +6,7 @@ Architecture: the existing per-user daemon dispatches a persistent SQLite FIFO. 
 
 ## Boundaries and decisions
 
-- Continue the clean `codex/todo-safety-docs-parity` checkout at `7962428`; `816fb11` is present. No push, PR, merge or release.
+- Continue the clean `codex/todo-safety-docs-parity` checkout at `7962428`; `816fb11` is present. The follow-up request authorizes committing and pushing this development branch. PR, merge and release remain outside this task.
 - Engine agent owns state, migration 012 and daemon. CLI agent owns Commander integration, CLI tests and usage docs/skill. Root owns shared protocol/config, source evidence, coordination, verification and commits. At most two subagents run; heavy checks are root-only and sequential.
 - Tasks explicitly opt in with `queue = true`, cannot have `background = true`, and require a finite positive timeout of at most 24 hours. This makes accidental dev-server slot exhaustion bounded.
 - Only daemon global config sets `[jobs].max_concurrent_heavy` (default 1, range 1–64); repository config cannot enlarge the shared limit. Queue scope is local host identity and OS user within one state database; separate state directories are independent, not an OS-enforced quota.
@@ -18,13 +18,13 @@ Architecture: the existing per-user daemon dispatches a persistent SQLite FIFO. 
 
 ## Execution
 
-- [ ] Record baseline tests and inspect fresh native process identity failures.
-- [ ] Root: failing shared schema/config/source-evidence tests, then implement those contracts.
-- [ ] Engine: failing real SQLite FIFO/idempotency/slot/removal tests and scheduler lifecycle tests; implement state + daemon on existing supervisor.
-- [ ] CLI: failing enqueue/query/result/JSON/docs-parity tests; implement thin CLI and agent workflow.
-- [ ] Review each other's implementation independently; root coordinates fixes and integration.
-- [ ] Run targeted tests, then lint, typecheck, full tests, e2e, perf and package verification sequentially; diagnose failures without weakening safety.
-- [ ] Update analysis/TODO only for demonstrated criteria, document measurement recipe and missing platform evidence, commit small local slices using configured Git identity.
+- [x] Record baseline tests and inspect fresh native process identity failures.
+- [x] Root: failing shared schema/config/source-evidence tests, then implement those contracts.
+- [x] Engine: failing real SQLite FIFO/idempotency/slot/removal tests and scheduler lifecycle tests; implement state + daemon on existing supervisor.
+- [x] CLI: failing enqueue/query/result/JSON/docs-parity tests; implement thin CLI and agent workflow.
+- [x] Review each other's implementation independently; root coordinates fixes and integration.
+- [x] Run targeted tests, then lint, typecheck, full tests, e2e, perf and package verification sequentially; diagnose failures without weakening safety. Full/native gates remain unsuccessful as recorded in the analysis; running them is not a passing release gate.
+- [x] Update analysis/TODO only for demonstrated criteria, document measurement recipe and missing platform evidence, commit small local slices using configured Git identity.
 
 ## Measurement boundary
 
