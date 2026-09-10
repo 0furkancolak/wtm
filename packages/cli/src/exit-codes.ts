@@ -55,6 +55,7 @@ export function exitCodeForError(code: WtmErrorCode): number {
     || code === 'GIT_DIRTY_STAGED'
     || code === 'GIT_DIRTY_UNSTAGED'
     || code === 'GIT_UNTRACKED'
+    || code === 'GIT_UNTRACKED_SYMLINKS'
     || code === 'GIT_IGNORED_CONTENT'
     || code === 'GIT_UNMERGED'
     || code === 'GIT_HEAD_NOT_REMOTE_PERSISTED'

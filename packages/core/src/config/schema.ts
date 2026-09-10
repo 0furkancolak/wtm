@@ -148,6 +148,7 @@ export const wtmConfigSchema = z.object({
     }).strict().optional(),
   }).strict().optional(),
   git: gitSchema.optional(),
+  safety: z.object({ untracked_symlinks: z.enum(['ignore', 'review', 'block']).optional() }).strict().optional(),
   version: z.literal(1).optional(),
   workspace: z.object({ name: z.string().min(1).optional() }).strict().optional(),
   discovery: z.object({

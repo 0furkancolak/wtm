@@ -16,6 +16,8 @@ export interface WorktreeContext {
   worktreePath: string;
   baseRef?: string;
   allowedRemoteRefs?: readonly string[];
+  /** Untracked link handling only; ignored links retain their existing exclusion. */
+  untrackedSymlinks?: 'ignore' | 'review' | 'block';
   /**
    * What the caller already did about remote freshness, not an instruction to do anything.
    * {@link analyzeWorktree} never fetches; a caller that wants fresh remote-tracking refs runs
@@ -125,6 +127,10 @@ export class WorktreeAnalysisError extends Error {
 }
 
 export async function analyzeWorktree(ctx: WorktreeContext): Promise<WorktreeAnalysis> {
+  const untrackedSymlinkPolicy = ctx.untrackedSymlinks === undefined ? 'ignore' : ctx.untrackedSymlinks;
+  if (!['ignore', 'review', 'block'].includes(untrackedSymlinkPolicy)) {
+    throw new WorktreeAnalysisError('Untracked symlink policy is invalid.', { policy: untrackedSymlinkPolicy });
+  }
   const topology = await listGitWorktrees(ctx.repoPath);
   const selectedIndex = await findSelectedWorktreeIndex(topology, ctx.worktreePath);
   const selected = topology[selectedIndex];
@@ -145,7 +151,9 @@ export async function analyzeWorktree(ctx: WorktreeContext): Promise<WorktreeAna
     throw new WorktreeAnalysisError('Git returned an invalid HEAD object ID.', { worktreePath });
   }
 
-  const workingTree = pathExists ? await readWorkingTree(worktreePath) : unavailableWorkingTree();
+  const { workingTree, untrackedSymlinks } = pathExists
+    ? await readWorkingTree(worktreePath)
+    : { workingTree: unavailableWorkingTree(), untrackedSymlinks: [] };
   const upstream = await readUpstream(analysisPath, selected.branch, headOid);
   const remotePersistence = await analyzeRemotePersistence(
     analysisPath,
@@ -168,7 +176,10 @@ export async function analyzeWorktree(ctx: WorktreeContext): Promise<WorktreeAna
     pathExists,
     baseRef,
   };
-  const safety = buildSafety(identity, workingTree, upstream, remotePersistence, base, selected.head);
+  const safety = buildSafety(
+    identity, workingTree, upstream, remotePersistence, base, selected.head,
+    { policy: untrackedSymlinkPolicy, paths: untrackedSymlinks },
+  );
 
   return {
     identity,
@@ -198,7 +209,12 @@ function describeRemoteKnowledge(refresh: RemoteRefreshRecord | undefined): Remo
   };
 }
 
-async function readWorkingTree(worktreePath: string): Promise<WorkingTreeAnalysis> {
+interface InspectedWorkingTree {
+  workingTree: WorkingTreeAnalysis;
+  untrackedSymlinks: string[];
+}
+
+async function readWorkingTree(worktreePath: string): Promise<InspectedWorkingTree> {
   const result = await runGit(worktreePath, [
     'status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignored=matching',
   ]);
@@ -215,26 +231,35 @@ async function readWorkingTree(worktreePath: string): Promise<WorkingTreeAnalysi
  *
  * Without this, WTM blocked itself: a `[resources]` table that links a worktree's `.env` at
  * the main working tree's meant that any worktree a task had ever run in could never be removed.
+ * Untracked links are retained separately for the configured advisory/blocking policy; they
+ * never become ordinary content or change how ignored files and links are classified.
  */
 async function withoutSymbolicLinks(
   worktreePath: string,
   analysis: WorkingTreeAnalysis,
-): Promise<WorkingTreeAnalysis> {
+): Promise<InspectedWorkingTree> {
   const paths = { ...analysis.paths };
+  const untrackedSymlinks: string[] = [];
   for (const group of ['untracked', 'ignored'] as const) {
-    const kept = await Promise.all(paths[group].map(async (path) => {
+    const inspected = await Promise.all(paths[group].map(async (path) => {
       try {
-        return (await lstat(resolve(worktreePath, path))).isSymbolicLink() ? null : path;
+        return { path, symlink: (await lstat(resolve(worktreePath, path))).isSymbolicLink() };
       } catch (error) {
         // Only disappearance proves there is no content to lose. Other errors must fail closed.
         if (isNodeError(error) && error.code === 'ENOENT') return null;
         throw error;
       }
     }));
-    paths[group] = kept.filter((path): path is string => path !== null);
+    const kept: string[] = [];
+    for (const entry of inspected) {
+      if (entry === null) continue;
+      if (!entry.symlink) kept.push(entry.path);
+      else if (group === 'untracked') untrackedSymlinks.push(entry.path);
+    }
+    paths[group] = kept;
   }
   const counts = { ...analysis.counts, untracked: paths.untracked.length, ignored: paths.ignored.length };
-  return { ...analysis, classifications: classifyWorkingTree(counts), counts, paths };
+  return { workingTree: { ...analysis, classifications: classifyWorkingTree(counts), counts, paths }, untrackedSymlinks };
 }
 
 export function parseStatusPorcelainV2(output: Uint8Array): WorkingTreeAnalysis {
@@ -430,6 +455,7 @@ function buildSafety(
   remotePersistence: RemotePersistenceAnalysis,
   base: BaseAnalysis,
   topologyHead: string | null,
+  symlinks: { policy: 'ignore' | 'review' | 'block'; paths: readonly string[] },
 ): WorktreeSafety {
   const blockers: WtmError[] = [];
   const warnings: WtmError[] = [];
@@ -504,6 +530,15 @@ function buildSafety(
       'The worktree contains ignored files or directories.',
       pathContext(worktreeContext, workingTree.paths.ignored),
     ));
+  }
+  if (symlinks.paths.length > 0 && symlinks.policy !== 'ignore') {
+    const issue = gitError(
+      'GIT_UNTRACKED_SYMLINKS',
+      'The worktree contains untracked symbolic links.',
+      { ...pathContext(worktreeContext, symlinks.paths), policy: symlinks.policy },
+    );
+    if (symlinks.policy === 'review') warnings.push({ ...issue, severity: 'warning' });
+    else blockers.push(issue);
   }
   if (!remotePersistence.persisted) {
     blockers.push({
