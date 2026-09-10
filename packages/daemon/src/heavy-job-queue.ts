@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import {
-  captureSourceSnapshot, HeavyJobError,
-  type HeavyJobRecord, type HeavyJobStore, type ManagedProcessRecord, type SourceSnapshot,
+  captureSourceSnapshot, HeavyJobError, memoryEstimateError,
+  type HeavyJobRecord, type HeavyJobStore, type ManagedProcessRecord, type SourceSnapshot, type JobMemoryAdmission,
 } from '@wtm/core';
 import { jobArgumentSchemas, jobCommandNames, type EnqueueAcceptance, type IpcRequest, type JobWaitingReason, type JsonEnvelope, type SourceValidity, type WtmErrorCode } from '@wtm/protocol';
 import type { ManagedProcessCompletion } from './logs';
 import type { ManagedProcessStartInput, ManagedProcessStartResult, ProcessGroupInspection } from './process-supervisor';
+import { readHostJobMemory, sanitizeHostJobMemory, type HostJobMemory } from './job-memory';
 
 export interface ResolvedHeavyJob {
   workspaceId: string;
@@ -14,6 +15,7 @@ export interface ResolvedHeavyJob {
   worktreePath: string;
   taskName: string;
   timeoutMs: number;
+  memoryEstimateBytes?: number | null;
   argv: readonly string[];
   cwd: string;
   shell: boolean;
@@ -40,6 +42,8 @@ export interface HeavyJobQueueOptions {
   resolveTask(cwd: string, taskName: string): Promise<ResolvedHeavyJob>;
   inspectGroup(pgid: number): Promise<ProcessGroupInspection>;
   maxConcurrent?: number;
+  memory?: { budgetBytes: number; reserveBytes: number };
+  readMemory?: () => HostJobMemory;
   snapshot?: (root: string) => Promise<SourceSnapshot>;
   logs?: QueueLogs;
   now?: () => Date;
@@ -67,6 +71,10 @@ export class HeavyJobQueue {
     this.#snapshot = options.snapshot ?? captureSourceSnapshot;
     this.#now = options.now ?? (() => new Date());
     if (!Number.isSafeInteger(options.maxConcurrent ?? 1) || (options.maxConcurrent ?? 1) < 1) throw new TypeError('Invalid heavy-job concurrency');
+    if (options.memory !== undefined && (!Number.isSafeInteger(options.memory.budgetBytes)
+      || options.memory.budgetBytes < 1 || options.memory.budgetBytes > 1_099_511_627_776
+      || !Number.isSafeInteger(options.memory.reserveBytes) || options.memory.reserveBytes < 0
+      || options.memory.reserveBytes > 1_099_511_627_776)) throw new TypeError('Invalid heavy-job memory policy');
   }
 
   async start(): Promise<void> {
@@ -95,13 +103,18 @@ export class HeavyJobQueue {
 
   async #enqueue(cwd: string, taskName: string, idempotencyKey: string): Promise<EnqueueAcceptance> {
     const task = await this.#options.resolveTask(cwd, taskName);
+    const memory = this.#memory();
+    const memoryError = memory === undefined ? null : memoryEstimateError(task.memoryEstimateBytes, memory);
+    if (memoryError !== null) throw new HeavyJobError(memoryError,
+      memoryError === 'WTM_JOB_MEMORY_ESTIMATE_REQUIRED' ? 'Memory admission requires a positive task memory estimate.' : 'Task memory estimate cannot fit the configured or host memory budget.',
+      { taskName, memoryEstimateBytes: task.memoryEstimateBytes ?? null, budgetBytes: memory!.budgetBytes, reserveBytes: memory!.reserveBytes, totalBytes: memory!.totalBytes });
     const source = await this.#snapshot(task.worktreePath);
     await this.#prune();
     const { job, reused } = this.#options.store.enqueue({
       scope: this.#options.scope, workspaceId: task.workspaceId, repositoryId: task.repositoryId,
       worktreeId: task.worktreeId, worktreePath: task.worktreePath, taskName,
       commandFingerprint: commandFingerprint(task), sourceFingerprint: source.fingerprint,
-      timeoutMs: task.timeoutMs, idempotencyKey, now: this.#now().toISOString(),
+      timeoutMs: task.timeoutMs, memoryEstimateBytes: task.memoryEstimateBytes ?? null, idempotencyKey, now: this.#now().toISOString(),
     });
     // Never await dispatch here: the acknowledgement means only that SQLite committed the job.
     this.#schedule(0);
@@ -139,7 +152,7 @@ export class HeavyJobQueue {
       }
       if (!this.#closed) {
         for (let count = 0; count < (this.#options.maxConcurrent ?? 1); count += 1) {
-          const job = this.#options.store.claim(this.#options.scope, this.#options.maxConcurrent ?? 1, this.#now().toISOString());
+          const job = this.#options.store.claim(this.#options.scope, this.#options.maxConcurrent ?? 1, this.#now().toISOString(), this.#memory());
           if (job === null) break;
           await this.#launch(job);
         }
@@ -160,7 +173,8 @@ export class HeavyJobQueue {
       if (command === 'jobs.enqueue') return success(command, await this.enqueue(args.cwd!, args.taskName!, args.idempotencyKey!));
       if (command === 'jobs.list') {
         const records = this.#options.store.list(this.#options.scope, args.limit);
-        const waiting = this.#options.store.waitingReasons(this.#options.scope, this.#options.maxConcurrent ?? 1);
+        const memory = this.#memory();
+        const waiting = this.#options.store.waitingReasons(this.#options.scope, this.#options.maxConcurrent ?? 1, memory);
         const jobs: ReturnType<typeof publicJob>[] = [];
         let bytes = 0;
         for (const record of records) {
@@ -169,10 +183,10 @@ export class HeavyJobQueue {
           if (bytes > 128 * 1024) break;
           jobs.push(job);
         }
-        return success(command, { jobs, truncated: jobs.length < records.length });
+        return success(command, { jobs, truncated: jobs.length < records.length, memory: memory ?? null });
       }
       const job = this.get(args.jobId!);
-      if (command === 'jobs.cancel') return success(command, { job: publicJob(await this.cancel(job.jobId)) });
+      if (command === 'jobs.cancel') return success(command, { job: publicJob(await this.cancel(job.jobId)), memory: this.#memory() ?? null });
       if (command === 'jobs.logs') {
         const record = this.#process(job);
         const bound = 32 * 1024;
@@ -180,16 +194,17 @@ export class HeavyJobQueue {
         const stderr = record === null || this.#options.logs === undefined ? '' : await this.#options.logs.read(record.stderrPath, bound);
         return success(command, { jobId: job.jobId, stdout: tailLines(stdout, args.tail ?? 100), stderr: tailLines(stderr, args.tail ?? 100), truncated: Buffer.byteLength(stdout) >= bound || Buffer.byteLength(stderr) >= bound });
       }
-      const waiting = this.#options.store.waitingReasons(this.#options.scope, this.#options.maxConcurrent ?? 1);
+      const memory = this.#memory();
+      const waiting = this.#options.store.waitingReasons(this.#options.scope, this.#options.maxConcurrent ?? 1, memory);
       const sourceValidity = await this.#sourceValidity(job);
       const current = { ...publicJob(job, waiting), sourceValidity };
-      if (command === 'jobs.status') return success(command, { job: current });
+      if (command === 'jobs.status') return success(command, { job: current, memory: memory ?? null });
       const terminal = job.state !== 'QUEUED' && job.state !== 'RUNNING' && !job.slotHeld;
       // Old daemons could finalize a stale success after accepting a stop request. Preserve
       // that immutable history, but never expose it as successful validation to an agent.
       const successful = terminal && job.state === 'SUCCEEDED' && job.stopReason === null
         && job.exitCode === 0 && job.signal === null && sourceValidity === 'UNCHANGED';
-      const data = { job: current, terminal, successful, sourceValidity };
+      const data = { job: current, terminal, successful, sourceValidity, memory: memory ?? null };
       if (!terminal) return failure(command, 'WTM_JOB_NOT_COMPLETE', 'Job has not completed; acceptance is not a successful result.', data);
       if (sourceValidity !== 'UNCHANGED') return failure(command, 'WTM_JOB_SOURCE_CHANGED', 'Job result does not verify the current source state.', data);
       if (!successful) return failure(command, 'WTM_JOB_UNSUCCESSFUL', 'Job did not complete successfully.', data);
@@ -210,6 +225,14 @@ export class HeavyJobQueue {
   #process(job: HeavyJobRecord): ManagedProcessRecord | null {
     return this.#options.supervisor.list(job.worktreeId).find((record) => record.id === job.processId
       || job.processId === null && record.taskName === `job-${job.jobId}`) ?? null;
+  }
+
+  #memory(): JobMemoryAdmission | undefined {
+    if (this.#options.memory === undefined) return undefined;
+    let sample: HostJobMemory;
+    try { sample = sanitizeHostJobMemory((this.#options.readMemory ?? readHostJobMemory)()); }
+    catch { sample = { availableBytes: null, totalBytes: null }; }
+    return { ...this.#options.memory, ...sample };
   }
 
   async #launch(job: HeavyJobRecord): Promise<void> {
@@ -365,7 +388,10 @@ export class HeavyJobQueue {
 
 function commandFingerprint(task: ResolvedHeavyJob): string {
   const env = Object.entries(task.env).filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b));
-  return createHash('sha256').update(JSON.stringify([task.argv, task.cwd, task.shell, env, task.timeoutMs])).digest('hex');
+  const inputs: unknown[] = [task.argv, task.cwd, task.shell, env, task.timeoutMs];
+  // Preserve legacy fingerprints when memory admission was not configured.
+  if (task.memoryEstimateBytes != null) inputs.push({ memoryEstimateBytes: task.memoryEstimateBytes });
+  return createHash('sha256').update(JSON.stringify(inputs)).digest('hex');
 }
 
 function publicJob(job: HeavyJobRecord, waiting?: ReadonlyMap<string, JobWaitingReason>) {
@@ -374,6 +400,7 @@ function publicJob(job: HeavyJobRecord, waiting?: ReadonlyMap<string, JobWaiting
     repositoryId: job.repositoryId, worktreeId: job.worktreeId, worktreePath: job.worktreePath,
     slotHeld: job.slotHeld, processId: job.processId, createdAt: job.createdAt, startedAt: job.startedAt,
     finishedAt: job.finishedAt, timeoutMs: job.timeoutMs, exitCode: job.exitCode, signal: job.signal,
+    memoryEstimateBytes: job.memoryEstimateBytes,
     error: job.error, stopReason: job.stopReason, sourceValidity: job.sourceValidity,
     waitingReason: job.state === 'QUEUED' ? waiting?.get(job.jobId) ?? 'dispatch_pending' : null,
     sourceFingerprint: job.sourceFingerprint,

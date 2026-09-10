@@ -5,6 +5,7 @@ import { access } from 'node:fs/promises';
 import { constants, homedir, hostname } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
+import { readinessDurationMs } from '@wtm/protocol';
 import { exitCodeForError } from './exit-codes';
 import {
   DaemonSocketPathTooLongError,
@@ -57,6 +58,7 @@ import {
 } from './diagnostics';
 import { renderEnvelope } from './output';
 import { runCreateCommand } from './commands/create';
+import { measureCleanupCandidates } from './commands/cleanup-estimates';
 import { runStartCommand } from './commands/start';
 import { runStopCommand } from './commands/stop';
 import { runRestartCommand } from './commands/restart';
@@ -319,9 +321,10 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   const humanNotice: CommandNotifier = (message) => stdout(`${message}\n`);
 
   const start = program.command('start <task>').description('Start a managed background task.');
+  addReadinessOptions(start);
   addJsonOption(start);
-  start.action(async (taskName: string, options: ScopeOptions) => {
-    renderRuntime(await runStartCommand({ cwd, taskName }, dependencies.runtimeClient), runtimeJson(program, options));
+  start.action(async (taskName: string, options: ScopeOptions & ReadinessOptions) => {
+    renderRuntime(await runStartCommand({ cwd, taskName, ...readinessArguments(options) }, dependencies.runtimeClient, dependencies.signal), runtimeJson(program, options));
   });
 
   const stop = program.command('stop [task]').description('Stop one or all managed tasks.');
@@ -331,9 +334,10 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   });
 
   const restart = program.command('restart <task>').description('Safely stop and restart a managed task.');
+  addReadinessOptions(restart);
   addJsonOption(restart);
-  restart.action(async (taskName: string, options: ScopeOptions) => {
-    renderRuntime(await runRestartCommand({ cwd, taskName }, dependencies.runtimeClient), runtimeJson(program, options));
+  restart.action(async (taskName: string, options: ScopeOptions & ReadinessOptions) => {
+    renderRuntime(await runRestartCommand({ cwd, taskName, ...readinessArguments(options) }, dependencies.runtimeClient, dependencies.signal), runtimeJson(program, options));
   });
 
   const ps = program.command('ps').description('List WTM-managed process groups.');
@@ -652,6 +656,22 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
  */
 const hiddenCompletionDataCommand = '__complete';
 
+interface ReadinessOptions { wait?: boolean; timeout?: number }
+
+function addReadinessOptions(command: Command): void {
+  command.option('--wait', 'wait for the configured task healthcheck');
+  command.option('--timeout <duration>', 'readiness deadline, from 1ms to 5m (requires --wait)', (value) => {
+    const duration = readinessDurationMs(value);
+    if (duration === null) throw new InvalidArgumentError('readiness timeout must be 1ms to 5m');
+    return duration;
+  });
+}
+
+function readinessArguments(options: ReadinessOptions): { wait?: true; waitTimeoutMs?: number } {
+  if (options.timeout !== undefined && options.wait !== true) throw new InvalidArgumentError('--timeout requires --wait');
+  return options.wait === true ? { wait: true, ...(options.timeout === undefined ? {} : { waitTimeoutMs: options.timeout }) } : {};
+}
+
 function defaultPortableSkillInstaller(fallbackWorkspaceRoot: string): SkillInstaller {
   return {
     install(request) {
@@ -834,7 +854,7 @@ async function runProductionAnalyze(input: {
   // `envelope.data` that `--json` serializes, so sorting here is what makes human and JSON output
   // structurally incapable of disagreeing about which candidate comes first.
   const analyses = input.cleanupCandidates
-    ? await rankCleanupCandidateAnalyses(analysed, cleanupState)
+    ? await rankCleanupCandidateAnalyses(analysed, cleanupState, input.globalConfigPath)
     : analysed.map(({ analysis }) => analysis);
   const errors = envelopes.flatMap(({ errors }) => errors);
   const common = {
@@ -1096,20 +1116,37 @@ function lastWtmActivity(record: WorktreeRecord, processes: readonly ManagedProc
 async function rankCleanupCandidateAnalyses(
   candidates: ReadonlyArray<{ repoPath: string; analysis: WorktreeAnalysis }>,
   state: ReadonlyMap<string, CleanupCandidateState>,
+  globalConfigPath: string,
 ): Promise<unknown[]> {
+  const measurements = await measureCleanupCandidates(candidates.map(({ repoPath, analysis }) => ({
+    path: analysis.identity.path,
+    loadConfig: async () => {
+      const workspaceRoot = await findWorkspaceRoot(repoPath) ?? repoPath;
+      const config = await resolveWorkspaceConfig({ workspaceRoot, repoRoot: analysis.identity.path, globalConfigPath });
+      return {
+        config: config.value,
+        context: {
+          workspace: { root: workspaceRoot, name: config.value.workspace?.name ?? basename(workspaceRoot) },
+          repo: { root: repoPath, name: basename(repoPath) }, main: { root: repoPath },
+          worktree: { root: analysis.identity.path }, env: process.env,
+        },
+      };
+    },
+  })));
   const inputs = await Promise.all(candidates.map(async ({ repoPath, analysis }) => {
     // Read the commit through the repository rather than the worktree: a prunable candidate is
     // one whose directory is already gone, and it still has a HEAD worth dating.
     const lastCommitAt = await readGitCommitTimestamp(repoPath, analysis.identity.headOid);
     return {
       analysis,
+      reclaimable: measurements.get(analysis.identity.path),
       ...state.get(resolve(analysis.identity.path)) ?? {},
       ...(lastCommitAt === null ? {} : { lastCommitAt }),
     };
   }));
-  return rankCleanupCandidates(inputs).map(({ analysis, rank, score, reason }) => ({
+  return rankCleanupCandidates(inputs).map(({ analysis, rank, score, reason, reclaimable }) => ({
     ...analysis,
-    cleanup: { rank, score, reason },
+    cleanup: { rank, score, reason, reclaimable },
   }));
 }
 

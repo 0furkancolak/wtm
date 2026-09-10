@@ -38,8 +38,9 @@ describe('persistent job CLI', () => {
   test('refuses unknown or contradictory daemon waiting evidence', async () => {
     for (const action of ['list', 'status']) {
       for (const job of [
-        { jobId: 'job-1', state: 'QUEUED', waitingReason: 'memory_budget' },
+        { jobId: 'job-1', state: 'QUEUED', waitingReason: 'unregistered_reason' },
         { jobId: 'job-1', state: 'SUCCEEDED', waitingReason: 'concurrency' },
+        { jobId: 'job-1', state: 'SUCCEEDED', waitingReason: 'memory_budget' },
       ]) {
         const data = action === 'list' ? { jobs: [job] } : { job };
         const argv = action === 'list' ? ['jobs', action, '--json'] : ['jobs', action, 'job-1', '--json'];
@@ -51,7 +52,7 @@ describe('persistent job CLI', () => {
   });
 
   test('shows queued waiting reasons in JSON and human output without changing result semantics', async () => {
-    for (const waitingReason of ['concurrency', 'worktree_busy', 'fifo', 'dispatch_pending']) {
+    for (const waitingReason of ['concurrency', 'worktree_busy', 'fifo', 'dispatch_pending', 'memory_budget']) {
       const job = { jobId: 'job-1', state: 'QUEUED', waitingReason };
       for (const json of [true, false]) {
         const output = capture();

@@ -1,4 +1,5 @@
 import type { JobState, JobWaitingReason, SourceValidity } from '@wtm/protocol';
+import type { JobMemoryAdmission, JobMemoryErrorCode } from './job-memory';
 
 export interface HeavyJobRecord {
   jobId: string;
@@ -13,6 +14,7 @@ export interface HeavyJobRecord {
   commandFingerprint: string;
   sourceFingerprint: string;
   timeoutMs: number;
+  memoryEstimateBytes: number | null;
   state: JobState;
   slotHeld: boolean;
   processId: string | null;
@@ -38,6 +40,7 @@ export interface HeavyJobEnqueueInput {
   commandFingerprint: string;
   sourceFingerprint: string;
   timeoutMs: number;
+  memoryEstimateBytes?: number | null;
   now: string;
 }
 
@@ -57,8 +60,8 @@ export interface HeavyJobStore {
   list(scope: string, limit?: number): HeavyJobRecord[];
   active(scope: string): HeavyJobRecord[];
   /** Current FIFO/capacity observations for queued jobs only; reading does not dispatch. */
-  waitingReasons(scope: string, maxConcurrent: number): ReadonlyMap<string, JobWaitingReason>;
-  claim(scope: string, maxConcurrent: number, now: string): HeavyJobRecord | null;
+  waitingReasons(scope: string, maxConcurrent: number, memory?: JobMemoryAdmission): ReadonlyMap<string, JobWaitingReason>;
+  claim(scope: string, maxConcurrent: number, now: string, memory?: JobMemoryAdmission): HeavyJobRecord | null;
   bindProcess(jobId: string, processId: string): boolean;
   bindAnchor(jobId: string, pid: number): boolean;
   requestCancellation(jobId: string, scope: string, reason: 'CANCELLED' | 'TIMED_OUT' | 'INTERRUPTED', now: string): HeavyJobRecord;
@@ -80,7 +83,7 @@ export class HeavyJobError extends Error {
   constructor(
     readonly code: 'WTM_JOB_NOT_FOUND' | 'WTM_JOB_QUEUE_FULL' | 'WTM_JOB_IDEMPOTENCY_CONFLICT'
       | 'WTM_JOB_NOT_QUEUEABLE' | 'WTM_JOB_NOT_COMPLETE' | 'WTM_JOB_UNSUCCESSFUL'
-      | 'WTM_JOB_SOURCE_CHANGED' | 'WTM_OPERATION_CONFLICT',
+      | 'WTM_JOB_SOURCE_CHANGED' | 'WTM_OPERATION_CONFLICT' | JobMemoryErrorCode,
     message: string,
     readonly context: Record<string, unknown> = {},
   ) { super(message); this.name = 'HeavyJobError'; }

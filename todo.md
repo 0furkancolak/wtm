@@ -244,6 +244,11 @@ bağlı — ayrı bir `needs: performance` gerekmedi çünkü performance artık
       unsigned executable'a prerelease için tanıdığı muafiyetin aynısı, aynı gerekçeyle: prerelease'in
       kendisi bir düzeltmeyi ölçmenin tek aracı, onu reddetmek düzeltmeyi ölçecek hiçbir şey bırakmaz).
 
+**2026-09-10 düzeltmesi:** Performance report script'indeki yanlış testkit import yolu,
+ölçüme başlamadan ERR_MODULE_NOT_FOUND üretiyordu. Yol düzeltildi; gerçek script girişini,
+JSON dosyasını ve blocker/exit-code eşleşmesini doğrulayan iki test eklendi (ölçümler fixture).
+Native performans bütçesi bu ortamda Unix socket kısıtı nedeniyle hâlâ doğrulanamıyor.
+
 **Çözüldü:** 2026-09-06. `performance.yml` ayrı workflow'u kaldırıldı (kimsenin bakmadığı bir yerde
 koşuyordu); ölçüm `release.yml`'in `verify` job'una taşındı, `dist/release/PERFORMANCE.json` olarak
 diğer kanıtlarla (SIGNING, SMOKE.json) aynı şekilde taşınıp `publish`'te birleştiriliyor,
@@ -656,7 +661,7 @@ skill ağır komutları WTM'ye göndermeli; WTM bunları ortak bir kuyruğa alı
 işlerine devam edebilmeli. Belleğin ne kadarının bu alt süreçlerden geldiği henüz ölçülmedi.
 
 **Durum: sabit eşzamanlılık dilimi uygulandı; Linux ve iki macOS mimarisinde native kanıt alındı.**
-Windows doğrulaması ve RAM dilimi açık. Son completion güvenliği düzeltmesi ayrıca test edildi.
+Windows doğrulaması açık. 2026-09-10 RAM kabulü eklendi; native/gerçek iki AI ölçümü ve bağımsız review açık.
 Migration 012, daemon scheduler, CLI/IPC ve skill birlikte eklendi. `wtm run` foreground
 davranışı korundu; `--enqueue` kalıcı kabulden sonra döner. `wtm start` servisleri bu slotu
 kullanmaz. Bu bir RAM kotası değildir. Ayrıntılar ve doğrulama sınırları:
@@ -727,17 +732,25 @@ wtm jobs cancel <job-id>
 
 #### RAM farkındalığı: ikinci dilim
 
-- [ ] Sabit eşzamanlılık sınırından sonra, task bellek tahmini ve host'un kullanılabilir
+**2026-09-10 uygulaması:** Global `jobs.memory` budget/headroom ve task `memory_estimate_mib`
+ile tahmine dayalı kabul; `queue_env` task worker ayarlarını yalnız queued execution'a uygular.
+Migration 013 tahmini saklar; SQLite transaction tüm held tahminleri aynı claim'de sayar.
+Node available/constrained memory kullanılır, süreç ağacı/RSS taraması eklenmez. İmkânsız veya
+eski tahminsiz queued işler açık hatayla sonlanır; held işler cleanup kanıtına kadar rezervasyon
+korur. Geçici yetersizlikte strict FIFO bekler. Native ve gerçek makine ölçümü hâlâ açık;
+`docs/development/2026-09-10-todo-continuation.md` test ve review sınırlarını kaydeder.
+
+- [x] Sabit eşzamanlılık sınırından sonra, task bellek tahmini ve host'un kullanılabilir
       belleği/bellek baskısıyla yeni iş kabulünü değerlendir. İşletim sistemi, Claude/AI ve diğer
       uygulamalar için pay bırak. Tek build'in kendi worker paralelliği için task'a özel ayar
       sun; yalnızca kuyruk uzunluğunu azaltmayı kesin bir RAM üst sınırı gibi sunma.
 - [x] Uygulanan sabit sınırın bekleme nedenlerini list/status/result/cancel içinde görünür yap:
       `concurrency`, `worktree_busy`, `fifo`, `dispatch_pending`. Tanı ve atomik claim aynı
       FIFO/slot kararını kullanır; sorgu state'i değiştirmez. Bu gözlem slot rezervasyonu değildir.
-- [ ] RAM kabul kontrolüyle birlikte `memory_budget` nedenini ekle. Bütçeye hiçbir zaman
+- [x] RAM kabul kontrolüyle birlikte `memory_budget` nedenini ekle. Bütçeye hiçbir zaman
       sığmayacak talebi açıkça reddet; kuyruğun sessizce tıkanmasını önle. Bellek yüzünden
       bekleyen işlerin ilerleme ve adalet politikasını tanımla.
-- [ ] Uzun ömürlü `wtm start` servislerini sonlanan ağır işlerden ayrı ele al; dev server
+- [x] Uzun ömürlü `wtm start` servislerini sonlanan ağır işlerden ayrı ele al; dev server
       tek ağır iş slotunu süresiz tutmasın, fakat belleği kabul hesabında dikkate alınsın.
 - [ ] Süreç ağacının bellek ölçüm maliyetini sınırla. RSS toplamını paylaşılan sayfalar nedeniyle
       kesin fiziksel RAM tüketimi sayma. Tahmine dayalı kabul kontrolü ile işletim sistemi
@@ -846,12 +859,11 @@ var olduktan sonrasının tamamı daemon'da. Bu, uygulamayı yazmadan önce spec
 
 `wtm analyze --cleanup-candidates` yalnızca linked worktree filtresi olmamalı.
 
-**Kısmen kapandı.** Ranking uygulandı: sekiz girdinin yedisi çalışıyor, reclaimable disk size
-gerekçesiyle açık bırakıldı. Spec `docs/superpowers/specs/2026-09-07-cleanup-candidate-ranking.md`,
-plan `docs/superpowers/plans/2026-09-07-cleanup-candidate-ranking.md`. Sıralama ağırlıklı toplam
-değil, sıralı tier'lar üzerinden leksikografik: her karşılaştırmanın tek cümlelik bir cevabı var,
-ve `reason` tam olarak o cevapları taşıyor. Başlık, reclaimable satırı açık olduğu için madde 2'nin
-`repair` satırında kullanılan aynı kuralla `[ ]` kalıyor.
+**2026-09-10:** Sekiz girdi uygulandı. Yeni disk ölçümü bütün mevcut safety/activity tier'larından
+sonra eşitliği bozar. Eksik ölçüm sıfır değildir; maliyet bütün adaylar için sınırlıdır ve
+ölçüm silme yetkisi vermez. Dosya/ranking/CLI hedefli testleri geçti. Başlık yeni ölçümün
+bağımsız subagent review'u tamamlanamadığı için açık tutuluyor; agent kullanım sınırı
+kanıt eksikliği olarak kaydedildi. Önceki ranking davranışı yeniden yazılmadı.
 
 #### Ranking girdileri
 
@@ -864,12 +876,12 @@ ve `reason` tam olarak o cevapları taşıyor. Başlık, reclaimable satırı a�
 - [x] remote persistence — 3. ve 4. tier. 4. tier `remoteKnowledge.source` ile nitelendiriyor:
       yalnızca yerel ref'lerden bilinen kalıcılık, fetch ile doğrulanmışın altında sıralanıyor.
       "persistence known only from local refs ranks below the same candidate after a fetch".
-- [ ] reclaimable disk size — **açık.** Bu sayı hiçbir yerde yok: `packages/cli/src/commands/
-      disk.ts` kendi ölçüm temelini `reclaimable: 'not-estimated'` diye ilan ediyor ve core'daki
-      tek reclaimable fonksiyonu (`resources/removal.ts`) bayt değil *yol* döndürüyor. Sayıya
-      çevirmek, kendi yürüme maliyeti/cache/bayatlama kararları olan bir ölçüm özelliği — ranking
-      özelliği değil. Tier sırası, bu girdi sonradan üstündekileri bozmadan eklenebilecek şekilde
-      yazıldı.
+- [x] reclaimable disk size — `cleanup.reclaimable`, tek hard link'li normal dosyaların
+      allocated block tahminidir. Git metadata, symlink/hedefleri, mount ve retained resource
+      yolları sayılmaz. Bütün adaylar toplam 2 saniye/20.000 entry bütçesini paylaşır;
+      partial/unavailable değerler null kalır. COW/snapshot sebebiyle gerçek boşalacak bayt
+      veya alt sınır garantisi değildir. Kaynak değişikliği ve path yarışı ölçümü geçersiz kılar.
+      `wtm disk` ayrı resource-footprint sözleşmesini korur.
 - [x] last WTM activity — 5. tier, ama beklenen alandan değil: `worktrees.last_runtime_at`
       sütununu **hiçbir production yolu yazmıyor**, migration'dan beri hep NULL. Bu yüzden aktivite
       managed-process journal'ından türetiliyor (`startedAt`/`stoppedAt`'in en yenisi), o da yoksa
@@ -1397,9 +1409,11 @@ kapanmalı: bugün ulaşılamaz olmasının tek sebebi Linux'un henüz çalışm
 
 `wtm start dev` process doğduğu için başarılı sayılmamalı; kullanıcı isterse servisin hazır olmasını bekleyebilmeli.
 
-**Aşağıdaki CLI/config taslaktır; henüz uygulanmadı.** Mevcut IPC timeout, process identity
-ve disconnect davranışları incelendi. Sonraki küçük HTTP diliminin sözleşmesi ve test kapsamı:
-`docs/development/2026-09-09-readiness-next-slice.md`.
+**2026-09-10:** HTTP dilimi uygulandı: start/restart wait, config/template, sınırlı observation,
+process/completion identity, IPC cancellation ve JSON hata sözleşmesi. Gerçek HTTP + TCP IPC
+üzerinden 5,5 saniyeden uzun wait, timeout ve iptal geçti. Native owner/IPC e2e bu ortamda
+Unix socket `listen EPERM` ile başarısız; native CI ve observer'ın bağımsız subagent review'u
+açık. Tasarım ve kanıt: `docs/development/2026-09-10-todo-continuation.md`.
 
 #### CLI
 
@@ -1418,19 +1432,12 @@ timeout = "30s"
 interval = "500ms"
 ```
 
-Alternatif tipler:
-
-```text
-http
-tcp
-process
-command
-```
+Uygulanan tip `http`; `tcp`, `process` ve `command` gelecekteki genişletmelerdir.
 
 #### Kabul kriterleri
 
-- [ ] Process spawn olup servis ayağa kalkmazsa start sonucu bunu gösterebiliyor.
-- [ ] JSON output readiness durumunu içeriyor.
+- [x] Process spawn olup servis ayağa kalkmazsa wait sonucu timeout veya process/evidence hatasını gösteriyor.
+- [x] JSON output readiness durumunu içeriyor; normal start `NOT_CHECKED`, başarılı wait `READY`.
 - [ ] Agent'lar `wtm start --wait` sonrası ortamın hazır olduğunu güvenle varsayabiliyor.
 
 ---
@@ -2279,7 +2286,9 @@ Hedef `v0.2.0` tag'i aşağıdakiler tamamlanmadan çıkarılmamalı:
 madde 45'in ilk dilimi (kalıcı kuyruk, sabit ağır iş sınırı, asenkron CLI ve agent skill akışı)
 uygulandı; native CI'da ortaya çıkan regresyonlar ve bekleme nedenleri devam dilimidir.
 Native süreç kanıtı ve gerçek makine bellek ölçümü alınmadan RAM kriterleri kapatılmaz.
-Sonraki ürün dilimi readiness/healthcheck; RAM kabul kontrolü ayrı tasarım/ölçüm gerektirir.
+2026-09-10: HTTP readiness, cleanup disk tahmini ve isteğe bağlı RAM kabulü uygulandı.
+Bağımsız review için subagent kullanım sınırı ve native CI/gerçek makine ölçümü açık.
+Port probing batch, multi-repo create ve P2/P3 özellikleri sonraki bağımsız geliştirmelerdir.
 Bu işler notarization veya diğer yayın hesabı işlerini beklemek zorunda değil.
 
 ```text
@@ -2296,7 +2305,7 @@ Bu işler notarization veya diğer yayın hesabı işlerini beklemek zorunda de�
 11. wtm create
 12. cleanup candidate ranking
 13. allowed remote refs config
-14. shared heavy-job queue + async agent flow (uygulandı; Linux e2e geçti, native takip ve RAM dilimi açık)
+14. shared heavy-job queue + async agent flow (sabit sınır ve tahmini RAM kabulü uygulandı; native takip/gerçek RAM ölçümü açık)
 15. readiness/healthcheck
 16. local domains
 17. GitHub/PR awareness

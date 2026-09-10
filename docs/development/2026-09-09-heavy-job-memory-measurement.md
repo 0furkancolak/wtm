@@ -11,6 +11,13 @@ Sabit eşzamanlılık bir RAM üst sınırı değildir. WTM yalnızca kendisine 
 sınırlar; Claude/Codex'in kendi süreçlerini, WTM dışında çalışan komutları veya bir task'ın
 kendi içindeki worker sayısını sınırlamaz. Bu ilk dilim yeni bir bellek tarama servisi eklemez.
 
+2026-09-10 eklemesi: İsteğe bağlı tahmini RAM kabulü uygulandı (`jobs.memory`, task
+`memory_estimate_mib` ve `queue_env`). Sabit limit ile RAM kabulünü aynı deney gibi saymayın:
+aşağıdaki iki koşuya, aynı worker ayarları korunarak üçüncü bir RAM kabul koşusu ekleyin.
+Global budget/reserve, task tahminleri ve her sorgunun `data.memory` gözlemini kaydedin.
+Gerçek kullanılabilir bellek ile kayıtlı tahminler farklıdır; hiçbir koşu OS tarafından
+zorlanan sert RAM kotası değildir. Native ve gerçek iki AI ölçüm kanıtı henüz alınmadı.
+
 ## Native macOS/Linux deneyi
 
 1. Aynı commit'ten iki bağımsız worktree hazırlayın. İkisine aynı bağımlılık sürümlerini

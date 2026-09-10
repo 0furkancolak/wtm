@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { normalizeAllowedRemoteRefs } from '../analysis/remote-persistence';
 import { queueTaskTimeoutMs } from './task-timeout';
+import { healthcheckSchema } from './healthcheck';
 
 const commandSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
 
@@ -13,7 +14,10 @@ const taskSchema = z.object({
   shell: z.boolean().optional(),
   cwd: z.string().min(1).optional(),
   background: z.boolean().optional(),
+  healthcheck: healthcheckSchema.optional(),
   queue: z.boolean().optional(),
+  memory_estimate_mib: z.number().int().min(1).max(1_048_576).optional(),
+  queue_env: z.record(z.string().min(1), z.string()).optional(),
   singleton: z.boolean().optional(),
   grace_period: z.string().min(1).optional(),
   timeout: z.string().min(1).optional(),
@@ -21,6 +25,9 @@ const taskSchema = z.object({
   requires: z.array(z.string().min(1)).optional(),
   env: z.record(z.string(), z.string()).optional(),
 }).strict().superRefine((task, context) => {
+  if (task.queue_env !== undefined && task.queue !== true) {
+    context.addIssue({ code: 'custom', message: 'queue_env requires queue = true' });
+  }
   if (task.queue === true && (task.background === true || queueTaskTimeoutMs(task.timeout) === null)) {
     context.addIssue({ code: 'custom', message: 'queued tasks require background != true and a positive timeout (ms, s, m, h), at most 24h' });
   }
@@ -133,7 +140,13 @@ const gitSchema = z.object({
 });
 
 export const wtmConfigSchema = z.object({
-  jobs: z.object({ max_concurrent_heavy: z.number().int().min(1).max(64).optional() }).strict().optional(),
+  jobs: z.object({
+    max_concurrent_heavy: z.number().int().min(1).max(64).optional(),
+    memory: z.object({
+      budget_mib: z.number().int().min(1).max(1_048_576),
+      reserve_mib: z.number().int().min(0).max(1_048_576).optional(),
+    }).strict().optional(),
+  }).strict().optional(),
   git: gitSchema.optional(),
   version: z.literal(1).optional(),
   workspace: z.object({ name: z.string().min(1).optional() }).strict().optional(),

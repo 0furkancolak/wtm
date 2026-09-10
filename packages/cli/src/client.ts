@@ -7,6 +7,8 @@ import {
   ipcResponseSchema,
   isProtocolVersionCompatible,
   protocolVersion,
+  maxReadinessTimeoutMs,
+  readinessLaunchAllowanceMs,
   type IpcRequest,
   type JsonEnvelope,
 } from '@wtm/protocol';
@@ -20,6 +22,13 @@ export interface DaemonClientOptions {
 export interface FollowLogsOptions {
   signal?: AbortSignal;
   pollIntervalMs?: number;
+}
+
+export interface DaemonRequestOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  /** Abort a bounded observer on the daemon; it must not undo accepted side effects. */
+  cancelRemote?: boolean;
 }
 
 interface PendingRequest {
@@ -59,12 +68,16 @@ export class DaemonClient {
     return this.#starting;
   }
 
-  request(command: string, args?: unknown, options: { signal?: AbortSignal } = {}): Promise<JsonEnvelope<unknown>> {
+  request(command: string, args?: unknown, options: DaemonRequestOptions = {}): Promise<JsonEnvelope<unknown>> {
     const socket = this.#socket;
     if (this.#closed || socket === null || socket.destroyed) {
       return Promise.reject(new Error('Daemon client is not connected'));
     }
     if (options.signal?.aborted) return Promise.reject(new Error(`Daemon request aborted: ${command}`));
+    const timeoutMs = options.timeoutMs ?? this.#requestTimeoutMs;
+    if (options.timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > maxReadinessTimeoutMs + readinessLaunchAllowanceMs)) {
+      return Promise.reject(new RangeError('Daemon request timeout override is outside its supported bound'));
+    }
     const id = randomUUID();
     const request: IpcRequest = {
       protocol: protocolVersion,
@@ -82,8 +95,9 @@ export class DaemonClient {
           pending.signal.removeEventListener('abort', pending.onAbort);
         }
         this.#rememberTimedOutRequest(id);
+        if (options.cancelRemote === true) this.#cancelRemoteRequest(id);
         reject(new Error(`Daemon request timed out: ${command}`));
-      }, this.#requestTimeoutMs);
+      }, timeoutMs);
       timer.unref();
       const onAbort = () => {
         const pending = this.#pending.get(id);
@@ -92,6 +106,7 @@ export class DaemonClient {
         clearTimeout(pending.timer);
         options.signal?.removeEventListener('abort', onAbort);
         this.#rememberTimedOutRequest(id);
+        if (options.cancelRemote === true) this.#cancelRemoteRequest(id);
         reject(new Error(`Daemon request aborted: ${command}`));
       };
       this.#pending.set(id, {
@@ -106,6 +121,17 @@ export class DaemonClient {
         this.#rejectPending(id, new Error('Daemon request could not be written'));
       });
     });
+  }
+
+  #cancelRemoteRequest(requestId: string): void {
+    const socket = this.#socket;
+    if (socket === null || socket.destroyed || !socket.writable) return;
+    const id = randomUUID();
+    // The cancellation acknowledgement is independent of the original late response.
+    this.#rememberTimedOutRequest(id);
+    const request: IpcRequest = { protocol: protocolVersion, id, command: 'ipc.cancel', arguments: { requestId } };
+    try { socket.write(encodeFrame(Buffer.from(JSON.stringify(request)), this.#maxFrameBytes)); }
+    catch { /* A lost connection also aborts its server-side observers. */ }
   }
 
   async followLogs(

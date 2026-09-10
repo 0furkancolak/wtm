@@ -101,6 +101,21 @@ wtm start dev
 
 does not start two copies. The second call reports the existing process. Explicit `wtm restart dev` replaces it.
 
+## Readiness observations
+
+An HTTP healthcheck and `wtm start dev --wait` (also supported by restart) request a bounded
+readiness observation after launch. Normal start reports `NOT_CHECKED`. A successful wait
+requires a 2xx response plus the same live PID/group/start-time/fingerprint and no authenticated
+completion evidence before and after the probe. An anchor PID alone is insufficient.
+
+The observation runs outside the supervisor lock and cannot mark a replacement task ready.
+Timeout, IPC cancellation and disconnect release its HTTP request and timers; they leave the
+managed service running. IPC cancellation is scoped to the submitting connection and remains
+available when its normal request capacity is full. Unrelated requests keep their existing
+five-second transport deadline. Readiness has a separate bounded deadline plus launch allowance.
+There is no persisted health state or periodic health monitor. See the configuration and CLI
+references for durations and result/error states.
+
 ## Logs
 
 Managed task stdout/stderr is redirected to WTM log files. `wtm logs` reads from disk; the daemon does not accumulate unlimited output in memory.

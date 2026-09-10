@@ -66,12 +66,13 @@ function candidate(
   path: string,
   overrides: Partial<CleanupCandidateInput> & Parameters<typeof analysis>[0] = {},
 ): CleanupCandidateInput {
-  const { lastRuntimeAt, lastCommitAt, hasRunningProcess, ...shape } = overrides;
+  const { lastRuntimeAt, lastCommitAt, hasRunningProcess, reclaimable, ...shape } = overrides;
   return {
     analysis: analysis({ path, ...shape }),
     lastRuntimeAt: 'lastRuntimeAt' in overrides ? lastRuntimeAt : daysAgo(30),
     lastCommitAt: 'lastCommitAt' in overrides ? lastCommitAt : daysAgo(30),
     hasRunningProcess: 'hasRunningProcess' in overrides ? hasRunningProcess : false,
+    ...(reclaimable === undefined ? {} : { reclaimable }),
   };
 }
 
@@ -79,10 +80,48 @@ function order(candidates: readonly CleanupCandidateInput[]): string[] {
   return rankCleanupCandidates(candidates, { now }).map(({ analysis }) => analysis.identity.path);
 }
 
+function measurement(estimatedBytes: number) {
+  return {
+    status: 'complete' as const, estimatedBytes, observedExclusiveBytes: estimatedBytes, entries: 1,
+    excluded: { hardlinks: 0, symlinks: 0, policyPaths: 0, crossDevice: 0 },
+    reason: null, basis: 'exclusive-file-allocation-estimate' as const,
+  };
+}
+
 // Ordering tests name their worktrees so that plain path order is the *reverse* of the
 // expected order: a tier that stopped separating two candidates would then fall through to
 // the path tie-break and produce the wrong answer, rather than the right one by accident.
 describe('rankCleanupCandidates', () => {
+  test('complete reclaimable estimates break ties after existing safety and activity facts', () => {
+    const large = measurement(100_000);
+    const small = measurement(1_000);
+    const ranked = rankCleanupCandidates([
+      candidate('/repo/a-small', { reclaimable: small }),
+      candidate('/repo/z-large', { reclaimable: large }),
+      candidate('/repo/b-blocked-large', { readiness: 'BLOCKED', reclaimable: large }),
+      candidate('/repo/c-recent-large', { lastRuntimeAt: daysAgo(29), reclaimable: large }),
+    ], { now });
+    expect(ranked.map(({ analysis }) => analysis.identity.path))
+      .toEqual(['/repo/z-large', '/repo/a-small', '/repo/c-recent-large', '/repo/b-blocked-large']);
+    expect(ranked[0]?.reason).toContain('reclaimable-estimate-100000-bytes');
+    expect(ranked[0]?.reclaimable).toEqual(large);
+    for (let i = 1; i < ranked.length; i += 1) expect(ranked[i - 1]!.score).toBeGreaterThanOrEqual(ranked[i]!.score);
+  });
+
+  test('partial, unavailable and invalid measurements never rank as complete estimates', () => {
+    const ranked = rankCleanupCandidates([
+      candidate('/repo/a-partial', { reclaimable: { ...measurement(10_000), status: 'partial', reason: 'entry-budget' } }),
+      candidate('/repo/b-unavailable', { reclaimable: { ...measurement(10_000), status: 'unavailable', reason: 'changed' } }),
+      candidate('/repo/c-invalid', { reclaimable: measurement(Number.NaN) }),
+      candidate('/repo/z-zero', { reclaimable: measurement(0) }),
+    ], { now });
+    expect(ranked.map(({ analysis }) => analysis.identity.path))
+      .toEqual(['/repo/z-zero', '/repo/a-partial', '/repo/b-unavailable', '/repo/c-invalid']);
+    expect(ranked[1]?.reason).toContain('reclaimable-unknown-entry-budget');
+    expect(ranked[2]?.reason).toContain('reclaimable-unknown-changed');
+    expect(ranked[3]?.reason).toContain('reclaimable-unknown');
+  });
+
   test('ranks SAFE above REVIEW above BLOCKED, and keeps the blocked one in the list', () => {
     const ranked = rankCleanupCandidates([
       candidate('/repo/blocked', { readiness: 'BLOCKED' }),
@@ -199,6 +238,7 @@ describe('rankCleanupCandidates', () => {
       'inactive-14-days',
       'last-commit-30-days',
       'not-prunable',
+      'reclaimable-unknown',
     ]);
   });
 

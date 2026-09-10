@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { SqliteDatabase } from './database';
 import { jobWaitingReasons, type JobSchedulingEntry } from './job-scheduling';
+import { memoryEstimateError } from './job-memory';
 import {
   HeavyJobError, heavyJobRetentionMs, maxPendingHeavyJobs, maxRetainedHeavyJobs,
   type HeavyJobEnqueueInput, type HeavyJobFinishInput, type HeavyJobRecord, type HeavyJobStore,
@@ -14,6 +15,7 @@ function record(row: Row): HeavyJobRecord {
     workspaceId: String(row.workspace_id), repositoryId: String(row.repository_id), worktreeId: String(row.worktree_id),
     worktreePath: String(row.worktree_path), taskName: String(row.task_name), idempotencyKey: String(row.idempotency_key),
     commandFingerprint: String(row.command_fingerprint), sourceFingerprint: String(row.source_fingerprint), timeoutMs: Number(row.timeout_ms),
+    memoryEstimateBytes: row.memory_estimate_bytes == null ? null : Number(row.memory_estimate_bytes),
     state: row.state as HeavyJobRecord['state'], slotHeld: row.slot_held === 1, processId: row.process_id as string | null, anchorPid: row.anchor_pid as number | null,
     createdAt: String(row.created_at), startedAt: row.started_at as string | null, finishedAt: row.finished_at as string | null,
     exitCode: row.exit_code as number | null, signal: row.signal as string | null, error: row.error as string | null,
@@ -30,13 +32,14 @@ export function assertNoHeavyJobs(database: SqliteDatabase, repositoryId: string
 export function createHeavyJobStore(database: SqliteDatabase): HeavyJobStore {
   const transaction = <T>(body: () => T): T => database.transaction(body).immediate();
   const schedulingSnapshot = (scope: string): JobSchedulingEntry[] => (
-    database.prepare(`SELECT job.job_id, job.state, job.slot_held,
+    database.prepare(`SELECT job.job_id, job.state, job.slot_held, job.memory_estimate_bytes,
       EXISTS (SELECT 1 FROM heavy_jobs occupied WHERE occupied.worktree_id = job.worktree_id AND occupied.slot_held = 1) AS worktree_busy
       FROM heavy_jobs job WHERE job.scope = ? AND (job.state = 'QUEUED' OR job.slot_held = 1)
       ORDER BY job.sequence`).all(scope) as Row[]
   ).map((row) => ({
     jobId: String(row.job_id), state: row.state as JobSchedulingEntry['state'],
     slotHeld: row.slot_held === 1, worktreeBusy: row.worktree_busy === 1,
+    memoryEstimateBytes: row.memory_estimate_bytes == null ? null : Number(row.memory_estimate_bytes),
   }));
   const getById = (jobId: string): HeavyJobRecord => {
     const row = database.prepare('SELECT * FROM heavy_jobs WHERE job_id = ?').get(jobId) as Row | undefined;
@@ -67,12 +70,15 @@ export function createHeavyJobStore(database: SqliteDatabase): HeavyJobStore {
     },
     enqueue(input) {
       if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1 || input.idempotencyKey.length < 1) throw new TypeError('Invalid heavy job admission');
+      if (input.memoryEstimateBytes != null && (!Number.isSafeInteger(input.memoryEstimateBytes)
+        || input.memoryEstimateBytes < 1 || input.memoryEstimateBytes > 1_099_511_627_776)) throw new TypeError('Invalid job memory estimate');
       return transaction(() => {
         const existing = database.prepare('SELECT * FROM heavy_jobs WHERE scope = ? AND idempotency_key = ?').get(input.scope, input.idempotencyKey) as Row | undefined;
         if (existing !== undefined) {
           const job = record(existing);
           if (job.worktreeId !== input.worktreeId || job.taskName !== input.taskName || job.commandFingerprint !== input.commandFingerprint
-            || job.sourceFingerprint !== input.sourceFingerprint || job.timeoutMs !== input.timeoutMs) {
+            || job.sourceFingerprint !== input.sourceFingerprint || job.timeoutMs !== input.timeoutMs
+            || job.memoryEstimateBytes !== (input.memoryEstimateBytes ?? null)) {
             throw new HeavyJobError('WTM_JOB_IDEMPOTENCY_CONFLICT', 'Idempotency key already identifies a different request.', { jobId: job.jobId });
           }
           return { job, reused: true };
@@ -84,8 +90,8 @@ export function createHeavyJobStore(database: SqliteDatabase): HeavyJobStore {
           throw new HeavyJobError('WTM_JOB_QUEUE_FULL', 'Heavy job queue or retained history is full.', { maxPending: maxPendingHeavyJobs });
         }
         const jobId = randomUUID();
-        database.prepare(`INSERT INTO heavy_jobs (job_id, scope, workspace_id, repository_id, worktree_id, worktree_path, task_name, idempotency_key, command_fingerprint, source_fingerprint, timeout_ms, state, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QUEUED', ?)`).run(jobId, input.scope, input.workspaceId, input.repositoryId, input.worktreeId, input.worktreePath, input.taskName, input.idempotencyKey, input.commandFingerprint, input.sourceFingerprint, input.timeoutMs, input.now);
+        database.prepare(`INSERT INTO heavy_jobs (job_id, scope, workspace_id, repository_id, worktree_id, worktree_path, task_name, idempotency_key, command_fingerprint, source_fingerprint, timeout_ms, memory_estimate_bytes, state, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QUEUED', ?)`).run(jobId, input.scope, input.workspaceId, input.repositoryId, input.worktreeId, input.worktreePath, input.taskName, input.idempotencyKey, input.commandFingerprint, input.sourceFingerprint, input.timeoutMs, input.memoryEstimateBytes ?? null, input.now);
         return { job: getById(jobId), reused: false };
       });
     },
@@ -99,13 +105,25 @@ export function createHeavyJobStore(database: SqliteDatabase): HeavyJobStore {
     active(scope) {
       return (database.prepare("SELECT * FROM heavy_jobs WHERE scope = ? AND (state = 'QUEUED' OR slot_held = 1) ORDER BY sequence").all(scope) as Row[]).map(record);
     },
-    waitingReasons(scope, maxConcurrent) {
-      return jobWaitingReasons(schedulingSnapshot(scope), maxConcurrent);
+    waitingReasons(scope, maxConcurrent, memory) {
+      return jobWaitingReasons(schedulingSnapshot(scope), maxConcurrent, memory);
     },
-    claim(scope, maxConcurrent, now) {
+    claim(scope, maxConcurrent, now, memory) {
       if (!Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1) throw new TypeError('Invalid concurrency limit');
       return transaction(() => {
-        const reasons = jobWaitingReasons(schedulingSnapshot(scope), maxConcurrent);
+        let entries = schedulingSnapshot(scope);
+        if (memory !== undefined) {
+          // Policy can change across daemon restarts. Never replay or silently starve behind
+          // a request that can no longer fit; no process/slot was created for these failures.
+          entries = entries.filter((entry) => {
+            if (entry.state !== 'QUEUED' || entry.slotHeld) return true;
+            const error = memoryEstimateError(entry.memoryEstimateBytes, memory);
+            if (error === null) return true;
+            database.prepare("UPDATE heavy_jobs SET state = 'FAILED', finished_at = ?, error = ? WHERE job_id = ? AND state = 'QUEUED' AND slot_held = 0").run(now, error, entry.jobId);
+            return false;
+          });
+        }
+        const reasons = jobWaitingReasons(entries, maxConcurrent, memory);
         const next = reasons.entries().next().value;
         if (next?.[1] !== 'dispatch_pending') return null;
         const job = getById(next[0]);

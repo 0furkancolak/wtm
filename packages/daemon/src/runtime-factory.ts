@@ -22,6 +22,7 @@ import {
   queueTaskTimeoutMs,
   type DaemonStateStore,
   type LifecycleEventStore,
+  type WtmConfig,
 } from '@wtm/core';
 import { LifecycleEventDispatcher } from './events';
 import { WtmDaemon } from './main';
@@ -242,6 +243,7 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     supervisor,
     logs,
     resolver,
+    inspectProcess: async (pid) => await platformRuntime.process.inspectProcess(pid),
     // Dispatching an event must not delay the reply to the person who started the task, and
     // must not fail it either: the task started, whatever the workspace hung off the event did.
     onRuntimeEvent: (event, worktreeId) => {
@@ -249,11 +251,15 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     },
   });
   if (stateStore.jobs !== undefined) {
-    const maxConcurrent = await globalJobConcurrency(paths.globalConfigPath);
+    const jobPolicy = await globalJobPolicy(paths.globalConfigPath);
     jobs = new HeavyJobQueue({
       store: stateStore.jobs,
       scope: queueScope!,
-      supervisor, logs, maxConcurrent, onError,
+      supervisor, logs, maxConcurrent: jobPolicy.max_concurrent_heavy ?? 1, onError,
+      ...(jobPolicy.memory === undefined ? {} : { memory: {
+        budgetBytes: jobPolicy.memory.budget_mib * 1024 * 1024,
+        reserveBytes: (jobPolicy.memory.reserve_mib ?? 1024) * 1024 * 1024,
+      } }),
       inspectGroup: async (pgid) => await platformRuntime.process.inspectProcessGroup(pgid),
       resolveTask: async (cwd, taskName) => resolveHeavyJob(stateStore, paths.globalConfigPath, cwd, taskName),
     });
@@ -265,7 +271,7 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
       recover: async () => supervisor.recover(),
       close: async () => { await jobs?.close(); await supervisor.close(); },
     },
-    runtimeHandler: async (request) => jobCommandNames.has(request.command) && jobs !== null ? jobs.handle(request) : controller.handle(request),
+    runtimeHandler: async (request, context) => jobCommandNames.has(request.command) && jobs !== null ? jobs.handle(request) : controller.handle(request, context),
     // Preparation and lifecycle events belong to the pass that noticed the change, so a
     // worktree created while WTM is watching is prepared before anybody runs anything in it.
     onReconciled: async ({ repository, result }) => {
@@ -296,14 +302,14 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
   };
 }
 
-async function globalJobConcurrency(path: string): Promise<number> {
+async function globalJobPolicy(path: string): Promise<NonNullable<WtmConfig['jobs']>> {
   let value: string;
   try { value = await readFile(path, 'utf8'); }
   catch (error) {
-    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return 1;
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return {};
     throw error;
   }
-  return parseWtmConfig(parse(value), path).jobs?.max_concurrent_heavy ?? 1;
+  return parseWtmConfig(parse(value), path).jobs ?? {};
 }
 
 async function resolveHeavyJob(store: DaemonStateStore, globalConfigPath: string, cwd: string, taskName: string): Promise<ResolvedHeavyJob> {
@@ -313,7 +319,7 @@ async function resolveHeavyJob(store: DaemonStateStore, globalConfigPath: string
   if (configured?.queue !== true || configured.background === true || timeoutMs === null) {
     throw new HeavyJobError('WTM_JOB_NOT_QUEUEABLE', 'Queue tasks require queue=true, a finite timeout, and background=false.', { taskName });
   }
-  const task = resolveTask(taskResolutionInput(runtime, taskName));
+  const task = resolveTask({ ...taskResolutionInput(runtime, taskName), executionMode: 'queued' });
   const root = await realpath(runtime.registration.worktree.path);
   const taskCwd = await realpath(task.cwd);
   if (!containsPath(root, taskCwd)) throw new HeavyJobError('WTM_JOB_NOT_QUEUEABLE', 'Queued task working directory must stay inside its worktree.', { taskName });
@@ -321,6 +327,7 @@ async function resolveHeavyJob(store: DaemonStateStore, globalConfigPath: string
     workspaceId: runtime.registration.workspace.id, repositoryId: runtime.registration.repository.id,
     worktreeId: runtime.registration.worktree.id, worktreePath: runtime.registration.worktree.path,
     taskName, timeoutMs, argv: task.argv, cwd: taskCwd, shell: task.shell,
+    memoryEstimateBytes: configured.memory_estimate_mib === undefined ? null : configured.memory_estimate_mib * 1024 * 1024,
     env: { ...process.env, ...task.envDelta },
   };
 }

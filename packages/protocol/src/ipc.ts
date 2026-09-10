@@ -2,6 +2,9 @@ import { z } from 'zod';
 import { protocolVersionSchema } from './adapter';
 import { jsonEnvelopeSchema } from './json-envelope';
 
+/** Cancellation is scoped to the connection that issued the original request. */
+export const ipcCancellationArgumentsSchema = z.object({ requestId: z.string().min(1).max(128) }).strict();
+
 export const ipcRequestSchema = z.object({
   protocol: protocolVersionSchema,
   id: z.string().min(1).max(128),

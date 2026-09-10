@@ -1,4 +1,5 @@
 import type { WorktreeAnalysis } from './worktree-analysis';
+import type { WorktreeReclaimableMeasurement } from './worktree-reclaimable';
 
 /**
  * One worktree offered to the ranking, with whatever else is known about it.
@@ -19,6 +20,8 @@ export interface CleanupCandidateInput {
    * the same answer as false, and does not rank like it.
    */
   hasRunningProcess?: boolean | undefined;
+  /** Only complete allocation estimates may break ties after all existing safety/activity facts. */
+  reclaimable?: WorktreeReclaimableMeasurement | undefined;
 }
 
 export interface RankedCleanupCandidate extends CleanupCandidateInput {
@@ -123,6 +126,14 @@ export function rankCleanupCandidates(
     if (runtime !== 0) return runtime;
     const commit = right.idleness.commitMs - left.idleness.commitMs;
     if (commit !== 0) return commit;
+    const leftBytes = reclaimableBytes(left.candidate);
+    const rightBytes = reclaimableBytes(right.candidate);
+    // Preserve all existing tiers (including exact idleness). Unknown is never a measured zero.
+    if (leftBytes !== rightBytes) {
+      if (leftBytes === null) return 1;
+      if (rightBytes === null) return -1;
+      return rightBytes - leftBytes;
+    }
     return codeUnitCompare(left.candidate.analysis.identity.path, right.candidate.analysis.identity.path);
   });
   return measured.map(({ candidate, tiers }, index) => ({
@@ -227,7 +238,20 @@ function reasonsOf(candidate: CleanupCandidateInput, now: number): string[] {
       ? 'last-commit-unknown'
       : elapsedLabel('last-commit', idleness.commitMs),
     isPrunable(identity) ? 'prunable' : 'not-prunable',
+    reclaimableReason(candidate),
   ];
+}
+
+function reclaimableBytes(candidate: CleanupCandidateInput): number | null {
+  const value = candidate.reclaimable;
+  return value?.status === 'complete' && value.estimatedBytes !== null
+    && Number.isSafeInteger(value.estimatedBytes) && value.estimatedBytes >= 0 ? value.estimatedBytes : null;
+}
+
+function reclaimableReason(candidate: CleanupCandidateInput): string {
+  const bytes = reclaimableBytes(candidate);
+  if (bytes !== null) return `reclaimable-estimate-${String(bytes)}-bytes`;
+  return candidate.reclaimable?.reason ? `reclaimable-unknown-${candidate.reclaimable.reason}` : 'reclaimable-unknown';
 }
 
 function elapsedLabel(prefix: string, elapsedMs: number): string {

@@ -27,6 +27,8 @@ export function exitCodeForError(code: WtmErrorCode): number {
   if (
     code === 'WTM_CONFIG_INVALID'
     || code === 'WTM_JOB_NOT_QUEUEABLE'
+    || code === 'WTM_JOB_MEMORY_ESTIMATE_REQUIRED'
+    || code === 'WTM_JOB_MEMORY_BUDGET_EXCEEDED'
     || code === 'WTM_JOB_NOT_FOUND'
     || code === 'WTM_WORKSPACE_NOT_FOUND'
     || code === 'WTM_NOT_INITIALIZED'

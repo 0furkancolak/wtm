@@ -17,6 +17,7 @@ const migrationFiles = [
   '010-repository-operation-leases.sql',
   '011-repository-operation-lease-host-identity.sql',
   '012-heavy-jobs.sql',
+  '013-heavy-job-memory.sql',
 ] as const;
 const scenarioPath = fileURLToPath(new URL('./assets.scenario.ts', import.meta.url));
 
@@ -29,7 +30,7 @@ function runScenario(): Record<string, unknown> {
 }
 
 describe('filesystem migration assets', () => {
-  test('reads the twelve canonical migrations in exact byte order', () => {
+  test('reads the thirteen canonical migrations in exact byte order', () => {
     const expected = migrationFiles.map((file) => readFileSync(new URL(`../migrations/${file}`, import.meta.url), 'utf8'));
 
     expect(filesystemMigrationAssets.readMigrations()).toEqual(expected);

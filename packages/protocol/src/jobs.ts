@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 export const jobStateSchema = z.enum(['QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'INTERRUPTED']);
 export type JobState = z.infer<typeof jobStateSchema>;
-export const jobWaitingReasonSchema = z.enum(['concurrency', 'worktree_busy', 'fifo', 'dispatch_pending']);
+export const jobWaitingReasonSchema = z.enum(['concurrency', 'worktree_busy', 'fifo', 'dispatch_pending', 'memory_budget']);
 export type JobWaitingReason = z.infer<typeof jobWaitingReasonSchema>;
 /** An observation of scheduling, not a reservation or a promise that a job will start. */
 export const jobSchedulingSchema = z.object({

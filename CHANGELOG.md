@@ -26,9 +26,20 @@ binaries are Developer ID signed and notarized.
 
 ### Added
 
+- Opt-in estimated memory admission for queued tasks: global `jobs.memory` budget/headroom,
+  per-task `memory_estimate_mib` and `queue_env` worker settings. Migration 013 preserves
+  estimates and legacy unknowns; held slots retain reservations through cancellation/restart.
+  Atomic FIFO claims consider available memory, with `memory_budget` diagnostics and explicit
+  missing/unfit estimate errors. This is not an OS-enforced RAM cap or measured RAM savings.
+- Bounded HTTP readiness for `start`/`restart --wait --timeout`: strict healthcheck config,
+  process/completion evidence, JSON observations and connection-scoped IPC cancellation.
+  Normal start reports NOT_CHECKED. Timeout/disconnect ends observation without stopping
+  the managed service. Real HTTP/TCP integration is tested; native lifecycle proof remains open.
+- Bounded metadata-only disk estimates in cleanup ranking, after existing safety/activity
+  tiers. Partial/unknown scans are distinct from zero, and estimates never authorize removal.
 - Queue records expose current `waitingReason` in list/status/result/cancel: concurrency,
-  same-worktree occupancy, FIFO position or pending dispatch. This observation shares the
-  claim policy and does not reserve a slot; RAM-based admission remains a separate task.
+  same-worktree occupancy, FIFO position, memory admission or pending dispatch. This observation
+  shares the claim policy and does not reserve a slot.
 - Persistent FIFO heavy-task queue on the existing daemon and SQLite state. `wtm run <task>
   --enqueue` returns a durable job ID; `wtm jobs list/status/logs/result/cancel` manages it.
   Tasks opt in with `queue = true` and a finite timeout. Daemon global
@@ -147,6 +158,11 @@ binaries are Developer ID signed and notarized.
 
 ### Fixed
 
+- Correct the performance report entrypoint import so measurement can start; ordinary tests
+  now exercise its actual JSON output and blocker exit code using fixture measurements.
+- Preserve the canonical pathname during private-directory opened-handle validation so Windows
+  ACL ownership checks do not receive an empty path. Git CLI fixtures resolve Git from PATH
+  and use a portable Node foreground task, preserving their existing assertions.
 - Job finalization honors cancellation committed during asynchronous source validation,
   retaining numeric exit evidence without reporting the cancelled job as successful.
   Authenticated timeout precedence and terminal result immutability are preserved.

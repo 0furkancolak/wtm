@@ -1,6 +1,7 @@
 import { parseWtmConfig, WtmConfigError, type WtmConfig } from '../config/schema';
 import { resolveTemplate, type TemplateContext } from '../templates/resolve';
 import { resolveEnvironment } from './environment';
+import { resolveHealthcheck, type ResolvedHealthcheck } from '../config/healthcheck';
 
 export interface ResolvedTask {
   argv: string[];
@@ -9,6 +10,7 @@ export interface ResolvedTask {
   envDelta: Record<string, string>;
   background: boolean;
   singleton: boolean;
+  healthcheck?: ResolvedHealthcheck;
 }
 
 export interface TaskResolutionInput {
@@ -16,6 +18,8 @@ export interface TaskResolutionInput {
   taskName: string;
   isMain: boolean;
   context: TemplateContext;
+  /** Queue-only environment settings may control this task's own worker parallelism. */
+  executionMode?: 'queued';
   /** Variables WTM derived for this worktree — endpoint ports, the CORS allowlist. */
   automaticEnvironment?: Record<string, string>;
   /** The `[repos.<name>.environment]` in force for the repository this worktree belongs to. */
@@ -72,7 +76,8 @@ export function resolveTask(input: TaskResolutionInput): ResolvedTask {
     ...(input.automaticEnvironment === undefined ? {} : { automatic: input.automaticEnvironment }),
     ...(config.environment === undefined ? {} : { workspace: config.environment }),
     ...(input.repoEnvironment === undefined ? {} : { repo: input.repoEnvironment }),
-    ...(task.env === undefined ? {} : { task: task.env }),
+    ...((task.env === undefined && (input.executionMode !== 'queued' || task.queue_env === undefined))
+      ? {} : { task: { ...task.env, ...(input.executionMode === 'queued' ? task.queue_env : {}) } }),
     context: input.context,
   });
   const context = {
@@ -88,6 +93,14 @@ export function resolveTask(input: TaskResolutionInput): ResolvedTask {
     });
   }
 
+  let healthcheck: ResolvedHealthcheck | undefined;
+  if (task.healthcheck !== undefined) {
+    try { healthcheck = resolveHealthcheck(task.healthcheck, (value) => resolveTemplate(value, context)); }
+    catch {
+      throw new WtmTaskResolutionError('Task healthcheck URL cannot be resolved to a valid HTTP(S) URL without credentials or a fragment.', { taskName: input.taskName });
+    }
+  }
+
   return {
     argv,
     shell: task.shell === true,
@@ -95,6 +108,7 @@ export function resolveTask(input: TaskResolutionInput): ResolvedTask {
     envDelta,
     background: task.background ?? false,
     singleton: task.singleton ?? true,
+    ...(healthcheck === undefined ? {} : { healthcheck }),
   };
 }
 

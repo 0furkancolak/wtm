@@ -118,8 +118,14 @@ The queue coordinates WTM submissions across repositories for the same host, OS 
 state store. The database has one machine/user owner, claimed before process recovery;
 foreign-host/user state is refused. Use host-local state when HOME is shared, and do not
 remove its ownership record to bypass a refusal. Separately configured state stores have
-independent limits. Its concurrency limit is not a hard RAM limit, and a task can still launch its
-own worker pool. Directly launched commands bypass the queue. This skill neither intercepts
+independent limits. Optional global `jobs.memory` uses each queued task's `memory_estimate_mib`,
+available memory and headroom. Estimate the whole worker tree, and use the task's `queue_env`
+for its actual tool-specific worker settings. This overrides ordinary task environment only
+in the queue; `wtm resolve` still describes the ordinary task. `memory_budget` means wait for
+memory/evidence; do not bypass it by running the same heavy command directly. Missing or
+permanently unfit estimates are explicit errors; inspect configuration before retrying.
+Neither concurrency nor estimated memory admission is a hard RAM limit. Directly launched
+commands bypass the queue. This skill neither intercepts
 all terminal commands nor automatically wakes an agent when a job completes. Agent-specific
 notifications/hooks require a separate verified integration.
 
@@ -133,6 +139,14 @@ For a long-running task WTM should supervise, and for raw argv that is not a con
 wtm start <task>
 wtm exec -- <argv>
 ```
+
+When a dependent step needs an HTTP service to be ready, configure its task healthcheck
+and use `wtm start <task> --wait --timeout 30s --json` (or `wtm restart <task> --wait --json`).
+Require `ok:true` and `data.readiness.state: READY` before proceeding. An ordinary start
+reports `NOT_CHECKED`; a live PID alone does not prove application readiness. Timeout,
+failed evidence and client cancellation are unsuccessful observations and leave the service
+running. Readiness is an observation of that endpoint and managed process at that time,
+not a guarantee of future health. Inspect `wtm logs <task>` and stop explicitly when needed.
 
 When a task behaves unexpectedly, inspect its resolved context before changing project files:
 

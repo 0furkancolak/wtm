@@ -5,11 +5,11 @@ describe('heavy-job wire contract', () => {
   test('waiting evidence accepts only implemented reasons for queued jobs', () => {
     const schema = (protocol as Record<string, any>).jobSchedulingSchema;
     expect(schema).toBeDefined();
-    for (const waitingReason of ['concurrency', 'worktree_busy', 'fifo', 'dispatch_pending']) {
+    for (const waitingReason of ['concurrency', 'worktree_busy', 'fifo', 'dispatch_pending', 'memory_budget']) {
       expect(schema.safeParse({ state: 'QUEUED', waitingReason }).success).toBe(true);
       expect(schema.safeParse({ state: 'SUCCEEDED', waitingReason }).success).toBe(false);
     }
-    expect(schema.safeParse({ state: 'QUEUED', waitingReason: 'memory_budget' }).success).toBe(false);
+    expect(schema.safeParse({ state: 'QUEUED', waitingReason: 'made_up_reason' }).success).toBe(false);
     expect(schema.safeParse({ state: 'RUNNING', waitingReason: null }).success).toBe(true);
     expect(schema.safeParse({ state: 'QUEUED' }).success).toBe(true);
   });

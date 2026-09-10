@@ -26,6 +26,9 @@ describe('documented CLI commands', () => {
     expect(validateReference('wtm create feat/auth --from main --json')).toEqual([]);
     expect(validateReference('wtm exec -- node --unknown-child-option')).toEqual([]);
     expect(validateReference('wtm start/stop/restart <task>')).toEqual([]);
+    expect(validateReference('wtm start dev --wait --timeout 30s --json')).toEqual([]);
+    expect(validateReference('wtm restart dev --wait --json')).toEqual([]);
+    expect(validateReference('wtm start dev --wait-timeout 30s')).toEqual(['unknown option: wtm start --wait-timeout']);
     expect(validateReference('wtm run typecheck --enqueue --idempotency-key check-1 --json')).toEqual([]);
     expect(validateReference('wtm jobs list --limit 50 --json')).toEqual([]);
     expect(validateReference('wtm jobs logs <job-id> --tail 100 --json')).toEqual([]);

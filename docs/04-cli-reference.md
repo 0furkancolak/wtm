@@ -202,14 +202,18 @@ current queue; reading it does not claim a slot, mutate a job or run another sch
 | `concurrency` | All configured slots are held, including jobs still awaiting verified process cleanup |
 | `worktree_busy` | This job is the FIFO head and its worktree already holds a job slot |
 | `fifo` | An earlier queued job must be considered first |
+| `memory_budget` | The FIFO head cannot currently fit the optional memory policy, or memory evidence is unavailable |
 | `dispatch_pending` | Capacity/worktree checks permit considering the FIFO head; dispatch and source/repository validation are still pending |
 | `null` | The job is no longer queued |
 
-Capacity takes precedence, then FIFO position, then worktree occupancy. A later job does not
+Capacity takes precedence, then FIFO position, then worktree occupancy and memory. A later job does not
 overtake a blocked head even if its own worktree is free. This observation is not a reservation
 or start-time guarantee. Older daemons may omit the additive field; absence is not evidence
-of any particular reason. Memory-based admission is not implemented, so `memory_budget` is
-not an emitted reason.
+of any particular reason. Memory admission is opt-in; disabled policy retains the previous
+concurrency-only behavior. `data.memory` on list/status/result/cancel is null when disabled;
+otherwise it reports `budgetBytes`, `reserveBytes`, `availableBytes` and `totalBytes` from that
+observation. Unknown memory values remain null. `job.memoryEstimateBytes` is the accepted
+estimate, not measured usage. These observations do not reserve memory in the OS.
 
 Cancellation accepted before the final SQLite transaction remains cancellation even if the
 child has already exited with code zero while source verification is in progress. Its numeric
@@ -244,10 +248,11 @@ state assumption. Legacy records do not identify their originating host, so that
 cannot be proven retrospectively. Upgrade only state local to this host; shared-host legacy
 adoption is not supported. Once bound, a different machine/user is refused before recovery.
 
-This is admission control for
-WTM-submitted finite tasks, not a hard RAM ceiling. A task's own worker parallelism, the AI's
-memory and non-WTM commands remain outside that ceiling. RAM-based admission is a later slice.
-FIFO is strict: if the oldest queued job's worktree is busy, later jobs wait even when another
+Optional `[jobs.memory]` adds estimate-based admission using available memory and headroom;
+see the [configuration specification](03-configuration-spec.md#shared-heavy-job-memory-admission).
+It requires `memory_estimate_mib` on tasks and supports `queue_env` for task-specific worker
+settings. It does not impose a hard RAM ceiling on the task, AI or other commands.
+FIFO is strict: if the oldest queued job's worktree is busy or memory is insufficient, later jobs wait even when another
 global slot is free. The queue task's deadline is also enforced by its ownership anchor,
 so the timeout continues while the daemon is stopped.
 
@@ -301,6 +306,22 @@ Executes raw argv in the foreground with the same resolved environment/context. 
 
 Starts a managed background task owned by the current worktree.
 
+With a configured HTTP healthcheck, `wtm start dev --wait --timeout 30s --json` waits for
+an observation of readiness. `--timeout` requires `--wait`; it overrides the healthcheck's
+timeout, accepts positive `ms`, `s` or `m` durations, and is capped at five minutes.
+Without an override the configured timeout applies (default 30 seconds). The observation
+starts after launch acknowledgement. Normal start performs no probe and reports
+`data.readiness.state: NOT_CHECKED`.
+
+With `--wait`, success requires a 2xx response and matching live process identity and
+completion evidence before and after the request. `data.readiness` includes `state`,
+`probe`, `attempts`, `elapsedMs` and `observedAt`; it does not disclose the endpoint URL.
+Timeout, process exit/replacement, unavailable evidence and cancellation return `ok:false`
+while preserving `data.process`, `data.existing` and the observation. Timeout or client
+disconnect ends the observation and leaves the managed service running. Use `wtm stop dev`
+to stop it. Readiness describes that instant; it does not guarantee future health or that
+another process could not answer the configured endpoint.
+
 ### `wtm stop [task]`
 
 Stops one task or all WTM-managed tasks for the selected worktree.
@@ -308,6 +329,10 @@ Stops one task or all WTM-managed tasks for the selected worktree.
 ### `wtm restart <task>`
 
 Equivalent to safe stop + start.
+
+Accepts the same `--wait` and `--timeout` options as start. A missing or invalid healthcheck
+is rejected before stopping an existing service. An observation never holds the lifecycle
+lock, so another session can stop or replace the task while a client waits.
 
 ### `wtm resolve <task>`
 
@@ -374,9 +399,9 @@ Options:
 ```
 
 `--cleanup-candidates` returns every linked worktree of the current repository — never the main
-one — ordered best-first, each carrying a `cleanup` block of `rank`, `score` and `reason`. The
+one — ordered best-first, each carrying `cleanup.rank`, `score`, `reason` and `reclaimable`. The
 order is lexicographic over ordered tiers (readiness, nothing running, work safely elsewhere,
-remote persistence strength, idleness, prunable), tie-broken by worktree path so the output is a
+remote persistence strength, idleness, prunable, complete disk estimate), tie-broken by worktree path so the output is a
 total order; `score` is derived from those same tiers rather than sorted on. An input nothing can
 answer ranks neutral and is named in `reason`, and a `BLOCKED` candidate is ranked last rather
 than filtered out. The sort happens in the envelope, so `--json` and the human rendering list the

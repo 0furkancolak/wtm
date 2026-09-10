@@ -540,3 +540,9 @@ Son hedefli doğrulama 5 dosyada 35 pass / 0 fail; lint, typecheck ve package:ve
 (66 dosya). Yukarıdaki native sonuçlar `dbf7734` içindir; bu son completion düzeltmesinin
 yeni native koşusu ayrı izlenmelidir. Tam yerel paket/e2e/performance için önce kaydedilmiş
 PID/proc ve socket sınırları geçerlidir; test beklentileri gevşetilmedi veya test atlanmadı.
+
+## 2026-09-10 devam kaydı
+
+Yeni HTTP readiness, cleanup disk tahmini, Windows private-directory ACL path düzeltmesi
+ve sonraki RAM kabul tasarımı `2026-09-10-todo-continuation.md` içinde izleniyor. Buradaki
+2026-09-09 sonuçları tarihsel baseline'dır; yeni değişikliklerin kanıtı yerine kullanılmaz.

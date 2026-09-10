@@ -387,7 +387,7 @@ wtm analyze --cleanup-candidates
 ```
 
 lists every linked worktree of the current repository — the main worktree is never a candidate —
-ordered best-first, with a `cleanup` block on each entry carrying `rank`, `score` and `reason`.
+ordered best-first, with a `cleanup` block carrying `rank`, `score`, `reason` and `reclaimable`.
 
 The order is **lexicographic over ordered tiers**, not a weighted sum. Each comparison is decided
 by the first tier that separates two candidates, so every position has a one-sentence answer:
@@ -401,6 +401,8 @@ by the first tier that separates two candidates, so every position has a one-sen
    away whether or not anything merged it.
 5. **Idleness** — longest since the last WTM activity first, then since the last commit.
 6. **Prunable** — a worktree Git already reports as gone, before one that is still there.
+7. **Disk estimate** — larger complete estimates first, then unknown estimates. This never
+   overrides safety, runtime, persistence or activity evidence.
 
 Two candidates that tie on every tier are ordered by worktree path, so the output is a total
 order and the same repository produces the same sequence every run.
@@ -419,10 +421,23 @@ Ranking never deletes and never hides. A `BLOCKED` candidate is returned ranked 
 blockers, because dropping it would be a policy decision disguised as a sort. The ranking is
 advisory; WTM never bulk-removes worktrees without explicit selectors/confirmation.
 
-Reclaimable disk size is **not** a ranking input today: `wtm disk` reports its own basis as
-`not-estimated`, and turning that into a number is a measurement feature with its own cost,
-caching and staleness questions rather than a ranking one. The tier order above is written so it
-can be added later without reordering anything above it.
+`cleanup.reclaimable` reports an `exclusive-file-allocation-estimate`: allocated blocks of
+regular files with one hard link, excluding Git metadata, symlinks and their targets, mounted
+filesystems, and retained resource paths determined by the removal policy. No file contents
+are read. Directory and symlink allocation is omitted. Clones, snapshots and compressed or
+shared blocks mean this is not guaranteed freed space and is not a lower bound.
+
+All candidates share a cooperative two-second / 20,000-entry budget and are measured
+sequentially in path order. Each walk has a depth limit of 64. A pending OS read cannot be
+interrupted. There is no persistent cache or background scan. Detected file/path changes,
+unreadable allocation metadata and unresolvable resource templates make an estimate
+unavailable. Budget exhaustion makes it partial; both use `estimatedBytes: null`, retain
+`observedExclusiveBytes` for diagnosis and carry a `reason`. Neither is ranked as zero.
+Complete estimates carry `reclaimable-estimate-<bytes>-bytes` in ranking reasons; unknown
+ones carry `reclaimable-unknown` with a reason when available. Path/metadata rechecks detect
+races but do not create an atomic filesystem snapshot. Removal always repeats its own safety
+checks. `wtm disk` retains its separate resource-footprint basis and does not report this as
+its own reclaimable total.
 
 ## JSON analysis
 

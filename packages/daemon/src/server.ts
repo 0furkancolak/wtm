@@ -12,6 +12,7 @@ import {
   defaultMaxIpcFrameBytes,
   encodeFrame,
   ipcRequestSchema,
+  ipcCancellationArgumentsSchema,
   ipcResponseSchema,
   jsonEnvelopeSchema,
   protocolVersion,
@@ -23,10 +24,13 @@ import {
 
 export type IpcRequestHandler = (
   request: IpcRequest,
+  context?: { signal: AbortSignal },
 ) => JsonEnvelope<unknown> | Promise<JsonEnvelope<unknown>>;
 
 export interface UnixIpcServerOptions {
   socketPath: string;
+  /** Inject the selected transport publisher; production defaults to this host's policy. */
+  publisher?: IpcServerPublisher;
   handler: IpcRequestHandler;
   /**
    * `sizeof(sun_path)` for the machine this server binds on. Defaults to the platform seam's
@@ -58,11 +62,11 @@ export interface UnixIpcServerOptions {
 
 interface ConnectionState {
   decoder: FrameDecoder;
-  inFlight: number;
   partialTimer: ReturnType<typeof setTimeout> | null;
   outputQueue: Buffer[];
   pendingOutputBytes: number;
   backpressured: boolean;
+  requests: Map<string, AbortController>;
 }
 
 interface PreReadyInput {
@@ -139,7 +143,7 @@ export class UnixIpcServer {
       options.partialFrameIdleTimeoutMs ?? 5_000,
       'Partial IPC frame idle timeout',
     );
-    this.#publisher = hostIpcPublisher();
+    this.#publisher = options.publisher ?? hostIpcPublisher();
     this.#publishOptions = {
       probeExistingSocket: options.probeExistingSocket,
       beforeStaleSocketQuarantine: options.beforeStaleSocketQuarantine ?? options.beforeStaleSocketUnlink,
@@ -270,13 +274,15 @@ export class UnixIpcServer {
     const decoder = new FrameDecoder({ maxFrameBytes: this.#maxFrameBytes });
     const state: ConnectionState = {
       decoder,
-      inFlight: 0,
       partialTimer: null,
       outputQueue: [],
       pendingOutputBytes: 0,
       backpressured: false,
+      requests: new Map(),
     };
     socket.once('close', () => {
+      for (const request of state.requests.values()) request.abort();
+      state.requests.clear();
       if (state.partialTimer !== null) clearTimeout(state.partialTimer);
       state.partialTimer = null;
       state.outputQueue.length = 0;
@@ -305,12 +311,8 @@ export class UnixIpcServer {
       }
       this.#updatePartialFrameTimer(socket, state);
       for (const frame of frames) {
-        if (state.inFlight >= this.#maxInFlightPerConnection) {
-          socket.destroy();
-          return;
-        }
-        state.inFlight += 1;
-        void this.#handleFrame(socket, state, frame).finally(() => { state.inFlight -= 1; });
+        if (socket.destroyed) return;
+        void this.#handleFrame(socket, state, frame).catch(() => socket.destroy());
       }
     };
     socket.on('data', receive);
@@ -362,8 +364,30 @@ export class UnixIpcServer {
     }
 
     let envelope: JsonEnvelope<unknown>;
+    if (parsed.data.command === 'ipc.cancel') {
+      const cancellation = ipcCancellationArgumentsSchema.safeParse(parsed.data.arguments);
+      if (!cancellation.success) {
+        this.#writeResponse(socket, state, failureResponse(id, command, 'WTM_DAEMON_INVALID_REQUEST', 'Invalid cancellation request.'));
+        return;
+      }
+      state.requests.get(cancellation.data.requestId)?.abort();
+      this.#writeResponse(socket, state, { protocol: protocolVersion, id, envelope: {
+        schemaVersion: 1, ok: true, command, data: null, warnings: [], errors: [],
+      } });
+      return;
+    }
+    if (state.requests.has(id)) {
+      this.#writeResponse(socket, state, failureResponse(id, command, 'WTM_DAEMON_INVALID_REQUEST', 'An active request already uses this ID.'));
+      return;
+    }
+    // Control frames must be able to cancel an observer even when every work slot is held.
+    // Ordinary requests retain the exact same connection limit.
+    if (state.requests.size >= this.#maxInFlightPerConnection) { socket.destroy(); return; }
+    const cancellation = new AbortController();
+    state.requests.set(id, cancellation);
     try {
-      const handled = await this.#handler(parsed.data);
+      if (socket.destroyed) cancellation.abort();
+      const handled = await this.#handler(parsed.data, { signal: cancellation.signal });
       const validated = jsonEnvelopeSchema.safeParse(handled);
       if (!validated.success) throw new Error('handler returned an invalid envelope');
       envelope = handled;
@@ -373,6 +397,8 @@ export class UnixIpcServer {
         'WTM_DAEMON_REQUEST_FAILED',
         'The daemon could not complete the request.',
       );
+    } finally {
+      state.requests.delete(id);
     }
     this.#writeResponse(socket, state, {
       protocol: protocolVersion,

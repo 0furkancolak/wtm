@@ -1,8 +1,9 @@
 # TODO 10: readiness için sonraki dilim
 
-Bu belge uygulama tasarımıdır; burada önerilen readiness özelliği henüz uygulanmadı.
-Mevcut `start`/`restart` komutlarında `--wait`, `--timeout` veya `--wait-timeout` yoktur.
-Task config şeması `healthcheck` kabul etmez. Çalışan kullanım için CLI reference esas alınır.
+Bu belge 2026-09-09 tarihindeki tasarım kaydıdır. HTTP dilimi 2026-09-10'da uygulandı;
+`start`/`restart --wait --timeout` ve task `healthcheck` config'i artık kayıtlıdır.
+Aşağıdaki eski durum ve öneriler tarihsel gerekçedir. Güncel sözleşme CLI/config reference'ta,
+doğrulama ve açık native/review kanıtları `2026-09-10-todo-continuation.md` dosyasındadır.
 
 ## Mevcut sınır
 

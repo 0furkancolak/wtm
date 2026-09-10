@@ -55,6 +55,8 @@ WTM_JOB_NOT_QUEUEABLE
 WTM_JOB_NOT_COMPLETE
 WTM_JOB_UNSUCCESSFUL
 WTM_JOB_SOURCE_CHANGED
+WTM_JOB_MEMORY_ESTIMATE_REQUIRED
+WTM_JOB_MEMORY_BUDGET_EXCEEDED
 ```
 
 Job commands retain the V1 JSON envelope. A successful enqueue is durable acceptance, not a
@@ -65,6 +67,8 @@ and `reused`. Queries preserve the recorded task exit code independently of the 
 | --- | --- | --- |
 | `WTM_JOB_NOT_FOUND` | 2 | No visible retained job has that identifier in this queue scope. |
 | `WTM_JOB_NOT_QUEUEABLE` | 2 | The task is not eligible, local machine/user identity is unavailable, or state belongs to a different host/user. |
+| `WTM_JOB_MEMORY_ESTIMATE_REQUIRED` | 2 | Enabled memory admission requires a positive task estimate. |
+| `WTM_JOB_MEMORY_BUDGET_EXCEEDED` | 2 | The estimate cannot fit the configured or known host capacity after headroom. |
 | `WTM_JOB_QUEUE_FULL` | 3 | The bounded queue/history cannot accept another job. |
 | `WTM_JOB_IDEMPOTENCY_CONFLICT` | 3 | The key already belongs to a different request; no second job ran. |
 | `WTM_JOB_SOURCE_CHANGED` | 3 | The job's source/configuration evidence changed or cannot be verified. |
@@ -76,6 +80,13 @@ slot ownership and `sourceValidity`; an accepted/queued job is never evidence th
 `UNCHANGED` describes the documented Git-visible input snapshot, not ignored/external inputs
 or an immutable source sandbox. Metadata carries command fingerprints, not resolved environment
 values or secret-bearing argv. Task output may itself contain secrets, as with ordinary logs.
+
+Temporary shortage or unknown memory evidence leaves the job queued with `memory_budget`
+when earlier concurrency/FIFO/worktree gates permit considering it. Status remains a successful
+lookup. If changed global policy makes an already queued job permanently unfit, claim records
+`FAILED` and its memory error without a process, startedAt or invented exit code. `jobs result`
+still applies the normal terminal/source/result checks. Legacy jobs retain null estimates;
+enabling memory admission never invents a reservation amount or clears their held slots.
 
 ### Scope/config
 
@@ -199,7 +210,16 @@ RUNTIME_TASK_NOT_RUNNING
 RUNTIME_PROCESS_IDENTITY_STALE
 RUNTIME_START_FAILED
 RUNTIME_STOP_FAILED
+RUNTIME_READINESS_TIMEOUT
+RUNTIME_READINESS_FAILED
+RUNTIME_READINESS_ABORTED
 ```
+
+The three readiness errors map to exit code 1. A timeout reports `TIMED_OUT`; cancellation
+reports `ABORTED`; a failed observation distinguishes `PROCESS_EXITED`, `PROCESS_CHANGED`,
+`IDENTITY_UNCERTAIN` and `EVIDENCE_UNAVAILABLE`. Start/restart responses preserve the process
+and observation in `data` even when `ok:false`. `READY` is the successful wait observation;
+`NOT_CHECKED` is a start without a probe. Neither timeout nor abort stops the managed task.
 
 ### Adapter
 

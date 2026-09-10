@@ -4,23 +4,29 @@ import {
   WtmEnvironmentError,
   WtmTaskResolutionError,
   WtmTemplateError,
+  resolvedHealthcheckSchema,
   type ManagedProcessRecord,
   type ResolvedTask,
 } from '@wtm/core';
 import {
   defaultMaxIpcFrameBytes,
   protocolVersion,
+  runtimeStartArgumentsSchema,
   type IpcRequest,
   type JsonEnvelope,
   type WtmError,
   type WtmErrorCode,
 } from '@wtm/protocol';
 import { z } from 'zod';
-import type {
-  ManagedProcessSelector,
-  ManagedProcessStartInput,
-  ManagedProcessStartResult,
+import {
+  inspectProcess,
+  type ProcessInspection,
+  type ManagedProcessSelector,
+  type ManagedProcessStartInput,
+  type ManagedProcessStartResult,
 } from './process-supervisor';
+import type { ManagedProcessCompletion } from './logs';
+import { observeReadiness, uncheckedReadiness, type ReadinessFetch } from './readiness';
 
 /**
  * Raised when a request names a directory that no registered workspace, repository, or
@@ -60,8 +66,8 @@ const logStreamCursorsSchema = z.object({
   stderr: logCursorSchema.optional(),
 }).strict();
 const runtimeArgumentSchemas = {
-  start: z.object({ cwd: cwdSchema, taskName: taskNameSchema }).strict(),
-  restart: z.object({ cwd: cwdSchema, taskName: taskNameSchema }).strict(),
+  start: runtimeStartArgumentsSchema,
+  restart: runtimeStartArgumentsSchema,
   stop: z.object({ cwd: cwdSchema, taskName: taskNameSchema.optional() }).strict(),
   ps: z.object({ cwd: cwdSchema }).strict(),
   logs: z.object({
@@ -85,6 +91,7 @@ export interface DaemonRuntimeSupervisor {
 
 export interface DaemonRuntimeLogReader {
   read(path: string, maxBytes?: number): Promise<string>;
+  readCompletion?(stdoutPath: string, pid: number): Promise<ManagedProcessCompletion | null>;
   readCursor?(
     path: string,
     cursor?: { dev: number; ino: number; offset: number; generation?: string },
@@ -116,6 +123,8 @@ export interface DaemonRuntimeControllerOptions {
   supervisor: DaemonRuntimeSupervisor;
   logs: DaemonRuntimeLogReader;
   resolver: DaemonRuntimeResolver;
+  inspectProcess?: (pid: number) => Promise<ProcessInspection>;
+  readinessFetch?: ReadinessFetch;
   /**
    * Told when a supervised task actually started or stopped, so that `[events."runtime.started"]`
    * and `[events."runtime.stopped"]` can run what the workspace attached to them. It is never
@@ -129,16 +138,20 @@ export class DaemonRuntimeController {
   readonly #supervisor: DaemonRuntimeSupervisor;
   readonly #logs: DaemonRuntimeLogReader;
   readonly #resolver: DaemonRuntimeResolver;
+  readonly #inspectProcess: (pid: number) => Promise<ProcessInspection>;
+  readonly #readinessFetch: ReadinessFetch | undefined;
   readonly #onRuntimeEvent: NonNullable<DaemonRuntimeControllerOptions['onRuntimeEvent']>;
 
   constructor(options: DaemonRuntimeControllerOptions) {
     this.#supervisor = options.supervisor;
     this.#logs = options.logs;
     this.#resolver = options.resolver;
+    this.#inspectProcess = options.inspectProcess ?? inspectProcess;
+    this.#readinessFetch = options.readinessFetch;
     this.#onRuntimeEvent = options.onRuntimeEvent ?? (() => {});
   }
 
-  async handle(request: IpcRequest): Promise<JsonEnvelope<unknown>> {
+  async handle(request: IpcRequest, context?: { signal?: AbortSignal }): Promise<JsonEnvelope<unknown>> {
     if (!runtimeCommandNames.has(request.command)) return invalidRequest(request.command);
     try {
       const schema = runtimeArgumentSchemas[request.command as keyof typeof runtimeArgumentSchemas];
@@ -147,6 +160,8 @@ export class DaemonRuntimeController {
       const args = parsed.data as {
         cwd: string;
         taskName?: string;
+        wait?: boolean;
+        waitTimeoutMs?: number;
         follow?: false;
         argv?: string[];
         cursors?: Record<string, {
@@ -159,14 +174,67 @@ export class DaemonRuntimeController {
       if (request.command === 'start' || request.command === 'restart') {
         const taskName = args.taskName as string;
         const resolved = await this.#resolver.resolveTask(cwd, taskName);
+        const healthcheck = args.wait === true ? resolvedHealthcheckSchema.safeParse(resolved.task.healthcheck) : null;
+        if (healthcheck !== null && !healthcheck.success) {
+          throw new WtmTaskResolutionError('Waiting for readiness requires a valid HTTP healthcheck for this task.', { taskName });
+        }
+        if (args.wait === true && context?.signal?.aborted) {
+          return failure(request.command, {
+            code: 'RUNTIME_READINESS_ABORTED', message: 'Readiness observation was cancelled.',
+            severity: 'error', context: { taskName },
+          });
+        }
         const input = processStartInput(resolved.worktreeId, taskName, resolved.task);
         const result = request.command === 'start'
           ? await this.#supervisor.start(input)
           : await this.#supervisor.restart(input);
+        if (result.record.state !== 'RUNNING' || result.record.cleanupRequired) {
+          return {
+            ...success(request.command, {
+              process: result.record, existing: result.existing,
+              readiness: { ...uncheckedReadiness(), state: 'PROCESS_EXITED', observedAt: new Date().toISOString() },
+            }, scopeOf(resolved)),
+            ok: false,
+            errors: [{
+              code: 'RUNTIME_START_FAILED', message: 'Managed task did not remain running after launch.',
+              severity: 'error', context: { taskName, processId: result.record.id, state: result.record.state },
+            }],
+          };
+        }
         if (!result.existing || request.command === 'restart') {
           this.#onRuntimeEvent('runtime.started', resolved.worktreeId);
         }
-        return success(request.command, { process: result.record, existing: result.existing }, scopeOf(resolved));
+        if (healthcheck === null || !healthcheck.success) {
+          return success(request.command, {
+            process: result.record, existing: result.existing, readiness: uncheckedReadiness(),
+          }, scopeOf(resolved));
+        }
+        const observation = await observeReadiness({
+          record: result.record, healthcheck: healthcheck.data,
+          ...(args.waitTimeoutMs === undefined ? {} : { timeoutMs: args.waitTimeoutMs }),
+          ...(context?.signal === undefined ? {} : { signal: context.signal }),
+          inspectProcess: this.#inspectProcess,
+          ...(this.#logs.readCompletion === undefined ? {} : {
+            readCompletion: async (path: string, pid: number) => this.#logs.readCompletion!(path, pid),
+          }),
+          ...(this.#readinessFetch === undefined ? {} : { fetch: this.#readinessFetch }),
+          getCurrentRecord: () => {
+            const records = this.#supervisor.list(resolved.worktreeId).filter((record) => record.taskName === taskName);
+            return records.find((record) => ['STARTING', 'RUNNING', 'STOPPING'].includes(record.state))
+              ?? records.find((record) => record.id === result.record.id) ?? null;
+          },
+        });
+        const envelope = success(request.command, { ...observation, existing: result.existing }, scopeOf(resolved));
+        if (observation.readiness.state === 'READY') return envelope;
+        const state = observation.readiness.state;
+        const code = state === 'TIMED_OUT' ? 'RUNTIME_READINESS_TIMEOUT'
+          : state === 'ABORTED' ? 'RUNTIME_READINESS_ABORTED' : 'RUNTIME_READINESS_FAILED';
+        return { ...envelope, ok: false, errors: [{
+          code,
+          message: state === 'TIMED_OUT' ? 'Managed task was not ready before the observation deadline.'
+            : state === 'ABORTED' ? 'Readiness observation was cancelled.' : 'Managed task readiness could not be verified.',
+          severity: 'error', context: { taskName, processId: result.record.id, state },
+        }] };
       }
 
       if (request.command === 'stop') {
