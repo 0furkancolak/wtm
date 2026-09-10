@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   buildReleaseManifest,
   verifyReleaseArtifacts,
@@ -189,6 +191,20 @@ describe('release artifact gate', () => {
     expect(manifest.archives.map(({ name }) => name)).toEqual([arm64]);
   });
 
+  test('rejects an empty archive selection even when the checksum document is empty', () => {
+    expect(() => verifyReleaseArtifacts(request(stage({}), { archives: [] })))
+      .toThrow('Release archive selection must be a non-empty, unique subset');
+  });
+
+  test('rejects duplicate and unpublished archive selections', () => {
+    const name = 'wtm-darwin-arm64.tar.gz';
+    expect(() => verifyReleaseArtifacts(request(stage({ [name]: payloads[name]! }), { archives: [name, name] })))
+      .toThrow('Release archive selection must be a non-empty, unique subset');
+    const unpublished = 'wtm-linux-x64.tar.gz';
+    expect(() => verifyReleaseArtifacts(request(stage({ [unpublished]: 'local archive' }), { archives: [unpublished] })))
+      .toThrow('Release archive selection must be a non-empty, unique subset');
+  });
+
   test('rejects an architecture that ships another architecture\'s archive', () => {
     const directory = stage(payloads);
 
@@ -351,6 +367,51 @@ describe('release artifact gate', () => {
     expect(() => verifyReleaseArtifacts(request(directory, {
       performance: [{ blockers: 0, warnings: 1 }, { blockers: 1, warnings: 0 }],
     }))).toThrow('Stable release v1.2.3 has 1 performance blocker(s)');
+  });
+
+  test('a negative report cannot cancel another architecture\'s blocker', () => {
+    expect(() => verifyReleaseArtifacts(request(stage(), {
+      performance: [{ blockers: 1, warnings: 0 }, { blockers: -1, warnings: 0 }],
+    }))).toThrow('non-negative safe integers');
+  });
+
+  test('rejects malformed counters at the public boundary, including for prereleases', () => {
+    const directory = stage();
+    const invalid = [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1];
+    for (const prerelease of [false, true]) {
+      const version = prerelease ? '1.2.3-rc.1' : '1.2.3';
+      for (const count of invalid) {
+        for (const report of [{ blockers: count, warnings: 0 }, { blockers: 0, warnings: count }]) {
+          expect(() => verifyReleaseArtifacts(request(directory, {
+            release: { tag: `v${version}`, version, prerelease },
+            packageVersion: version,
+            performance: [report],
+          }))).toThrow('non-negative safe integers');
+        }
+      }
+    }
+  });
+
+  test('the executable rejects malformed JSON performance evidence before inspecting archives', () => {
+    const root = fileURLToPath(new URL('../..', import.meta.url));
+    const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version: string };
+    for (const counters of ['-1', '0.5', '1e400', '9007199254740992']) {
+      const child = spawnSync(process.execPath, [join(root, 'scripts/verify-release.ts'), `v${version}`], {
+        cwd: root,
+        env: { ...process.env, WTM_RELEASE_PERFORMANCE: `[{"blockers":0,"warnings":${counters}}]` },
+        encoding: 'utf8', timeout: 5000,
+      });
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(1);
+      expect(child.stderr).toContain('WTM_RELEASE_PERFORMANCE');
+      expect(child.stderr).toContain('non-negative safe integers');
+    }
+  });
+
+  test('reports combined blocker counts exactly even above the safe number range', () => {
+    expect(() => verifyReleaseArtifacts(request(stage(), {
+      performance: [{ blockers: Number.MAX_SAFE_INTEGER, warnings: 0 }, { blockers: 2, warnings: 0 }],
+    }))).toThrow('has 9007199254740993 performance blocker(s)');
   });
 
   test('accepts a stable release with performance warnings but no blockers', () => {
