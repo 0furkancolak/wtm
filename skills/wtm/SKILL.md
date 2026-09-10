@@ -18,6 +18,18 @@ wtm doctor --json
 wtm status --json
 ```
 
+Use the platform check in `wtm doctor --json` to identify the active backend and its paths.
+macOS uses a per-user LaunchAgent, Linux a systemd user service, and the experimental Windows
+backend a per-user Scheduled Task and named pipe. Windows implementation and test coverage
+do not imply that its native validation is complete; report capability failures as returned.
+Do not translate another platform's paths or service commands by hand.
+
+Use the same WTM subcommands from PowerShell and Git Bash; their quoting, environment
+assignment and path syntax differ. Prefer configured argv-array tasks and WTM's own `status`,
+`ports`, `ps`, `stop`, and `doctor` commands. Avoid shell-specific `kill`, `pkill`, or `lsof`
+workarounds. Use `wtm daemon status --json` to inspect the service, `wtm daemon install` when
+installation is authorized, and `wtm skill install` for the documented skill installer.
+
 If WTM says the current directory is not initialized, do not invent WTM configuration. Report it or, when initialization is part of the user's request, run:
 
 ```bash
@@ -71,6 +83,7 @@ wtm run typecheck --enqueue --idempotency-key <unique-request-key> --json
    | `worktree_busy` | The FIFO head shares a worktree with a job that still holds a slot. |
    | `fifo` | An earlier queued job must be considered first. |
    | `dispatch_pending` | Awaiting scheduler dispatch and preflight checks; launch is not guaranteed. |
+   | `memory_budget` | The configured estimate cannot fit current memory/headroom evidence; continue independent work without bypassing the queue. |
 
    The value is `null` outside `QUEUED`. Older daemons may omit the field; an omitted reason
    is unknown. Continue independent work at the same polling interval; these observations do
@@ -248,6 +261,7 @@ Read `errors[].code` and handle the refusal, do not work around it:
 | `errors[].code` | Exit | What it means, and what to do |
 | --- | --- | --- |
 | `GIT_DIRTY_*`, `GIT_UNTRACKED`, `GIT_IGNORED_CONTENT`, `GIT_UNMERGED`, `GIT_HEAD_NOT_REMOTE_PERSISTED`, `GIT_WORKTREE_LOCKED`, `GIT_MAIN_WORKTREE` | 3 | Real work would be lost. Report the blocker and its remediation. Ignored content is separate from untracked content; inspect both `workingTree.paths.ignored` and `workingTree.paths.untracked`. |
+| `GIT_UNTRACKED_SYMLINKS` | 3 | Configured `safety.untracked_symlinks = "block"` protects these links, including resource-owned ones. Report the listed paths; do not unlink them or weaken the policy to make removal pass. Under `review`, the same code is advisory in `warnings`, not a failed command. |
 | `WTM_OPERATION_CONFLICT` with `context.jobId` | 3 | A queued job or held slot protects this repository. Inspect the job; let it finish or cancel it explicitly and verify slot release before retrying. `--resume` does not bypass this conflict. |
 | `WTM_OPERATION_CONFLICT` with `context.holderPid` | 3 | Another process holds a repository operation lease. Inspect `holderPid` and `acquiredAt`; do not retry in a loop. |
 | `WTM_OPERATION_CONFLICT` with `context.abandoned: true` | 3 | The previous removal's process died at `context.stage`. This is the only case for `--resume`; the error's remediation carries the exact command. |

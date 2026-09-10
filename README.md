@@ -1,13 +1,20 @@
 # WTM — Worktree Runtime Manager
 
-**Run many Git worktrees at once, on macOS and Linux, without port collisions, `.env` copying, or losing uncommitted work.**
+**Run every Git worktree with its own tasks, environment, ports and managed processes.**
 
 WTM is a local-first runtime and safety manager for Git worktrees. It discovers your
 repositories and linked worktrees, resolves per-worktree tasks and environments, supervises
-long-running processes, allocates endpoints, and refuses unsafe worktree removal.
+long-running processes, queues expensive finite tasks across coding-agent sessions, and refuses
+unsafe worktree removal. macOS and Linux x64 have native test evidence; the Windows backend is
+experimental while its native validation is being completed.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20x64-lightgrey.svg)](#platform-support)
+[![Platforms](https://img.shields.io/badge/platforms-cross--platform-lightgrey.svg)](#platform-support)
+[![macOS](https://img.shields.io/badge/macOS-arm64%20%7C%20x64-lightgrey.svg)](#platform-support)
+[![Linux](https://img.shields.io/badge/Linux-x64-lightgrey.svg)](#platform-support)
+[![Windows](https://img.shields.io/badge/Windows-experimental-yellow.svg)](#platform-support)
+[![Latest release](https://img.shields.io/github/v/release/0furkancolak/wtm?include_prereleases)](https://github.com/0furkancolak/wtm/releases)
+[![CI](https://github.com/0furkancolak/wtm/actions/workflows/ci.yml/badge.svg)](https://github.com/0furkancolak/wtm/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D24-green.svg)](#requirements)
 [![JSON output](https://img.shields.io/badge/output-stable%20JSON-orange.svg)](#json-output-for-scripts-and-agents)
 
@@ -69,9 +76,9 @@ context-aware orchestration layer around them.
 
 ## Install
 
-### From source, today (recommended while pre-release)
+### macOS and Linux: from source
 
-Requires [Bun](https://bun.sh) 1.3+ and Node.js 24+ to build. The result is a single
+Requires [Bun](https://bun.sh) 1.3+ and the repository's pinned **Node.js 24.18.0** to build the standalone binary. The result is a single
 standalone executable that needs neither afterwards. This is the route on Linux: the published
 release archives are macOS-only, and building from source is what CI itself does on
 `ubuntu-latest`.
@@ -93,21 +100,19 @@ To install the binary alone and register no service:
 make install WITH_DAEMON=0
 ```
 
-### Homebrew (macOS, not available yet)
+### macOS: Homebrew channel awaiting verification
 
 The formula is rendered and committed only for stable tags, and a stable release requires a
-Developer ID signed executable. Until one is published there is no tap to add:
+Developer ID signed executable. A rendered formula or CI build is not an installed, published
+Homebrew channel. Use the source build or the published prerelease archive until that channel
+is verified.
 
-```bash
-brew tap 0furkancolak/wtm && brew install 0furkancolak/wtm/wtm
-```
+### macOS: published prerelease binary
 
-### Direct macOS binary
-
-The release archives are macOS-only — `wtm-darwin-arm64` and `wtm-darwin-x64`. There is no Linux
+The published `v0.1.0-rc.1` archives are macOS-only — `wtm-darwin-arm64` and `wtm-darwin-x64`. There is no Linux
 download: nothing is published for Linux yet, and adding it means changing the release workflow,
 the artifact names, the signing rule and the Homebrew formula together, which is a later
-increment. Install on Linux from source or from npm.
+increment. Install on Linux from source.
 
 Select the archive matching your architecture, verify it against `SHA256SUMS`, then extract:
 
@@ -145,23 +150,39 @@ not something you should have to do. It disappears when the stable macOS binarie
 signed and notarized.
 <!-- gatekeeper-quarantine:end -->
 
-### npm (Node.js 24+)
+### npm package: publication awaiting verification
 
-```bash
-npm install --global worktree-runtime-manager@next
-```
-
-`@next` is where prereleases are published. Drop it once a stable version exists.
+The repository builds and verifies an npm package named `worktree-runtime-manager`, but the
+registry publication and `next` channel have not been verified. Use the source build or the
+published macOS archive above; a package build alone does not establish a working registry
+installation command.
 
 The npm package carries no runtime of its own and uses the Node.js you already have. The
 standalone executable embeds one, which is why it is roughly 97 MB on disk.
 
-The package declares `"os": ["darwin", "linux"]`, so it installs on both and refuses elsewhere
-rather than installing and then failing to start.
+The current source manifest declares `"os": ["darwin", "linux", "win32"]`. This is an installation
+eligibility list, not evidence that every backend or previously published package has passed
+every gate. See [Platform support](#platform-support), especially the Windows limitations.
+
+### Windows: experimental contributor build
+
+There is no published Windows archive, PowerShell installer, Scoop manifest or WinGet package.
+The source includes a Windows backend and a native CI leg, which still has failures. To inspect
+that work from PowerShell after cloning this repository and installing its development prerequisites:
+
+```powershell
+bun install --frozen-lockfile
+bun run build
+node dist/cli/bin.js doctor --json
+```
+
+Use the reported errors when diagnosing the experimental backend. Do not treat successful
+installation or configuration parsing as proof of safe process cleanup or service recovery.
+The POSIX `make install` recipe above is not a PowerShell installation recipe.
 
 ## Quick start
 
-Five commands, from nothing to a resolved task. They work in a clean workspace with no `Makefile`
+Five commands in Bash, from nothing to a resolved task. They work in a clean workspace with no `Makefile`
 and no adapters, because the third one defines the task the last one resolves.
 
 ```bash
@@ -171,6 +192,10 @@ printf '\n[tasks.dev]\nrun = ["npm", "run", "dev"]\n' >> wtm.toml
 wtm status
 wtm resolve dev
 ```
+
+In PowerShell, run the same WTM commands and add the task to `wtm.toml` with an editor instead
+of the Bash `printf` command. The TOML entry is `[tasks.dev]` followed by
+`run = ["npm", "run", "dev"]` on the next line.
 
 `init` records the repositories under this directory and writes a `wtm.toml`; `status` says which
 worktree you are standing in and what is running there; `resolve` prints the exact argv, working
@@ -197,7 +222,8 @@ wtm init --yes
 `init` walks the tree (five levels deep by default), records every repository and linked
 worktree it finds, and writes a `wtm.toml` next to itself. It registers the workspace in WTM's own
 state directory — `~/Library/Application Support/WTM` on macOS, `~/.local/state/wtm` on Linux
-(`$XDG_STATE_HOME/wtm` when that is set to an absolute path). Nothing outside that directory and
+(`$XDG_STATE_HOME/wtm` when that is set to an absolute path), or `%LOCALAPPDATA%\WTM` in the
+experimental Windows backend. Nothing outside that directory and
 the `wtm.toml` is modified. `wtm doctor`'s `platform` check prints the roots in force, so you never
 have to guess which layout you are on.
 
@@ -292,7 +318,8 @@ zero-exit task with unchanged source evidence; it preserves failure details othe
 
 `jobs list` and `jobs status` include `waitingReason` for queued jobs: `concurrency` when
 all shared slots are held, `worktree_busy` when the FIFO head's worktree is occupied, `fifo`
-when an earlier queued job is ahead, or `dispatch_pending` before scheduler/preflight checks.
+when an earlier queued job is ahead, `memory_budget` when the optional RAM policy cannot admit
+the FIFO head, or `dispatch_pending` before scheduler/preflight checks.
 This is a current observation; it does not reserve a slot or promise a start time.
 
 By default only one heavy job runs across this host, OS user and state store. Set
@@ -303,8 +330,16 @@ HOME is shared. The first upgrade adopts legacy unbound state under the existing
 assumption; old records cannot prove their host retrospectively. Independent state stores
 have independent limits. Long-running dev
 servers stay under `wtm start` and do not hold this queue's slots. The limit controls task
-concurrency, not a strict RAM ceiling or the task's own worker count. RAM-aware scheduling and
-automatic agent wakeups are separate future integrations.
+concurrency, not a strict RAM ceiling or the task's own worker count.
+
+Optional `[jobs.memory]` in the daemon's global config adds `budget_mib` and `reserve_mib`
+admission checks. Every queued task then needs a positive `memory_estimate_mib` for its whole
+worker tree; its `queue_env` can set the build tool's actual worker limit without changing
+foreground execution. Estimates remain reserved until process cleanup is confirmed, including
+during cancellation and recovery. Unknown available memory defers starts. This is estimated
+admission, not an OS-enforced RAM quota or a measured savings claim. See the
+[configuration contract](docs/03-configuration-spec.md#shared-heavy-job-memory-admission).
+Automatic agent wakeups remain a separate, unimplemented integration.
 
 Cleanup/removal is refused while the repository has queued jobs or occupied job slots.
 Cancel those jobs and confirm their slots are released before retrying cleanup. Queue history
@@ -324,8 +359,19 @@ wtm restart dev            # stop and start it safely
 wtm stop dev               # stop it; `wtm stop` with no task stops all
 ```
 
-Each supervised task runs inside its own process group behind an anchor process, so
-stopping a task stops everything it spawned rather than leaving orphans behind.
+Each supervised task runs behind an anchor process, so
+stopping a task verifies its owned process tree before releasing it. macOS/Linux use POSIX
+groups; the experimental Windows backend uses identity-checked process-tree inspection.
+
+When a dependent step needs an HTTP service, configure its task `healthcheck` and use:
+
+```bash
+wtm start dev --wait --timeout 30s --json
+```
+
+Require `ok: true` and `data.readiness.state: "READY"`. Ordinary start returns `NOT_CHECKED`;
+a running PID is not application readiness. A wait timeout or cancelled observation leaves
+the managed service running. See the [healthcheck configuration](docs/03-configuration-spec.md#http-readiness).
 
 ### 6. Remove a worktree safely
 
@@ -595,7 +641,8 @@ schema is in [docs/03-configuration-spec.md](docs/03-configuration-spec.md).
 
 Background supervision (`start`, `stop`, `restart`, `ps`, `logs`) and the shared heavy-job queue need a per-user daemon,
 registered with the platform's own service manager — a LaunchAgent under launchd on macOS, a
-systemd user unit driven by `systemctl --user` on Linux. `make install` registers it for you.
+systemd user unit driven by `systemctl --user` on Linux, or the experimental Scheduled Task
+backend on Windows. On macOS and Linux, `make install` registers it for you.
 
 ```bash
 wtm daemon install     # register the service
@@ -605,7 +652,9 @@ wtm daemon uninstall   # remove it
 
 `wtm daemon status` names the definition it is describing in `definitionPath`, and `wtm doctor`'s
 `platform` check names the service manager in force, so you can always find the file WTM published
-and the tool that loads it.
+and the tool that loads it. On Windows, `definitionPath` names the XML staging file; Task
+Scheduler owns the registered task. The Windows service lifecycle still needs complete native
+acceptance evidence.
 
 Foreground task execution with `wtm run <task>` does not require the daemon. Enqueueing with
 `wtm run <task> --enqueue` does. Installing WTM never submits a task; explicit task execution
@@ -695,7 +744,7 @@ Full detail: [docs/04-cli-reference.md](docs/04-cli-reference.md).
 | `make install` | Build, install to `~/.local/bin`, register the daemon |
 | `make reinstall` | Rebuild and reinstall |
 | `make uninstall` | Unregister the daemon and remove the executable |
-| `make purge` | Uninstall, then delete this user's WTM state (macOS layout only) |
+| `make purge` | Uninstall, then delete this user's WTM state, logs and configuration |
 | `make where` | Which `wtm` is on PATH, its version, the daemon |
 | `make check` | Lint, typecheck, unit suites |
 | `make verify` | The full release gate |
@@ -725,10 +774,10 @@ WTM is pre-release and honest about its edges. Every command carries a real payl
 
 | Platform | State |
 | --- | --- |
-| **macOS** (Apple silicon and Intel) | First-class. Built, tested and released here; the daemon runs under launchd. |
-| **Linux x64** (glibc) | Supported and tested. Every CI gate the macOS legs run — lint, typecheck, the full suite, the end-to-end suite, the build, the package check and the standalone-executable check — runs on `ubuntu-latest` and is green. **Nothing is released for Linux yet**: install from source or from npm. |
+| **macOS** (Apple silicon and Intel) | Native CLI, launchd and process supervision backends; both architectures have published prerelease archives and native CI legs. Current regressions and signing/notarization requirements remain release gates. |
+| **Linux x64** (glibc) | Native CLI, Unix IPC and POSIX process supervision have passing CI evidence. The systemd user-service lifecycle needs a real user session for full validation. No published Linux archive; build from source. |
 | **Linux arm64, musl/Alpine** | Unproven. No runner, no build, no claim. |
-| **Windows** | Not started. WTM refuses to run with `WTM_PLATFORM_UNSUPPORTED`. |
+| **Windows x64** | Experimental implementation: CLI, Named Pipe IPC, SID/ACL checks, Scheduled Task service backend and process-tree supervision. The native CI leg still has failures; no released binary or complete platform-support claim. |
 
 WTM's operating system is a parameter rather than an assumption: one `PlatformRuntime` answers
 where files go, how long a socket address may be, how to recognise a process, and how to register a
@@ -753,15 +802,28 @@ Two limits are worth stating rather than leaving to be discovered:
 - **`launchctl` and launchd are macOS-only**, and so is everything about signing, notarization and
   Homebrew in this README.
 
-The package declares `"os": ["darwin", "linux"]`, pinned by a test to the platforms CI actually
-validates, so the manifest cannot drift ahead of the evidence.
+The package declares `"os": ["darwin", "linux", "win32"]`, and a test checks that each declared
+platform has a CI leg. That test checks coverage configuration, not whether those jobs passed.
+Use [the CI run](https://github.com/0furkancolak/wtm/actions/workflows/ci.yml) for the revision
+you are evaluating; a past green run does not verify later changes.
 
 ## Requirements
 
-- **macOS, or Linux x64 with glibc** — see [Platform support](#platform-support)
-- **Node.js 24+** for the npm installation (the standalone executable embeds its own)
-- **Bun 1.3+** to build from source and to run the tests
-- On Linux, a **systemd user manager** for background supervision; foreground commands need none
+| Use | Requirements |
+| --- | --- |
+| Every installation | Git 2.x on PATH and the toolchain used by the selected task |
+| Published standalone archives | macOS arm64 or x64; Node is embedded |
+| npm / JavaScript bundles | Node.js 24+; platform limitations above still apply |
+| Development | Bun 1.3+ and Node.js 24; native dependency builds may require Python and a C++ toolchain |
+| Standalone build / binary verification | Exactly Node.js 24.18.0, pinned by the SEA builder and CI |
+| macOS automatic daemon startup | A login session with launchd |
+| Linux automatic daemon startup | systemd 240+ and a reachable user manager/session bus |
+| Windows experimental backend | Native Windows Node/Git, Windows PowerShell and Task Scheduler; Git Bash is a shell, not a Linux runtime |
+
+Foreground commands do not require a service manager. The registered background service uses
+the platform manager; the internal daemon can also run in the foreground for isolated testing.
+Linux arm64/musl and minimum supported Windows versions have not been established by the
+current validation matrix.
 
 ### Disk access (macOS)
 
@@ -789,11 +851,13 @@ access to your files is the whole point of the permission.
 
 ```bash
 make uninstall   # unregister the daemon, remove the executable
-make purge       # the above, plus this user's WTM state and configuration
+make purge       # the above, plus this user's WTM state, logs and configuration
 ```
 
-`make purge` deletes the macOS state directory only; on Linux, remove the directories below by
-hand after `make uninstall`.
+`make purge` uses the current user's platform layout: on macOS it removes
+`~/Library/Application Support/WTM` and `~/Library/Logs/WTM`; on Linux it removes
+`${XDG_STATE_HOME:-$HOME/.local/state}/wtm` and `${XDG_CONFIG_HOME:-$HOME/.config}/wtm`.
+Use the same `HOME`, XDG settings and installation prefix that you used when installing WTM.
 
 By hand, if you installed some other way:
 
@@ -809,6 +873,13 @@ rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/wtm" "${XDG_CONFIG_HOME:-$HOME/.co
 ```
 
 Removing WTM never touches your repositories or worktrees.
+
+For an npm installation, run `wtm daemon uninstall` before
+`npm uninstall --global worktree-runtime-manager`. The experimental Windows backend uses the
+same daemon command; do not apply the POSIX `rm` recipes in PowerShell. Uninstalling the
+executable does not erase the SQLite queue/history. If intentionally resetting state, first
+record the roots from `wtm doctor --json` and confirm managed jobs/processes are stopped, then
+remove only those WTM-owned directories through your platform's file tools.
 
 ## Development
 

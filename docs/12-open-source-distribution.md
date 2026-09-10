@@ -97,85 +97,110 @@ The protocol/interface must allow the helper to be replaced.
 
 ## Distribution channels
 
-V1 ships two channels from one codebase:
+The source supports two packaging formats. Building a package and publishing a verified install
+channel are separate steps:
 
-1. **Standalone executable.** A Node SEA build that embeds the pinned Node 24 runtime, the SQL
-   migrations and the agent skill. It stores state through `node:sqlite`, so it contains no native
-   addon and needs no Node, Bun or compiler on the target machine. Built by `bun run build:binary`
-   and proven by `bun run binary:verify`. Both are platform-aware: the same commands produce a
-   Mach-O on macOS and an ELF on Linux x64, and CI runs `binary:verify` on all three legs. Only the
-   macOS builds are **published**.
-2. **npm global package** for developers already running Node 24+. This channel keeps
-   `better-sqlite3` and the ordinary Node module resolution, and the manifest declares
-   `"os": ["darwin", "linux"]`.
+1. **Standalone executable.** A Node SEA build embeds the pinned Node 24 runtime, SQL migrations
+   and agent skill. It uses `node:sqlite`, so it contains no native SQLite addon and needs no Node,
+   Bun or compiler on the target machine. `bun run build:binary` selects a Mach-O, ELF or PE build
+   backend for macOS, Linux or Windows; `bun run binary:verify` builds and exercises the executable.
+2. **npm package** for developers already running Node 24+. This format uses `better-sqlite3` and
+   ordinary Node module resolution. The manifest declares `"os": ["darwin", "linux", "win32"]`;
+   that is installation eligibility, not evidence that every backend has passed its native gates.
 
-Both channels run the same CLI. The only difference is how a WTM child process is launched: the npm
-build re-invokes `node <cli>`, the standalone build re-invokes its own executable.
+Both formats run the same CLI. The npm build launches WTM children through `node <cli>`; the
+standalone build re-invokes its own executable.
 
-**Nothing is released for Linux.** The release workflow, the release artifact names
-(`wtm-darwin-{arm64,x64}.tar.gz`), the rule that a stable release must carry a Developer ID signed
-executable, and the Homebrew formula are all macOS-only and must change together; two of them are
-decisions rather than renames, because a Linux binary can only ever be unsigned and the workflow
-currently requires every build job to report the same signing status. Until that work lands, Linux
-users install from source or from npm.
+The configured verification and publication scopes differ:
 
-A Homebrew formula is prepared in `packaging/homebrew/wtm.rb.template` and rendered by
-`bun run formula:render`; it is macOS-only, as its inputs are the two darwin archive digests.
-**No public tap repository exists yet.** Until one is published, install
-from a custom tap or directly from a downloaded archive.
+| Workflow | Native runner targets | Effect |
+| --- | --- | --- |
+| `.github/workflows/ci.yml` | macOS arm64, macOS x64, Linux x64, Windows x64 | Schedules lint, typecheck, tests, e2e, bundle/package verification and standalone smoke checks; publishes nothing |
+| `.github/workflows/release.yml` | macOS arm64 and macOS x64 | Verifies the two Darwin artifacts and publishes them only for version tags |
 
-The daemon is installed separately through:
+A configured CI leg is not a claim that its latest run passed. Windows remains experimental, with
+native failures tracked in the development notes. Linux arm64 has no native CI leg in this matrix.
+
+The current tag workflow publishes `wtm-darwin-arm64.tar.gz`, `wtm-darwin-x64.tar.gz` and
+`SHA256SUMS`. The verified published prerelease `v0.1.0-rc.1` has those macOS assets. There is no
+published Linux or Windows archive in that verified release. Linux users can build from source;
+Windows contributor builds must be assessed against the experimental backend's remaining gates.
+Expanding publication requires a platform-specific artifact and signing/notarization policy;
+the current combined release gate expects the two Darwin archives and matching signing evidence.
+
+Local archive construction also supports Linux x64: after `bun run build:binary`, run
+`bun run release:artifacts` to produce `dist/release/wtm-linux-x64.tar.gz` and `SHA256SUMS`.
+The archive contains the executable, license, notice and third-party notices. Construction
+checks a bounded ELF header, sets numeric archive ownership and writes checksums; executable smoke is a
+separate check. Linux arm64 and Windows archive construction are not enabled. Local Linux
+support does not change the two required published Darwin targets or their signing policy.
+
+The npm registry publication, dist-tags and provenance have not been verified. A successful
+`package:verify` is a build and dry-run tarball check, not proof that a registry installation works.
+Use the documented source build or published macOS archive until the registry channel is verified.
+
+A macOS Homebrew formula is prepared in `packaging/homebrew/wtm.rb.template` and rendered by
+`bun run formula:render` from the two Darwin archive digests. The stable-tag workflow can update
+`0furkancolak/homebrew-wtm` when a tap credential is configured. Public tap availability and a clean
+Homebrew installation remain unverified; the template and update job alone do not establish a live
+channel.
+
+Archive extraction and npm installation do not register the daemon. Install the per-user service
+explicitly with:
 
 ```bash
 wtm daemon install
 ```
 
-rather than automatically starting a hidden service during package installation.
+The source Makefile is different: `make install` registers the service by default on macOS and
+Linux. `make install WITH_DAEMON=0` installs only the executable.
 
 ## Release operations
 
-Nothing is published by ordinary CI. Publication happens only when a `v*` tag is pushed, and every
-publishing job is guarded by `startsWith(github.ref, 'refs/tags/v')`.
+Ordinary CI publishes nothing. Publication runs only for `v*` tags, and every publishing job is
+guarded by `startsWith(github.ref, 'refs/tags/v')`.
 
 The tag workflow (`.github/workflows/release.yml`):
 
-- builds and fully verifies the executable natively on macOS arm64 and macOS x64. Performance
-  budgets are not part of this gate: they are wall-clock measurements, and a shared CI runner
-  blocks budgets that the same commit met minutes earlier, which fails releases at random without
-  telling anyone anything about the product. The `Performance` workflow measures them on every
-  `v*` tag, on one consistent runner, and uploads the report;
-- requires the tag to equal the `package.json` version exactly — `v1.2.3` for `1.2.3`, and a
-  prerelease tag only for the identical prerelease version;
-- recomputes every archive digest and requires exactly the two expected archives before it
-  publishes anything;
-- refuses to publish a **stable** release whose executable is not Developer ID signed. Prereleases
-  may ship ad-hoc signed;
-- attests the artifacts, uploads them to the GitHub Release, publishes to npm with provenance under
-  the `next` dist-tag for a prerelease and `latest` for a stable release, and only then renders and
-  commits the Homebrew formula from the final checksums. The formula job runs
-  for stable tags only — it is gated by `!contains(github.ref_name, '-')`, so a prerelease never
-  becomes the default `brew install` formula.
+- builds and verifies the executable natively on macOS arm64 and macOS x64;
+- measures performance inside each `verify` matrix job and records `PERFORMANCE.json` alongside
+  signing, notarization and smoke evidence. There is no separate `Performance` workflow.
+  `publish` depends on `verify` and runs the combined artifact gate again;
+- requires the tag to match the `package.json` version exactly, including any prerelease suffix;
+- checks executable smoke results, recomputes archive digests and requires exactly the two expected
+  Darwin archives before publication;
+- requires a **stable** release to have Developer ID signing, successful notarization and no
+  performance blockers. The notarization step submits a temporary ZIP with `notarytool --wait`,
+  requires an accepted result, then runs `spctl --assess`. Published archives remain `.tar.gz`;
+- allows **prereleases** to carry ad-hoc or unsigned signing evidence, skipped notarization and
+  performance blockers. Missing or invalid required evidence is still an error, and failed smoke
+  checks are not exempted;
+- attests the archives and creates the GitHub Release before attempting the optional npm channel.
+  npm uses `--provenance --access public`, with `next` for prereleases and `latest` for stable tags.
+  Missing `NPM_TOKEN` skips that channel; a rejected publish emits a warning annotation and leaves
+  the GitHub Release intact;
+- renders the Homebrew formula from the published checksums only for stable tags. The formula job
+  depends on `publish` and is gated by `!contains(github.ref_name, '-')`; it updates the configured
+  tap only when a tap credential exists.
 
-Required repository configuration before the first real release:
+Signing/notarization workflow code and gate tests do not establish that a notarized release has
+passed Gatekeeper on a clean macOS machine. That native acceptance remains open; retain the
+README/CHANGELOG quarantine workaround until it is demonstrated.
+The workflow's Gatekeeper check is designed around online ticket lookup for the bare executable;
+it does not exercise offline installation or establish first-run acceptance for a future release.
+
+Repository configuration used by the workflow:
 
 | Secret / setting | Purpose |
 | --- | --- |
-| `MACOS_SIGNING_CERTIFICATE`, `MACOS_SIGNING_PASSWORD`, `MACOS_SIGNING_IDENTITY` | Developer ID signing for stable releases |
-| `NPM_TOKEN` | npm automation token for `npm publish`; provenance still comes from the workflow's OIDC identity. Absent, the npm channel is skipped and the GitHub Release still stands |
-| `HOMEBREW_TAP_TOKEN` | write access to the tap repository that receives `Formula/wtm.rb` |
+| `MACOS_SIGNING_CERTIFICATE`, `MACOS_SIGNING_PASSWORD`, `MACOS_SIGNING_IDENTITY` | Developer ID signing required for stable releases |
+| `MACOS_NOTARIZATION_APPLE_ID`, `MACOS_NOTARIZATION_PASSWORD`, `MACOS_NOTARIZATION_TEAM_ID` | Apple account, app-specific password and team used by `notarytool`; stable publication requires successful notarization |
+| `NPM_TOKEN` | Optional npm publication credential; provenance uses the workflow's OIDC identity |
+| `HOMEBREW_TAP_TOKEN` | Optional write access to the tap repository receiving `Formula/wtm.rb` |
 
-The formula is never committed with guessed digests: it is rendered from the `SHA256SUMS` produced
-by the same workflow run, after the assets are uploaded.
-
-Custom tap installation, once a tap exists:
-
-```bash
-brew tap 0furkancolak/wtm
-brew install 0furkancolak/wtm/wtm
-```
-
-`brew tap 0furkancolak/wtm` resolves to `github.com/0furkancolak/homebrew-wtm`, which is the
-repository the release workflow writes `Formula/wtm.rb` into.
+These names describe the workflow contract, not a claim that the credentials or public channels
+have been verified. The formula's digests come from the same workflow run's `SHA256SUMS` after
+artifact publication; they are never guessed.
 
 ## Semantic versioning
 

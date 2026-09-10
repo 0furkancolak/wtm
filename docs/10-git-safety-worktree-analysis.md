@@ -43,8 +43,10 @@ Ignored directories may be represented by one trailing-slash entry; these are Gi
 not recursive file counts. Both groups block removal, using `GIT_UNTRACKED` and
 `GIT_IGNORED_CONTENT` respectively.
 
-Untracked and ignored symbolic links retain the existing policy: WTM ignores the link itself
-without following its target. A missing path can be dropped between status and inspection;
+By default WTM excludes untracked and ignored symbolic links from content blockers without
+following their targets. Configured [untracked-symlink policy](03-configuration-spec.md#untracked-symbolic-links)
+can warn or block on untracked links; ignored links retain their existing exclusion.
+A missing path can be dropped between status and inspection;
 other inspection failures abort analysis rather than classify unreadable content as safe.
 Invalid UTF-8 in porcelain output also aborts analysis (`GIT_REPOSITORY_DEGRADED`), because
 replacing invalid bytes could change pathname identity and make existing content appear absent.
@@ -128,11 +130,15 @@ V1 blocks removal when any of these are true:
 An ignored file blocks removal for the same reason an untracked one does: Git cannot give it
 back, and a `.env` or a local database is exactly the kind of thing `.gitignore` names.
 
-A **symbolic link** is the one exception. It holds no content of its own: removing the worktree
+A **symbolic link** is excluded from ordinary content blockers by default. It holds no content of its own: removing the worktree
 removes the link, and what it points at is somewhere else and survives — and if that somewhere
 is inside this worktree, it is reported in its own right. Without the exception WTM blocked
 itself, because a `[resources]` table that links a worktree's `.env` at the main working tree's
 meant no worktree a task had ever run in could be removed.
+
+An explicit `untracked_symlinks = "block"` adds a separate blocker even for a resource-owned
+untracked link; `review` adds a warning. Neither setting changes ignored-link classification
+or bypasses Git's final unforced removal check.
 
 ## "Unpushed" definition
 
@@ -296,6 +302,13 @@ actually left behind: if stage 4 retains a target instead of deleting it, the un
 still there and the removal is refused — after the processes were stopped, but with the worktree
 intact.
 
+`[safety] untracked_symlinks` defaults to `ignore`; `review` adds an advisory warning and
+`block` adds the dedicated `GIT_UNTRACKED_SYMLINKS` blocker. Its context reports policy,
+paths and count. It is never deferred to resource cleanup, including for a resource-owned
+symlink. Both analyses use the resolved policy. Ignored entries retain their separate
+policy and `GIT_IGNORED_CONTENT` behavior. The final Git remove remains unforced, so an
+analysis without blockers is not permission to bypass Git's own dirty-worktree refusal.
+
 The deferred blockers are reported on the removal result as `deferredBlockers`, exactly as the
 analysis raised them. They are not warnings: a worktree that ran a task is *expected* to hold the
 directories WTM put there, and warning on every such removal would train the reader to ignore the
@@ -422,10 +435,21 @@ blockers, because dropping it would be a policy decision disguised as a sort. Th
 advisory; WTM never bulk-removes worktrees without explicit selectors/confirmation.
 
 `cleanup.reclaimable` reports an `exclusive-file-allocation-estimate`: allocated blocks of
-regular files with one hard link, excluding Git metadata, symlinks and their targets, mounted
-filesystems, and retained resource paths determined by the removal policy. No file contents
+regular files with one hard link, excluding Git metadata, symlinks and their targets, other
+devices, and retained resource paths determined by the removal policy. No file contents
 are read. Directory and symlink allocation is omitted. Clones, snapshots and compressed or
 shared blocks mean this is not guaranteed freed space and is not a lower bound.
+
+On Linux, the platform reader additionally checks the current mount namespace before and
+after the walk, excluding descendant mountpoints even when they share the worktree's device.
+The worktree root may itself be a mountpoint. `excluded.mounts` counts these exclusions;
+`excluded.crossDevice` retains its separate device-change meaning. Each mount snapshot is
+bounded to 1 MiB and 20,000 records within the shared time budget. Missing or malformed
+evidence reports `mount-evidence-unavailable`; a changed relevant mount reports
+`mount-evidence-changed`. Neither yields a complete byte estimate. Unrelated mounts do not
+invalidate the scan. Other platforms retain device/symlink checks; same-device mount
+exclusion is not yet proven there. These two observations cannot detect every transient
+mount/unmount between them and are not an atomic mount snapshot.
 
 All candidates share a cooperative two-second / 20,000-entry budget and are measured
 sequentially in path order. Each walk has a depth limit of 64. A pending OS read cannot be
@@ -449,6 +473,7 @@ Example codes:
 GIT_DIRTY_STAGED
 GIT_DIRTY_UNSTAGED
 GIT_UNTRACKED
+GIT_UNTRACKED_SYMLINKS
 GIT_IGNORED_CONTENT
 GIT_UNMERGED
 GIT_HEAD_NOT_REMOTE_PERSISTED

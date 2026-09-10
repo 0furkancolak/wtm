@@ -538,9 +538,10 @@ creates nothing for them and only reports whether it is there.
 `wtm status` lists every declared resource and whether this worktree has it, and `wtm doctor`
 reports the ones that could not be created, with the reason.
 
-A symbolic link a resource creates does not block `wtm remove`: the link holds no content of
-its own, and whatever it points at lives outside the worktree and survives. A copied or cloned
-resource is real content in the worktree, and does block, like any other untracked file.
+A symbolic link a resource creates does not add a WTM content blocker by default. The
+untracked-symlink policy below can explicitly warn or block even for resource-owned links.
+Copied or cloned resources are real content; removal's resource cleanup and final Git safety
+gate determine whether they can be removed.
 
 ## Git safety
 
@@ -577,6 +578,33 @@ offending pattern, rather than surfacing later as a crash from inside the analys
 
 The segment after `refs/remotes/` also names which remotes `--refresh-remotes` fetches from, so
 narrowing this list narrows what a refresh talks to.
+
+### Untracked symbolic links
+
+```toml
+[safety]
+untracked_symlinks = "ignore"
+```
+
+| Value | WTM analysis and removal policy |
+| --- | --- |
+| `ignore` (default) | A Git-untracked symlink adds no WTM warning or blocker. |
+| `review` | Adds `GIT_UNTRACKED_SYMLINKS` as a warning and yields `REVIEW` when no blocker exists. |
+| `block` | Adds `GIT_UNTRACKED_SYMLINKS` as a blocker; removal exits 3 before runtime cleanup. |
+
+The setting uses the same built-in/global/workspace/nested/repository configuration layers
+as remote-ref safety, including `.wtm.toml` overrides and `wtm explain` provenance. Missing
+values preserve the parent layer; invalid values are `WTM_CONFIG_INVALID`. The policy
+applies only to Git's untracked entries. Ignored content and ignored-symlink behavior are
+unchanged; tracked edits remain blockers. File contents and link targets are not read or
+modified to evaluate a symlink. Inspection errors other than disappearance fail closed.
+
+Warnings do not introduce a confirmation prompt or override another blocker. Explicit
+`block` is not deferred to resource cleanup, even for a WTM-owned link. The final safety
+analysis repeats the policy, catching links created during cleanup and links replaced by
+ordinary untracked files. `ignore`/`review` do not force deletion: Git's final unforced
+worktree removal can still refuse an arbitrary untracked symlink. WTM does not unlink such
+links or add `--force` to bypass that refusal.
 
 ## Capability provider override
 

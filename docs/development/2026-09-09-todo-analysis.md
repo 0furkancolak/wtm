@@ -546,3 +546,20 @@ PID/proc ve socket sınırları geçerlidir; test beklentileri gevşetilmedi vey
 Yeni HTTP readiness, cleanup disk tahmini, Windows private-directory ACL path düzeltmesi
 ve sonraki RAM kabul tasarımı `2026-09-10-todo-continuation.md` içinde izleniyor. Buradaki
 2026-09-09 sonuçları tarihsel baseline'dır; yeni değişikliklerin kanıtı yerine kullanılmaz.
+
+
+## 2026-09-10 continuation and independent review
+
+The historical results above remain scoped to their recorded revisions. Current continuation:
+
+- [Review follow-up and native evidence](2026-09-10-review-follow-up.md): UDP descriptor
+  closure, rotation-safe log recovery, bounded Linux mount evidence and native RAM admission.
+- [Configured symlink policy](2026-09-10-symlink-policy.md): target-specific config, dedicated
+  removal warning/blocker, real-Git refusal and independent review.
+- [Windows follow-up](2026-09-10-windows-follow-up.md): native failures, strict ACL evidence,
+  isolated pipe/profile paths and anchor authorization work.
+- [Distribution follow-up](2026-09-10-distribution-follow-up.md): strict release evidence,
+  local Linux x64 archives, FIFO regression and actual extracted WTM version smoke.
+
+Numbered TODO headings currently mark 21/45 complete; checklist counts are not an estimate
+of engineering effort. Native platform/distribution evidence and larger feature work remain.

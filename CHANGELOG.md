@@ -26,6 +26,22 @@ binaries are Developer ID signed and notarized.
 
 ### Added
 
+- Local Linux x64 `.tar.gz` construction with bounded ELF architecture inspection, exact archive
+  members, executable permissions and SHA-256 output. The published release target set remains
+  Darwin arm64/x64. Header inspection refuses FIFO/device inputs without waiting for a writer.
+- Configurable `safety.untracked_symlinks = "ignore" | "review" | "block"`, resolved from the
+  selected worktree's configuration. Symlink targets are not followed, inspection failures stop
+  analysis, and `GIT_UNTRACKED_SYMLINKS` is distinct from ignored/untracked content. This policy
+  does not force Git removal or unlink files.
+- Windows anchor log authorization through bounded asynchronous SID/ACL inspection, with fresh
+  evidence for mutations, empty-file authorization before writes and retained child ownership
+  through cancellation. Windows remains experimental pending native acceptance.
+- Linux mount-boundary evidence in cleanup estimates, including same-device bind mounts.
+  Missing or changing evidence produces an unknown estimate rather than a removal permission.
+- Failed UDP probes release their socket before the next probe. Log recovery tolerates bounded
+  rename/reopen gaps while preserving ownership, generation and exact process identity checks.
+- Release gates reject malformed performance counters and empty, duplicate or unpublished
+  archive selections. Valid prerelease performance exceptions remain explicit.
 - Batched endpoint bind probing: one bounded helper per allocation for Node and standalone
   installations, preserving preferred ports, stable leases and transactional collision checks.
 - Opt-in estimated memory admission for queued tasks: global `jobs.memory` budget/headroom,
@@ -37,7 +53,7 @@ binaries are Developer ID signed and notarized.
   process/completion evidence, JSON observations and connection-scoped IPC cancellation.
   Normal start reports NOT_CHECKED. Timeout/disconnect ends observation without stopping
   the managed service. Real HTTP/TCP integration and Linux x64 native lifecycle tests pass;
-  other platform gates and independent observer review remain open.
+  independent observer review is complete; other native platform gates remain open.
 - Bounded metadata-only disk estimates in cleanup ranking, after existing safety/activity
   tiers. Partial/unknown scans are distinct from zero, and estimates never authorize removal.
 - Queue records expose current `waitingReason` in list/status/result/cancel: concurrency,
@@ -67,21 +83,22 @@ binaries are Developer ID signed and notarized.
   Agent Skill, and example Markdown files. Fixed the README installation command to
   `wtm skill install`.
 
-- **Linux x64 support, proven by CI rather than asserted.** An `ubuntu-latest` x64 job runs `lint`,
-  `typecheck`, the full suite, `test:e2e`, `build`, `package:verify` and `binary:verify` — the same
-  gates as the two macOS legs, in the same order, with nothing skipped, weakened or made
-  platform-conditional to get there — and it is green. It builds the standalone executable as a
+- **Linux x64 native validation.** An `ubuntu-latest` x64 job runs `lint`, `typecheck`, the full
+  suite, `test:e2e`, `build`, `package:verify` and `binary:verify`. These gates passed for
+  `75a8626` in [run 34457543774](https://github.com/0furkancolak/wtm/actions/runs/34457543774),
+  with 1627 full-suite passes and 15 existing skips. Later changes require their own native
+  evidence; the current local full/e2e/performance gates are not green. The job builds a
   real ELF and exercises it against a real repository: the daemon serves over its socket end to
   end, `wtm start` launches and supervises a managed task through the process anchor, and a trusted
   external adapter runs through its guarded child.
 
-  `package.json` now declares `"os": ["darwin", "linux"]`, with the description and keywords to
-  match, and a test pins that field to the platforms CI actually validates so the manifest cannot
-  drift ahead of the evidence.
+  The manifest now declares `"os": ["darwin", "linux", "win32"]`. Windows has a configured
+  native CI job but remains experimental with failing gates; manifest eligibility is not native
+  acceptance. See SUPPORT.md for the current evidence and distribution boundaries.
 
   Four things this deliberately does **not** claim. **Nothing is released for Linux** — the release
-  workflow, the artifact names, the signing rule and the Homebrew formula are all still macOS-only,
-  so a Linux install means building from source or using the npm package. **Not arm64**: there is
+  workflow, required published artifacts, signing rule and Homebrew formula are still macOS-only,
+  so a verified Linux installation currently starts from source; npm publication is unverified. **Not arm64**: there is
   no Linux arm64 runner and no Linux arm64 build. **Not musl or Alpine**: `ubuntu-latest` is glibc.
   And **the systemd lifecycle is not integration-tested** — a CI runner has no logind user session,
   so install → enable → start cannot be exercised there, and `HOME` isolation cannot manufacture
@@ -111,13 +128,13 @@ binaries are Developer ID signed and notarized.
   way the launchd backend has always been tested against a fake `launchctl`; the CI job above is
   what runs it on a kernel.
 
-  `docs/05-daemon-and-macos-runtime.md` — whose filename is now historical — documents both
-  backends.
+  `docs/05-daemon-and-macos-runtime.md` — whose filename is now historical — documents the
+  macOS/Linux backends and the experimental Windows backend.
 - `wtm doctor` reports a `platform` check: the selected runtime, the service manager it will use,
   the resolved data, log and socket roots, and the socket address limit in force. It is `pass` or
   `error`, and `error` only when WTM has no backend for the host.
-- `WTM_PLATFORM_UNSUPPORTED` (exit 2). Starting WTM on a platform it has no backend for — today,
-  Windows — is refused with a coded error naming the increment that will add it, rather than with
+- `WTM_PLATFORM_UNSUPPORTED` (exit 2). Starting WTM on a platform it has no backend for
+  is refused with a coded error, rather than with
   the message "WTM V1 daemon requires macOS", which was becoming false.
 - `wtm daemon status` and `install` report `definitionPath`, the platform-neutral name for the
   file WTM published. `plistPath` is retained beside it on macOS with the same value and marked
@@ -128,7 +145,7 @@ binaries are Developer ID signed and notarized.
   envelope carries a `cleanup` block — `stoppedProcesses`, `releasedEndpoints`, `collectedResources`
   and `retainedResources` with the reason each survived.
 - Cross-process destructive-operation locking. A `repository_operation_leases` table (migration
-  `010`) serializes `remove`, `gc` and `repair` per repository across separate CLI processes and the
+  `010`) serializes `remove` and `gc` per repository across separate CLI processes and the
   daemon, which a process-local mutex never could. A conflicting operation is refused with the new
   `WTM_OPERATION_CONFLICT` code (exit 3) naming the holding PID and when it took the lease.
 - `wtm remove <selector> --resume`. Each stage of a removal is journalled on the lease, so a removal

@@ -187,6 +187,7 @@ GIT_WORKTREE_LOCKED
 GIT_DIRTY_STAGED
 GIT_DIRTY_UNSTAGED
 GIT_UNTRACKED
+GIT_UNTRACKED_SYMLINKS
 GIT_IGNORED_CONTENT
 GIT_BRANCH_IN_USE
 GIT_UNMERGED
@@ -200,6 +201,12 @@ Both carry worktree-relative `context.paths` and `context.count`, and both map t
 `workingTree.counts.ignored` and `workingTree.paths.ignored` are separate from `untracked`;
 consumers that need all local-only content must inspect both groups. Ignored directories can be
 reported as one path ending in `/`; counts describe Git entries, not a recursive file count.
+
+`GIT_UNTRACKED_SYMLINKS` reports `context.policy`, worktree-relative `paths` and `count`.
+With `safety.untracked_symlinks = "block"` it is a non-deferrable removal blocker (exit 3).
+With `review` it appears in warnings; a successful analysis still exits 0 and reports
+`REVIEW` when no blocker exists. `ignore` is the default. These settings affect WTM's
+decision; the final unforced Git command may still reject an untracked symlink.
 
 ### Runtime
 

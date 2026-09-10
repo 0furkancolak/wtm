@@ -1,50 +1,45 @@
 # Daemon and Platform Runtime
 
-> **The filename is historical.** This document is still `05-daemon-and-macos-runtime.md` because
-> renaming it would break every link that already points at it — `docs/README.md`'s index, the
-> changelog, and anything outside this repository — for a cosmetic gain. The content is not
-> macOS-only: it describes the daemon on both platforms WTM has a backend for, and the title above
-> is the name that matters. The rename is worth doing only alongside a change that already breaks
-> these links for a reason.
+> The filename is historical and retained to preserve existing links. This document covers
+> macOS, Linux and the experimental Windows backend.
 
 ## Which platform, and what has been verified where
 
 WTM selects one `PlatformRuntime` at startup — `@wtm/platform`'s `selectPlatformRuntime` — and
 everything below asks it where files go, how long a socket address may be, how to recognise a
-process, and how to register a service. There are two backends today:
+process, and how to register a service. There are three source backends:
 
-| | macOS | Linux |
-| --- | --- | --- |
-| Service manager | launchd, `launchctl` | systemd user manager, `systemctl --user` |
-| Definition | LaunchAgent plist | systemd user unit |
-| Process identity | `ps -o lstart=` | `/proc/<pid>/stat` |
-| Socket | Unix domain socket | Unix domain socket |
-| Status | Shipped, tested and released on arm64 and x64 | Tested on x64; **nothing is released for Linux** |
+| | macOS | Linux | Windows, experimental |
+| --- | --- | --- | --- |
+| Service manager | launchd, `launchctl` | systemd user manager, `systemctl --user` | Task Scheduler, `schtasks` |
+| Definition | LaunchAgent plist | systemd user unit | XML staging file and registered task |
+| Process identity | `ps -o lstart=` | `/proc/<pid>/stat` | CIM creation time and command fingerprint |
+| Transport | Unix domain socket | Unix domain socket | Named pipe |
+| Distribution | arm64/x64 prerelease archives | No Linux release archive | No Windows release archive or installer |
 
-Both columns run the same CI gates. The `ubuntu-latest` x64 leg runs `lint`, `typecheck`, the full
-suite, `test:e2e`, `build`, `package:verify` and `binary:verify` — the same list as the two macOS
-legs, in the same order — and is green. It builds a real ELF standalone executable and exercises it
-against a real repository, so the Linux column is evidence from a kernel rather than from fixtures:
-the daemon serves over its socket end to end, a managed task is owned through the process anchor,
-and a trusted external adapter runs through its guarded child.
+CI configures the same lint, typecheck, test, e2e, build, package and binary gates on macOS
+arm64/x64, Linux x64 and Windows x64. Previous Linux native runs have exercised a real ELF
+standalone executable, daemon IPC, anchored tasks and trusted external adapters. A configured
+job or a previous green run does not establish that the current revision passes; consult its
+[CI run](https://github.com/0furkancolak/wtm/actions/workflows/ci.yml). Windows native acceptance
+remains incomplete and its backend is experimental.
 
-`package.json` declares `"os": ["darwin", "linux"]`, pinned by a test to the platforms CI actually
-validates.
+The source `package.json` declares `"os": ["darwin", "linux", "win32"]`, checked against the
+configured CI platform matrix. That is package eligibility, not a support or release claim.
 
-Four limits are stated here rather than left to be discovered:
+Current evidence and distribution limits:
 
-- **x64 only.** There is no Linux arm64 runner and no Linux arm64 build.
+- **Linux x64 only.** There is no Linux arm64 runner or published build.
 - **glibc only.** `ubuntu-latest` is glibc. musl and Alpine are unproven and unclaimed.
-- **Nothing is published for Linux.** The release workflow, its artifact names, the signing rule
-  and the Homebrew formula are all still macOS-only. Installing on Linux means building from source
-  or using the npm package.
+- **Published standalone assets are macOS-only.** The published `v0.1.0-rc.1` release contains
+  Darwin arm64/x64 archives and checksums. Source build support does not imply a Linux or Windows
+  release archive, Homebrew tap or Windows package-manager channel.
 - **The systemd lifecycle is not integration-tested**, for the reason given under
   [the systemd user unit](#linux-the-systemd-user-unit).
 
-Windows has no backend. `selectPlatformRuntime` refuses it with `WTM_PLATFORM_UNSUPPORTED` (exit
-2), and the daemon's refusal names the Windows increment — which decides process-group and
-service-manager semantics together rather than one call site at a time — instead of the older
-message, "WTM V1 daemon requires macOS", which had stopped being the reason.
+Windows selection is implemented. Its native process-tree cleanup, ACL/pipe isolation and
+service-recovery evidence must be completed before claiming the same acceptance as macOS.
+Other unrecognized operating systems are refused with `WTM_PLATFORM_UNSUPPORTED`.
 
 `wtm doctor`'s `platform` check reports the selected runtime, its service manager, its resolved
 data, log and socket roots, and the socket limit in force. It is the first thing to read when WTM
@@ -58,31 +53,25 @@ Node's native `fs.watch()` maps directory watches to FSEvents on macOS and to in
 
 ## Process model
 
-```text
-service manager  (launchd on macOS, the systemd user manager on Linux)
-  └── wtmd
-       ├── workspace watcher registry
-       ├── reconciliation queue
-       ├── SQLite state store
-       ├── Unix socket server
-       └── managed process supervisor
-```
+The per-user service manager starts `wtmd`. The daemon holds the workspace watcher registry,
+reconciliation and finite-job queues, SQLite state store, platform IPC server and managed-process
+supervisor. macOS and Linux supervise process groups; Windows uses an identity-checked tree.
 
 External adapters are not resident processes.
 
 ## Where WTM keeps its files
 
-Each platform follows its own convention rather than one layout wearing two sets of names:
+Each platform follows its own convention:
 
-| | macOS | Linux |
-| --- | --- | --- |
-| Data root (`state.db`) | `~/Library/Application Support/WTM` | `$XDG_STATE_HOME/wtm`, default `~/.local/state/wtm` |
-| Global config | `<data root>/config.toml` | `$XDG_CONFIG_HOME/wtm/config.toml`, default `~/.config/wtm/config.toml` |
-| Logs | `~/Library/Logs/WTM` | `<data root>/logs` |
-| Socket directory | `<data root>` | `$XDG_RUNTIME_DIR/wtm`, falling back to `<data root>` |
-| Service definition | `~/Library/LaunchAgents` | `$XDG_CONFIG_HOME/systemd/user`, default `~/.config/systemd/user` |
+| | macOS | Linux | Windows |
+| --- | --- | --- | --- |
+| Data root (`state.db`) | `~/Library/Application Support/WTM` | `$XDG_STATE_HOME/wtm`, default `~/.local/state/wtm` | `%LOCALAPPDATA%\WTM`, default `<home>\AppData\Local\WTM` |
+| Global config | `<data root>/config.toml` | `$XDG_CONFIG_HOME/wtm/config.toml`, default `~/.config/wtm/config.toml` | `<data root>\config.toml` |
+| Logs | `~/Library/Logs/WTM` | `<data root>/logs` | `<data root>\logs` |
+| IPC root | `<data root>` | `$XDG_RUNTIME_DIR/wtm`, falling back to `<data root>` | Named-pipe namespace derived from the data root |
+| Service definition | `~/Library/LaunchAgents` | `$XDG_CONFIG_HOME/systemd/user`, default `~/.config/systemd/user` | XML staging under `<data root>\service`; registration in Task Scheduler |
 
-Four rules hold this table together:
+Path rules:
 
 - **The socket directory is its own field, not a derivation of the data root.** On Linux it
   genuinely is one: `$XDG_RUNTIME_DIR` is normally `/run/user/<uid>`, which is both where the
@@ -98,7 +87,9 @@ Four rules hold this table together:
 - **macOS ignores the XDG variables entirely, including when they are set.** A macOS user with
   `XDG_CONFIG_HOME` exported for some other tool must not find WTM's state relocated the next time
   their shell profile changes; the daemon would come up with an empty workspace and no explanation.
-- **`XDG_CACHE_HOME` moves nothing, on either platform.** WTM writes no cache. Nothing it stores is
+- **Windows accepts `LOCALAPPDATA` only when it is absolute.** An unset or relative value uses
+  the home-based fallback. Windows does not adopt XDG paths.
+- **`XDG_CACHE_HOME` moves nothing.** WTM writes no cache. Nothing it stores is
   reconstructible from something else — the database is authoritative, the logs are a record that
   must survive a cache clear, and the socket is a live address — so honouring the variable would
   have meant inventing a directory nothing writes to in order to be able to say it is supported.
@@ -106,10 +97,9 @@ Four rules hold this table together:
 ## Service definition
 
 `wtm daemon install`, `uninstall` and `status` are driven by the selected platform's service
-manager. Both backends are descriptors over one transactional publisher — an operation lock, a
+manager. The backends are descriptors over one transactional publisher — an operation lock, a
 journal, file-identity checks, atomic publish and removal, and interrupted-transaction recovery —
-because none of that is launchd knowledge and writing it twice would mean two implementations of
-the recovery path to keep true.
+so shared publication and recovery rules stay separate from each manager's commands.
 
 ### macOS: the LaunchAgent
 
@@ -138,7 +128,7 @@ changes.
 
 The LaunchAgent invokes the resolved `wtmd` binary/script and restarts it on unexpected failure. Installation never requires root.
 
-`ProcessType` is `Adaptive`, not `Background`. launchd throttles a Background job's CPU and disk I/O, and everything it spawns inherits the throttle — the port prober is one short-lived process per candidate port, and under the throttle it outlived its own two-second timeout, so every port read as taken; the developer's own dev server ran throttled too. Nothing this daemon does is unattended work.
+`ProcessType` is `Adaptive`, not `Background`. launchd throttles a Background job's CPU and disk I/O, and its children inherit that throttle. Earlier per-candidate port probes exceeded their timeout under it, and dev servers inherited the same throttling. The current default endpoint probe batches candidates through a bounded helper; the daemon still needs ordinary interactive scheduling.
 
 macOS may withhold disk access from a background agent. The executable is signed under one stable identifier (`dev.wtm.cli`) so the grant is not invalidated by every rebuild — but WTM asks for nothing up front, and names the grant only on evidence: a registered directory that exists and refuses to open. A timeout is not that evidence. A `git` that overran its bound on a volume answering slowly is indistinguishable from a denied one until the directory is opened directly, and telling somebody to hand a background agent every file on their disk on the strength of a timeout is advice too large to give on a guess.
 
@@ -264,13 +254,25 @@ on essentially every Linux host, or tightening a directory that belongs to syste
 The unit *file* is still checked for `(mode & 0o077) === 0`, so its contents stay unreadable by
 other users inside a `0755` directory.
 
-### On both platforms
+### Windows: the experimental Scheduled Task
 
-`wtm daemon install` waits for the daemon to answer on its socket before it reports success, and both `install` and `status` report `reachable`. A service manager reports a service as running the moment it forks — launchd does, and so does systemd — which says nothing about whether a command would work.
+The Windows backend renders a per-user, least-privilege Scheduled Task and registers it with
+`schtasks`. It requires native Windows PowerShell and Task Scheduler. The guarded XML file
+under the service root is staging for registration; Task Scheduler owns the live task.
+`definitionPath` therefore does not by itself prove which command is registered.
 
-`wtm daemon install` restarts a service that is already loaded. The definition names the executable by path, so installing a new build leaves it byte-identical and the service manager goes on running the previous binary — an install that reported success and changed nothing, and made verifying a new build impossible. Restarting in place is the cheapest guarantee that the daemon now answering is the one just installed; the state it needs is all in SQLite, and startup recovery is designed for exactly this.
+Status and command classification have fixture coverage, but complete native install, restart,
+interrupted-transaction recovery and uninstall evidence is still required. Do not assume that
+`schtasks /Run` provides launchd or systemd restart semantics, or that safe XML publication alone
+establishes scheduler recovery. WTM does not install an elevated system-wide Windows service.
 
-Installation never requires root on either platform.
+### Shared service contract
+
+`wtm daemon install` waits for the daemon to answer through IPC before it reports success, and both `install` and `status` report `reachable`. A service manager's running state alone does not establish that WTM can answer a command.
+
+On macOS and Linux, `wtm daemon install` restarts a service that is already loaded. The definition names the executable by path, so replacing a build may leave the definition byte-identical while the previous binary keeps running. Restarting allows the newly installed daemon to recover its SQLite state. Windows restart equivalence remains part of the native acceptance work above.
+
+The service backends target the current user; they do not require a root/system service.
 
 ## Watching scope
 
@@ -336,7 +338,7 @@ On daemon startup:
 4. verify managed process identities;
 5. verify endpoint leases;
 6. schedule pending cleanup retries;
-7. **open the Unix socket**;
+7. **open the platform IPC endpoint**;
 8. run Git worktree snapshot for known repos;
 9. reconcile missing/new worktrees;
 10. start filesystem watchers.
@@ -375,7 +377,14 @@ WTM does not depend on an event being delivered exactly once. Any subsequent `st
 
 V1 does not add high-frequency polling merely to detect sleep/wake. If field testing shows reliable wake detection is needed, add a narrow macOS helper behind the watcher interface rather than spreading native code through core packages.
 
-## Unix domain socket
+## IPC transport
+
+Windows uses a named pipe whose name is derived from the data root. It does not publish a
+filesystem socket or use POSIX mode `0600` as an access-control guarantee. The Windows publisher
+uses Node's named-pipe transport; native cross-account access isolation remains to be verified.
+Pipe naming alone is not authentication.
+
+### macOS and Linux Unix domain socket
 
 The socket is `wtmd.sock` inside the platform's socket directory:
 
@@ -428,7 +437,7 @@ destructive-operation lease, and compares it against the live process before act
 what makes a recycled PID detectable: the number alone would let a lease be reclaimed from a
 different process that happens to have inherited it.
 
-The start time is read differently on each platform, and the two questions it answers are not the
+The start time is read differently on each platform, and the questions it answers are not the
 same question:
 
 - **macOS** shells out to `ps -ww -p <pid> -o lstart=` and stores what it prints —
@@ -438,8 +447,11 @@ same question:
   since that boot. Boot time alone is not enough — start ticks repeat after every reboot, so PID
   412 started at tick 2778072 of this boot and PID 412 started at tick 2778072 of the last one
   would be indistinguishable without it.
+- **Windows** reads CIM `Win32_Process` creation time and compares a command fingerprint.
+  Parent/child tree membership is checked against creation times before taskkill-based cleanup.
+  This is not a POSIX process group or a Windows Job Object containment guarantee.
 
-**The two formats can never be equal**, because the Linux string is decimal digits and a colon
+**The macOS and Linux formats can never be equal**, because the Linux string is decimal digits and a colon
 while the macOS string contains letters and spaces. That is deliberate, and it is why the two
 coexist in one state column with no version tag and no migration.
 
@@ -465,8 +477,8 @@ reclaims — a wrong absence — in exchange for releasing a lease a few millise
 reaps the child. Whether a zombie lease holder *should* be reclaimable is a real question; it
 belongs with lease semantics, not with the platform seam.
 
-`process-anchor.ts` reads identity in both dialects. Its code lives inside a program serialised
-into a string and executed by a separate `node`, so it cannot import a platform port and both
+`process-anchor.ts` reads platform-specific identity. Its code lives inside a program serialised
+into a string and executed by a separate `node`, so it cannot import a platform port and the
 readers are inlined there. The anchor is **told** which platform to speak, through its spec, and
 does not read `process.platform`: the dialect is a property of the decision the supervisor already
 made, and an anchor that observed its own could disagree with the port reading it — a disagreement
@@ -497,6 +509,7 @@ WTM logs live under:
 ```text
 macOS   ~/Library/Logs/WTM/
 Linux   <data root>/logs/, i.e. ~/.local/state/wtm/logs by default
+Windows <data root>\logs\
 ```
 
 Logs follow the data root on Linux rather than `$XDG_CACHE_HOME`: they are the daemon's record of
@@ -510,6 +523,15 @@ Default rotation target:
 20 MiB per file
 3 retained files
 ```
+
+Runtime log-store overrides accept 1–32 retained archives per stream; larger counts are rejected
+before startup. The shared bound keeps both streams and their rotation evidence within a bounded
+operation. Finite queued jobs use their separate 1 MiB / one-archive policy. On Windows, the anchor
+checks SID/DACL evidence for directories, existing files and newly opened empty files before
+writing trusted bytes. ACL inspection is asynchronous, operation-local and bounded; ordinary log
+chunks do not start PowerShell. Failed or aborted helper processes retain their local inspection
+slot until process closure is observed. Native Windows acceptance remains experimental.
+
 
 ## Resource budget
 
@@ -530,9 +552,15 @@ The RSS numbers above were revised 2026-09-06 (todo item 42) after measurement s
 costs: a real breakdown found ~46 MiB of that RSS present before any WTM code runs, and another
 ~27 MiB from loading the bundled daemon and `better-sqlite3`'s native binding — WTM's own
 construction and startup (state store, supervisor, log store, Unix socket server, structural
-watcher) added only ~6 MiB on top. Every real measurement taken (CI and local, both architectures)
-fits inside 85/110 MiB with headroom for a genuine regression to still trip the gate.
+watcher) added only ~6 MiB on top. Those historical macOS measurements fit inside 85/110 MiB
+with headroom for a regression to trip the gate. They do not establish a Windows baseline,
+current-revision performance or RAM savings across the user's concurrent AI sessions.
 
 ## Node single executable note
 
-Node supports single-executable applications, but the feature remains in active development. Therefore V1 distribution should not depend on SEA for correctness. Homebrew/npm installs are primary; standalone SEA binaries may be an additional release artifact later.
+Standalone Node SEA builds are implemented and the macOS `v0.1.0-rc.1` release contains arm64
+and x64 archives with checksums. The builder and native binary gate require exactly Node
+24.18.0. Ordinary JavaScript execution remains available from a source build.
+There is no verified published Homebrew channel, Linux release archive or Windows installer;
+rendered formulas and a configured CI build are not distribution evidence. npm package
+construction is implemented, but registry publication is a separate release milestone.
