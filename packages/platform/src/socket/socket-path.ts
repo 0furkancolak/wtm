@@ -1,4 +1,5 @@
 import { basename, dirname, join } from 'node:path/posix';
+import { join as windowsJoin } from 'node:path/win32';
 import type { Remediation } from '@wtm/protocol';
 
 /**
@@ -34,7 +35,11 @@ export const daemonSocketFileName = 'wtmd.sock';
  * is precisely why `PlatformPaths` states `socketRoot` as its own field rather than deriving it.
  */
 export function publishedDaemonSocketPath(socketRoot: string): string {
-  return join(socketRoot, daemonSocketFileName);
+  // Pipe names have their own namespace even when a Windows runtime is inspected from POSIX.
+  // A forward slash is not interchangeable with the pipe separator for client/server identity.
+  return socketRoot.startsWith('\\\\.\\pipe\\')
+    ? windowsJoin(socketRoot, daemonSocketFileName)
+    : join(socketRoot, daemonSocketFileName);
 }
 
 /**

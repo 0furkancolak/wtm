@@ -12,7 +12,8 @@ const { createProductionDaemon } = await import(pathToFileURL(process.argv[1]));
 const root = await mkdtemp(join(tmpdir(), 'wtm-production-idle-'));
 const runtime = await createProductionDaemon({
   dataRoot: join(root, 'data'), databasePath: join(root, 'data', 'state.db'),
-  socketPath: join(root, 'data', 'wtmd.sock'), logRoot: join(root, 'logs'),
+  // The production data-root override selects the host's isolated Unix socket or named pipe.
+  logRoot: join(root, 'logs'),
   globalConfigPath: join(root, 'data', 'config.toml'),
 });
 try {

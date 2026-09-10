@@ -8,7 +8,8 @@ import { ensurePrivateDirectory, verifyPrivateDirectory } from '../private-direc
 
 const mode = process.argv[2];
 assert.ok(['create', 'verify', 'owner-denied', 'access-denied', 'unreadable', 'replaced'].includes(mode ?? ''));
-const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), 'wtm-private-policy-')));
+// Match production realpath: native Windows sync/async paths may spell aliases differently.
+const root = await fs.promises.realpath(fs.mkdtempSync(join(tmpdir(), 'wtm-private-policy-')));
 const target = join(root, 'state');
 const retired = join(root, 'retired');
 const originalOpen = fs.promises.open;
@@ -71,7 +72,7 @@ try {
       return true;
     });
   }
-  assert.equal(openedTarget, true, 'the test must reach an actual open directory descriptor');
+  assert.equal(openedTarget, true, JSON.stringify({ root, target, ownershipPaths, accessChecks, reason: 'must open the actual target descriptor' }));
   assert.equal(ownershipPaths.includes(''), false, 'descriptor checks need the same canonical ACL path');
   assert.ok(accessChecks.every((check) => check.path !== '' && check.mask === 0o077));
   assert.equal(fs.readFileSync(join(mode === 'replaced' ? retired : target, 'preserved'), 'utf8'), 'original');

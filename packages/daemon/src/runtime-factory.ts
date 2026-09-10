@@ -4,12 +4,11 @@ import { parse } from 'smol-toml';
 import { jobCommandNames } from '@wtm/protocol';
 import { basename as posixBasename, dirname as posixDirname, join as posixJoin, resolve as posixResolve } from 'node:path/posix';
 import { basename as win32Basename, dirname as win32Dirname, join as win32Join, resolve as win32Resolve } from 'node:path/win32';
-import { readHeavyJobScope, selectPlatformRuntime } from '@wtm/platform';
+import { readHeavyJobScope, selectPlatformRuntime, windowsNamedPipeRootFor } from '@wtm/platform';
 import type { PlatformId, PlatformRuntime } from '@wtm/platform/ports';
 import {
   assertDaemonSocketPathFits,
   daemonSocketFileName,
-  publishedDaemonSocketPath,
 } from '@wtm/platform/socket';
 import {
   SQLiteStateStore,
@@ -118,7 +117,7 @@ export function runtimePathsFor(runtime: PlatformRuntime): ProductionRuntimePath
   return {
     dataRoot: paths.dataRoot,
     databasePath: join(paths.dataRoot, databaseFileName),
-    socketPath: publishedDaemonSocketPath(paths.socketRoot),
+    socketPath: join(paths.socketRoot, daemonSocketFileName),
     logRoot: paths.logRoot,
     globalConfigPath: paths.configPath,
   };
@@ -137,12 +136,15 @@ export function defaultProductionRuntimePaths(
   return runtimePathsFor(selectPlatformRuntime({ home, ...options }));
 }
 
-export async function createProductionDaemon(options: ProductionDaemonOptions = {}): Promise<ProductionDaemonRuntime> {
-  const platformRuntime = options.platformRuntime ?? selectPlatformRuntime();
-  const { join, resolve, dirname, basename } = pathModuleFor(platformRuntime.id);
+/** Pure path resolution shared by production startup and cross-platform validation. */
+export function resolveProductionRuntimePaths(
+  platformRuntime: PlatformRuntime,
+  options: Pick<ProductionDaemonOptions, 'dataRoot' | 'databasePath' | 'socketPath' | 'logRoot' | 'globalConfigPath'> = {},
+): ProductionRuntimePaths {
+  const { join, resolve } = pathModuleFor(platformRuntime.id);
   const defaults = runtimePathsFor(platformRuntime);
   const dataRoot = resolve(options.dataRoot ?? defaults.dataRoot);
-  const requestedPaths: ProductionRuntimePaths = {
+  return {
     dataRoot,
     databasePath: resolve(options.databasePath ?? join(dataRoot, databaseFileName)),
     // A caller who moved the data root gets its socket moved with it, even on a platform whose
@@ -151,10 +153,18 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     // failure a caller passing `dataRoot` is trying to avoid. Only the untouched default reads
     // the platform's socket root.
     socketPath: resolve(options.socketPath
-      ?? (options.dataRoot === undefined ? defaults.socketPath : join(dataRoot, daemonSocketFileName))),
+      ?? (options.dataRoot === undefined ? defaults.socketPath
+        : join(platformRuntime.id === 'win32' ? windowsNamedPipeRootFor(dataRoot) : dataRoot, daemonSocketFileName))),
     logRoot: resolve(options.logRoot ?? defaults.logRoot),
     globalConfigPath: resolve(options.globalConfigPath ?? join(dataRoot, 'config.toml')),
   };
+}
+
+export async function createProductionDaemon(options: ProductionDaemonOptions = {}): Promise<ProductionDaemonRuntime> {
+  const platformRuntime = options.platformRuntime ?? selectPlatformRuntime();
+  const { join, dirname, basename } = pathModuleFor(platformRuntime.id);
+  const requestedPaths = resolveProductionRuntimePaths(platformRuntime, options);
+  const { dataRoot } = requestedPaths;
   // Before the data directory exists. A socket path that cannot fit in a socket address is
   // not a reason to bring a state directory, a database and a log root into being first, and
   // failing here means the report names the path rather than whatever the next step tripped on.

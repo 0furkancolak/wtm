@@ -1,3 +1,4 @@
+import { retainedLogCount } from './log-policy';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
@@ -408,7 +409,7 @@ export class ManagedProcessSupervisor {
     try { logs = await this.#logs.prepare(input.worktreeId, input.taskName); }
     catch (error) { throw startFailure(input, error, 'not-started'); }
     if (input.logRotationBytes !== undefined) logs.rotationBytes = positiveInteger(input.logRotationBytes, 'Job log rotation bound');
-    if (input.logRetainedFiles !== undefined) logs.retainedFiles = positiveInteger(input.logRetainedFiles, 'Job log retained files');
+    if (input.logRetainedFiles !== undefined) logs.retainedFiles = retainedLogCount(input.logRetainedFiles);
     let child: ChildProcess;
     try {
       child = await spawnAnchor({

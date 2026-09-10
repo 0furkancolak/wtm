@@ -34,17 +34,6 @@ const defaultRunPowershell: PowershellRunner = async (args) =>
     maxBuffer: 1024 * 1024,
   });
 
-interface RawAccessRule {
-  Sid?: unknown;
-  Rights?: unknown;
-  ControlType?: unknown;
-}
-
-interface RawPathAcl {
-  OwnerSid?: unknown;
-  AccessRules?: unknown;
-}
-
 /**
  * `Get-Acl` lives in the `Microsoft.PowerShell.Security` module, which Windows PowerShell 5.1
  * autoloads on first use by searching `$env:PSModulePath` for a module exporting that command --
@@ -81,34 +70,39 @@ function aclScript(path: string): string {
     `$ErrorActionPreference = 'Stop'`,
     importSecurityModuleByExplicitPath(),
     `$acl = Get-Acl -LiteralPath '${escaped}'`,
+    `$descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)`,
+    `$daclPresent = ($null -ne $descriptor.DiscretionaryAcl) -and (($descriptor.ControlFlags -band [System.Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -ne 0)`,
     `$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value`,
     `$rules = $acl.Access | ForEach-Object {`,
     `  $sid = try { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { $_.IdentityReference.Value }`,
     `  [PSCustomObject]@{ Sid = $sid; Rights = $_.FileSystemRights.ToString(); ControlType = $_.AccessControlType.ToString() }`,
     `}`,
-    `[PSCustomObject]@{ OwnerSid = $owner; AccessRules = @($rules) } | ConvertTo-Json -Depth 5 -Compress`,
+    `[PSCustomObject]@{ DaclPresent = $daclPresent; OwnerSid = $owner; AccessRules = @($rules) } | ConvertTo-Json -Depth 5 -Compress`,
   ].join('; ');
 }
 
-function parseAccessRule(raw: RawAccessRule): WindowsAccessRule | undefined {
-  if (typeof raw.Sid !== 'string' || typeof raw.Rights !== 'string') return undefined;
-  const controlType = raw.ControlType === 'Deny' ? 'Deny' : 'Allow';
-  return { identitySid: raw.Sid, fileSystemRights: raw.Rights, accessControlType: controlType };
+function isSid(value: unknown): value is string {
+  return typeof value === 'string' && /^S-\d+(?:-\d+)+$/.test(value);
 }
 
-function parsePathAcl(stdout: string): WindowsPathAcl | undefined {
-  let raw: RawPathAcl;
-  try {
-    raw = JSON.parse(stdout) as RawPathAcl;
-  } catch {
-    return undefined;
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** No malformed ACE may disappear and turn unknown access into an owner-only ACL. */
+export function parseWindowsPathAcl(raw: unknown): WindowsPathAcl | undefined {
+  // NULL DACL grants everyone access; an observed empty DACL grants nobody access.
+  if (!record(raw) || raw.DaclPresent !== true || !isSid(raw.OwnerSid)) return undefined;
+  const rawRules = Array.isArray(raw.AccessRules) ? raw.AccessRules
+    : record(raw.AccessRules) ? [raw.AccessRules] : undefined;
+  if (rawRules === undefined) return undefined;
+  const accessRules: WindowsAccessRule[] = [];
+  for (const rule of rawRules) {
+    if (!record(rule) || !isSid(rule.Sid) || typeof rule.Rights !== 'string'
+      || rule.Rights.trim() === '' || (rule.ControlType !== 'Allow' && rule.ControlType !== 'Deny')) return undefined;
+    accessRules.push({ identitySid: rule.Sid, fileSystemRights: rule.Rights,
+      accessControlType: rule.ControlType });
   }
-  if (typeof raw.OwnerSid !== 'string') return undefined;
-  const rawRules = Array.isArray(raw.AccessRules) ? raw.AccessRules : [raw.AccessRules];
-  const accessRules = (rawRules as RawAccessRule[])
-    .filter((entry): entry is RawAccessRule => entry !== null && typeof entry === 'object')
-    .map(parseAccessRule)
-    .filter((rule): rule is WindowsAccessRule => rule !== undefined);
   return { ownerSid: raw.OwnerSid, accessRules };
 }
 
@@ -116,7 +110,7 @@ export function createWindowsAclReader(runPowershell: PowershellRunner = default
   return async (path) => {
     try {
       const { stdout } = await runPowershell(['-NoProfile', '-NonInteractive', '-Command', aclScript(path)]);
-      return parsePathAcl(stdout);
+      return parseWindowsPathAcl(JSON.parse(stdout));
     } catch {
       return undefined;
     }
@@ -146,8 +140,8 @@ export function createCurrentWindowsUserSidReader(
         '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
       ]);
       const sid = stdout.trim();
-      if (sid.length > 0) cached = sid;
-      return sid.length > 0 ? sid : null;
+      if (isSid(sid)) cached = sid;
+      return isSid(sid) ? sid : null;
     } catch {
       return null;
     }

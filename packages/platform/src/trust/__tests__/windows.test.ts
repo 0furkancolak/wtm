@@ -124,3 +124,11 @@ describe('createWindowsFileTrustPolicy', () => {
     expect(windowsTrustedPrincipalSids).toEqual(['S-1-5-18', 'S-1-5-32-544']);
   });
 });
+
+
+test('unknown and numeric ACE rights never count as proven read-only access', async () => {
+  for (const rights of ['2', '-1', 'UnexpectedRight', 'Read, UnexpectedRight', '']) {
+    const policy = policyWith({ ownerSid, accessRules: [{ identitySid: otherUserSid, fileSystemRights: rights, accessControlType: 'Allow' }] });
+    expect(await policy.isWritableOnlyByOwner(stat(), 'C:\\x', 0o022)).toBe(false);
+  }
+});

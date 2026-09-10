@@ -31,6 +31,7 @@ import {
 } from '@wtm/protocol';
 import { listGitWorktrees, SQLiteStateStore } from '@wtm/core';
 import { createGitSafetyFixture } from '../../../testkit/src/git-fixture';
+import { fixtureIpcAddress } from '../../../testkit/src/ipc-address';
 
 interface ChildReport {
   exitCode: number;
@@ -45,7 +46,7 @@ interface ChildReport {
 const childPath = fileURLToPath(new URL('./remove-child.ts', import.meta.url));
 const fixture = await createGitSafetyFixture();
 const socketRoot = await mkdtemp(join(tmpdir(), 'wtm-resume-'));
-const socketPath = join(socketRoot, 'd.sock');
+const socketPath = fixtureIpcAddress(socketRoot, 'd.sock');
 const markerPath = join(socketRoot, 'stop-received');
 let store: SQLiteStateStore | null = null;
 

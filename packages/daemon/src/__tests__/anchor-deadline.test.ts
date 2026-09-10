@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { ManagedLogStore } from '../logs';
 import { anchorSource } from '../process-anchor';
+import { createAnchorLogStore } from '../anchor-log-trust';
 
 test('an anchor whose READY-to-GO handshake consumes its deadline never spawns the task', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wtm-anchor-deadline-'));
@@ -37,7 +38,7 @@ test('an anchor whose READY-to-GO handshake consumes its deadline never spawns t
     // Execute the same anchor source shipped to child processes. Only the clock, process
     // boundary and native ps response are controlled; completion uses the real private files.
     runInNewContext(anchorSource, {
-      process: anchorProcess, Date: ControlledDate, Buffer,
+      process: anchorProcess, Date: ControlledDate, Buffer, AbortController, createAnchorLogStore,
       require: (name: string) => name !== 'node:child_process' ? require(name) : {
         spawn: () => { spawns++; throw new Error('TASK_SPAWNED_AFTER_DEADLINE'); },
         execFile: (_file: string, _args: string[], _options: unknown, callback: (error: null, stdout: string) => void) => {
@@ -54,6 +55,8 @@ test('an anchor whose READY-to-GO handshake consumes its deadline never spawns t
     expect(spawns).toBe(0);
     expect(timers).toBe(0);
     expect(status).toBe('ERROR ANCHOR_DEADLINE_EXPIRED\n');
+    // ACL-backed publication is asynchronous; launch refusal above remains synchronous.
+    for (let turn = 0; turn < 12; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
     expect(await logs.readCompletion(paths.stdoutPath, 100)).toMatchObject({ timedOut: true, exitCode: null, signal: null });
     expect(anchorProcess.exitCode).not.toBe(0);
   } finally { await logs.close(); await rm(root, { recursive: true, force: true, maxRetries: 5 }); }

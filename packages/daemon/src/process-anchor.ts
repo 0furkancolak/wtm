@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { createAnchorLogStore } from './anchor-log-trust';
 
 export async function runProcessAnchor(marker: string): Promise<number> {
   if (!/^[a-f0-9]{64}$/.test(marker)) return 2;
@@ -7,8 +8,10 @@ export async function runProcessAnchor(marker: string): Promise<number> {
       typeof process.exitCode === 'number' ? process.exitCode : 1,
     ));
   });
-  const run = Function('require', anchorSource) as (require: NodeJS.Require) => void;
-  run(createRequire(import.meta.url));
+  const run = Function('require', 'createAnchorLogStore', anchorSource) as (
+    require: NodeJS.Require, logStore: typeof createAnchorLogStore,
+  ) => void;
+  run(createRequire(import.meta.url), createAnchorLogStore);
   return await completed;
 }
 
@@ -69,9 +72,9 @@ export function compileAnchorReaders(spec: AnchorReaderSpec): AnchorReaders {
  * The anchor's process readers, one per platform, duplicating
  * `packages/platform/src/process/{darwin,linux,proc-stat,identity}.ts`.
  *
- * The duplication is forced rather than chosen: the anchor is a source string compiled with
- * `Function('require', ...)` inside the spawned child, so it has no module graph and no way to
- * import `@wtm/platform` at all. What keeps the copy honest is that it lives in one
+ * These readers remain a source fragment compiled in the spawned child and in parity fixtures.
+ * Log trust is a separate, injected capability so its platform ACL policy is shared with the
+ * daemon. What keeps the process-reader copy honest is that it lives in one
  * fragment with one entry point, that `compileAnchorReaders` compiles that same text, and that
  * `__tests__/process-anchor.test.ts` runs both implementations over one live process and one
  * captured `/proc` and requires byte-identical output. Drift is a red build.
@@ -373,10 +376,7 @@ function createAnchorReaders(spec) {
 export const anchorSource = String.raw`
 'use strict';
 const { spawn } = require('node:child_process');
-const fs = require('node:fs');
-const { closeSync } = fs;
-const { Writable, pipeline } = require('node:stream');
-const pathModule = require('node:path');
+const { pipeline } = require('node:stream');
 const spec = JSON.parse(process.env.WTM_ANCHOR_SPEC || '{}');
 delete process.env.WTM_ANCHOR_SPEC;
 // The platform, and only the platform: a 'procRoot' arriving through the environment would let the
@@ -385,7 +385,25 @@ const readers = createAnchorReaders({ platform: spec.platform });
 let taskExit = { code: 1, signal: null };
 let taskExited = false;
 const anchorReadyAt = Date.now() + 250;
-process.on('SIGTERM', () => {});
+const activity = new AbortController();
+const logStore = createAnchorLogStore(spec.platform, spec.logs);
+let taskStarted = false;
+let launchPending = false;
+let groupPending = false;
+let completing = false;
+let completionPromise;
+let deadlineTimer;
+process.on('SIGTERM', () => {
+  // Before spawn there is no task to drain. Abort a suspended ACL check so a later resolution
+  // cannot launch work after cancellation. Once launched, the anchor stays to observe the tree.
+  if (taskStarted || finished) return;
+  activity.abort();
+  taskExited = true; stdoutDrained = true; stderrDrained = true;
+  taskExit = { code: null, signal: 'SIGTERM' };
+  reportLaunch('ERROR ANCHOR_ABORTED');
+  void logStore.close();
+  checkGroup();
+});
 const signalNumbers = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15 };
 let stdoutDrained = false;
 let stderrDrained = false;
@@ -402,318 +420,83 @@ function signalOwnedGroup(signal) {
     catch (error) { if (error.code !== 'ESRCH') setTimeout(() => signalOwnedGroup(signal), 1000).unref(); }
   }
 }
+function writeCompletion() {
+  if (completionPromise === undefined) {
+    completionPromise = logStore.publishCompletion(() => ({
+      pid: process.pid, exitCode: timedOut ? null : taskExit.code,
+      signal: timedOut ? null : taskExit.signal, completedAt: new Date().toISOString(),
+      logFailed, timedOut
+    })).catch(() => { logFailed = true; });
+  }
+  return completionPromise;
+}
 function enforceDeadline() {
   if (finished) return;
   timedOut = true;
-  try {
-    publishLaunch(spec.logs.completionMarkerPath, spec.logs.root, {
-      pid: process.pid, exitCode: null, signal: null, completedAt: new Date().toISOString(),
-      logFailed, timedOut: true
-    });
-  } catch { logFailed = true; }
+  activity.abort();
+  if (!taskStarted) {
+    taskExited = true; stdoutDrained = true; stderrDrained = true;
+    reportLaunch('ERROR ANCHOR_DEADLINE_EXPIRED');
+    process.exitCode = 124;
+  }
+  // ACL evidence is asynchronous; termination must not wait for a cold or hung inspector.
+  void writeCompletion();
   signalOwnedGroup('SIGTERM');
   setTimeout(() => { if (!finished) signalOwnedGroup('SIGKILL'); }, 5000).unref();
-}
-function assertSecureDirectoryChain(root, directory) {
-  const resolvedRoot = pathModule.resolve(root);
-  const resolvedDirectory = pathModule.resolve(directory);
-  const relative = pathModule.relative(resolvedRoot, resolvedDirectory);
-  if (relative === '..' || relative.startsWith('..' + pathModule.sep) || pathModule.isAbsolute(relative)) {
-    throw new Error('LOG_PATH_OUTSIDE_ROOT');
-  }
-  let current = resolvedRoot;
-  for (const part of relative === '' ? [] : relative.split(pathModule.sep)) {
-    checkDirectory(current);
-    current = pathModule.join(current, part);
-  }
-  checkDirectory(current);
-}
-function checkDirectory(path) {
-  const stat = fs.lstatSync(path);
-  const uid = process.getuid?.();
-  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o700 || (uid !== undefined && stat.uid !== uid)) {
-    throw new Error('UNSAFE_LOG_DIRECTORY');
-  }
-  return { dev: stat.dev, ino: stat.ino, uid: stat.uid };
-}
-function assertDirectoryIdentity(path, expected) {
-  const current = checkDirectory(path);
-  if (current.dev !== expected.dev || current.ino !== expected.ino || current.uid !== expected.uid) {
-    throw new Error('LOG_DIRECTORY_CHANGED');
-  }
-}
-function checkFile(path) {
-  try {
-    const stat = fs.lstatSync(path);
-    const uid = process.getuid?.();
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (uid !== undefined && stat.uid !== uid)) {
-      throw new Error('UNSAFE_LOG_TARGET');
-    }
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-  }
-}
-function secureOpen(path) {
-  checkFile(path);
-  const fd = fs.openSync(path, fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600);
-  const stat = fs.fstatSync(fd);
-  const uid = process.getuid?.();
-  if (!stat.isFile() || stat.nlink !== 1 || (uid !== undefined && stat.uid !== uid)) {
-    closeSync(fd); throw new Error('UNSAFE_LOG_TARGET');
-  }
-  fs.fchmodSync(fd, 0o600);
-  return { fd, size: stat.size };
-}
-function readGeneration(path, currentPath) {
-  try {
-    checkFile(path);
-    const value = fs.readFileSync(path, 'utf8').trim();
-    if (/^\d+$/.test(value)) return Number(value);
-    const phased = /^rotating-(\d+)-(marker|closed|shifted|archived|opened)-[A-Za-z0-9-]+$/.exec(value);
-    if (phased) {
-      const archived = phased[2] === 'archived' || phased[2] === 'opened' || !fs.existsSync(currentPath);
-      return Number(phased[1]) + (archived ? 1 : 0);
-    }
-    if (/^rotating-[A-Za-z0-9-]+$/.test(value)) {
-      const current = (() => { try { return fs.lstatSync(currentPath); } catch { return null; } })();
-      return current === null || current.size === 0 && fs.existsSync(currentPath + '.1') ? 1 : 0;
-    }
-    throw new Error('INVALID_LOG_GENERATION_MARKER');
-  } catch (error) {
-    if (error.code === 'ENOENT') return 0;
-    throw error;
-  }
-}
-function readGenerationMarker(path) {
-  try {
-    checkFile(path);
-    return fs.readFileSync(path, 'utf8').trim();
-  } catch (error) {
-    if (error.code === 'ENOENT') return '0';
-    throw error;
-  }
-}
-function hasSafeFile(path) {
-  checkFile(path);
-  try { fs.lstatSync(path); return true; }
-  catch (error) { if (error.code === 'ENOENT') return false; throw error; }
-}
-function safeFileSize(path) {
-  checkFile(path);
-  try { return fs.lstatSync(path).size; }
-  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
-}
-function publishGeneration(path, value) {
-  checkFile(path);
-  const temporary = path + '.tmp-' + process.pid + '-' + Math.random().toString(16).slice(2);
-  fs.writeFileSync(temporary, String(value), { flag: 'wx', mode: 0o600 });
-  try { fs.renameSync(temporary, path); }
-  catch (error) { try { fs.rmSync(temporary); } catch {} throw error; }
-}
-function publishLaunch(path, root, value = { pid: process.pid }) {
-  const directory = pathModule.dirname(path);
-  assertSecureDirectoryChain(root, directory);
-  const parent = checkDirectory(directory);
-  checkFile(path);
-  const temporary = path + '.tmp-' + process.pid + '-' + Math.random().toString(16).slice(2);
-  const fd = fs.openSync(temporary, 'wx', 0o600);
-  try { fs.writeFileSync(fd, JSON.stringify(value)); fs.fsyncSync(fd); }
-  finally { fs.closeSync(fd); }
-  try {
-    assertDirectoryIdentity(directory, parent);
-    fs.renameSync(temporary, path);
-    assertDirectoryIdentity(directory, parent);
-  }
-  catch (error) { try { fs.rmSync(temporary); } catch {} throw error; }
-}
-class RotatingLog extends Writable {
-  constructor(path, root, limit, retained) {
-    super({ highWaterMark: 16 * 1024 });
-    this.path = path;
-    this.root = root;
-    this.limit = limit;
-    this.retained = retained;
-    this.markerPath = path + '.generation';
-    this.directory = pathModule.dirname(path);
-    assertSecureDirectoryChain(root, this.directory);
-    this.parentIdentity = checkDirectory(this.directory);
-    this.generation = this.recoverGeneration(readGenerationMarker(this.markerPath));
-    this.verifyParent();
-    const opened = secureOpen(path);
-    this.verifyParent();
-    this.fd = opened.fd;
-    this.size = opened.size;
-    const recoveryMarker = readGenerationMarker(this.markerPath);
-    const recovery = /^rotating-(\d+)-(marker|closed|shifted|archived|opened)-([A-Za-z0-9-]+)$/.exec(recoveryMarker);
-    if (recovery) {
-      publishGeneration(this.markerPath, 'rotating-' + recovery[1] + '-opened-' + recovery[3]);
-      this.verifyParent();
-    }
-    publishGeneration(this.markerPath, this.generation);
-    this.verifyParent();
-  }
-  recoverGeneration(marker) {
-    const phased = /^rotating-(\d+)-(marker|closed|shifted|archived|opened)-([A-Za-z0-9-]+)$/.exec(marker);
-    if (!phased) return readGeneration(this.markerPath, this.path);
-    const generation = Number(phased[1]);
-    const phase = phased[2];
-    const transaction = phased[3];
-    this.verifyParent();
-    if (phase === 'archived' || phase === 'opened') {
-      if (!hasSafeFile(this.path + '.1') || phase === 'opened' && !hasSafeFile(this.path)) {
-        throw new Error('AMBIGUOUS_LOG_ROTATION_RECOVERY');
-      }
-      return generation + 1;
-    }
-    if (!hasSafeFile(this.path)) {
-      if (phase !== 'shifted' || !hasSafeFile(this.path + '.1')) {
-        throw new Error('AMBIGUOUS_LOG_ROTATION_RECOVERY');
-      }
-      publishGeneration(this.markerPath, 'rotating-' + generation + '-archived-' + transaction);
-      this.verifyParent();
-      return generation + 1;
-    }
-    if ((phase === 'marker' || phase === 'closed') && safeFileSize(this.path) === 0) {
-      throw new Error('AMBIGUOUS_LOG_ROTATION_RECOVERY');
-    }
-    if (phase === 'shifted' && !hasSafeFile(this.path + '.1') && safeFileSize(this.path) === 0) {
-      throw new Error('AMBIGUOUS_LOG_ROTATION_RECOVERY');
-    }
-    if (phase === 'shifted' && hasSafeFile(this.path + '.1') && safeFileSize(this.path) === 0) {
-      publishGeneration(this.markerPath, 'rotating-' + generation + '-archived-' + transaction);
-      this.verifyParent();
-      return generation + 1;
-    }
-    if (phase !== 'shifted') {
-      const present = Array.from({ length: this.retained }, (_, index) => hasSafeFile(this.path + '.' + (index + 1)));
-      const firstMissing = present.findIndex((value) => !value);
-      let shiftStart;
-      if (firstMissing < 0) {
-        this.verifyParent();
-        fs.rmSync(this.path + '.' + this.retained);
-        this.verifyParent();
-        shiftStart = this.retained - 1;
-      } else {
-        shiftStart = firstMissing;
-      }
-      for (let suffix = shiftStart; suffix >= 1; suffix -= 1) {
-        const source = this.path + '.' + suffix;
-        const target = this.path + '.' + (suffix + 1);
-        if (!hasSafeFile(source)) continue;
-        if (hasSafeFile(target)) throw new Error('AMBIGUOUS_LOG_ROTATION_RECOVERY');
-        this.verifyParent();
-        fs.renameSync(source, target);
-        this.verifyParent();
-      }
-      publishGeneration(this.markerPath, 'rotating-' + generation + '-shifted-' + transaction);
-    }
-    if (hasSafeFile(this.path + '.1')) throw new Error('AMBIGUOUS_LOG_ROTATION_RECOVERY');
-    this.verifyParent();
-    fs.renameSync(this.path, this.path + '.1');
-    this.verifyParent();
-    publishGeneration(this.markerPath, 'rotating-' + generation + '-archived-' + transaction);
-    return generation + 1;
-  }
-  _write(chunk, _encoding, callback) {
-    try {
-      let offset = 0;
-      while (offset < chunk.length) {
-        if (this.size >= this.limit) this.rotate();
-        const length = Math.min(chunk.length - offset, this.limit - this.size);
-        let written = 0;
-        while (written < length) {
-          written += fs.writeSync(this.fd, chunk, offset + written, length - written);
-        }
-        offset += length;
-        this.size += length;
-      }
-      callback();
-    } catch (error) { logFailed = true; callback(error); }
-  }
-  _final(callback) {
-    try { closeSync(this.fd); callback(); }
-    catch (error) { logFailed = true; callback(error); }
-  }
-  _destroy(error, callback) {
-    try { closeSync(this.fd); } catch {}
-    callback(error);
-  }
-  rotate() {
-    this.verifyParent();
-    const transaction = process.pid + '-' + Date.now();
-    publishGeneration(this.markerPath, 'rotating-' + this.generation + '-marker-' + transaction);
-    this.verifyParent();
-    closeSync(this.fd);
-    publishGeneration(this.markerPath, 'rotating-' + this.generation + '-closed-' + transaction);
-    const oldest = this.path + '.' + this.retained;
-    checkFile(oldest);
-    try { fs.rmSync(oldest); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    this.verifyParent();
-    for (let generation = this.retained - 1; generation >= 1; generation -= 1) {
-      const source = this.path + '.' + generation;
-      checkFile(source);
-      try { fs.renameSync(source, this.path + '.' + (generation + 1)); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-      this.verifyParent();
-    }
-    publishGeneration(this.markerPath, 'rotating-' + this.generation + '-shifted-' + transaction);
-    checkFile(this.path);
-    fs.renameSync(this.path, this.path + '.1');
-    this.verifyParent();
-    publishGeneration(this.markerPath, 'rotating-' + this.generation + '-archived-' + transaction);
-    const opened = secureOpen(this.path);
-    this.verifyParent();
-    publishGeneration(this.markerPath, 'rotating-' + this.generation + '-opened-' + transaction);
-    this.fd = opened.fd;
-    this.size = 0;
-    this.generation += 1;
-    publishGeneration(this.markerPath, this.generation);
-    this.verifyParent();
-  }
-  verifyParent() {
-    assertSecureDirectoryChain(this.root, this.directory);
-    assertDirectoryIdentity(this.directory, this.parentIdentity);
-  }
 }
 function refuseExpiredDeadline() {
   if (!Number.isSafeInteger(spec.deadlineAt) || Date.now() < spec.deadlineAt) return false;
   timedOut = true;
+  activity.abort();
   finished = true;
-  try {
-    publishLaunch(spec.logs.completionMarkerPath, spec.logs.root, {
-      pid: process.pid, exitCode: null, signal: null, completedAt: new Date().toISOString(),
-      logFailed, timedOut: true
-    });
-  } catch { logFailed = true; }
+  void writeCompletion();
   // Nothing ran: a zero-delay timer would still allow synchronous spawn before it fires.
   reportLaunch('ERROR ANCHOR_DEADLINE_EXPIRED');
   process.exitCode = 124;
   return true;
 }
-function launch() {
+async function launch() {
   if (refuseExpiredDeadline()) return;
   if (Number.isSafeInteger(spec.deadlineAt)) {
-    setTimeout(enforceDeadline, Math.max(0, spec.deadlineAt - Date.now())).unref();
+    deadlineTimer = setTimeout(enforceDeadline, Math.max(0, spec.deadlineAt - Date.now()));
+    deadlineTimer.unref();
   }
   let stdoutLog;
   let stderrLog;
   try {
-    stdoutLog = new RotatingLog(spec.logs.stdoutPath, spec.logs.root, spec.logs.rotationBytes, spec.logs.retainedFiles);
-    stderrLog = new RotatingLog(spec.logs.stderrPath, spec.logs.root, spec.logs.rotationBytes, spec.logs.retainedFiles);
+    const opened = await logStore.open(activity.signal);
+    stdoutLog = opened.stdout; stderrLog = opened.stderr;
   } catch {
-    logFailed = true; stdoutDrained = true; stderrDrained = true; taskExited = true;
-    reportLaunch('ERROR LOG_SETUP_FAILED'); checkGroup(); return;
+    logFailed ||= !activity.signal.aborted;
+    stdoutDrained = true; stderrDrained = true; taskExited = true;
+    reportLaunch(timedOut ? 'ERROR ANCHOR_DEADLINE_EXPIRED'
+      : activity.signal.aborted ? 'ERROR ANCHOR_ABORTED' : 'ERROR LOG_SETUP_FAILED');
+    checkGroup(); return;
   }
-  if (refuseExpiredDeadline()) {
+  if (activity.signal.aborted || refuseExpiredDeadline()) {
     stdoutLog.destroy(); stderrLog.destroy();
-    return;
+    stdoutDrained = true; stderrDrained = true; taskExited = true;
+    checkGroup(); return;
   }
-  const child = spawn(spec.argv[0], spec.argv.slice(1), {
-    cwd: process.cwd(), env: process.env, shell: spec.shell === true, stdio: ['ignore', 'pipe', 'pipe']
-  });
+  let child;
+  try {
+    taskStarted = true;
+    child = spawn(spec.argv[0], spec.argv.slice(1), {
+      cwd: process.cwd(), env: process.env, shell: spec.shell === true, stdio: ['ignore', 'pipe', 'pipe']
+    });
+  } catch {
+    stdoutLog.destroy(); stderrLog.destroy();
+    taskExited = true; stdoutDrained = true; stderrDrained = true;
+    taskExit = { code: 127, signal: null };
+    reportLaunch('ERROR SPAWN_FAILED'); checkGroup(); return;
+  }
   child.once('spawn', () => {
-    try { publishLaunch(spec.logs.launchMarkerPath, spec.logs.root); reportLaunch('LAUNCHED'); }
-    catch { logFailed = true; reportLaunch('ERROR LAUNCH_MARKER_FAILED'); }
+    launchPending = true;
+    logStore.publishLaunch(activity.signal).then(() => {
+      if (!activity.signal.aborted) reportLaunch('LAUNCHED');
+      else reportLaunch(timedOut ? 'ERROR ANCHOR_DEADLINE_EXPIRED' : 'ERROR ANCHOR_ABORTED');
+    }, () => { logFailed = true; reportLaunch('ERROR LAUNCH_MARKER_FAILED'); })
+      .finally(() => { launchPending = false; checkGroup(); });
   });
   child.once('error', (error) => {
     reportLaunch('ERROR ' + (/^[A-Z0-9_]+$/.test(error.code || '') ? error.code : 'SPAWN_FAILED'));
@@ -733,27 +516,22 @@ function reportLaunch(value) {
   process.stderr.end(value + '\n');
 }
 function checkGroup() {
-  if (finished) return;
-  // The group is only worth inspecting once the task has exited and its logs have drained.
-  // Polling while the task merely runs scans the whole process table every 25ms for the
-  // task's entire lifetime, which costs a core and grows the anchor's heap for nothing.
+  if (finished || completing || groupPending || launchPending) return;
+  // Inspect only after exit and log drain. There is no process-table polling while work runs.
   if (!taskExited || !stdoutDrained || !stderrDrained) return;
-  // The anchor is spawned detached, so it leads its own group and everything the task launched is
-  // in it. Draining means nobody but the anchor is left.
+  groupPending = true;
   readers.readGroupMembers(process.pid, (error, members) => {
-    if (error) return setTimeout(checkGroup, 25);
+    groupPending = false;
+    if (finished || completing) return;
+    if (error || members === null) return setTimeout(checkGroup, 25);
     if (Date.now() >= anchorReadyAt && members.every((pid) => pid === process.pid)) {
-      finished = true;
-      if (spec.logs.completionMarkerPath) {
-        try {
-          publishLaunch(spec.logs.completionMarkerPath, spec.logs.root, {
-            pid: process.pid, exitCode: taskExit.code, signal: taskExit.signal,
-            completedAt: new Date().toISOString(), logFailed, timedOut
-          });
-        } catch { logFailed = true; }
-      }
-      process.exitCode = logFailed ? 1
-        : taskExit.signal ? 128 + (signalNumbers[taskExit.signal] || 0) : (taskExit.code === null ? 1 : taskExit.code);
+      completing = true;
+      void writeCompletion().then(() => {
+        finished = true;
+        if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+        process.exitCode = timedOut ? 124 : logFailed ? 1
+          : taskExit.signal ? 128 + (signalNumbers[taskExit.signal] || 0) : (taskExit.code === null ? 1 : taskExit.code);
+      });
       return;
     }
     setTimeout(checkGroup, 25);
@@ -767,7 +545,7 @@ function decide(command) {
   if (decided) return;
   decided = true;
   control.destroy();
-  if (command === 'GO') launch();
+  if (command === 'GO') void launch().catch(() => { logFailed = true; reportLaunch('ERROR ANCHOR_LAUNCH_FAILED'); signalOwnedGroup('SIGTERM'); });
   else if (spec.ignoreAbort === true) setInterval(() => {}, 1000);
   else process.exitCode = 0;
 }

@@ -1147,6 +1147,7 @@ describe('ManagedProcessSupervisor', () => {
     const store = new MemoryProcessStore();
     const worktree = { id: 'worktree-1' };
     const logsRoot = join(root, 'logs');
+    const pausePath = join(root, 'pause-writer');
     const supervisor = createSupervisor({
       stateStore: store,
       logs: new ManagedLogStore({ root: logsRoot, rotationBytes: 64, retainedFiles: 3 }),
@@ -1156,7 +1157,14 @@ describe('ManagedProcessSupervisor', () => {
     const started = await supervisor.start({
       worktreeId: worktree.id,
       taskName: 'recover-logs',
-      argv: ['node', '-e', "let n=0;setInterval(()=>process.stdout.write(String(n++).padStart(8,'0')),5)"],
+      argv: ['node', '-e', [
+        "const fs = require('node:fs'); let n = 0; let paused = false;",
+        'setInterval(() => {',
+        '  if (paused) return;',
+        "  if (fs.existsSync(process.argv[1])) { paused = true; process.stdout.write('PAUSED!!'); return; }",
+        "  process.stdout.write(String(n++).padStart(8, '0'));",
+        '}, 5);',
+      ].join('\n'), pausePath],
       cwd: root,
       env: process.env,
     });
@@ -1183,6 +1191,18 @@ describe('ManagedProcessSupervisor', () => {
 
     const recovered = await recoveredSupervisor.recover();
     await waitFor(async () => readFile(`${started.record.stdoutPath}.1`, 'utf8').then(() => true, () => false));
+
+    // Request a task-owned pause without stopping the live anchor. Observing the final sentinel
+    // through the generation-aware reader proves its queued output has drained, so the raw file
+    // size assertions below cannot land between rename(current, .1) and the writer reopening it.
+    await writeFile(pausePath, 'pause');
+    await waitFor(async () => {
+      try { return (await recoveredLogs.readCursor(started.record.stdoutPath)).content.endsWith('PAUSED!!'); }
+      catch (error) {
+        if (error instanceof Error && error.message === 'Managed log rotated during bounded read') return false;
+        throw error;
+      }
+    });
 
     expect(recovered[0]?.state).toBe('RUNNING');
     expect((await readFile(`${started.record.stdoutPath}.1`)).byteLength).toBeLessThanOrEqual(64);

@@ -9,6 +9,7 @@ import { stringify } from 'smol-toml';
 import { createProductionDaemon } from '../../../daemon/src/runtime-factory';
 import { createWorkspaceFixture } from '../../../testkit/src/workspace-fixture';
 import { developmentRuntimeInvocation } from '../../../testkit/src/runtime-invocation';
+import { fixtureIpcAddress } from '../../../testkit/src/ipc-address';
 import { shortTmpRoot } from '../../../testkit/src/platform';
 import { DaemonClient } from '../client';
 import { runCli } from '../main';
@@ -17,8 +18,12 @@ import { createQueueTaskFixture } from './jobs-task-fixture';
 const fixture = await createWorkspaceFixture();
 const socketRoot = await mkdtemp(join(shortTmpRoot(), 'wtm-jobs-'));
 const releasePath = join(socketRoot, 'release');
+const memoryPolicy = process.argv[2] === 'memory';
+if (memoryPolicy) await writeFile(join(socketRoot, 'global.toml'), stringify({
+  version: 1, jobs: { max_concurrent_heavy: 2, memory: { budget_mib: 64, reserve_mib: 0 } },
+}));
 const runtime = await createProductionDaemon({
-  dataRoot: join(fixture.userDataDir, 'queue'), socketPath: join(socketRoot, 'wtmd.sock'),
+  dataRoot: join(fixture.userDataDir, 'queue'), socketPath: fixtureIpcAddress(socketRoot),
   logRoot: join(fixture.userDataDir, 'logs'), globalConfigPath: join(socketRoot, 'global.toml'),
   runtimeInvocation: developmentRuntimeInvocation(), gracePeriodMs: 100, pollIntervalMs: 10,
 });
@@ -27,6 +32,12 @@ let connected = false;
 try {
   // The external barrier is only test coordination. The task never writes its source worktree.
   const taskFixture = createQueueTaskFixture(releasePath);
+  if (memoryPolicy) {
+    // A deterministic admission budget, not an RSS estimate or a measured savings claim.
+    taskFixture.config.tasks!.check!.memory_estimate_mib = 64;
+    taskFixture.config.tasks!.check!.queue_env = { WTM_FIXTURE_WORKERS: '1' };
+    taskFixture.files['queue-check.cjs'] += "\nconsole.log('WORKERS ' + process.env.WTM_FIXTURE_WORKERS);\n";
+  }
   await writeFile(join(fixture.root, 'wtm.toml'), stringify(taskFixture.config));
   const workspace = runtime.stateStore.upsertWorkspace({
     name: 'jobs-fixture', root: fixture.root, scope: 'local', configPath: join(fixture.root, 'wtm.toml'),
@@ -57,7 +68,8 @@ try {
   // Both actual CLI children have exited while neither task can have completed.
   await until('shared slot before release', ids, (states) => {
     return states.filter((job) => job.state === 'RUNNING').length === 1
-      && states.filter((job) => job.state === 'QUEUED').length === 1;
+      && states.filter((job) => job.state === 'QUEUED'
+        && job.waitingReason === (memoryPolicy ? 'memory_budget' : 'concurrency')).length === 1;
   });
   const repeated = await submit(fixture.firstRepoPath, 'native-first');
   assert.equal(repeated.jobId, ids[0]);
@@ -82,11 +94,13 @@ try {
     const output = (logs.data as { stdout: string }).stdout;
     assert.equal((output.match(/START /g) ?? []).length, 1);
     assert.equal((output.match(/END /g) ?? []).length, 1);
+    if (memoryPolicy) assert.equal((output.match(/^WORKERS 1$/gm) ?? []).length, 1, output);
     intervals.push({ start: Number(/START (\d+)/.exec(output)?.[1]), end: Number(/END (\d+)/.exec(output)?.[1]) });
   }
   intervals.sort((a, b) => a.start - b.start);
   assert.ok(intervals[0]!.end <= intervals[1]!.start, JSON.stringify(intervals));
-  console.log(JSON.stringify({ detached: true, sharedSlot: true, idempotent: true, resultsVerified: true }));
+  console.log(JSON.stringify({ detached: true, sharedSlot: true, idempotent: true, resultsVerified: true,
+    ...(memoryPolicy ? { memoryAdmission: true, queueEnvironment: true } : {}) }));
 } finally {
   let safeToRemove = true;
   try { if (connected) {

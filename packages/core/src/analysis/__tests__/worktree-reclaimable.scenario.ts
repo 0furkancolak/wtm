@@ -6,12 +6,14 @@ import { join } from 'node:path';
 import { measureWorktreeReclaimable } from '../worktree-reclaimable';
 
 const mode = process.argv[2];
-const parent = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), 'wtm-reclaimable-')));
+// Use the same canonicalization primitive as the production walker (Windows aliases differ).
+const parent = await fs.promises.realpath(fs.mkdtempSync(join(tmpdir(), 'wtm-reclaimable-')));
 const root = join(parent, 'worktree');
 const outside = join(parent, 'outside');
 const original = { lstat: fs.promises.lstat, opendir: fs.promises.opendir };
 const preserved = Buffer.from('source file that must remain unchanged');
 let outsideReads = 0;
+let injected = 0;
 try {
   fs.mkdirSync(root);
   fs.mkdirSync(outside);
@@ -60,7 +62,7 @@ try {
     signal = controller.signal;
   } else if (mode === 'unreadable') {
     fs.promises.opendir = (async (...args: Parameters<typeof original.opendir>) => {
-      if (String(args[0]) === root) throw Object.assign(new Error('unreadable'), { code: 'EACCES' });
+      if (String(args[0]) === root) { injected++; throw Object.assign(new Error('unreadable'), { code: 'EACCES' }); }
       return await original.opendir(...args);
     }) as typeof original.opendir;
   } else if (mode === 'allocation-unavailable' || mode === 'changed-file') {
@@ -69,6 +71,7 @@ try {
       const stat = await original.lstat(...args);
       if (String(args[0]) === join(root, 'source')) {
         sourceReads += 1;
+        injected++;
         if (mode === 'allocation-unavailable') Object.defineProperty(stat, 'blocks', { value: -1n });
         else if (sourceReads > 1) Object.defineProperty(stat, 'size', { value: BigInt(preserved.length + 1) });
       }
@@ -81,6 +84,7 @@ try {
     fs.writeFileSync(join(nested, 'original'), 'original nested source');
     fs.promises.opendir = (async (...args: Parameters<typeof original.opendir>) => {
       if (String(args[0]) !== nested) return await original.opendir(...args);
+      injected++;
       fs.renameSync(nested, moved);
       fs.symlinkSync(outside, nested, 'dir');
       let directory;
@@ -102,6 +106,9 @@ try {
   }
   syncBuiltinESMExports();
   const result = await measureWorktreeReclaimable({ root: targetRoot, excludedPaths, maxEntries, maxDurationMs, signal });
+  if (['unreadable', 'allocation-unavailable', 'changed-file', 'directory-swap'].includes(mode ?? '')) {
+    assert.ok(injected > 0, JSON.stringify({ mode, root, targetRoot, result, reason: 'fault injection must run' }));
+  }
   assert.equal(result.basis, 'exclusive-file-allocation-estimate');
   if (mode === 'accounting' || mode === 'sparse') {
     assert.equal(result.status, 'complete', JSON.stringify(result));

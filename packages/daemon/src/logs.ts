@@ -15,6 +15,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { selectPlatformRuntime } from '@wtm/platform';
 import type { FileTrustPolicy } from '@wtm/platform/ports';
+import { retainedLogCount } from './log-policy';
 
 const defaultRotationBytes = 20 * 1024 * 1024;
 const defaultRetainedFiles = 3;
@@ -104,7 +105,7 @@ export class ManagedLogStore {
     if (!isAbsolute(options.root)) throw new TypeError('Managed log root must be absolute');
     this.#root = resolve(options.root);
     this.#rotationBytes = positiveInteger(options.rotationBytes ?? defaultRotationBytes, 'Log rotation size');
-    this.#retainedFiles = positiveInteger(options.retainedFiles ?? defaultRetainedFiles, 'Retained log count');
+    this.#retainedFiles = retainedLogCount(options.retainedFiles ?? defaultRetainedFiles);
     positiveInteger(options.rotationCheckMs ?? 250, 'Log rotation check interval');
     this.#raceHook = options.raceHook ?? (() => {});
     this.#fileTrust = options.fileTrust ?? hostFileTrustPolicy();
@@ -199,9 +200,18 @@ export class ManagedLogStore {
     await assertSecureDirectoryChain(this.#root, directory, this.#fileTrust);
     const parent = await directoryIdentity(directory, this.#fileTrust);
     for (const path of [stdout, stderr]) {
-      const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      let handle: FileHandle;
+      try { handle = await openExistingSafeLog(path, this.#fileTrust); }
+      catch (error) {
+        if (!isMissing(error) && !(error instanceof ManagedLogIdentityChangedError)) throw error;
+        // The live anchor closes and archives current before reopening it. Verify that gap
+        // through the same bounded generation protocol as log reads, without creating a file
+        // or replacing the writer's inode. Stable current files need no marker/ACL round trips.
+        await this.readCursor(path, undefined, 1);
+        await assertDirectoryIdentity(directory, parent, this.#fileTrust);
+        continue;
+      }
       try {
-        await assertSafeFileHandle(handle, path, this.#fileTrust);
         await assertDirectoryIdentity(directory, parent, this.#fileTrust);
       } finally {
         await handle.close();

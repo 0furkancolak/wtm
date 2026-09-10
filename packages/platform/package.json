@@ -9,7 +9,8 @@
     "./ports": "./src/ports.ts",
     "./process": "./src/process/index.ts",
     "./service": "./src/service/index.ts",
-    "./socket": "./src/socket/index.ts"
+    "./socket": "./src/socket/index.ts",
+    "./trust": "./src/trust/index.ts"
   },
   "dependencies": {
     "@wtm/protocol": "workspace:*"

@@ -20,6 +20,10 @@ import { join } from 'node:path';
  * the variables the product happens to read today would stop being true the first time one was
  * added — silently, and only on Linux.
  *
+ * Windows derives its home from `USERPROFILE` and WTM prefers `LOCALAPPDATA` over that home.
+ * Both must move with the fixture. `APPDATA` confines tools using the roaming application-data
+ * directory too; leaving either application-data variable ambient can escape an isolated HOME.
+ *
  * Nothing is created here. WTM makes its own directories with the modes it requires
  * (`server.ts:659` creates the socket parent 0700, recursively), and a fixture that pre-created
  * them would be testing its own `mkdir` rather than the product's.
@@ -27,6 +31,9 @@ import { join } from 'node:path';
 export function isolatedHomeEnvironment(home: string): Record<string, string> {
   return {
     HOME: home,
+    USERPROFILE: home,
+    LOCALAPPDATA: join(home, 'AppData', 'Local'),
+    APPDATA: join(home, 'AppData', 'Roaming'),
     XDG_CONFIG_HOME: join(home, '.config'),
     XDG_STATE_HOME: join(home, '.local', 'state'),
     XDG_DATA_HOME: join(home, '.local', 'share'),
