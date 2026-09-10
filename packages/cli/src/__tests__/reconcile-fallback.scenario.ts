@@ -30,7 +30,7 @@ const gitConfig = join(root, 'gitconfig');
 function git(cwd: string, ...args: string[]): string {
   // `execFileSync` inherits stderr by default, and `git worktree add` narrates on it; this
   // scenario reports through stdout, so nothing of Git's may reach either stream.
-  return execFileSync('/usr/bin/git', args, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
 }
 
 interface Invocation {

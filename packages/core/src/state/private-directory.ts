@@ -148,7 +148,9 @@ async function inspectPrivateDirectory(
     const opened = await handle.stat().catch(() => {
       throw new PrivateDirectoryError();
     });
-    await assertPrivateDirectory(opened, fileTrust);
+    // Descriptor metadata does not carry ACL ownership on every host. Keep the pathname for
+    // policy inspection, then bind it back to this descriptor with the identity checks below.
+    await assertPrivateDirectory(opened, fileTrust, canonicalPath);
     const after = await lstat(canonicalPath).catch(() => {
       throw new PrivateDirectoryError();
     });
@@ -164,13 +166,13 @@ async function inspectPrivateDirectory(
   }
 }
 
-async function assertPrivateDirectory(stat: Stats, fileTrust: FileTrustPolicy, path?: string): Promise<void> {
+async function assertPrivateDirectory(stat: Stats, fileTrust: FileTrustPolicy, path: string): Promise<void> {
   if (!fileTrust.currentIdentityAvailable()) throw new PrivateDirectoryError();
   if (!stat.isDirectory()) throw new PrivateDirectoryError(path, 'is not a directory');
-  if (!(await fileTrust.isOwnedByCurrentUser(stat, path ?? ''))) {
+  if (!(await fileTrust.isOwnedByCurrentUser(stat, path))) {
     throw new PrivateDirectoryError(path, 'belongs to another user');
   }
-  if (!(await fileTrust.isWritableOnlyByOwner(stat, path ?? '', 0o077))) {
+  if (!(await fileTrust.isWritableOnlyByOwner(stat, path, 0o077))) {
     throw new PrivateDirectoryError(
       path,
       `is readable by others (mode ${(stat.mode & 0o7777).toString(8)}); run chmod 700 on it`,
