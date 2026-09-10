@@ -4,6 +4,11 @@ Working branch: `codex/todo-safety-docs-parity`; published baseline `f37a160`.
 The worktree started clean. Changes in this wave are batched for one branch publication after verification.
 No release, merge or PR is authorized. Existing queue and ignored/untracked safety remain.
 
+The three-commit wave was subsequently published at `1956dd5`. Its native CI evidence,
+macOS fixture correction and TODO 18 follow-up are recorded in
+[`2026-09-10-endpoint-batching.md`](2026-09-10-endpoint-batching.md).
+The original local verification ledger below is retained as historical evidence.
+
 ## Baseline and native evidence
 
 Run 34366121974 at the published baseline: Linux x64 1525 passed / 0 failed / 14 existing

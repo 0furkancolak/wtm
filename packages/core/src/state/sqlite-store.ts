@@ -4,6 +4,7 @@ import type { MigrationAssetProvider } from './assets';
 import type { SqliteDatabase, SqliteDatabaseFactory } from './database';
 import { stateStoreRuntime } from './runtime';
 import { assertNoHeavyJobs, createHeavyJobStore } from './jobs-store';
+import { maxEndpointBatchCandidates, validEndpointBatchResults } from '../runtime/endpoint-batch';
 import type { HeavyJobStore } from './jobs';
 import type {
   LifecycleEventSubject,
@@ -42,11 +43,9 @@ import type {
 } from './store';
 
 /**
- * How many ports one allocation may ask the operating system about. Each question is a
- * process, so the answer to "is this whole range busy?" must cost a bounded amount rather
- * than one spawn per port in a range that is thirty thousand wide by default.
+ * Bound OS observations even with legacy single-candidate probe implementations.
  */
-const maxProbedEndpointCandidates = 256;
+const maxProbedEndpointCandidates = maxEndpointBatchCandidates;
 
 interface WorkspaceRow {
   id: string;
@@ -963,7 +962,7 @@ export class SQLiteStateStore implements StateStore {
         && existing.protocol === input.protocol
         && existing.host === input.host;
       if (
-        existingIsCompatible
+        existingIsCompatible && probe?.batch === undefined
         && (probe === undefined || probe({ protocol: input.protocol, host: input.host, port: existing.port }))
       ) {
         return endpointFromRow(existing);
@@ -985,14 +984,25 @@ export class SQLiteStateStore implements StateStore {
         SELECT id FROM endpoint_leases
         WHERE protocol = ? AND port = ? AND state = 'ACTIVE' AND id <> ?
       `);
-      // Every probe costs a process, so the search is bounded. The default range is thirty
-      // thousand ports wide, and a probe that systematically answers "taken" — a throttled
-      // daemon whose prober outlives its own timeout, a probe that cannot run at all — turned
-      // one allocation into thirty thousand spawns that never finished. Ports already leased
-      // are rejected by the statement above and cost nothing, so they do not count.
+      // Leased candidates never reach the OS helper. Batch-capable probes share one process
+      // and deadline; legacy injected single-candidate probes retain the same bounded search.
       let probed = 0;
       let exhausted = false;
-      const port = candidates.find((candidate) => {
+      const port = probe?.batch !== undefined ? (() => {
+        const offered: number[] = existingIsCompatible ? [existing.port] : [];
+        for (const candidate of candidates) {
+          if (offered.includes(candidate)) continue;
+          if (collisionStatement.get(input.protocol, candidate, existing?.id ?? '') !== undefined) continue;
+          if (offered.length >= maxProbedEndpointCandidates) { exhausted = true; break; }
+          offered.push(candidate);
+        }
+        probed = offered.length;
+        if (probed === 0) return undefined;
+        const results = probe.batch!(offered.map((candidate) => ({ protocol: input.protocol, host: input.host, port: candidate })));
+        // Malformed/incomplete results cannot partially authorize a lease or update an old one.
+        if (!validEndpointBatchResults(results, offered.length)) return undefined;
+        return offered.find((_candidate, index) => results[index] === true);
+      })() : candidates.find((candidate) => {
         if (exhausted) return false;
         if (collisionStatement.get(input.protocol, candidate, existing?.id ?? '') !== undefined) return false;
         if (probe === undefined) return true;
@@ -1009,6 +1019,8 @@ export class SQLiteStateStore implements StateStore {
           ? `No available ${input.protocol} endpoint ${where}: ${probed} ports were offered and every one was refused.`
           : `No available ${input.protocol} endpoint ${where}`);
       }
+
+      if (existingIsCompatible && port === existing.port) return endpointFromRow(existing);
 
       const timestamp = new Date().toISOString();
       if (existing !== undefined) {

@@ -37,6 +37,7 @@ describe('internal CLI dispatch', () => {
     expect(exitCode).toBe(0);
     expect(stdout).not.toContain('__wtm_internal_anchor');
     expect(stdout).not.toContain('__wtm_internal_adapter');
+    expect(stdout).not.toContain('__wtm_internal_endpoint_batch_probe');
   });
 
   const malformedArgv = [
@@ -48,6 +49,7 @@ describe('internal CLI dispatch', () => {
     ['__wtm_internal_adapter', '3.5', 'adapter.mjs'],
     ['__wtm_internal_adapter', '3', '../adapter.mjs'],
     ['__wtm_internal_adapter', '3', 'adapter.mjs', 'extra'],
+    ['__wtm_internal_endpoint_batch_probe', 'extra'],
   ];
   for (const argv of malformedArgv) {
     test(`rejects malformed private argv without throwing: ${JSON.stringify(argv)}`, async () => {
@@ -62,6 +64,20 @@ describe('internal CLI dispatch', () => {
   test('runs a private mode without loading the public CLI module graph', () => {
     expect(publicGraphModulesLoadedBy(['__wtm_internal_anchor', 'a'.repeat(64)])).toBe(0);
     expect(publicGraphModulesLoadedBy(['--version'])).toBeGreaterThan(0);
+    expect(publicGraphModulesLoadedBy(['__wtm_internal_endpoint_batch_probe'])).toBe(0);
+  });
+
+  test('rejects malformed, oversized and non-UTF-8 batch input without a partial availability result', () => {
+    for (const input of [
+      '{', '{"candidates":[]}', '{"candidates":[{"host":"127.0.0.1","port":0,"protocol":"tcp"}]}',
+      JSON.stringify({ candidates: Array.from({ length: 257 }, () => ({ host: '127.0.0.1', port: 3000, protocol: 'tcp' })) }),
+      ' '.repeat(128 * 1024 + 1), Buffer.from([0xff]),
+    ]) {
+      const result = runScenario('node', ['--import', 'tsx', cliEntry, '__wtm_internal_endpoint_batch_probe'], { input });
+      expect(result.status, result.stderr).toBe(2);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toBe('');
+    }
   });
 });
 

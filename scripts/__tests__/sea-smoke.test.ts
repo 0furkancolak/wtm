@@ -3,6 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:net';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { selectPlatformRuntime } from '../../packages/platform/src/select';
@@ -14,6 +15,7 @@ import { ManagedLogStore } from '../../packages/daemon/src/logs';
 import { ManagedProcessSupervisor } from '../../packages/daemon/src/process-supervisor';
 import { MemoryManagedProcessStore } from '../../packages/testkit/src/managed-process-store';
 import { seaAssetKeys } from '../build-sea';
+import { spawnedEndpointProbe } from '../../packages/core/src/runtime/endpoints';
 
 const windows = process.platform === 'win32';
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -139,6 +141,32 @@ async function waitForDaemon(options: { cwd: string; home: string; temporary: st
 }
 
 describe.skipIf(!existsSync(executable))('standalone executable', () => {
+  test('batches native bind checks through its private helper without Node on PATH', async () => {
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    try {
+      const address = server.address();
+      if (address === null || typeof address === 'string') throw new Error('Expected a TCP fixture');
+      const probe = spawnedEndpointProbe(executable, ['__wtm_internal_endpoint_probe'], ['__wtm_internal_endpoint_batch_probe']);
+      const candidates = Array.from({ length: 256 }, () => ({ host: '127.0.0.1', port: address.port, protocol: 'tcp' as const }));
+      expect(probe.batch!(candidates)).toEqual(Array.from({ length: 256 }, () => false));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      // Restrict the actual child's PATH without changing the test runner's environment.
+      const paths = await isolatedHome();
+      const result = spawnSync(executable, ['__wtm_internal_endpoint_batch_probe'], {
+        input: JSON.stringify({ candidates }), encoding: 'utf8', env: standaloneEnvironment(paths),
+        timeout: 5000, killSignal: 'SIGKILL',
+      });
+      expect(result.status, result.stderr || result.error?.message).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ available: Array.from({ length: 256 }, () => true) });
+    } finally {
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   test('reports its branded version and help without any runtime on PATH', async () => {
     const paths = await isolatedHome();
 

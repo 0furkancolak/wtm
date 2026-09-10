@@ -1635,7 +1635,15 @@ block
 
 ### [ ] 18. Port probing'i batch hale getir
 
-Şu an her candidate için child process spawn maliyeti var.
+**2026-09-10:** Node ve standalone tahsis yolu artık en fazla 256 adayı tek helper'a gönderir.
+SQLite transaction içindeki lease çakışma filtresi, mevcut port ve preferred port sırası korunur.
+İki saniye toplam süre, 128 KiB stdin ve 4 KiB yanıt sınırı vardır; bozuk/eksik yanıt veya
+timeout port tahsis etmez. Eski tekli probe enjeksiyonları desteklenir. Bağımsız subagent review
+kota nedeniyle açık olduğundan ana başlık henüz kapatılmadı.
+
+- [x] Tek process üzerinden sınırlı toplu bind/close kontrolü.
+- [x] Node ve standalone private girişleri, TCP/UDP ve transaction çakışma testleri.
+- [ ] Bağımsız review ve bu değişikliğin native CI sonuçları.
 
 #### Hedef
 
@@ -1654,9 +1662,12 @@ ve tek cevap:
 
 ```json
 {
-  "available": [3001]
+  "available": [false, true]
 }
 ```
+
+Yanıt boolean'ları istek sırasındadır; böylece aynı port numarasındaki farklı host/protocol
+adayları birbirine karışmaz. Bu private helper sözleşmesidir, yeni bir kullanıcı CLI komutu değildir.
 
 #### Not
 

@@ -86,7 +86,10 @@ export interface EndpointCandidate {
   port: number;
 }
 
-export type EndpointAvailabilityProbe = (candidate: EndpointCandidate) => boolean;
+export type EndpointAvailabilityProbe = ((candidate: EndpointCandidate) => boolean) & {
+  /** Positional results for one bounded candidate set, observed within the allocation transaction. */
+  batch?: (candidates: readonly EndpointCandidate[]) => readonly boolean[];
+};
 
 export type EndpointLeaseState = 'ACTIVE' | 'RELEASED';
 

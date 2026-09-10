@@ -26,6 +26,8 @@ binaries are Developer ID signed and notarized.
 
 ### Added
 
+- Batched endpoint bind probing: one bounded helper per allocation for Node and standalone
+  installations, preserving preferred ports, stable leases and transactional collision checks.
 - Opt-in estimated memory admission for queued tasks: global `jobs.memory` budget/headroom,
   per-task `memory_estimate_mib` and `queue_env` worker settings. Migration 013 preserves
   estimates and legacy unknowns; held slots retain reservations through cancellation/restart.
@@ -34,7 +36,8 @@ binaries are Developer ID signed and notarized.
 - Bounded HTTP readiness for `start`/`restart --wait --timeout`: strict healthcheck config,
   process/completion evidence, JSON observations and connection-scoped IPC cancellation.
   Normal start reports NOT_CHECKED. Timeout/disconnect ends observation without stopping
-  the managed service. Real HTTP/TCP integration is tested; native lifecycle proof remains open.
+  the managed service. Real HTTP/TCP integration and Linux x64 native lifecycle tests pass;
+  other platform gates and independent observer review remain open.
 - Bounded metadata-only disk estimates in cleanup ranking, after existing safety/activity
   tiers. Partial/unknown scans are distinct from zero, and estimates never authorize removal.
 - Queue records expose current `waitingReason` in list/status/result/cancel: concurrency,
