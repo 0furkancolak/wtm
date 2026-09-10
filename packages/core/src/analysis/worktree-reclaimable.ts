@@ -4,7 +4,8 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pinInode, type InodePin } from '../resources/guard';
 
 export type WorktreeReclaimableReason = 'entry-budget' | 'time-budget' | 'depth-budget' | 'aborted'
-  | 'missing' | 'symlink-root' | 'unreadable' | 'changed' | 'allocation-unavailable' | 'invalid-input';
+  | 'missing' | 'symlink-root' | 'unreadable' | 'changed' | 'allocation-unavailable' | 'invalid-input'
+  | 'mount-evidence-unavailable' | 'mount-evidence-changed';
 
 export interface WorktreeReclaimableMeasurement {
   status: 'complete' | 'partial' | 'unavailable';
@@ -12,13 +13,18 @@ export interface WorktreeReclaimableMeasurement {
   estimatedBytes: number | null;
   observedExclusiveBytes: number;
   entries: number;
-  excluded: { hardlinks: number; symlinks: number; policyPaths: number; crossDevice: number };
+  excluded: { hardlinks: number; symlinks: number; policyPaths: number; crossDevice: number; mounts: number };
   reason: WorktreeReclaimableReason | null;
   basis: 'exclusive-file-allocation-estimate';
 }
 
 export interface WorktreeReclaimableInput {
   root: string;
+  /** Optional mount-namespace evidence, supplied by the composition root. */
+  readMountBoundaries?: ((root: string, checkBudget: () => void) => Promise<{
+    paths: ReadonlySet<string>;
+    fingerprint: string;
+  }>) | undefined;
   /** Resolved retained-resource paths, or paths relative to root. Nothing outside root is walked. */
   excludedPaths?: readonly string[] | undefined;
   maxEntries?: number | undefined;
@@ -39,7 +45,8 @@ class MeasurementStopped extends Error {
 
 /**
  * Estimate allocated bytes of ordinary, single-link files inside one worktree. Git metadata,
- * retained resource paths, hardlinks, symlink targets and mounted filesystems are excluded.
+ * retained resource paths, hardlinks, symlink targets and other devices are excluded. Supplied
+ * mount-namespace evidence additionally excludes same-device mounts below the worktree root.
  * Allocation is not guaranteed freed space: clones, filesystem snapshots and compression can
  * share blocks without increasing nlink. Directory allocation and symlink storage are omitted.
  *
@@ -54,7 +61,7 @@ class MeasurementStopped extends Error {
 export async function measureWorktreeReclaimable(input: WorktreeReclaimableInput): Promise<WorktreeReclaimableMeasurement> {
   const result: WorktreeReclaimableMeasurement = {
     status: 'unavailable', estimatedBytes: null, observedExclusiveBytes: 0, entries: 0,
-    excluded: { hardlinks: 0, symlinks: 0, policyPaths: 0, crossDevice: 0 },
+    excluded: { hardlinks: 0, symlinks: 0, policyPaths: 0, crossDevice: 0, mounts: 0 },
     reason: null, basis: 'exclusive-file-allocation-estimate',
   };
   const maxEntries = input.maxEntries ?? 20_000;
@@ -98,6 +105,15 @@ export async function measureWorktreeReclaimable(input: WorktreeReclaimableInput
     const root = await realpath(requested);
     const canonical = await metadata(root);
     if (!sameMetadata(initial, canonical)) throw new MeasurementStopped('unavailable', 'changed');
+    const mountSnapshot = async () => {
+      if (input.readMountBoundaries === undefined) return null;
+      try { return await input.readMountBoundaries(root, checkBudget); }
+      catch (error) {
+        if (error instanceof MeasurementStopped) throw error;
+        throw new MeasurementStopped('unavailable', 'mount-evidence-unavailable');
+      }
+    };
+    const mounts = await mountSnapshot();
     const excludedPaths = (input.excludedPaths ?? []).map((path) => {
       const absolute = resolve(requested, path);
       const rel = relative(requested, absolute);
@@ -117,6 +133,7 @@ export async function measureWorktreeReclaimable(input: WorktreeReclaimableInput
         result.excluded.policyPaths += 1;
         return;
       }
+      if (mounts?.paths.has(path)) { result.excluded.mounts += 1; return; }
       await verifyActive();
       const stat = await metadata(path);
       await verifyActive();
@@ -170,6 +187,9 @@ export async function measureWorktreeReclaimable(input: WorktreeReclaimableInput
       if (!sameMetadata(entry.metadata, await metadata(entry.path))) throw new MeasurementStopped('unavailable', 'changed');
     }
     if (!sameMetadata(initial, await metadata(requested))) throw new MeasurementStopped('unavailable', 'changed');
+    if (mounts !== null && (await mountSnapshot())?.fingerprint !== mounts.fingerprint) {
+      throw new MeasurementStopped('unavailable', 'mount-evidence-changed');
+    }
     checkBudget();
     result.status = 'complete';
     result.estimatedBytes = result.observedExclusiveBytes;

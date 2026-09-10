@@ -25,7 +25,11 @@ export async function probeEndpoint(candidate: EndpointCandidate): Promise<boole
     }
     const socket = createSocket(candidate.host.includes(':') ? 'udp6' : 'udp4');
     socket.unref();
-    socket.once('error', () => resolve(false));
+    socket.once('error', () => {
+      // A batch continues in this process: unref alone leaves every failed bind's descriptor
+      // open. Wait for close before the next candidate can consume another descriptor.
+      try { socket.close(() => resolve(false)); } catch { resolve(false); }
+    });
     socket.bind({ address: candidate.host, port: candidate.port, exclusive: true }, () => {
       socket.close(() => resolve(true));
     });

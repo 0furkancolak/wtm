@@ -83,7 +83,7 @@ function order(candidates: readonly CleanupCandidateInput[]): string[] {
 function measurement(estimatedBytes: number) {
   return {
     status: 'complete' as const, estimatedBytes, observedExclusiveBytes: estimatedBytes, entries: 1,
-    excluded: { hardlinks: 0, symlinks: 0, policyPaths: 0, crossDevice: 0 },
+    excluded: { hardlinks: 0, symlinks: 0, policyPaths: 0, crossDevice: 0, mounts: 0 },
     reason: null, basis: 'exclusive-file-allocation-estimate' as const,
   };
 }

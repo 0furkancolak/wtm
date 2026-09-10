@@ -6,5 +6,6 @@ export * from './process';
 export * from './service';
 export * from './trust';
 export * from './ipc';
+export { mountBoundaryReaderFor } from './mounts';
 export { selectPlatformRuntime, supportedPlatforms, UnsupportedPlatformError } from './select';
 export type { SelectPlatformRuntimeOptions } from './select';

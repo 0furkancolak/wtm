@@ -46,7 +46,7 @@ process.stdin.on('end', async () => {
         server.listen({ host: candidate.host, port: candidate.port, exclusive: true }, () => server.close(() => resolve(true)));
       } else {
         const socket = require('node:dgram').createSocket(candidate.host.includes(':') ? 'udp6' : 'udp4');
-        socket.once('error', () => { try { socket.close(); } catch {} resolve(false); });
+        socket.once('error', () => { try { socket.close(() => resolve(false)); } catch { resolve(false); } });
         socket.bind({ address: candidate.host, port: candidate.port, exclusive: true }, () => socket.close(() => resolve(true)));
       }
     }));
