@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { stringify } from 'smol-toml';
 import { readGitRepositoryIdentity, listGitWorktrees } from '@wtm/core';
 import { createWorkspaceFixture } from '../../../testkit/src/workspace-fixture';
+import { shortTmpRoot } from '../../../testkit/src/platform';
 import { createProductionDaemon } from '../runtime-factory';
 
 const fixture = await createWorkspaceFixture();
+const controls = await mkdtemp(join(shortTmpRoot(), 'wtm-mem-'));
 let runtime: Awaited<ReturnType<typeof createProductionDaemon>> | undefined;
 try {
   const globalConfigPath = join(fixture.userDataDir, 'global.toml');
@@ -21,7 +23,11 @@ try {
       missing: { run: ['node', '-e', 'void 0'], queue: true, timeout: '1m' },
     },
   }));
-  runtime = await createProductionDaemon({ dataRoot: join(fixture.userDataDir, 'queue'), globalConfigPath });
+  runtime = await createProductionDaemon({
+    dataRoot: join(fixture.userDataDir, 'queue'), globalConfigPath,
+    // macOS's canonical temp workspace path can exceed sun_path before any socket is opened.
+    socketPath: process.platform === 'win32' ? String.raw`\\.\pipe\wtm-memory-${basename(controls)}` : join(controls, 'd.sock'),
+  });
   const workspace = runtime.stateStore.upsertWorkspace({ name: 'memory', root: fixture.root, scope: 'local', configPath });
   const identity = await readGitRepositoryIdentity(fixture.firstRepoPath);
   const repo = runtime.stateStore.upsertRepository({ workspaceId: workspace.id, commonGitDir: identity.commonGitDir, mainRoot: fixture.firstRepoPath, remoteIdentity: null });
@@ -36,4 +42,4 @@ try {
   await assert.rejects(runtime.jobs.enqueue(fixture.firstRepoPath, 'large', 'large'), { code: 'WTM_JOB_MEMORY_BUDGET_EXCEEDED' });
   await assert.rejects(runtime.jobs.enqueue(fixture.firstRepoPath, 'missing', 'missing'), { code: 'WTM_JOB_MEMORY_ESTIMATE_REQUIRED' });
   console.log(JSON.stringify({ ok: true }));
-} finally { await runtime?.close(); await fixture.cleanup(); }
+} finally { await runtime?.close(); await fixture.cleanup(); await rm(controls, { recursive: true, force: true }); }
