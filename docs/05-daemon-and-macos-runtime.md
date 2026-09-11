@@ -248,7 +248,10 @@ that does not fit — from a transient one. A permanent failure then exits `0`: 
 *non-zero* exit, so exiting `0` is what makes the manager leave the daemon stopped instead of
 retrying a condition no retry can clear. `wtm doctor` reports the recorded reason, and
 `wtm daemon install` starts the daemon again once it is fixed. Run by hand — without
-`WTM_DAEMON_SUPERVISED` set — the same failure keeps its normal exit class.
+`WTM_DAEMON_SUPERVISED` set — the same failure keeps its normal exit class. This includes
+`WTM_WATCH_UNAVAILABLE`: an inotify watch budget exhausted at startup is class 2 like any other
+configuration a person has to change, so a supervised daemon stays stopped on it too, even though
+the budget can free up on its own — `wtm daemon install` is what starts the daemon again.
 
 Two escapes in the rendered unit are not optional. `%` introduces a specifier systemd expands
 everywhere in a unit file, so a `HOME` containing one would silently become a different path; `$`
