@@ -774,7 +774,7 @@ tam stack trace ile yazıldığı için log hacmini büyütüyorlar.
 
 ---
 
-### [ ] 51. Kodsuz ama kalıcı açılış hataları hâlâ yeniden başlatma döngüsüne giriyor
+### [x] 51. Kodsuz ama kalıcı açılış hataları hâlâ yeniden başlatma döngüsüne giriyor
 
 45. maddenin final review'ında bulundu (I3). `PrivateDirectoryError` (`WTM_PRIVATE_DIRECTORY_UNSAFE`,
 kayıtlı bir `WtmErrorCode` değil) ve `unix.ts`'teki `secureSocketParent`'ın iki reddi kodsuz kaldığı
@@ -790,23 +790,63 @@ başarısız olur ve bunu `daemon-status.json`'a yazar. Servis daemon'ı sonra �
 
 #### Yapılacaklar
 
-- [ ] `PrivateDirectoryError`'ı yalnızca mod/sahiplik/symlink dallarında sınıf 2'ye kaydet, `chmod
+- [x] `PrivateDirectoryError`'ı yalnızca mod/sahiplik/symlink dallarında sınıf 2'ye kaydet, `chmod
       700 <path>` remediation'ı ile; ENOENT olmayan `lstat` hatasını (EIO/EACCES, muhtemelen
       geçici) kodsuz bırak.
-- [ ] `secureSocketParent`'ın aynı iki sahiplik/tip reddine aynı muameleyi uygula.
-- [ ] Linux için `StartLimitBurst`'ün bu sınıfa karşı bir yedek olarak tutulup tutulmayacağına karar
+- [x] `secureSocketParent`'ın aynı iki sahiplik/tip reddine aynı muameleyi uygula.
+- [x] Linux için `StartLimitBurst`'ün bu sınıfa karşı bir yedek olarak tutulup tutulmayacağına karar
       ver.
-- [ ] Elle çalıştırılan `wtm daemon serve`'in "already in use" reddi çalışan servisin
+- [x] Elle çalıştırılan `wtm daemon serve`'in "already in use" reddi çalışan servisin
       `daemon-status.json` kaydını ezmesin (M9): ya bu red için `recordOutcome`'u atla, ya da
       `wtm doctor` `pid`'i karşılaştırsın.
 
 #### Kabul kriterleri
 
-- [ ] `WTM_PRIVATE_DIRECTORY_UNSAFE` mod/sahiplik/symlink dallarında sınıf 2, supervised iken exit
+- [x] `WTM_PRIVATE_DIRECTORY_UNSAFE` mod/sahiplik/symlink dallarında sınıf 2, supervised iken exit
       0.
-- [ ] Aynı hatanın ENOENT olmayan `lstat` dalı kodsuz ve geçici kalıyor.
-- [ ] `secureSocketParent`'ın iki reddi aynı sınıfta.
-- [ ] Elle koşan bir `serve`'in "already in use" reddi, çalışan servisin kaydını ezmiyor.
+- [x] Aynı hatanın ENOENT olmayan `lstat` dalı kodsuz ve geçici kalıyor.
+- [x] `secureSocketParent`'ın iki reddi aynı sınıfta.
+- [x] Elle koşan bir `serve`'in "already in use" reddi, çalışan servisin kaydını ezmiyor.
+
+#### Not (2026-09-11)
+
+Kapandı, branch `claude/item-51-uncoded-permanent-failures`.
+
+- **Kod:** `WTM_PRIVATE_DIRECTORY_UNSAFE` protokole kaydedildi (exit 2).
+- **Kalıcı dallar:** `PrivateDirectoryError` bu kodu yalnızca dört dalda taşıyor: symlink, dizin
+  değil, başka kullanıcının, başkalarınca okunabilir. Yalnızca sonuncusuna `chmod 700 <path>`
+  remediation'ı eklendi; win32'de o da yok, çünkü orada karar ACL'den geliyor.
+- **Geçici dallar:** okunamayan, açılamayan ya da kontrol sırasında değişen dizin
+  (`replaced` senaryosu dahil) kayıtsız `WTM_PRIVATE_DIRECTORY_UNAVAILABLE` taşıyor. Kodsuz
+  kalıyor, yani yeniden deneniyor.
+- **`secureSocketParent`:** symlink, dizin değil ve başka kullanıcının dalları platform'daki
+  `SocketDirectoryUnsafeError` ile aynı kodu taşıyor. `@wtm/platform`, `@wtm/core`'u import
+  edemediği için sınıf ayrı.
+- **Yol üzerindeki dosya:** yolda bir dosya ya da kırık bir link varsa `mkdir`'in EEXIST'i artık
+  yutuluyor, sınıflandırmayı `lstat` yapıyor.
+- **M9:** "already in use" reddi artık kendi sınıfında (`IpcSocketInUseError`, kodsuz).
+  `serveDaemon` bu red için `recordOutcome`'u atlıyor; red yine log'a gidiyor.
+
+**Karar, `StartLimitBurst`: eklenmedi.** Gerekçeler:
+
+- launchd'de karşılığı yok.
+- Tanınan bütün kalıcı hatalar artık exit 0 ile duruyor.
+- Start limitine takılan bir unit `failed`'da kalır. `reset-failed` yapılana kadar `systemctl
+  --user start` bile onu reddeder. Bu, geç mount edilen bir HOME gibi geçici bir hatayı tam da
+  R3'ün önlemek istediği kesintiye çevirirdi.
+- Tanınmayan kalıcı bir hatanın bedeli 10 sn'de bir uyanmak; loglar sınırlı.
+- Gerekçe `linux.ts`'teki unit yorumunda.
+
+**Yerinde kalan davranış:** `wtm init` kendi eşlemesiyle bu hatayı hâlâ `WTM_CONFIG_INVALID`
+olarak raporluyor. Bu değişmedi, kapsam dışı.
+
+**Doğrulama (throwaway HOME'da, supervised `daemon serve`):**
+
+- (A) `~/Library` 755: exit 0, `WTM_PRIVATE_DIRECTORY_UNSAFE`, `chmod 700` önerisi,
+  `permanent:true`.
+- (B) Veri dizini symlink: exit 0, aynı kod.
+- (C) Servis ayaktayken elle `serve`: exit 1, "already in use". `daemon-status.json` ilk daemon'ın
+  `running` kaydını ve pid'ini koruyor.
 
 ---
 
