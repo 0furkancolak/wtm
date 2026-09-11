@@ -103,6 +103,7 @@ WTM_OPERATION_CONFLICT
 WTM_WORKTREE_PATH_OCCUPIED
 WTM_SOCKET_PATH_TOO_LONG
 WTM_IPC_PATH_UNUSABLE
+WTM_PRIVATE_DIRECTORY_UNSAFE
 WTM_PLATFORM_UNSUPPORTED
 WTM_WATCH_UNAVAILABLE
 ```
@@ -149,6 +150,17 @@ service manager's next retry is expected to find it gone. `context` carries
 and `ownerUid`. The remediation is `rm <path>` where removing the path is the remedy, and
 `wtm doctor` where it is not. A daemon run by launchd or systemd stops retrying on this code
 instead of restarting forever. It is a condition a person has to clear, so it exits with code 2.
+
+`WTM_PRIVATE_DIRECTORY_UNSAFE` means one of the directories WTM keeps private to the current user
+(its data root, its database directory, or the daemon's socket directory) is one it will not use.
+The directory is either a symbolic link, not a directory, owned by another user, or readable by
+others. WTM never repairs such a directory itself. `context` carries `path` and `reason`. When the
+directory is only readable by others, the remediation is `chmod 700 <path>`. There is none for the
+other reasons, because what to do depends on why the path is that way. A daemon run by launchd or
+systemd stops retrying on this code. A directory that could not be read at all, or that changed
+while WTM was checking it, is not reported with this code, since that may clear on its own; it stays
+an uncoded failure that a service manager retries. It is a condition a person has to clear, so it
+exits with code 2.
 
 `WTM_PLATFORM_UNSUPPORTED` means WTM has no backend for the operating system it was started on.
 `context` carries `platform`, the `process.platform` value that was refused, and `supported`, the

@@ -67,7 +67,12 @@ try {
     if (mode === 'create') assert.equal(fs.lstatSync(join(target, 'nested')).isDirectory(), true);
   } else {
     await assert.rejects(run(), (error: unknown) => {
-      assert.equal((error as { code?: string }).code, 'WTM_PRIVATE_DIRECTORY_UNSAFE');
+      // A directory swapped mid-check is a race a retry can win; the other three are refusals only
+      // a person can clear (todo item 51).
+      assert.equal(
+        (error as { code?: string }).code,
+        mode === 'replaced' ? 'WTM_PRIVATE_DIRECTORY_UNAVAILABLE' : 'WTM_PRIVATE_DIRECTORY_UNSAFE',
+      );
       if (mode !== 'replaced') assert.equal((error as { context?: { path?: string } }).context?.path, target);
       return true;
     });

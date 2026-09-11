@@ -14,7 +14,9 @@ import {
   publishedDaemonSocketPath,
 } from '@wtm/platform/socket';
 import { selectPlatformRuntime } from '@wtm/platform';
+import { IpcSocketInUseError } from '@wtm/platform/ipc';
 import type { PlatformRuntime } from '@wtm/platform/ports';
+import { PrivateDirectoryError } from '@wtm/core';
 import { jsonEnvelopeSchema } from '@wtm/protocol';
 import { launchdPaths } from '@wtm/daemon/launchd';
 import { servicePathsFor, type ServiceLifecycle } from '@wtm/daemon/service-lifecycle';
@@ -684,6 +686,51 @@ describe('daemon serve', () => {
       supervised: true,
     });
     expect(result.exitCode).toBe(1);
+  });
+
+  test('under a service manager, an unsafe private directory stops it, and one that could not be read is retried', async () => {
+    const serve = (failure: Error) => serveDaemon({
+      runtimeFactory: async () => { throw failure; },
+      signals: new FakeSignals(),
+      reportError: () => {},
+      supervised: true,
+    });
+    const path = '/home/me/.local/state/wtm';
+    const remediation = [{ kind: 'command-suggestion' as const, argv: ['chmod', '700', path] }];
+
+    const unsafe = await serve(new PrivateDirectoryError(path, 'is readable by others (mode 755); run chmod 700 on it', {
+      unsafe: true,
+      remediation,
+    }));
+    expect(unsafe.exitCode).toBe(0);
+    expect(unsafe.envelope.errors[0]).toMatchObject({
+      code: 'WTM_PRIVATE_DIRECTORY_UNSAFE',
+      context: { action: 'serve', path },
+      remediation,
+    });
+
+    const unreadable = await serve(new PrivateDirectoryError(path, 'cannot be read'));
+    expect(unreadable.exitCode).toBe(1);
+    expect(unreadable.envelope.errors[0]?.code).toBe('WTM_DAEMON_REQUEST_FAILED');
+  });
+
+  test("a refusal because another daemon already serves the socket leaves that daemon's record alone", async () => {
+    const recorded: DaemonStartupOutcome[] = [];
+    const reported: unknown[] = [];
+    const failure = new IpcSocketInUseError('/x/wtmd.sock');
+
+    const result = await serveDaemon({
+      runtimeFactory: async () => { throw failure; },
+      signals: new FakeSignals(),
+      reportError: (error) => { reported.push(error); },
+      recordOutcome: (outcome) => { recorded.push(outcome); },
+    });
+
+    expect(result.exitCode).toBe(1);
+    // The record belongs to whichever daemon is serving; a hand-run `serve` that lost the race to
+    // it has nothing to say about why that daemon is or is not up (todo item 51, M9).
+    expect(recorded).toEqual([]);
+    expect(reported).toEqual([failure]);
   });
 });
 

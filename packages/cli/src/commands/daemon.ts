@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { assertDaemonSocketPathFits, publishedDaemonSocketPath } from '@wtm/platform/socket';
 import { selectPlatformRuntime } from '@wtm/platform';
+import { IpcSocketInUseError } from '@wtm/platform/ipc';
 import type { FileTrustPolicy, PlatformRuntime } from '@wtm/platform/ports';
 import { errorSeveritySchema, remediationSchema, wtmErrorCodeSchema } from '@wtm/protocol';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
@@ -241,7 +242,11 @@ export async function serveDaemon(dependencies: DaemonServeDependencies): Promis
       const failed = serveFailure('WTM daemon could not start.', error);
       const permanent = isPermanentStartupFailure(failed);
       const reported = failed.envelope.errors[0];
-      if (reported !== undefined) {
+      // The record describes whichever daemon serves this HOME. A `serve` refused because one
+      // already is, typically run by hand next to the service, has nothing to say about why that
+      // daemon is or is not up. Recording it would make `wtm doctor` blame the service's next
+      // crash on this refusal (todo item 51, M9). It still goes to the log above.
+      if (reported !== undefined && !(error instanceof IpcSocketInUseError)) {
         const condition = reportableCondition(error);
         dependencies.recordOutcome?.({
           started: false,

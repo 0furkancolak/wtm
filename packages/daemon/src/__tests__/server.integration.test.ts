@@ -404,6 +404,46 @@ async function exchangeRaw(path: string, payload: string): Promise<IpcResponse> 
     await expect(client.request('ping')).resolves.toEqual(success('ping', 'recovered-private'));
   });
 
+  test('refuses a symbolically linked socket directory with a code a supervisor stops on', async () => {
+    expect(serverModule).not.toBeNull();
+    if (serverModule === null) return;
+    const directory = dirname(await socketPath());
+    const real = join(directory, 'real');
+    await mkdir(real, { mode: 0o700 });
+    const linked = join(directory, 'linked');
+    await symlink(real, linked);
+    const server = new serverModule.UnixIpcServer({
+      socketPath: join(linked, 'wtmd.sock'),
+      handler: async (value) => success(value.command, null),
+    });
+    cleanups.push(() => server.close());
+
+    await expect(server.start()).rejects.toMatchObject({
+      code: 'WTM_PRIVATE_DIRECTORY_UNSAFE',
+      severity: 'error',
+      context: { path: linked, reason: 'is a symbolic link' },
+    });
+    expect(await readdir(real)).toEqual([]);
+  });
+
+  test('refuses a file where the socket directory should be with a code a supervisor stops on', async () => {
+    expect(serverModule).not.toBeNull();
+    if (serverModule === null) return;
+    const directory = dirname(await socketPath());
+    const occupied = join(directory, 'occupied');
+    await writeFile(occupied, 'not a directory');
+    const server = new serverModule.UnixIpcServer({
+      socketPath: join(occupied, 'wtmd.sock'),
+      handler: async (value) => success(value.command, null),
+    });
+    cleanups.push(() => server.close());
+
+    await expect(server.start()).rejects.toMatchObject({
+      code: 'WTM_PRIVATE_DIRECTORY_UNSAFE',
+      context: { path: occupied, reason: 'is not a directory' },
+    });
+  });
+
   test('fails closed without displacing a live deterministic private bind socket', async () => {
     expect(serverModule).not.toBeNull();
     if (serverModule === null) return;
@@ -416,7 +456,11 @@ async function exchangeRaw(path: string, payload: string): Promise<IpcResponse> 
     });
     cleanups.push(() => server.close());
 
-    await expect(server.start()).rejects.toThrow('already in use');
+    // Its own class, so `daemon serve` can tell this refusal from its own startup failures.
+    await expect(server.start()).rejects.toMatchObject({
+      name: 'IpcSocketInUseError',
+      message: expect.stringContaining('already in use'),
+    });
     expect((await lstat(privatePath)).isSocket()).toBeTrue();
     await expect(lstat(path)).rejects.toMatchObject({ code: 'ENOENT' });
     await stopChild(child);
