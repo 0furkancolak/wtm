@@ -126,7 +126,13 @@ export async function runDaemonLifecycleCommand(
       return status !== null && status.state === 'failed' && Date.parse(status.at) >= startedAt ? status : null;
     };
     const ready = action === 'install'
-      ? await waitUntilReachable(reachable, () => freshFailure() !== null)
+      // Only a *permanent* fresh failure is worth cutting the wait short for: a transient one
+      // (an in-use socket while the previous daemon is still going down, a young close-shield
+      // placeholder, any uncoded error) is exactly the condition R2 has the service manager
+      // retry 10 s later, well inside this 20 s deadline. Stopping here for it is the "trust the
+      // installer" defect turned inside out (review I1): it would report `reachable: false` at
+      // once while the retry was seconds from succeeding.
+      ? await waitUntilReachable(reachable, () => { const failure = freshFailure(); return failure !== null && failure.permanent; })
       : await reachable();
     const failure = action === 'install' && !ready ? freshFailure() : null;
     if (failure === null) return successEnvelope(`daemon ${action}`, { ...data, reachable: ready });

@@ -299,6 +299,29 @@ describe('daemon lifecycle command', () => {
     expect(envelope).toMatchObject({ ok: true, data: { reachable: true }, warnings: [] });
     expect(callCount).toBeGreaterThanOrEqual(2);
   });
+
+  test('a fresh transient failure does not cut the readiness wait short (review I1)', async () => {
+    // A transient failure -- an in-use socket while the previous daemon is still going down, a
+    // young close-shield placeholder, any uncoded error -- is exactly what R2 has the service
+    // manager retry 10 s later, comfortably inside the 20 s deadline. Stopping at the first sight
+    // of it, as `install` used to, reported the daemon dead while the retry was seconds away from
+    // succeeding.
+    const fresh = nextDaemonStatus(null, {
+      started: false, code: 'WTM_DAEMON_REQUEST_FAILED',
+      condition: 'IPC socket is already in use: /x', message: 'IPC socket is already in use: /x',
+      remediation: null, permanent: false,
+    }, new Date(Date.now() + 1_000), 9);
+    let callCount = 0;
+    const reachable = async () => {
+      callCount++;
+      return callCount > 1;
+    };
+    const envelope = await runDaemonLifecycleCommand('install', fakeManager(), reachable, undefined, undefined, () => fresh);
+    expect(envelope).toMatchObject({ ok: true, data: { reachable: true }, warnings: [] });
+    // Reached a second poll rather than stopping after the first, which is what proves the
+    // transient failure did not cut the wait short.
+    expect(callCount).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe('the published definition path', () => {
