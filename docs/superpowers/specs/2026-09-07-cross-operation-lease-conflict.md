@@ -2,7 +2,30 @@
 
 ## Status
 
-Open — planned, not started. `docs/superpowers/specs/2026-08-31-destructive-operation-safety-design.md`
+Implemented — 2026-09-07. Landed as designed, with one correction the design had wrong and one
+addition it did not anticipate:
+
+- **The policy layer needed widening too.** `operation-lease.ts` measured liveness from
+  `readRepositoryOperationLease(key)` — this operation's row only — and its `ownerLiveness`
+  callback deliberately answers `alive` for any row it did not measure. Widening the store alone
+  would therefore have made a *crashed* `gc` refuse every `remove` on that repository forever,
+  since nothing would ever have been allowed to notice the process was gone. The store gained
+  `listRepositoryOperationLeases(repositoryId)` (a holder view, no tokens) and the policy layer
+  now measures every lapsed row.
+- **"the CLI error message already reports `holder.operation`" was not true.** `conflictFrom`
+  built its message and context from `key.operation` — what the caller *asked* for. Identical to
+  the holder's operation until this change, and misleading the moment they differ: a `remove`
+  blocked by a `gc` would have said another process was performing "remove". The message now
+  names the holder's operation and the context carries an additive `holderOperation`
+  (`docs/18-errors-json-contract.md`).
+- **The `abandoned` verdict has to wait for every row.** A live holder outranks a dead one, so a
+  conflict still returns on sight but `abandoned` is only decided once the whole repository has
+  been classified; reporting the first reclaimable row immediately would let an abandoned
+  `remove` mask a running `gc` and send the user to `--resume` into a live destruction.
+
+The rest of this document is the design as written before implementation, unchanged.
+
+`docs/superpowers/specs/2026-08-31-destructive-operation-safety-design.md`
 ("Increment A") already shipped the repository-operation-lease mechanism and its own schema
 comment says the missing piece explicitly: *"the operations that must exclude each other declare
 that in code, not in the schema. V1 declares all three mutually exclusive per repository"* — but
@@ -70,8 +93,9 @@ fields, no new `WTM_OPERATION_CONFLICT` variant.
 ## Acceptance criteria (verbatim from `todo.md` item 2)
 
 - [x] İki terminal aynı repository üzerinde destructive işlem başlatamıyor. (already true, same-op)
-- [ ] CLI ve daemon aynı repository üzerinde çakışan destructive işlem yapamıyor — **this is what
-      closes**, including the CLI-`remove`-vs-daemon-`gc` case named explicitly in the note.
+- [x] CLI ve daemon aynı repository üzerinde çakışan destructive işlem yapamıyor — closed, and the
+      CLI-`remove`-vs-daemon-`gc` case named explicitly in the note is what proves it
+      (`daemon-lease-conflict.scenario.ts`, two real OS processes).
 - [x] Crash olmuş process'in lease'i sonsuza kadar kalmıyor. (unaffected — still per-row liveness)
 
 `repair` stays out of scope: there is still no `repair` command, so there is nothing to test it
@@ -84,7 +108,8 @@ in `todo.md` stays as-is, not marked done by this change.
   (`docs/superpowers/specs/` item 44 work) — this spec only widens *which rows* get checked, not
   *how* a row is judged live.
 - A `repair` command itself.
-- Any UX/CLI copy change beyond what the existing `holder.operation` field already renders.
+- Any UX/CLI copy change beyond naming the blocking operation. (This turned out to be a change
+  after all — see the Status note: there was no `holder.operation` in the rendered error.)
 
 ## Plan
 

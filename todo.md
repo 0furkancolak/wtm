@@ -350,7 +350,9 @@ uçtan uca çalıştırılarak bulundu. Aracın kendisi çalışıyor: `init`, `
 Numaralandırma dosyanın sonundan devam ediyor; mevcut madde numaraları kasıtlı olarak
 değiştirilmedi.
 
-**Bir sonraki tag'den önce:** 36 ve 37. Bunlar kod değil, paketleme ve dokümantasyon işi.
+**Bir sonraki tag'den önce:** 36 ve 45; 37 kapandı. 36 kod değil, paketleme ve dokümantasyon
+işi. 45 kod işi ve tek başına daemon'ı kullanılamaz bırakıyor: bulunduğu makinede yedi gün
+boyunca hiç ayağa kalkmamıştı ve bunu söyleyen bir çıktı yoktu.
 
 ---
 
@@ -658,6 +660,86 @@ Bu 39. maddenin aynı sınıfı: kullanıcıya giden bir hata, alt katmanın ham
 - [x] Hiçbir kullanıcı çıktısında çevrilmiş `git` hata metni görünmüyor.
 
 **Çözüldü:** `b5395ae` — `WTM_WORKSPACE_NOT_FOUND` artık bulunan repoları listeleyerek üretiliyor.
+
+---
+
+### [ ] 45. Soket olmayan bir IPC yolu daemon'ı süresiz crash döngüsünde bırakıyor
+
+2026-09-09'da, bu repodan temiz bir `make install` yapılırken bulundu. Kurulum başarılı raporladı,
+ama daemon hiç ayağa kalkmadı ve bunu söyleyen bir çıktı yoktu.
+
+`~/Library/Application Support/WTM/.tmd.sock` yolunda soket yerine 0 baytlık normal bir dosya
+duruyordu (2026-09-02 tarihli; nasıl oluştuğu bilinmiyor — muhtemelen o gün koşan bir testin ya da
+yarıda kalan bir daemon'ın artığı). Daemon her açılışta bağlanmayı reddetti, launchd her seferinde
+yeniden başlattı, ve bu yedi gün boyunca sürdü.
+
+#### Kanıt
+
+```text
+$ wtm daemon status
+runState: spawn scheduled
+reachable: false
+
+$ launchctl print gui/$(id -u)/dev.wtm.daemon.<hash>
+last exit code = 1
+
+$ ls -la ~/Library/Application\ Support/WTM/.tmd.sock
+-rw-------  1 furkan  staff          0 Sep  2 14:16 .tmd.sock
+
+$ ls -la ~/Library/Logs/WTM/daemon.error.log
+-rw-------  1 furkan  staff  162321745 Sep  9 11:38 daemon.error.log
+```
+
+162 MB, denemesi başına ~2.7 KB stack trace demek ~60.000 yeniden başlatma — launchd'nin 10 sn'lik
+varsayılan `ThrottleInterval`'ı ile yedi güne tam oturuyor. Yani sayı tahmini değil, ölçülen
+dosya boyutu ile takvim birbirini doğruluyor.
+
+Kullanıcının gördüğü tek şey `reachable: false`. `wtm doctor` da `daemonReachable: false` diyor,
+sebebini söylemiyor. Log 162 MB olduğu için okunması da kolay değil.
+
+#### İki ayrı kusur
+
+**1. Soket olmayan yol için kurtarma yolu yok.** `prepareSocketPath`
+(`packages/platform/src/ipc/unix.ts:295-322`) bayat bir *soket* için eksiksiz bir kurtarma taşıyor:
+sahiplik doğrulaması, canlılık probe'u, quarantine, unlink. Ama ilk kontrol `initial.isSocket()` ve
+başarısızlığı koşulsuz `throw`. Yolda normal bir dosya varsa hiçbir kurtarma denenmiyor. Mesaj da
+eyleme dönük değil: dosyanın silinebileceğini söylemiyor, bir komut önermiyor, stable bir error code
+taşımıyor. 39. ve 43. maddelerin sınıfı burada tekrar ediyor — doğru teşhis edilmiş bir durum,
+kullanıcıya ne yapacağını söylemeyen bir mesajla bildiriliyor.
+
+**2. Kalıcı açılış hatası geçici hata gibi ele alınıyor.** `packages/platform/src/service/darwin.ts:167`
+`KeepAlive{SuccessfulExit:false}` yazıyor ve `ThrottleInterval` vermiyor; stderr doğrudan
+`daemon.error.log`'a bağlı (`service-lifecycle.ts:336`), rotation yok, üst sınır yok. Her deneme tam
+stack trace basıyor. `linux.ts:173`'teki `Restart=on-failure` aynı yapı, dolayısıyla aynı davranış.
+Sonuç: hiç açılamayan bir daemon, kullanıcı fark etmeden diski dolduran bir log üretiyor. Managed
+task logları için rotation var; daemon'ın kendi stderr'i için yok.
+
+Ayrıca aynı logda, diskte olmayan kayıtlı depolar için de her turda birer stack trace basılıyor
+(`missingDirectory`). Bunlar ölümcül değil ve mesajları doğru, ama uyarı seviyesinde bir durum
+tam stack trace ile yazıldığı için log hacmini büyütüyorlar.
+
+#### Yapılacaklar
+
+- [ ] Soket olmayan bir IPC yolunu, aynı sahiplik/identity doğrulamasından geçirdikten sonra bayat
+      soketle aynı quarantine yolundan geçir. Fail-closed kalması gereken durumları (başkasına ait,
+      dizin, symlink) ayır ve gerekçesini yaz.
+- [ ] Reddedilen her durum için eyleme dönük mesaj ve stable JSON error code üret: hangi yol, neden
+      reddedildi, kullanıcı ne yapmalı.
+- [ ] `wtm doctor`, daemon `reachable: false` olduğunda sebebini raporlasın. Bugün ulaşılamadığını
+      biliyor, nedenini bilmiyor — oysa neden daemon'ın kendi log'unda yazılı.
+- [ ] Daemon'ın kendi stderr'ine rotation ve üst sınır ekle.
+- [ ] Tekrarlayan açılış hatasına backoff ver; aynı hata üst üste tekrarlıyorsa tam stack trace'i
+      her turda yeniden basma.
+- [ ] Diskte olmayan kayıtlı depoları stack trace ile değil, tek satırlık uyarı ile bildir.
+- [ ] Regresyon testi: IPC yolunda normal bir dosya varken daemon'ın davranışını sabitle.
+
+#### Kabul kriterleri
+
+- [ ] IPC yolunda soket olmayan bir dosya varken daemon ya kendiliğinden toparlanıyor ya da ne
+      yapılacağını söyleyen tek bir hata veriyor.
+- [ ] Hiçbir açılış hatası sınırsız log büyümesi üretmiyor.
+- [ ] `wtm doctor` ulaşılamayan bir daemon'ın sebebini söylüyor.
+- [ ] Yeni kurulum yapan kullanıcı, daemon ayağa kalkmadığında bunu kurulum çıktısından anlıyor.
 
 ---
 
@@ -1476,6 +1558,167 @@ Completion kaynakları:
 
 ---
 
+### [ ] 47. Task komutlarına worktree selector'ü ekle (`--worktree <selector>`)
+
+`wtm run/start/stop/restart/logs/exec` yalnızca bulunulan dizinin worktree'sinde çalışıyor. Başka
+bir feature'ı ayağa kaldırmak için `cd` şart. Bir ajan ya da çok feature'lı bir oturum için bu
+kırılgan: her komuttan önce dizin değiştirmek gerekiyor ve dizin değiştirme oturumun geri kalanını
+da etkiliyor.
+
+#### Beklenen akış
+
+```bash
+wtm start web:dev --worktree feat/auth
+wtm logs web:dev --worktree feat/auth
+wtm stop --worktree feat/auth
+wtm run test --worktree 13 --repo web
+```
+
+Selector resolver zaten var: `status`, `analyze` ve `remove` branch adı, dizin adı, numara ve path
+kabul ediyor, çoklu eşleşmede `WorktreeSelectorError` üretiyor
+(`packages/cli/src/commands/remove.ts:73-222`). Bu madde yeni bir grammar icat etmemeli; mevcut
+resolver'ı ortak bir yere çıkarıp task komutlarına taşımalı.
+
+Çok depolu bir feature'da tek bir branch birden fazla worktree demek. Repo ayrıştırmasının nasıl
+yapılacağı (`--repo <name>` mi, `<repo>:<selector>` biçimi mi, yoksa ikisi de mi) bu maddede karara
+bağlanmalı — task adı zaten `web:dev` biçiminde iki parçalı olduğu için `<repo>:<selector>`
+seçilirse çakışma riski ayrıca değerlendirilsin.
+
+6. madde (`wtm create`) worktree'yi henüz var olmadan adlandırıyor, bu madde ise var olanı seçiyor;
+ikisinin ürettiği isim ve selector grameri aynı olmalı, `create` sonrası dönen kimlik doğrudan
+`--worktree` değeri olarak kullanılabilmeli.
+
+#### Yapılacaklar
+
+- [ ] Selector resolver'ı `remove.ts`'ten ortak bir modüle çıkar; `status`/`analyze`/`remove`
+      davranışı bit düzeyinde değişmesin.
+- [ ] `--worktree <selector>` bayrağını `run`, `start`, `stop`, `restart`, `logs`, `exec`
+      komutlarına ekle.
+- [ ] Repo ayrıştırma kararını uygula ve tek biçim olarak sabitle.
+- [ ] Bayrak verilmediğinde davranış bugünkü gibi kalsın: bulunulan dizinin worktree'si.
+- [ ] Workspace kökünden (worktree dışından) çağrıldığında `--worktree` zorunlu olsun ve eksikse
+      eyleme dönük hata versin, ham stack trace değil.
+- [ ] Belirsiz eşleşmede `WorktreeSelectorError` aynı stable JSON error code ile dönsün.
+- [ ] Shell completion (`wtm __complete worktrees`) bu bayrağı da beslesin.
+- [ ] `docs/04-cli-reference.md`'de altı komutun tamamında bayrağı belgele.
+- [ ] `docs/11-ai-first-skill-integration.md` ve `skills/wtm/SKILL.md`'de `cd` gerektirmeyen akışı
+      örnekle; ajanın önerilen yolu bu olsun.
+
+#### Kabul kriterleri
+
+- [ ] Altı komut da worktree dışından, `cd` olmadan hedef worktree'de çalışıyor.
+- [ ] Aynı branch birden fazla repoda varken repo ayrıştırması deterministic.
+- [ ] Belirsiz selector hiçbir komutta yanlış worktree'yi seçmiyor; hata veriyor.
+- [ ] `--worktree` olmadan çağrılan komutların davranışı değişmemiş.
+
+---
+
+### [ ] 48. Workspace Makefile'ı worktree bağlamında çalıştırılabilsin
+
+Bugün make adapter'ı iki aile üretiyor (`packages/adapters/src/make.ts:48-64`): `make:<target>`
+worktree'nin kendi Makefile'ını worktree kökünde, `workspace:<target>` kök Makefile'ı workspace
+kökünde çalıştırıyor. Arada kalan ve asıl istenen üçüncü hâl yok: kök Makefile'daki bir hedefi bu
+worktree'nin dizininde çalıştırmak.
+
+Alan kurulumunda bu şuna yol açtı: `api` worktree'sinde `make:dev` → `make dev` → paket script'i →
+komut satırında sabit `--port 4000` taşıyan bir dev server. WTM'in tahsis ettiği portu kullanmak
+için kullanıcı `wtm.toml`'a servis başına `api:dev`, `web:dev`, `worker:dev` … görevlerini elle
+yazmak zorunda kaldı. Hepsi kök Makefile'ın zaten bildiği komutların kopyası; kök Makefile
+değiştiğinde bu kopyalar sessizce bayatlıyor.
+
+Şart: Makefile kopyalanmasın veya symlink'lenmesin. WTM hedefi kendi state DB'sinde bir task kaydı
+olarak tutsun (49. madde) ve çalıştırma anında `-f <workspace>/Makefile` + `cwd = {worktree.root}`
+ile çözsün.
+
+#### Karara bağlanacaklar
+
+- [ ] İsim alanı: `workspace:<target>` mevcut davranışını korusun. Worktree bağlamı için ayrı bir ön
+      ek mi (`workspace-here:<target>`), yoksa `--cwd worktree` bayrağı mı?
+- [ ] `make -f` ile çalışan bir Makefile'ın göreli yolları kırılıyor (`$(ROOT_DIR)`,
+      `../.cache/state`). WTM hangi değişkenleri enjekte edecek (ör. `WTM_WORKTREE_ROOT`,
+      `WTM_WORKSPACE_ROOT`) ve neyi kullanıcıya bırakacak — açıkça yazılsın.
+- [ ] Aynı davranış diğer task-runner adapter'ları (bun scripts, just, task) için de geçerli mi,
+      yoksa yalnızca make'e mi özel? Genelleşecekse bu, adapter contract'ına eklenen bir alan
+      demek — 21. maddedeki contract versioning ile aynı turda ele alınsın.
+
+#### Yapılacaklar
+
+- [ ] İsim alanı kararını uygula; `workspace:<target>` semantiği değişmesin.
+- [ ] Çalıştırma anında `-f <workspace>/Makefile` + `cwd = {worktree.root}` çözümü; hiçbir noktada
+      Makefile kopyalama veya symlink yok.
+- [ ] Enjekte edilen değişken setini sabitle ve belgele.
+- [ ] Port lease'i bu yolla çalışan hedeflere de aynı şekilde ulaşsın; kullanıcı sabit portu
+      Makefile'da tutuyorsa bunun override edilemeyeceğini hata mesajında söyle.
+- [ ] Adapter'ın ürettiği bu üçüncü aile `wtm explain` çıktısında kaynağıyla görünsün.
+- [ ] `docs/03-configuration-spec.md`'ye yeni isim alanı ve değişken sözleşmesi.
+- [ ] `docs/04-cli-reference.md`'ye task adı biçimleri.
+- [ ] `docs/06-adapter-protocol.md`'ye adapter'ların `cwd` seçimini nasıl bildireceği.
+- [ ] `skills/wtm/SKILL.md`'de üç ailenin farkını ajanın karıştırmayacağı biçimde anlat.
+
+#### Kabul kriterleri
+
+- [ ] Kök Makefile'daki bir hedef, worktree dizininde, Makefile kopyalanmadan çalışıyor.
+- [ ] Kök Makefile değiştiğinde `wtm.toml`'da elle bakım gerektiren kopya kalmıyor.
+- [ ] Üç ailenin (`make:`, `workspace:`, worktree bağlamı) hangisinin ne yaptığı `wtm explain`
+      çıktısından anlaşılıyor.
+- [ ] Göreli yol kıran bir Makefile için hata mesajı hangi değişkenin eksik olduğunu söylüyor.
+
+---
+
+### [ ] 49. Task kayıtları DB'de tutulsun ve düzenlenebilir olsun (ajan tarafından)
+
+48. maddenin ön koşulu. Bugün bir task ya `wtm.toml`'da yazılı ya da bir adapter'ın ürettiği türev.
+İkisinin arasında, "WTM'in kendi kaydettiği, sonradan düzenlenebilen task" diye bir şey yok.
+Kurulumda ortaya çıkan ihtiyaç şu: bir ajan, bir worktree için türetilmiş komutu (port bayrağı, ek
+argüman, `cwd`) düzeltip kalıcı hâle getirebilmeli — kullanıcının `wtm.toml`'unu elle yeniden
+yazmadan.
+
+#### Hedef yüzey
+
+```bash
+wtm task list --json
+wtm task show <name> --json
+wtm task set <name> --run '...' --cwd '{worktree.root}' --json
+wtm task unset <name>
+```
+
+#### Karara bağlanacaklar
+
+- [ ] Öncelik sırası: `wtm.toml` her zaman kazanmalı mı, yoksa DB kaydı override mı? Mevcut
+      precedence zinciri `docs/03-configuration-spec.md`'de; yeni katman oraya açıkça yazılmalı,
+      ima edilmemeli.
+- [ ] Kaynak provenance: `wtm explain` bir task'ın DB'den mi TOML'dan mı geldiğini satır/kaynak
+      düzeyinde söylemeye devam etmeli.
+- [ ] Kalıcılık ve taşınabilirlik: DB kaydı makineye bağlı, ekip arkadaşı aynı task'ı görmüyor.
+      `wtm task export` ile `wtm.toml`'a düşürme yolu olmalı mı?
+- [ ] Güvenlik: keyfi argv'yi kalıcılaştıran bir yüzey. Adapter trust registry (21. madde) ile aynı
+      güven modeline oturmalı; ayrı bir onay mekanizması doğmamalı.
+
+#### Yapılacaklar
+
+- [ ] State DB'de task override tablosu; scope (workspace / repo / worktree) açıkça modellensin.
+- [ ] `wtm task list|show|set|unset` komutları, hepsinde stable `--json`.
+- [ ] Precedence kararını uygula ve `wtm explain`'de kaynağı göster.
+- [ ] Placeholder'lar (`{worktree.root}`, `{workspace.root}`, port lease'leri) DB kayıtlarında da
+      aynı biçimde çözülsün; ikinci bir interpolation dili doğmasın.
+- [ ] Trust modeli: DB'ye yazılan argv'nin hangi onaydan geçtiğini kaydet.
+- [ ] `wtm remove` bir worktree'yi kaldırdığında ona bağlı task kayıtları da temizlensin.
+- [ ] Export kararı uygulanırsa `wtm task export` ile `wtm.toml`'a düşür.
+- [ ] `docs/03-configuration-spec.md`'ye yeni precedence katmanı.
+- [ ] `docs/04-cli-reference.md`'ye `wtm task` komut ailesi.
+- [ ] `docs/06-adapter-protocol.md`'ye adapter türevlerinin DB kaydıyla ilişkisi.
+- [ ] `docs/11-ai-first-skill-integration.md` ve `skills/wtm/SKILL.md`'ye ajanın task düzeltme
+      akışı ve yapmaması gerekenler.
+
+#### Kabul kriterleri
+
+- [ ] Bir ajan türetilmiş bir task'ı düzeltip kalıcılaştırabiliyor; `wtm.toml` elle düzenlenmiyor.
+- [ ] `wtm explain` her task için kaynağını (TOML satırı / adapter / DB kaydı) söylüyor.
+- [ ] Precedence dokümanda yazdığı gibi çalışıyor ve parity testiyle sabitleniyor (34/35. maddeler).
+- [ ] Worktree kaldırıldığında ardında yetim task kaydı kalmıyor.
+
+---
+
 ## P2 — Ürünü belirgin biçimde farklılaştıracak işler
 
 ### [ ] 12. Local reverse proxy / stable feature domains
@@ -1570,6 +1813,66 @@ logs
 ```
 
 Bu özellik core logic taşımamalı; yalnızca mevcut stable protocol üzerinden çalışmalı.
+
+---
+
+### [ ] 46. Dev overlay: çalışan web uygulamasına worktree kimliğini ve ajan test adımlarını bas
+
+Aynı anda üç dört feature'ın `web`'i ayakta olduğunda, tarayıcıdaki bir sekmenin hangi worktree'ye
+ait olduğunu yalnızca port numarası söylüyor. Port da lease'e göre kayıyor: alan kurulumunda
+`api` tercih ettiği 4000'i alamadı, 3004'e düştü. Kullanıcı yanlış sekmede test ediyor ve bunu fark
+etmiyor. WTM hangi portun hangi worktree'ye ait olduğunu zaten biliyor; bu bilgi kullanıcının
+baktığı yere, yani sayfanın kendisine ulaşmıyor.
+
+WTM ile ayağa kaldırılan bir web dev server'ı sayfaya küçük bir overlay enjekte etmeli. Biçim olarak
+Astro dev toolbar / Next dev indicator mantığında, ama içeriği WTM'den gelmeli.
+
+#### Overlay'in göstereceği
+
+```text
+feature/branch, worktree numarası ve dizini, repo adı
+bu feature'ın tüm endpoint'leri (kardeş repolar dahil), tıklanabilir
+resource durumu (ready / missing)
+o an supervised çalışan task'lar
+ajanın yazdığı test adımları (kontrol listesi)
+```
+
+Test adımları tek yönlü olmamalı: bir ajan `wtm` üzerinden worktree'ye bir kontrol listesi
+yazabilmeli, overlay bunu maddeler halinde göstermeli, kullanıcı işaretleyince durum WTM'in state
+DB'sine geri yazılmalı. Kalıcı task kaydı yüzeyi 49. maddede tanımlanıyor; kontrol listesi de aynı
+yerde durmalı, ayrı bir depolama icat edilmemeli.
+
+#### Karara bağlanacaklar
+
+- [ ] Enjeksiyon katmanı: framework başına adapter (Astro integration, Vite plugin, Next dev
+      middleware) mı, yoksa 12. maddedeki local reverse proxy'de HTML'e tek noktadan enjeksiyon mu?
+      İkincisi framework-agnostik. Bu madde 12'yi beklemeli mi, yoksa proxy gelene kadar adapter
+      yolundan mı yürünmeli — karar maddeye yazılsın.
+- [ ] Opt-in mi opt-out mu (`[dev-overlay] enabled = true`), ve repo bazında kapatma.
+- [ ] Overlay'in veri kaynağı `wtm status --json` ile aynı kontrat olmalı; overlay'e özel ikinci bir
+      şema doğmamalı.
+
+#### Yapılacaklar
+
+- [ ] Enjeksiyon katmanı kararını uygula; hangi yol seçilirse seçilsin enjeksiyon yalnızca dev
+      modunda ve yalnızca loopback bind'de çalışsın.
+- [ ] Prod build'e sızma yolu olmadığını gösteren test yaz — bu, özelliğin kabul şartı.
+- [ ] Overlay veri ucu: `wtm status --json` şemasının bir alt kümesi, ayrı contract değil.
+- [ ] Ajanın kontrol listesi yazması ve kullanıcının işaretlemesi için iki yönlü uç.
+- [ ] Kardeş repoların endpoint'leri feature identity üzerinden çözülsün, port taramasıyla değil.
+- [ ] Konfigürasyon: global ve repo bazında etkinleştirme/kapatma.
+- [ ] `docs/03-configuration-spec.md`'ye `[dev-overlay]` bölümü.
+- [ ] `docs/04-cli-reference.md`'ye overlay ile ilgili komut/bayrak parity'si.
+- [ ] Adapter yolu seçilirse `docs/06-adapter-protocol.md`'ye enjeksiyon sözleşmesi.
+- [ ] `docs/11-ai-first-skill-integration.md` ve `skills/wtm/SKILL.md`'ye ajanın kontrol listesi
+      yazma akışı.
+
+#### Kabul kriterleri
+
+- [ ] Üç feature'ın `web`'i aynı anda ayaktayken her sekme kendi worktree'sini sayfadan söylüyor.
+- [ ] Overlay hiçbir prod build'de yer almıyor ve loopback dışı bir bind'de enjekte edilmiyor.
+- [ ] Ajanın yazdığı kontrol listesi kullanıcı tarafından işaretleniyor ve durum WTM'de kalıcı.
+- [ ] Overlay kapatıldığında dev server davranışı WTM'siz haline birebir eşit.
 
 ---
 
@@ -2224,7 +2527,8 @@ dokümanda anlatıldığı gibi çalışıyor mu test edilmeli.
 - [x] port release
 - [x] resource release
 - [x] concurrent CLI remove
-- [ ] CLI + daemon conflict
+- [x] CLI + daemon conflict — `daemon-lease-conflict.scenario.ts`, hem aynı operasyon (`remove`
+      vs `remove`) hem de farklı operasyon (`remove` vs `gc`) için.
 - [x] crash during cleanup
 - [x] HEAD changes between checks
 - [ ] branch changes between checks

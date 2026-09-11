@@ -2,6 +2,14 @@
 
 Spec: `docs/superpowers/specs/2026-09-07-cross-operation-lease-conflict.md`
 
+**Executed 2026-09-07.** Step 1's instruction to read `operation-lease.ts` first is what caught the
+plan's own optimism: it does *not* need "no change at all". Its `ownerLiveness` callback answers
+`alive` for any row it did not measure, and it measured only this operation's row — so widening the
+store alone would have let a crashed `gc` block every `remove` on that repository forever. The store
+gained `listRepositoryOperationLeases(repositoryId)` and the policy layer now measures every lapsed
+row. The rendered conflict error also had to change: it named the *requested* operation, not the
+holder's. See the spec's Status section.
+
 Single task, no parallel waves — one function's conflict check widens, and every other change is a
 mechanical consequence of that.
 
