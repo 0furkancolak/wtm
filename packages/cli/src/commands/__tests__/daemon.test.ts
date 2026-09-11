@@ -290,8 +290,14 @@ describe('daemon lifecycle command', () => {
     const stale = nextDaemonStatus(null, {
       started: false, code: 'WTM_IPC_PATH_UNUSABLE', condition: 'old', message: 'old', remediation: null, permanent: true,
     }, new Date(Date.now() - 60_000), 9);
-    const envelope = await runDaemonLifecycleCommand('install', fakeManager(), async () => true, undefined, undefined, () => stale);
+    let callCount = 0;
+    const reachable = async () => {
+      callCount++;
+      return callCount > 1;
+    };
+    const envelope = await runDaemonLifecycleCommand('install', fakeManager(), reachable, undefined, undefined, () => stale);
     expect(envelope).toMatchObject({ ok: true, data: { reachable: true }, warnings: [] });
+    expect(callCount).toBeGreaterThanOrEqual(2);
   });
 });
 
