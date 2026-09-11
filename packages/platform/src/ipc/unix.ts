@@ -343,7 +343,13 @@ async function prepareSocketPath(
     const expected = { dev: initial.dev, ino: initial.ino, uid: initial.uid };
     await quarantineAndUnlink(path, parent, expected, {
       mismatchMessage: `IPC path changed while reclaiming a stale close-shield placeholder: ${path}`,
-      matches: (stat) => isShieldPlaceholderShape(stat) && matchesPathIdentity(stat, expected),
+      // Age too, not only shape and identity: a same-uid unlink of the stale placeholder between
+      // the `lstat` above and the `rename` below, racing a fresh shield created with a reused
+      // inode, would otherwise pass shape-and-identity and unlink a shield that is not stale at
+      // all. `Number(...)` because `lstat` is never called with `bigint: true` here (see
+      // `isShieldPlaceholderShape`).
+      matches: (stat) => isShieldPlaceholderShape(stat) && matchesPathIdentity(stat, expected)
+        && Number(stat.mtimeMs) === Number(initial.mtimeMs),
     });
     return;
   }
