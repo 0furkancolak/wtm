@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { daemonStatusPath, formatRemediation, nextDaemonStatus, readDaemonStatus, writeDaemonStatus } from '../daemon-status';
@@ -24,6 +24,20 @@ describe('daemon-status.json', () => {
     writeDaemonStatus(path, status);
     expect(readDaemonStatus(path)).toEqual(status);
     expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  test('does not leave a temp file behind when the rename fails (review M2)', () => {
+    // A directory sitting at the status path makes `renameSync` throw on every launch -- exactly
+    // the sustained-failure case this item is about. The temp name is keyed on the writing
+    // process's pid, so without cleanup a crash loop would leave one new file per launch.
+    const directory = root();
+    const path = daemonStatusPath(directory);
+    mkdirSync(path);
+    const status = nextDaemonStatus(null, failure, new Date('2026-09-11T10:00:00.000Z'), 7);
+
+    writeDaemonStatus(path, status);
+
+    expect(readdirSync(directory).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 
   test('reads a missing or corrupt file as no status, never as an exception', () => {

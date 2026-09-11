@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
@@ -65,13 +65,17 @@ export function readDaemonStatus(path: string): DaemonStatus | null {
 
 /** Best effort, like the error log: a status that cannot be written must not mask the failure. */
 export function writeDaemonStatus(path: string, status: DaemonStatus): void {
+  const temporary = `${path}.${String(process.pid)}.tmp`;
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    const temporary = `${path}.${String(process.pid)}.tmp`;
     writeFileSync(temporary, `${JSON.stringify(status)}\n`, { mode: 0o600 });
     renameSync(temporary, path);
   } catch {
-    // Deliberately silent.
+    // Deliberately silent, like the write itself -- but the temp name is keyed on this launch's
+    // pid, so a rename that fails on every launch (something other than a file already sitting at
+    // `path`) would otherwise leave a new file every launch of the very crash loop this record
+    // exists to bound.
+    try { unlinkSync(temporary); } catch { /* best effort */ }
   }
 }
 
