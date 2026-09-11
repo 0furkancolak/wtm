@@ -300,14 +300,15 @@ binaries are Developer ID signed and notarized.
 - A non-socket file at the daemon's socket path no longer leaves the daemon restarting forever. On
   one machine a 0-byte file at `.tmd.sock` kept it down for seven days, silently, and grew
   `daemon.error.log` to 162 MB. WTM's own leftover close-shield placeholder — ours, empty, `0600`,
-  one link, at least 30 s old — is now reclaimed. Anything else (a directory, a symlink, another
-  user's file, a file with content) stops the daemon with `WTM_IPC_PATH_UNUSABLE` (exit 2), naming
-  the path, what occupies it and what to do. Each startup outcome is recorded in
-  `daemon-status.json` beside the daemon's logs: `wtm doctor` says why an unreachable daemon is down
-  and since when, and `wtm daemon install` warns when the daemon it installed did not start, with
-  the reason. A repeated startup failure writes its stack frames once rather than on every launch,
-  a registered repository missing from disk is one line instead of a stack trace, and the daemon's
-  own logs are rotated at startup so no failure grows them without bound.
+  one link, at least 30 s old — is now reclaimed. Anything else — a file other than WTM's own
+  empty, 0600, single-link placeholder at least 30 s old, a directory, a symlink, or another user's
+  file — stops the daemon with `WTM_IPC_PATH_UNUSABLE` (exit 2), naming the path, what occupies it
+  and what to do. Each startup outcome is recorded in `daemon-status.json` beside the daemon's
+  logs: `wtm doctor`, when run in a directory WTM has registered, says why an unreachable daemon is
+  down and since when, and `wtm daemon install` warns when the daemon it installed did not start,
+  with the reason. A repeated startup failure writes its stack frames once rather than on every
+  launch, a registered repository missing from disk is one line instead of a stack trace, and the
+  daemon's own logs are rotated at startup so no failure grows them without bound.
 
 ### Changed
 

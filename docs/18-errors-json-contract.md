@@ -140,9 +140,11 @@ whichever of the two is longer. Nothing was bound or connected: the check runs b
 a configuration the user has to change — a shorter home directory — so it exits with code 2.
 
 `WTM_IPC_PATH_UNUSABLE` means the daemon's socket path, published or private, is occupied by
-something WTM will not remove: a non-empty file, a symbolic link, a directory, or a file or
-socket owned by another user. WTM reclaims only a stale socket of its own and the empty
-placeholder file its own shutdown leaves behind when it is killed mid-close. `context` carries
+something WTM will not remove: a file other than WTM's own empty, `0600`, single-link placeholder
+at least 30 s old, a symbolic link, a directory, or a file or socket owned by another user. WTM
+reclaims only a stale socket of its own and that empty placeholder file its own shutdown leaves
+behind when it is killed mid-close — a younger one is refused as transient instead, since a
+service manager's next retry is expected to find it gone. `context` carries
 `path`, `occupant` (`file`, `foreign-file`, `directory`, `symlink`, `foreign-socket` or `other`)
 and `ownerUid`. The remediation is `rm <path>` where removing the path is the remedy, and
 `wtm doctor` where it is not. A daemon run by launchd or systemd stops retrying on this code
