@@ -133,6 +133,11 @@ export type {
 export { renderConfigDraft } from './detect/config-draft';
 export type { ConfigDraft, ConfigDraftBlock, ConfigDraftInput, OutOfRangePort } from './detect/config-draft';
 export { SQLiteStateStore } from './state/sqlite-store';
+export { HeavyJobError, maxPendingHeavyJobs, maxRetainedHeavyJobs, heavyJobRetentionMs } from './state/jobs';
+export type { HeavyJobRecord, HeavyJobStore, HeavyJobEnqueueInput, HeavyJobFinishInput } from './state/jobs';
+export { captureSourceSnapshot } from './jobs/source-snapshot';
+export type { SourceSnapshot } from './jobs/source-snapshot';
+export { queueTaskTimeoutMs } from './config/task-timeout';
 export { ensurePrivateDirectory, PrivateDirectoryError, verifyPrivateDirectory } from './state/private-directory';
 export type { PrivateDirectory, PrivateDirectoryIdentity } from './state/private-directory';
 export type {
@@ -254,3 +259,8 @@ export type {
 } from './plan/adapter-trust';
 export { ExternalAdapterError, invokeExternalAdapter } from './plan/external-adapter';
 export type { ExternalAdapterHooks, ExternalAdapterInvocation } from './plan/external-adapter';
+export type { ResolvedHealthcheck } from './config/healthcheck';
+export { resolvedHealthcheckSchema } from './config/healthcheck';
+export { measureWorktreeReclaimable } from './analysis/worktree-reclaimable';
+export type { WorktreeReclaimableInput, WorktreeReclaimableMeasurement } from './analysis/worktree-reclaimable';
+export { memoryEstimateError, memoryCapacity, type JobMemoryAdmission, type JobMemoryErrorCode } from './state/job-memory';

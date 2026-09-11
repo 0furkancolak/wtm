@@ -1,4 +1,6 @@
 export { SQLiteStateStore } from './sqlite-store';
+export { HeavyJobError, maxPendingHeavyJobs, maxRetainedHeavyJobs, heavyJobRetentionMs } from './jobs';
+export type { HeavyJobRecord, HeavyJobStore, HeavyJobEnqueueInput, HeavyJobFinishInput } from './jobs';
 export { ensurePrivateDirectory, PrivateDirectoryError, verifyPrivateDirectory } from './private-directory';
 export type { PrivateDirectory, PrivateDirectoryIdentity } from './private-directory';
 export type {

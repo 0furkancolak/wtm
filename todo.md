@@ -12,6 +12,20 @@ göre listeler.
 
 ---
 
+**2026-09-09 analiz ve ilk geliştirme dilimi:**
+[`docs/development/2026-09-09-todo-analysis.md`](docs/development/2026-09-09-todo-analysis.md).
+Madde 16 ve 34 tamamlandı; kalan P0/P1 bağımlılıkları ve doğrulama sınırları bu notta.
+Eşzamanlı AI oturumlarının ağır komutlarından doğan RAM baskısı için madde 50, P1'e eklendi;
+ortak iş kuyruğunun sabit eşzamanlılık dilimi uygulandı. Devamında iptal/finalizasyon yarışı,
+GC descriptor sızıntısı ve native CI fixture uyumsuzlukları giderildi; bekleme nedenleri eklendi.
+`04b42bb` Linux x64 CI tam test/e2e/binary/package adımlarını geçti; macOS takip bulguları
+ve gerçek iki AI oturumlu RAM ölçümü açık. Kalıcı task exit code/signal çiftinin anchor
+sonucuyla karışması ayrıca düzeltildi; yeni native koşu kanıtı takip ediliyor.
+
+**2026-09-10 devamı:** `docs/development/2026-09-10-review-follow-up.md` ve
+`docs/development/2026-09-10-symlink-policy.md` yeni düzeltmelerin, review ve doğrulamanın kaydıdır.
+Windows native bulguları ve takip yamaları: `docs/development/2026-09-10-windows-follow-up.md`.
+
 ## P0 — Stable öncesi zorunlu
 
 ### [x] 1. `wtm remove` lifecycle'ını runtime-aware hale getir
@@ -234,6 +248,16 @@ bağlı — ayrı bir `needs: performance` gerekmedi çünkü performance artık
       unsigned executable'a prerelease için tanıdığı muafiyetin aynısı, aynı gerekçeyle: prerelease'in
       kendisi bir düzeltmeyi ölçmenin tek aracı, onu reddetmek düzeltmeyi ölçecek hiçbir şey bırakmaz).
 
+**2026-09-10 düzeltmesi:** Performance report script'indeki yanlış testkit import yolu,
+ölçüme başlamadan ERR_MODULE_NOT_FOUND üretiyordu. Yol düzeltildi; gerçek script girişini,
+JSON dosyasını ve blocker/exit-code eşleşmesini doğrulayan iki test eklendi (ölçümler fixture).
+Native performans bütçesi bu ortamda Unix socket kısıtı nedeniyle hâlâ doğrulanamıyor.
+
+**2026-09-10 yayın kanıtı takibi:** Negatif bir sayaç başka rapordaki blocker'ı sıfırlayabiliyordu.
+Public verifier ve CLI JSON sınırı artık iki sayacı da negatif olmayan güvenli tam sayı olarak
+doğrular; toplam `BigInt` ile kayıpsızdır. Boş/yinelenen/yayımlanmayan arşiv seçimleri de reddedilir.
+Altı davranış regresyonu RED→GREEN doğrulandı; geçerli prerelease istisnası korundu.
+
 **Çözüldü:** 2026-09-06. `performance.yml` ayrı workflow'u kaldırıldı (kimsenin bakmadığı bir yerde
 koşuyordu); ölçüm `release.yml`'in `verify` job'una taşındı, `dist/release/PERFORMANCE.json` olarak
 diğer kanıtlarla (SIGNING, SMOKE.json) aynı şekilde taşınıp `publish`'te birleştiriliyor,
@@ -288,9 +312,10 @@ Developer ID signing tek başına stable macOS dağıtımı için yeterli değil
       makine rolünü oynuyor). Gate'in mantığı `verify-release.test.ts`'te dört testle kapalı
       (evidence yok / stable notarize değil / prerelease skipped / stable notarized), ama bunlar
       gate'i test ediyor, Gatekeeper'ı değil.
-- [ ] Release dokümantasyonunu güncelle. — bilerek yapılmadı: çevrimiçi ticket lookup gereksinimi
-      ("ilk çalıştırma ağ istiyor") ancak notarization gerçekten çalıştığında doğru bir cümle
-      olur. Aşağıdaki workaround kaldırma adımıyla aynı değişikliğe ait.
+- [x] Release dokümantasyonunu güncelle. — docs/12 artık mevcut signing/notarization/performance
+      gate'ini, prerelease istisnalarını ve online lookup üzerine kurulan workflow kontrolünü
+      açıklar. Gelecek artifact'ın ilk çalıştırma/offline kabulü doğrulanmış gibi sunulmaz;
+      gerçek Gatekeeper kanıtı gelene kadar aşağıdaki workaround korunur.
 - [ ] Quarantine workaround'unu kaldır: `README.md` ve `CHANGELOG.md` içinde
       `<!-- gatekeeper-quarantine:start -->` / `<!-- gatekeeper-quarantine:end -->` ile
       işaretli bölümler. `scripts/__tests__/gatekeeper-workaround.test.ts` yarım kaldırmayı
@@ -720,6 +745,135 @@ tam stack trace ile yazıldığı için log hacmini büyütüyorlar.
 
 ## P1 — V1 deneyimini tamamlayacak işler
 
+### [ ] 50. AI oturumları için ortak ağır iş kuyruğu ve RAM bütçesi
+
+> **Numara notu (2026-09-11):** Bu madde ayrı bir branch'te 45 olarak açıldı; aynı gün main'de
+> 45 numarası daemon crash döngüsüne verildi. Birleştirmede bu madde 50'ye taşındı. 2026-09-09 ve
+> 2026-09-10 tarihli commit mesajlarında geçen "45" bu maddeyi kastediyor.
+
+**2026-09-09 kullanıcı ihtiyacı:** Birden fazla Claude/AI oturumu kullanıldığında yüksek RAM
+tüketimi gözleniyor. Araştırılacak çözüm, eşzamanlı build/test/typecheck yükünü sınırlamak:
+skill ağır komutları WTM'ye göndermeli; WTM bunları ortak bir kuyruğa alırken AI bağımsız
+işlerine devam edebilmeli. Belleğin ne kadarının bu alt süreçlerden geldiği henüz ölçülmedi.
+
+**Durum: sabit eşzamanlılık dilimi uygulandı; Linux ve iki macOS mimarisinde native kanıt alındı.**
+Windows doğrulaması açık. 2026-09-10 RAM kabulünün bağımsız review’u tamamlandı;
+bütçe açık gerçek worker CI senaryosu eklendi, native sonucu ve gerçek iki AI ölçümü açık.
+Migration 012, daemon scheduler, CLI/IPC ve skill birlikte eklendi. `wtm run` foreground
+davranışı korundu; `--enqueue` kalıcı kabulden sonra döner. `wtm start` servisleri bu slotu
+kullanmaz. Bu bir RAM kotası değildir. Ayrıntılar ve doğrulama sınırları:
+`docs/development/2026-09-09-todo-analysis.md`; tekrarlanabilir gerçek makine ölçümü:
+`docs/development/2026-09-09-heavy-job-memory-measurement.md`.
+
+#### Kapsam ve ilk dilim
+
+- [ ] Önce temsili iki oturumda süreç ağacını ölç; Claude'un kendi belleği, ağır komutlar ve
+      uzun ömürlü servislerin payını ayır. Kuyruğun hedeflediği yükü bu başlangıç ölçümüyle doğrula.
+- [x] Aynı host ve işletim sistemi kullanıcısının WTM oturumları, repository/worktree'den
+      bağımsız ortak ağır iş kotasını paylaşsın. Paylaşılan `HOME` farklı host'ların RAM
+      bütçelerini birleştirmesin. Ayrı state diziniyle kota aşmanın kapsamı açıkça belgelensin.
+- [x] İlk dilimde ayarlanabilir `max_concurrent_heavy = 1` ile ağır işleri sırala.
+      Hafif okuma/inceleme işleri bu kuyruğa girmek zorunda olmasın. İlk destek config'te
+      tanımlı, sonlanan task'lar için olsun; mevcut foreground `wtm run` davranışı korunsun.
+- [x] CLI, iş kalıcı olarak kabul edilince `jobId` ve ilk kabulde `QUEUED` durumu döndürüp çıksın.
+      Kabul yanıtı işin başarılı olduğu anlamına gelmesin; CLI kapansa da daemon işi yönetsin.
+      Aynı anahtarla tekrar sorgu mevcut durumu döndürür; kabul öncesi sınırlı kaynak kontrolü yapılır.
+- [x] Mevcut daemon ve SQLite state üzerinde kalıcı FIFO kuyruk kur. İş alma ve slot ayırma
+      atomik olsun; birden fazla CLI aynı işi veya aynı slotu eşzamanlı çalıştıramasın.
+      Ek kuyruk servisi gerektirmesin; kuyruk boyutu, log ve sonuç saklama süresi sınırlı olsun.
+- [x] İş kimliği, repository/worktree, komut fingerprint'i, başlama/bitiş zamanı, exit code,
+      signal, iptal nedeni ve `jobId` üzerinden log sorgusu sunulsun. JSON zarfı sürüm 1;
+      config/env içindeki sırlar durum çıktısına veya metadata'ya açık olarak taşınmasın.
+      Karar: çözümlenen argv/env sır içerebilir; yalnızca fingerprint saklanır. Task logları sır içerebilir.
+- [x] Tekrar gönderim için açık idempotency anahtarı destekle. Aynı task adına ait farklı
+      talepleri kendiliğinden birleştirme. Durumlar `QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`,
+      `CANCELLED`, `TIMED_OUT`, `INTERRUPTED` olarak açıkça ayrışsın.
+- [x] İptal/timeout bütün süreç ağacını mevcut process identity kontrolleriyle sonlandırsın;
+      slot ancak süreçlerin durduğu doğrulanınca serbest kalsın. Daemon yeniden başladığında
+      kimliği doğrulanmış çalışan işi uzlaştırsın; sonucu belirsiz işi otomatik tekrar çalıştırmasın.
+- [x] Kuyruktaki iş ile `remove`/cleanup yarışı mevcut lease ve runtime güvenlik zincirine
+      bağlansın. Silinen/değişen worktree'ye iş başlatılmasın; pending ve running işler
+      removal sırasında açıkça ele alınsın. Aynı worktree'de çakışan işler eşzamanlı başlamasın.
+
+İptal/timeout/restart ve downtime completion senaryoları `dbf7734` için Linux x64, macOS ARM64
+ve macOS x64 native runner'larında geçti; PID/grup incelemesi ve gerçek descendant yokluğu
+doğrulandı. Bu kriter mevcut macOS/Linux kapsamı için kapandı; Windows native kanıtı açık.
+İlk eski-state geçişi mevcut host-local varsayımını devralır; legacy kayıtların host kimliği
+geriye dönük kanıtlanamaz.
+
+#### Uygulanan CLI ve agent skill akışı
+
+```bash
+wtm run typecheck --enqueue --json
+wtm jobs list --json
+wtm jobs status <job-id> --json
+wtm jobs logs <job-id> --tail 100
+wtm jobs result <job-id> --json
+wtm jobs cancel <job-id>
+```
+
+- [x] Skill: ağır işi gönder → `jobId` sakla → bağımsız işe devam et → gerektiğinde durum/log/
+      sonuç sorgula. Sık polling yapma; gerçekten bağımlı adımda sınırlı bekleme politikası kullan.
+      Son durum ve exit code okunmadan test/build başarılı deme veya buna dayanarak commit yapma.
+- [x] Sonucun hangi kaynak durumuna ait olduğunu takip et. İlk dilimde agent, queued/running
+      işin okuduğu worktree dosyalarını değiştirmesin; kod okuyabilir, planlayabilir veya başka
+      worktree'de çalışabilir. Başka oturumun dosya değişiklikleri sonucu geçersiz kılabilsin;
+      yalnızca HEAD eşitliğini doğrulama kanıtı sayma, commit edilmemiş değişiklikleri de ele al.
+- [x] Dağıtılan WTM skill'ini Claude/Codex için bu akışla genişlet.
+      Skill yalnızca WTM üzerinden gönderilen işleri sıraya sokar; doğrudan çalıştırılan bütün
+      komutları zorla yakaladığı veya AI'ı kendiliğinden yeniden uyandırdığı iddia edilmesin.
+      Otomatik bildirim/hook entegrasyonu ayrı, desteklenen agent yeteneklerine bağlı bir dilim olsun.
+      Kullanıcının gerçek oturumlarına kurulum ve iki agent ile deneme henüz doğrulanmadı.
+      Kaynak kanıtı tracked/untracked içerik, index/HEAD ve metadata ile sınırlı; ignored/external
+      girdileri veya atomik filesystem snapshot'ını kapsamaz, geçici oluştur/sil değişikliği kaçabilir.
+
+#### RAM farkındalığı: ikinci dilim
+
+**2026-09-10 uygulaması:** Global `jobs.memory` budget/headroom ve task `memory_estimate_mib`
+ile tahmine dayalı kabul; `queue_env` task worker ayarlarını yalnız queued execution'a uygular.
+Migration 013 tahmini saklar; SQLite transaction tüm held tahminleri aynı claim'de sayar.
+Node available/constrained memory kullanılır, süreç ağacı/RSS taraması eklenmez. İmkânsız veya
+eski tahminsiz queued işler açık hatayla sonlanır; held işler cleanup kanıtına kadar rezervasyon
+korur. Geçici yetersizlikte strict FIFO bekler. Native ve gerçek makine ölçümü hâlâ açık;
+`docs/development/2026-09-10-todo-continuation.md` test ve review sınırlarını kaydeder.
+
+- [x] Sabit eşzamanlılık sınırından sonra, task bellek tahmini ve host'un kullanılabilir
+      belleği/bellek baskısıyla yeni iş kabulünü değerlendir. İşletim sistemi, Claude/AI ve diğer
+      uygulamalar için pay bırak. Tek build'in kendi worker paralelliği için task'a özel ayar
+      sun; yalnızca kuyruk uzunluğunu azaltmayı kesin bir RAM üst sınırı gibi sunma.
+- [x] Uygulanan sabit sınırın bekleme nedenlerini list/status/result/cancel içinde görünür yap:
+      `concurrency`, `worktree_busy`, `fifo`, `dispatch_pending`. Tanı ve atomik claim aynı
+      FIFO/slot kararını kullanır; sorgu state'i değiştirmez. Bu gözlem slot rezervasyonu değildir.
+- [x] RAM kabul kontrolüyle birlikte `memory_budget` nedenini ekle. Bütçeye hiçbir zaman
+      sığmayacak talebi açıkça reddet; kuyruğun sessizce tıkanmasını önle. Bellek yüzünden
+      bekleyen işlerin ilerleme ve adalet politikasını tanımla.
+- [x] Uzun ömürlü `wtm start` servislerini sonlanan ağır işlerden ayrı ele al; dev server
+      tek ağır iş slotunu süresiz tutmasın, fakat belleği kabul hesabında dikkate alınsın.
+- [ ] Süreç ağacının bellek ölçüm maliyetini sınırla. RSS toplamını paylaşılan sayfalar nedeniyle
+      kesin fiziksel RAM tüketimi sayma. Tahmine dayalı kabul kontrolü ile işletim sistemi
+      tarafından zorlanan sert bellek sınırını ayır; platform desteğini doğrulamadan vaat etme.
+      Genel disk/process bütçeleri madde 19'da kalsın; iki ayrı scheduler oluşturma.
+
+#### Kabul kriterleri
+
+- [ ] İki AI oturumu farklı repolardan aynı anda ağır iş gönderdiğinde, limit 1 ise en fazla
+      bir ağır iş çalışır; diğer iş kuyrukta kalır, her iki gönderim de beklemeden `jobId` döndürür.
+- [x] FIFO sırası, eşzamanlı gönderim, idempotent tekrar, dolu kuyruk ve daemon restart testli.
+      Yeniden başlatma veya kimlik belirsizliği aynı komutu ikinci kez başlatmaz.
+      SQLite eşzamanlılığı gerçek Node süreçlerinde; restart/scheduler kontrollü supervisor ile
+      doğrulandı. Gerçek iki CLI/iki repo/tek slot, sonuç/log ve native iptal/timeout/restart/
+      downtime completion senaryoları Linux x64 ve iki macOS mimarisinde geçti (`dbf7734`).
+      Windows ve kullanıcının gerçek iki AI oturumu deneyi açık.
+- [ ] Başarısız işin exit code'u ve log'u korunur; iptal, timeout ve süreç ağacı cleanup'ı
+      slot sızdırmaz. Kuyrukta bekleyen iş worktree silme güvenliğini aşamaz.
+- [ ] İşin kaynakları değiştiğinde eski sonuç güncel doğrulama gibi sunulmaz. Skill'in
+      gönderme/devam etme/sonuç okuma akışı gerçek iki oturumlu senaryoyla doğrulanır.
+- [ ] Aynı görev setiyle kuyruk öncesi/sonrası tepe bellek, bellek baskısı/swap, toplam süre
+      ve WTM daemon ek maliyeti ölçülür. Claude'un kendi bellek tüketimindeki değişim ayrıca
+      ayrıştırılır; ölçüm yapılmadan belirli bir RAM tasarrufu oranı vaat edilmez.
+
+---
+
 ### [ ] 6. `wtm create` ekle
 
 WTM worktree lifecycle'ın sonunu yönetiyor fakat başlangıcını doğrudan yönetmiyor.
@@ -763,10 +917,10 @@ var olduktan sonrasının tamamı daemon'da. Bu, uygulamayı yazmadan önce spec
       seçildi. Slug çakışması (`feat/auth` ve `feat-auth`) üretilmiş bir sonek yerine
       occupied-path reddiyle karşılanıyor: hesaplanmış bir yol ancak tahmin edilebildiği sürece
       işe yarar.
-- [ ] Multi-repo branch alignment. — **açık.** Veri modelinde repository'ler arası worktree'leri
-      gruplayan hiçbir şey yok: `WorktreeRecord` tam olarak bir `repositoryId`'ye ait ve
-      `state/store.ts`'te bir gruplama anahtarı bulunmuyor. Bu bir komut değil, veri modeli
-      değişikliği.
+- [ ] Multi-repo branch alignment. — **açık.** Runtime bugün workspace + tam branch ref ile
+      feature gruplaması yapıyor; eksik olan kalıcı feature kimliği ve creation journal'ı.
+      `--repos` henüz kayıtlı CLI değildir. Ayrı repository başlangıç commit'leri önceden
+      sabitlenmeli; aynı branch adı aynı commit OID'si anlamına gelmez.
 - [x] Worktree oluşturulduktan sonra reconcile. — daemon ayaktaysa `reconcile` isteği (daemon
       cevaplamadan önce kuyruğunu boşaltıyor, yani cevap geldiğinde iş bitmiş oluyor); değilse
       CLI kendi reconcile ediyor. **Asla ikisi birden** — bir registry'nin iki yazıcısı olması
@@ -779,11 +933,11 @@ var olduktan sonrasının tamamı daemon'da. Bu, uygulamayı yazmadan önce spec
       yazıcının karar vermesi tam olarak `claimLifecycleEvent`'in önlemek için var olduğu şey.
 - [x] `--json` stable output. — `registration: 'daemon' | 'local'` alanı dahil, ki `--json`
       çağıranı hook'ların çalışıp çalışmadığını daemon'u yoklamadan bilebilsin.
-- [ ] Partial multi-repo creation rollback/recovery. — **açık.** Tek repository'lik bir create tek
-      bir `git worktree add`; yarım kalacak bir şey yok. N repository için `remove`'un lease +
-      journal + `--resume` makinesinin create tarafına genişletilmesi ve deterministik bir kilit
-      sırası gerekir (yoksa iki multi-repo create birbirini kilitler) — kendi spec'ini hak eden
-      bir soru.
+- [ ] Partial multi-repo creation rollback/recovery. — **açık.** Tek `git worktree add` bile
+      CLI crash sonrası yaşayan Git/hook çocuğu veya kısmi yazma bırakabilir. Kalıcı üye
+      aşamaları ve create lease migration'ı gerekir; belirsiz APPLYING aşaması otomatik
+      tekrar çalıştırılamaz. Mevcut lease beklemek yerine çakışmayı reddeder; deterministik
+      edinme sırası ve bütün repository'ler için mutasyon öncesi edinme yine gereklidir.
 
 #### Kabul kriterleri
 
@@ -798,16 +952,16 @@ var olduktan sonrasının tamamı daemon'da. Bu, uygulamayı yazmadan önce spec
 
 ---
 
-### [ ] 7. Gerçek cleanup candidate ranking ekle
+### [x] 7. Gerçek cleanup candidate ranking ekle
 
 `wtm analyze --cleanup-candidates` yalnızca linked worktree filtresi olmamalı.
 
-**Kısmen kapandı.** Ranking uygulandı: sekiz girdinin yedisi çalışıyor, reclaimable disk size
-gerekçesiyle açık bırakıldı. Spec `docs/superpowers/specs/2026-09-07-cleanup-candidate-ranking.md`,
-plan `docs/superpowers/plans/2026-09-07-cleanup-candidate-ranking.md`. Sıralama ağırlıklı toplam
-değil, sıralı tier'lar üzerinden leksikografik: her karşılaştırmanın tek cümlelik bir cevabı var,
-ve `reason` tam olarak o cevapları taşıyor. Başlık, reclaimable satırı açık olduğu için madde 2'nin
-`repair` satırında kullanılan aynı kuralla `[ ]` kalıyor.
+**2026-09-10:** Sekiz girdi uygulandı. Yeni disk ölçümü bütün mevcut safety/activity tier'larından
+sonra eşitliği bozar. Eksik ölçüm sıfır değildir; maliyet bütün adaylar için sınırlıdır ve
+ölçüm silme yetkisi vermez. Dosya/ranking/CLI testleri ve bağımsız review tamamlandı.
+Review’daki aynı-device mount bulgusu Linux platform reader’ı ve iki sınırlı snapshot ile
+giderildi; core platform bağımsızlığı korundu. Native mount/unmount ve diğer platformlarda
+aynı-device mount dışlama garantisi yok. Önceki ranking davranışı yeniden yazılmadı.
 
 #### Ranking girdileri
 
@@ -820,12 +974,12 @@ ve `reason` tam olarak o cevapları taşıyor. Başlık, reclaimable satırı a�
 - [x] remote persistence — 3. ve 4. tier. 4. tier `remoteKnowledge.source` ile nitelendiriyor:
       yalnızca yerel ref'lerden bilinen kalıcılık, fetch ile doğrulanmışın altında sıralanıyor.
       "persistence known only from local refs ranks below the same candidate after a fetch".
-- [ ] reclaimable disk size — **açık.** Bu sayı hiçbir yerde yok: `packages/cli/src/commands/
-      disk.ts` kendi ölçüm temelini `reclaimable: 'not-estimated'` diye ilan ediyor ve core'daki
-      tek reclaimable fonksiyonu (`resources/removal.ts`) bayt değil *yol* döndürüyor. Sayıya
-      çevirmek, kendi yürüme maliyeti/cache/bayatlama kararları olan bir ölçüm özelliği — ranking
-      özelliği değil. Tier sırası, bu girdi sonradan üstündekileri bozmadan eklenebilecek şekilde
-      yazıldı.
+- [x] reclaimable disk size — `cleanup.reclaimable`, tek hard link'li normal dosyaların
+      allocated block tahminidir. Git metadata, symlink/hedefleri, farklı device ve retained resource
+      yolları sayılmaz; Linux ayrıca aynı-device descendant mount sınırlarını okur. Bütün adaylar toplam 2 saniye/20.000 entry bütçesini paylaşır;
+      partial/unavailable değerler null kalır. COW/snapshot sebebiyle gerçek boşalacak bayt
+      veya alt sınır garantisi değildir. Kaynak değişikliği ve path yarışı ölçümü geçersiz kılar.
+      `wtm disk` ayrı resource-footprint sözleşmesini korur.
 - [x] last WTM activity — 5. tier, ama beklenen alandan değil: `worktrees.last_runtime_at`
       sütununu **hiçbir production yolu yazmıyor**, migration'dan beri hep NULL. Bu yüzden aktivite
       managed-process journal'ından türetiliyor (`startedAt`/`stoppedAt`'in en yenisi), o da yoksa
@@ -1244,32 +1398,20 @@ wtm-windows-arm64.exe
 - [x] Core package platform-independent. — `platform-independence.test.ts` yapısal olarak
       zorluyor; iki gözden geçirilmiş istisna var, ikisi de tabloda gerekçesiyle yazılı.
 - [x] Platform-specific import'lar platform package dışında minimum.
-- [x] macOS regression yok. — `33657859156`'da her iki macOS bacağı da yeşil; **2026-08-31'den
-      beri ilk tam yeşil koşu**. Kırmızılık `48b4bd4`'ten beri sürüyordu ve C1 "doğrulandı" diye
-      bildirilirken kimse CI'a bakmamıştı (spec F15). Kalan hata runner'ın `~/Library/LaunchAgents`
-      dizinini 0755 olduğu için reddetmesiydi; kural düzeltildi (F16), regresyon değildi.
-- [x] Linux x64 CI green. — `33657859156`, üç bacakta da yedi gate'in hepsi koştu, atlanan yok.
+- [~] macOS regression yok. — `75a8626` / `34457543774` ARM64 bütün gate'lerde yeşil;
+      Intel x64 1629 pass / 2 fail. Rotation gözlem/recovery kusuru düzeltildi; stale process
+      identity nedeni henüz kanıtlanmadı, failure-only native trace eklendi. Önceki yeşil koşu
+      bu yeni kırmızılığı kapatmaz.
+- [x] Linux x64 CI green. — `75a8626` / `34457543774`: test 1627/0, e2e 3/0, binary 10/0;
+      lint/typecheck/build/package geçti. Takip yamalarının native kanıtı ayrıca izlenir.
 - [ ] Linux arm64 build doğrulanıyor.
-- [ ] Windows x64 CI green. — **duraklatıldı, 2026-09-06.** Dört düzeltme dalgası (~30 push,
-      2026-09-04 – 2026-09-06) gerçek, kanıtlanmış kusurları kapattı (Windows'un ACL-only
-      `stat.mode` sentezi, `Get-Acl` arkasındaki PowerShell 5.1/7 modül çakışması, gerçek bir
-      Windows daemon'ın kendi data root'unu hiç oluşturamayacağı iki üretim `fileTrust` bağlama
-      boşluğu, bir path-normalizasyon hatası). Son gerçek koşu (`34041455473`, `759eb4e`) hâlâ
-      1360 testten 98'inin kırmızı olduğunu gösteriyor — çoğunluğu tek bir kümede:
-      `process-supervisor.test.ts`'in 27 hatası hâlâ `LOG_SETUP_FAILED` veriyor (dördüncü dalganın
-      SID-cache düzeltmesi bunu çözmedi; gerçek ACL diagnostiği trust policy'nin doğru cevap
-      verdiğini kanıtlamıştı, yani kök neden hâlâ bulunamadı), ve çoğu CLI entegrasyon testi
-      (`adapter`, `gc`, `init`, `production-init`, `remove`, `resolve`, `skill`, `daemon`,
-      `full-workflow`, `reconcile-fallback`, `production-commands`) gerçek bir daemon/managed
-      process kurduğu için aynı kümeye bağımlı düşüyor. Ayrı, önceden işaretlenmiş bir küme
-      (`remove-runtime.test.ts`'in iki-process lease-conflict senaryoları, muhtemelen
-      Windows'ta bare `spawn('git', ...)`'in `.cmd`/PATHEXT shim'i üzerinden çözülmemesi) hâlâ
-      açık. Karar: kullanıcıyla birlikte, gerisi P0 backlog'unu bekletmesin diye further iterasyon
-      şimdilik durduruldu — kalan hatalar sığ olduğu için değil, tam tersi: köklü, henüz
-      bulunamamış tek bir savunma hattı sorunu olduğu için, ve 30-60 dk'lık her CI turu bunu hızlı
-      kapatmaya yetmiyordu. `supportedPlatforms` `win32`'yi tutuyor, CI leg'i `ci.yml`'de kalıyor
-      ve gerçek kırmızısını raporluyor. Detay: `2026-09-04-windows-ci-leg-and-supported-
-      platform.md`'nin "Status update, 2026-09-06" bölümü.
+- [ ] Windows x64 CI green. — **2026-09-10 takip yeniden başladı.** `75a8626` koşusunda
+      1327 pass / 115 fail / 200 skip ve bir testler-arası error; sonraki gate'ler çalışmadı.
+      Native log, anchor'da yanlış POSIX 0700 kontrolünü somut olarak gösteriyor; SID/ACL
+      capability düzeltmesi geliştiriliyor. Custom state-root pipe adresi ve fixture Windows
+      home izolasyonu düzeltildi. Gerçek native sonuç gelmeden bu madde kapanmaz.
+      Önceki incelemeler tarihsel notlarında korunur; güncel kayıt
+      `docs/development/2026-09-10-windows-follow-up.md`.
 - [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
 - [ ] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
       `plistPath` macOS'a özel bir ek alan olarak bilerek duruyor (D11), kaldırılması daemon JSON
@@ -1349,9 +1491,15 @@ kapanmalı: bugün ulaşılamaz olmasının tek sebebi Linux'un henüz çalışm
 
 ---
 
-### [ ] 10. Managed task readiness / healthcheck ekle
+### [x] 10. Managed task readiness / healthcheck ekle
 
 `wtm start dev` process doğduğu için başarılı sayılmamalı; kullanıcı isterse servisin hazır olmasını bekleyebilmeli.
+
+**2026-09-10:** HTTP dilimi uygulandı: start/restart wait, config/template, sınırlı observation,
+process/completion identity, IPC cancellation ve JSON hata sözleşmesi. Gerçek HTTP + TCP IPC
+üzerinden 5,5 saniyeden uzun wait, timeout ve iptal geçti. `75a8626` için Linux x64 ve macOS
+ARM64 native e2e geçti; observer/controller bağımsız review’u tamamlandı. Bu ortamda Unix
+socket `listen EPERM`, Windows native kabulü ve ayrı Intel lifecycle hatası açık. Tasarım ve kanıt: `docs/development/2026-09-10-todo-continuation.md`.
 
 #### CLI
 
@@ -1370,20 +1518,14 @@ timeout = "30s"
 interval = "500ms"
 ```
 
-Alternatif tipler:
-
-```text
-http
-tcp
-process
-command
-```
+Uygulanan tip `http`; `tcp`, `process` ve `command` gelecekteki genişletmelerdir.
 
 #### Kabul kriterleri
 
-- [ ] Process spawn olup servis ayağa kalkmazsa start sonucu bunu gösterebiliyor.
-- [ ] JSON output readiness durumunu içeriyor.
-- [ ] Agent'lar `wtm start --wait` sonrası ortamın hazır olduğunu güvenle varsayabiliyor.
+- [x] Process spawn olup servis ayağa kalkmazsa wait sonucu timeout veya process/evidence hatasını gösteriyor.
+- [x] JSON output readiness durumunu içeriyor; normal start `NOT_CHECKED`, başarılı wait `READY`.
+- [x] Agent’lar başarılı `READY` sonucunu aynı managed process ve HTTP endpoint için o andaki
+      readiness kanıtı olarak kullanabiliyor; gelecekteki sağlık veya endpoint ownership garantisi yok.
 
 ---
 
@@ -1740,9 +1882,21 @@ yerde durmalı, ayrı bir depolama icat edilmemeli.
 
 ## P2 — Analysis ve UX iyileştirmeleri
 
-### [ ] 16. Ignored dosyaları `untracked` grubundan ayır
+### [x] 16. Ignored dosyaları `untracked` grubundan ayır
 
-Şu an ignored content safety açısından doğru şekilde blocker ancak JSON semantics daha açık olabilir.
+**Tamamlandı, 2026-09-09.** Porcelain `!` kayıtları artık `workingTree.counts.ignored`,
+`workingTree.paths.ignored` ve `ignored` classification'ında; `?` kayıtları `untracked` altında.
+Yeni `GIT_IGNORED_CONTENT` kodu silmede exit 3 üretir. İki grup da silmeyi engeller;
+WTM'nin temizleyeceği ephemeral kaynakların tamamını kapsayan blocker'lar runtime cleanup'a
+ertelenebilir. Cleanup sonrası analiz, geride kalan veya yeni oluşan ignored kullanıcı
+verisini tekrar engeller. İki gruptaki symlink'ler mevcut politikayı korur; ENOENT dışındaki
+inceleme hataları güvenli kabul edilmez.
+
+Kanıt: `status-parser.test.ts`, `worktree-analysis.integration.test.ts`,
+`guarded-remove.integration.test.ts`, `git-environment.test.ts`, `ignored-content.test.ts`
+ve `exit-codes.test.ts`. `.gitignore`, `info/exclude`, global excludes, ignored dizin,
+symlink, karma kullanıcı/kaynak verisi, cleanup sırasında oluşan dosya ve CLI JSON/exit
+senaryoları kapsanıyor. Counts, Git'in döndürdüğü entry sayısıdır; ignored dizin tek entry olabilir.
 
 #### Önerilen yapı
 
@@ -1766,7 +1920,12 @@ GIT_IGNORED_CONTENT
 
 ---
 
-### [ ] 17. Symlink removal policy configurable olsun
+### [x] 17. Symlink removal policy configurable olsun
+
+**2026-09-10 tamamlandı:** Varsayılan `ignore`, advisory `review`, non-deferrable `block` uygulandı. Hedef worktree’nin
+`.wtm.toml` politikası selector’dan sonra çözülür; iki removal gate’ine aynı context gider.
+Ignored içerik ve final unforced Git veto korunur. Bağımsız review bulgusu regresyon testiyle
+giderildi. Kanıt: `docs/development/2026-09-10-symlink-policy.md`.
 
 Default davranış mevcut güvenli davranışta kalabilir.
 
@@ -1789,7 +1948,16 @@ block
 
 ### [ ] 18. Port probing'i batch hale getir
 
-Şu an her candidate için child process spawn maliyeti var.
+**2026-09-10:** Node ve standalone tahsis yolu artık en fazla 256 adayı tek helper'a gönderir.
+SQLite transaction içindeki lease çakışma filtresi, mevcut port ve preferred port sırası korunur.
+İki saniye toplam süre, 128 KiB stdin ve 4 KiB yanıt sınırı vardır; bozuk/eksik yanıt veya
+timeout port tahsis etmez. Eski tekli probe enjeksiyonları desteklenir. Bağımsız review tamamlandı;
+bulunan UDP descriptor sızıntısı gerçek private CLI testiyle giderildi. Son native CI takibi açık.
+
+- [x] Tek process üzerinden sınırlı toplu bind/close kontrolü.
+- [x] Node ve standalone private girişleri, TCP/UDP ve transaction çakışma testleri.
+- [x] Bağımsız review; UDP descriptor bulgusu giderildi ve yeniden incelendi.
+- [ ] Son düzeltmenin native CI sonuçları; `75a8626` Linux/ARM64 başarılı, Intel iki hata.
 
 #### Hedef
 
@@ -1808,9 +1976,12 @@ ve tek cevap:
 
 ```json
 {
-  "available": [3001]
+  "available": [false, true]
 }
 ```
+
+Yanıt boolean'ları istek sırasındadır; böylece aynı port numarasındaki farklı host/protocol
+adayları birbirine karışmaz. Bu private helper sözleşmesidir, yeni bir kullanıcı CLI komutu değildir.
 
 #### Not
 
@@ -1822,7 +1993,11 @@ Rust yalnızca profiler bunun gerçek bottleneck olduğunu gösterirse düşün�
 
 ### [ ] 19. Resource budgets
 
-Opsiyonel:
+**Öncelik güncellemesi (2026-09-09):** Ağır iş eşzamanlılığı ve RAM'e göre kuyruktan iş
+başlatma kısmı P1 madde 50'ye taşındı. Bu madde genel process/disk bütçeleri ve platforma
+özel sert sınırları kapsar; madde 50 ile aynı kaynak muhasebesini kullanmalı.
+
+Opsiyonel config taslağı (henüz uygulanmadı):
 
 ```toml
 [runtime.budgets]
@@ -1913,8 +2088,8 @@ cross-platform
 
 - [ ] GitHub repository description güncelle.
 - [ ] Topics güncelle.
-- [ ] Website/homepage alanını kontrol et.
-- [ ] Release/installation linklerini görünür hale getir.
+- [x] Website/homepage alanını kontrol et.
+- [x] Release/installation linklerini görünür hale getir.
 
 ---
 
@@ -1937,15 +2112,15 @@ Built for developers and coding agents working in parallel on macOS, Linux and W
 
 #### README ilk bölümünde mutlaka göster
 
-- [ ] Cross-platform badge.
-- [ ] macOS badge.
-- [ ] Linux badge.
-- [ ] Windows badge.
-- [ ] Latest release badge.
-- [ ] CI badge.
+- [x] Cross-platform badge.
+- [x] macOS badge.
+- [x] Linux badge.
+- [x] Windows badge.
+- [x] Latest release badge.
+- [x] CI badge.
 - [ ] npm version badge.
-- [ ] License badge.
-- [ ] JSON/Agent-friendly badge gerekiyorsa korunabilir.
+- [x] License badge.
+- [x] JSON/Agent-friendly badge gerekiyorsa korunabilir.
 
 #### Platform durumu tablosu
 
@@ -2030,11 +2205,16 @@ wtm-windows-x64.zip
 - [ ] Install scriptlerin checksum doğrulaması yapması.
 - [ ] Architecture autodetection.
 - [ ] Existing install upgrade desteği.
-- [ ] Uninstall dokümantasyonu.
+- [x] Uninstall dokümantasyonu. — README/CONTRIBUTING `make uninstall` ile state silen
+      `make purge`'ü ayırır; macOS state/log ve Linux XDG state/config köklerini, npm kaldırmayı
+      ve Windows için önce doctor kökleri/süreç durumu doğrulamasını açıklar. Installer script'leri açık.
 
 ---
 
-### [ ] 25. Requirements bölümünü macOS-only olmaktan çıkar
+### [x] 25. Requirements bölümünü macOS-only olmaktan çıkar
+
+**2026-09-10 tamamlandı:** Requirements artık kaynak/npm/standalone gereksinimlerini ayırır: Git, Node24, Bun1.3 ve
+SEA için Node24.18.0 pin’i; platform servis gereksinimleri ve deneysel Windows sınırı açık.
 
 README'deki:
 
@@ -2065,7 +2245,10 @@ Daemon requirements platform bazlı açıklanmalı.
 
 ---
 
-### [ ] 26. Architecture docs'a Platform Layer bölümü ekle
+### [x] 26. Architecture docs'a Platform Layer bölümü ekle
+
+**2026-09-10 tamamlandı:** `docs/02-architecture.md` ve daemon belgesi platform ports, süreç kimliği/ağacı, IPC,
+filesystem yolları ve trust farklarını gerçek implementasyonla eşleştirir; bağımsız review tamam.
 
 `docs/02-architecture.md` güncellenmeli.
 
@@ -2096,14 +2279,17 @@ yerine:
                        Core
 ```
 
-- [ ] Platform interface'leri dokümante et.
-- [ ] Process model farklarını dokümante et.
-- [ ] IPC farklarını dokümante et.
-- [ ] Filesystem/path farklarını dokümante et.
+- [x] Platform interface'leri dokümante et.
+- [x] Process model farklarını dokümante et.
+- [x] IPC farklarını dokümante et.
+- [x] Filesystem/path farklarını dokümante et.
 
 ---
 
-### [ ] 27. Roadmap'i cross-platform olarak yeniden düzenle
+### [x] 27. Roadmap'i cross-platform olarak yeniden düzenle
+
+**2026-09-10 tamamlandı:** Linux deferred ifadesi kaldırıldı. Mevcut backend/queue/RAM/readiness ile kalan native
+kabul, artifact dağıtımı ve gerçek iki-AI RAM ölçümü ayrı gösteriliyor.
 
 `docs/15-roadmap.md` içindeki:
 
@@ -2133,27 +2319,31 @@ Eğer hedef stable `v1.0` öncesi üç platform ise roadmap buna göre tamamen y
 
 ### [ ] 28. Package metadata'yı güncelle
 
-`package.json` şu an:
-
-```json
-"os": ["darwin"]
-```
-
-ile macOS'a kilitli.
+**2026-09-10:** Manifest zaten `darwin`, `linux`, `win32` içeriyordu; yeniden yazılmadı.
+Keywords/description ve README eşlendi; Node>=24 npm runtime, Node24.18.0 SEA build pin’i
+ayrıldı. Windows native kabulü madde9’da, npm ilk yayın kanıtı madde38’de açık; metadata
+güncellemesi bu platform/yayın kabulü değildir.
 
 Cross-platform hazır olduğunda:
 
-- [ ] `os` restriction kaldır veya üç OS'u tanımla.
-- [ ] keywords içine `linux`, `windows`, `cross-platform` ekle.
-- [ ] description güncelle.
-- [ ] npm README platform tablosuyla eşleşsin.
-- [ ] Node engine requirement tekrar değerlendir.
+- [x] `os` restriction kaldır veya üç OS'u tanımla.
+- [x] keywords içine `linux`, `windows`, `cross-platform` ekle.
+- [x] description güncelle.
+- [x] npm README platform tablosuyla eşleşsin.
+- [x] Node engine requirement tekrar değerlendir.
 
 Not: Windows/Linux desteği tamamlanmadan `os` restriction kaldırılmamalı; yarım destek npm kullanıcılarına kırık paket vermemeli.
 
 ---
 
 ### [ ] 29. Release workflow'u çoklu OS matrix'e geçir
+
+**2026-09-10 yerel Linux dilimi:** Ortak hedef kataloğu Darwin arm64/x64 ve Linux x64 arşiv
+üretimini tanımlar; yayımlanan gerekli hedefler iki Darwin olarak kalır. Linux ELF64 başlığı
+en fazla 64 bayt okunur; gerçek FIFO bloklanması review'da bulunup giderildi. Gerçek WTM SEA
+arşivlenip çıkarıldı: dört üye, 0755, SHA-256 ve `--version` exit 0. Bu yerel kanıt Linux/Windows
+release matrix, signing politikası veya bütün platform kabulü değildir. Ayrıntı:
+`docs/development/2026-09-10-distribution-follow-up.md`.
 
 Hedef:
 
@@ -2193,7 +2383,8 @@ wtm-windows-x64.zip
 SHA256SUMS
 ```
 
-- [ ] Artifact names stable contract olsun.
+- [~] Artifact names stable contract olsun. — mevcut üç yerel hedef ortak katalogda;
+      Linux ARM64 ve Windows ZIP ile yayımlama hedeflerinin tamamlanması açık.
 - [ ] Her platform smoke tested.
 - [ ] Checksums tüm platformları kapsasın.
 - [ ] Build provenance tüm artifact'lar için üret.
@@ -2213,7 +2404,8 @@ Stable sonrası hedef:
 
 Öncelik sırası:
 
-- [ ] standalone binary
+- [~] standalone binary — Linux x64 yerel ELF arşivi üretildi ve gerçek executable ile
+      doğrulandı; GitHub release arşivi ve Linux ARM64 hâlâ açık.
 - [ ] Homebrew/Linuxbrew
 - [ ] `.deb` / apt repository ancak talep oluşursa
 - [ ] `.rpm` ancak talep oluşursa
@@ -2247,9 +2439,10 @@ Ayrı workflow kullanılıyorsa ayrı badge; tek matrix workflow kullanılıyors
 
 Ayrıca:
 
-- [ ] `CONTRIBUTING.md` platform test komutlarını içersin.
-- [ ] `SECURITY.md` platform-specific security concerns içersin.
-- [ ] `SUPPORT.md` desteklenen OS/version tablosu içersin.
+- [x] `CONTRIBUTING.md` platform test komutlarını içersin.
+- [x] `SECURITY.md` platform-specific security concerns içersin.
+- [~] `SUPPORT.md` backend/native/distribution tablosunu içeriyor; minimum OS sürümleri bütün
+      hedeflerde kanıtlanmadığı için bu bölüm açıkça bilinmiyor, destek garantisi üretilmedi.
 
 ---
 
@@ -2275,24 +2468,34 @@ Kurallar:
 
 ---
 
-### [ ] 33. Agent Skill cross-platform hale getir
+### [x] 33. Agent Skill cross-platform hale getir
+
+**2026-09-10 tamamlandı:** Skill platform diagnostic’ini, ortak WTM komutlarını, PowerShell/Git Bash farkını ve
+deneysel Windows sınırını anlatıyor. `memory_budget` tablosu tamamlandı; otomatik wakeup veya
+tüm terminal komutlarını yakalama iddiası yok. Commander parity ve bağımsız review geçti.
 
 `skills/wtm/SKILL.md` yalnızca POSIX/macOS varsayımlarına dayanmamalı.
 
-- [ ] Platform detection rehberi.
-- [ ] Windows'ta PowerShell/Git Bash farkları.
-- [ ] Manuel `kill`, `pkill`, `lsof` gibi platform-specific workaround'ları önermemesi.
-- [ ] Her platformda WTM'nin kendi `status`, `ports`, `ps`, `stop`, `doctor` komutlarını tercih etmesi.
-- [ ] Skill içindeki install/daemon örneklerini platform-aware yap.
+- [x] Platform detection rehberi.
+- [x] Windows'ta PowerShell/Git Bash farkları.
+- [x] Manuel `kill`, `pkill`, `lsof` gibi platform-specific workaround'ları önermemesi.
+- [x] Her platformda WTM'nin kendi `status`, `ports`, `ps`, `stop`, `doctor` komutlarını tercih etmesi.
+- [x] Skill içindeki install/daemon örneklerini platform-aware yap.
 
 ---
 
 
 # Documentation / consistency checklist
 
-### [ ] 34. Kod ve docs parity testi ekle
+### [x] 34. Kod ve docs parity testi ekle
 
-Dokümantasyonda geçen komutların gerçekten CLI'da mevcut olduğunu test et.
+**Tamamlandı, 2026-09-09.** `scripts/__tests__/cli-docs.test.ts`, aşağıdaki kaynakların
+inline komut referanslarını ve fenced komut örneklerini gerçek Commander komut/option
+kayıtlarına karşı doğrular. Örnekler çalıştırılmaz; create/remove/start yan etkisi yoktur.
+Kontrol, README'deki hatalı `wtm skill --install` kullanımını yakaladı; `wtm skill install`
+olarak düzeltildi. Bilinmeyen komut, alt komut ve flag negatif senaryoları mevcut.
+Normal `bun test` kapsamında CI'da çalışır. Bu gate komut/flag varlığını denetler;
+görevlerin çalışma sonucunu, metin açıklamalarının tamamını veya tüm shell gramerini doğrulamaz.
 
 Kontrol edilecekler:
 
@@ -2339,21 +2542,25 @@ dokümanda anlatıldığı gibi çalışıyor mu test edilmeli.
 - [x] stale local remote ref
 - [x] deleted remote branch after refresh
 - [x] multiple remotes
-- [ ] allowed refs config
+- [x] allowed refs config — gerçek Git fixture ile production analyze/remove; son selector
+      düzeltmesinden sonra symlink/allowed-ref CLI grubu 11/0.
 - [x] detached HEAD
 - [x] no upstream
 - [x] commit persisted in another remote branch
 
 ### [ ] Create
 
-- [ ] existing branch
-- [ ] new branch
-- [ ] conflicting worktree
+- [x] existing branch
+- [x] new branch
+- [x] conflicting worktree
 - [ ] partial multi-repo failure
 - [ ] daemon running
-- [ ] daemon stopped
+- [x] daemon stopped
 - [ ] eager prepare
 - [ ] lazy prepare
+
+Doğrulama (2026-09-09): `packages/cli/src/__tests__/create.test.ts` 11/11 başarılı.
+Daemon açıkken hook ve multi-repo kabul kriterleri bu sonuçla kapatılmadı.
 
 ### [ ] Runtime
 
@@ -2390,15 +2597,15 @@ dokümanda anlatıldığı gibi çalışıyor mu test edilmeli.
 
 ---
 
-# Release checklist — Stable v1.0
+# Release checklist — v0.2.0
 
-Stable `v1.0.0` tag'i aşağıdakiler tamamlanmadan çıkarılmamalı:
+Hedef `v0.2.0` tag'i aşağıdakiler tamamlanmadan çıkarılmamalı:
 
 - [ ] P0 maddelerinin tamamı bitmiş.
 - [x] `wtm remove` runtime-aware.
 - [x] Cross-process destructive operation lease mevcut.
 - [x] Remote freshness semantics net.
-- [ ] Performance workflow/docs parity sağlanmış.
+- [x] Performance workflow/docs parity sağlanmış. — Madde 4; gerçek platform performance sonucu ayrı gate olarak kalır.
 - [ ] Stable macOS binary Developer ID signed.
 - [ ] Stable macOS binary notarized.
 - [ ] macOS ARM64 CI green.
@@ -2424,6 +2631,16 @@ Stable `v1.0.0` tag'i aşağıdakiler tamamlanmadan çıkarılmamalı:
 
 # Önerilen geliştirme sırası
 
+**2026-09-09 güncellemesi:** Tamamlanan madde 16/34'ün native CI doğrulamasıyla birlikte
+madde 50'nin ilk dilimi (kalıcı kuyruk, sabit ağır iş sınırı, asenkron CLI ve agent skill akışı)
+uygulandı; native CI'da ortaya çıkan regresyonlar ve bekleme nedenleri devam dilimidir.
+Native süreç kanıtı ve gerçek makine bellek ölçümü alınmadan RAM kriterleri kapatılmaz.
+2026-09-10: HTTP readiness, cleanup disk tahmini ve isteğe bağlı RAM kabulü uygulandı.
+Bağımsız review tamamlandı; bulunan UDP/log/mount/selector hataları giderildi. Symlink policy
+ve platform dokümanları güncellendi. Native Intel/Windows takibi ve gerçek RAM ölçümü açık.
+Multi-repo create ve kalan P2/P3 özellikleri sonraki bağımsız geliştirmelerdir.
+Bu işler notarization veya diğer yayın hesabı işlerini beklemek zorunda değil.
+
 ```text
 1. repository operation leases
 2. runtime-aware remove
@@ -2438,11 +2655,12 @@ Stable `v1.0.0` tag'i aşağıdakiler tamamlanmadan çıkarılmamalı:
 11. wtm create
 12. cleanup candidate ranking
 13. allowed remote refs config
-14. readiness/healthcheck
-15. local domains
-16. GitHub/PR awareness
-17. idle runtime
-18. TUI/menu bar
+14. shared heavy-job queue + async agent flow (sabit sınır ve tahmini RAM kabulü uygulandı; native takip/gerçek RAM ölçümü açık)
+15. readiness/healthcheck
+16. local domains
+17. GitHub/PR awareness
+18. idle runtime
+19. TUI/menu bar
 ```
 
 Bu sıra özellikle destructive safety ve stable release risklerini önce kapatacak şekilde hazırlanmıştır.

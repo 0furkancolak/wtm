@@ -1147,6 +1147,7 @@ describe('ManagedProcessSupervisor', () => {
     const store = new MemoryProcessStore();
     const worktree = { id: 'worktree-1' };
     const logsRoot = join(root, 'logs');
+    const pausePath = join(root, 'pause-writer');
     const supervisor = createSupervisor({
       stateStore: store,
       logs: new ManagedLogStore({ root: logsRoot, rotationBytes: 64, retainedFiles: 3 }),
@@ -1156,7 +1157,14 @@ describe('ManagedProcessSupervisor', () => {
     const started = await supervisor.start({
       worktreeId: worktree.id,
       taskName: 'recover-logs',
-      argv: ['node', '-e', "let n=0;setInterval(()=>process.stdout.write(String(n++).padStart(8,'0')),5)"],
+      argv: ['node', '-e', [
+        "const fs = require('node:fs'); let n = 0; let paused = false;",
+        'setInterval(() => {',
+        '  if (paused) return;',
+        "  if (fs.existsSync(process.argv[1])) { paused = true; process.stdout.write('PAUSED!!'); return; }",
+        "  process.stdout.write(String(n++).padStart(8, '0'));",
+        '}, 5);',
+      ].join('\n'), pausePath],
       cwd: root,
       env: process.env,
     });
@@ -1183,6 +1191,18 @@ describe('ManagedProcessSupervisor', () => {
 
     const recovered = await recoveredSupervisor.recover();
     await waitFor(async () => readFile(`${started.record.stdoutPath}.1`, 'utf8').then(() => true, () => false));
+
+    // Request a task-owned pause without stopping the live anchor. Observing the final sentinel
+    // through the generation-aware reader proves its queued output has drained, so the raw file
+    // size assertions below cannot land between rename(current, .1) and the writer reopening it.
+    await writeFile(pausePath, 'pause');
+    await waitFor(async () => {
+      try { return (await recoveredLogs.readCursor(started.record.stdoutPath)).content.endsWith('PAUSED!!'); }
+      catch (error) {
+        if (error instanceof Error && error.message === 'Managed log rotated during bounded read') return false;
+        throw error;
+      }
+    });
 
     expect(recovered[0]?.state).toBe('RUNNING');
     expect((await readFile(`${started.record.stdoutPath}.1`)).byteLength).toBeLessThanOrEqual(64);
@@ -1231,3 +1251,42 @@ function sameIdentity(left: ProcessIdentity, right: ProcessIdentity): boolean {
     && left.processStartTime === right.processStartTime
     && left.commandFingerprint === right.commandFingerprint;
 }
+
+test('retries durable cleanup after transient inspection failure without releasing live ownership', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wtm-cleanup-retry-'));
+  const store = new MemoryProcessStore();
+  let inspectFailed = true;
+  let alive = true;
+  const identity = { pid: 999999, pgid: 999999, processStartTime: 'fixture-identity', commandFingerprint: 'fixture-fingerprint' };
+  const record = store.createManagedProcess({ ...identity, worktreeId: 'worktree', taskName: 'job-retry', state: 'RUNNING', startedAt: new Date().toISOString(), stoppedAt: null, stdoutPath: join(root, 'stdout'), stderrPath: join(root, 'stderr') });
+  const supervisor = createSupervisor({
+    stateStore: store, logs: new ManagedLogStore({ root: join(root, 'logs') }), gracePeriodMs: 0, pollIntervalMs: 1,
+    inspectProcess: async () => inspectFailed ? { status: 'failed', reason: 'TRANSIENT' } : alive ? { status: 'present', identity } : { status: 'absent' },
+    inspectProcessGroup: async () => alive ? { status: 'present', pids: [identity.pid] } : { status: 'absent' },
+    signalProcessGroup: () => { alive = false; },
+  });
+  try {
+    await expect(supervisor.stopRecord(record)).rejects.toThrow('safely');
+    expect(store.getManagedProcess(record.id)?.cleanupRequired).toBe(true);
+    inspectFailed = false;
+    await supervisor.stopRecord(record);
+    expect(alive).toBe(false);
+    expect(store.getManagedProcess(record.id)?.cleanupRequired).toBe(false);
+  } finally { await supervisor.close(); await removeRootDirectory(root); }
+});
+
+test('rolls back a spawned anchor when durable ownership binding rejects before handshake', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wtm-anchor-binding-'));
+  const store = new MemoryProcessStore();
+  const supervisor = createSupervisor({ stateStore: store, logs: new ManagedLogStore({ root: join(root, 'logs') }), gracePeriodMs: 0 });
+  let anchorPid: number | null = null;
+  try {
+    let failure: unknown;
+    try { await supervisor.start({ worktreeId: 'worktree', taskName: 'job-binding', argv: immediateExitArgv, cwd: root, onSpawned: (pid) => { anchorPid = pid; throw new Error('JOB_BIND_REJECTED'); } }); }
+    catch (error) { failure = error; }
+    expect(anchorPid).not.toBeNull();
+    expect(failure).toMatchObject({ context: { spawnOutcome: 'cleaned' } });
+    expect(store.listManagedProcesses()).toEqual([]);
+    expect(pidExists(anchorPid!)).toBe(false);
+  } finally { await supervisor.close(); await removeRootDirectory(root); }
+}, 15_000);

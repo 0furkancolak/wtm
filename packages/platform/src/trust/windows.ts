@@ -52,20 +52,15 @@ export type CurrentWindowsUserSidReader = () => Promise<string | null>;
  */
 export const windowsTrustedPrincipalSids: readonly string[] = ['S-1-5-18', 'S-1-5-32-544'];
 
-/**
- * `FileSystemRights` flag names that grant the ability to change a file's contents, attributes, or
- * permissions. Deliberately more than a `Write` substring match: `AppendData` and
- * `DeleteSubdirectoriesAndFiles` do not contain the word "Write" but are still write-capable, and a
- * substring match would miss them.
- */
-const writeCapableRightNames: ReadonlySet<string> = new Set([
-  'WriteData', 'AppendData', 'WriteExtendedAttributes', 'WriteAttributes', 'Write', 'Delete',
-  'DeleteSubdirectoriesAndFiles', 'ChangePermissions', 'TakeOwnership', 'Modify', 'FullControl',
+/** Only known read-only rights prove the weaker no-write mask. Unknown/numeric flags deny. */
+const readOnlyRightNames: ReadonlySet<string> = new Set([
+  'ReadData', 'ListDirectory', 'ReadExtendedAttributes', 'ReadAttributes', 'ReadPermissions',
+  'Read', 'ReadAndExecute', 'ExecuteFile', 'Traverse', 'Synchronize',
 ]);
 
-function grantsWriteCapableAccess(rule: WindowsAccessRule): boolean {
+function grantsOnlyReadAccess(rule: WindowsAccessRule): boolean {
   return rule.fileSystemRights.split(',').map((name) => name.trim())
-    .some((name) => writeCapableRightNames.has(name));
+    .every((name) => readOnlyRightNames.has(name));
 }
 
 export interface WindowsFileTrustPolicyOptions {
@@ -109,7 +104,7 @@ export function createWindowsFileTrustPolicy(options: WindowsFileTrustPolicyOpti
     return acl.accessRules
       .filter((rule) => rule.accessControlType === 'Allow')
       .filter((rule) => !allowedSids.has(rule.identitySid))
-      .every((rule) => (mask === 0o022 ? !grantsWriteCapableAccess(rule) : false));
+      .every((rule) => (mask === 0o022 ? grantsOnlyReadAccess(rule) : false));
   }
 
   function isNotSharedByHardLink(stat: NodeJsStats): boolean {

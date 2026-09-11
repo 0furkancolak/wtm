@@ -11,6 +11,7 @@ import {
   type GitWorktreeRecord,
 } from '../../../core/src/index';
 import { DaemonClient } from '../../../cli/src/client';
+import { fixtureIpcAddress } from '../../../testkit/src/ipc-address';
 import { WtmDaemon } from '../main';
 import type { ReconcileSignal } from '../reconciler-queue';
 
@@ -217,7 +218,7 @@ async function explicitReconcileFailure() {
     const repositoryRoot = join(root, 'repo');
     const commonGitDir = join(repositoryRoot, '.git');
     await mkdir(commonGitDir, { recursive: true });
-    const socketPath = join(root, 'wtmd.sock');
+    const socketPath = fixtureIpcAddress(root);
     const store = new SQLiteStateStore(join(root, 'state.db'));
     try {
       const workspace = store.upsertWorkspace({ name: 'failure', root, scope: 'local', configPath: null });
@@ -296,7 +297,7 @@ async function watchErrorMissingRoot() {
   return await withDirectory('wtm-watch-missing-', async (root) => {
     const workspaceRoot = join(root, 'workspace');
     await mkdir(workspaceRoot);
-    const socketPath = join(root, 'wtmd.sock');
+    const socketPath = fixtureIpcAddress(root);
     const store = new SQLiteStateStore(join(root, 'state.db'));
     try {
       store.upsertWorkspace({ name: 'missing', root: workspaceRoot, scope: 'local', configPath: null });
@@ -458,7 +459,7 @@ async function rawWorktree() {
       const detected = new Promise<void>((resolve) => { resolveDetected = resolve; });
       const daemon = new WtmDaemon({
         stateStore: store,
-        socketPath: join(root, 'wtmd.sock'),
+        socketPath: fixtureIpcAddress(root),
         onReconciled: () => {
           if (store.listWorktrees(repository.id).some(({ path }) => path === outsideWorktree)) resolveDetected();
         },

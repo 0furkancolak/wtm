@@ -12,6 +12,7 @@ const provenance = new Map<string, Provenance>([
   ['tasks.test.run', { source: '/projects/demo/wtm.toml', line: 44 }],
   ['resources.env.path', { source: '/projects/demo/wtm.toml', line: 50 }],
   ['git.allowed_remote_refs', { source: '/projects/demo/wtm.toml', line: 60 }],
+  ['safety.untracked_symlinks', { source: '/projects/demo/wtm.toml', line: 63 }],
 ]);
 
 const config: WtmConfig = {
@@ -24,6 +25,7 @@ const config: WtmConfig = {
   },
   resources: { env: { path: '.env', policy: 'symlink' } },
   git: { allowed_remote_refs: ['refs/remotes/upstream/*'] },
+  safety: { untracked_symlinks: 'block' },
 };
 
 function runtime(): WorktreeRuntime {
@@ -66,6 +68,11 @@ function explain(environment: Record<string, string> = { PORT: '4000', WTM_ID: '
 }
 
 describe('explained decisions', () => {
+  it('attributes the configured symlink policy to its winning source', () => {
+    expect(explain().find(({ key }) => key === 'safety.untracked_symlinks')).toMatchObject({
+      kind: 'config', value: 'block', provenance: { source: '/projects/demo/wtm.toml', line: 63 },
+    });
+  });
   it('names the file and line a configuration value came from', () => {
     const decision = explain().find(({ key }) => key === 'ports.range');
 

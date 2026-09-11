@@ -2,43 +2,22 @@
 
 ## High-level model
 
-```text
-              macOS │ Linux   (one PlatformRuntime, selected at startup)
-                              │
-             launchd │ systemd --user
-                              │
-                             wtmd
-                              │
-             ┌────────────────┼─────────────────┐
-             │                │                 │
-          fs.watch           Git             SQLite
-      (FSEvents/inotify)  porcelain state      state
-             │                │                 │
-             └────────────────┼─────────────────┘
-                              │
-                         Reconciler
-                              │
-                        Context Resolver
-                              │
-                       Configuration Graph
-                              │
-                         Adapter Graph
-                              │
-                         Resource Plan
-                              │
-                  ┌───────────┼────────────┐
-                  │           │            │
-                env        endpoints     storage
-                  │           │            │
-               tasks       processes    runtime
-                  └───────────┼────────────┘
-                              │
-                          Core Apply
-                              │
-                            State
-
-      wtm CLI  ───────── Unix domain socket ───────── wtmd
+```mermaid
+flowchart TD
+    CLI[WTM CLI] --> IPC[Platform IPC]
+    IPC --> Daemon[Daemon and reconciler]
+    Platform[Selected platform capabilities] --> IPC
+    Platform --> Daemon
+    Daemon --> Core[Context, config and resource plans]
+    Core --> State[SQLite state]
+    Daemon --> State
+    Adapters[Adapters] --> Core
 ```
+
+The platform is selected once at startup. macOS uses launchd and Unix sockets; Linux uses
+the systemd user manager and Unix sockets. Windows has an experimental Scheduled Task and
+named-pipe backend. Backend implementation, native acceptance and release distribution are
+separate milestones; see [support status](../SUPPORT.md).
 
 ## Packages
 
@@ -47,6 +26,7 @@ The source repository should use a small Bun workspace with explicit package bou
 ```text
 packages/
 ├── protocol/        # shared types, JSON schemas, error codes
+├── platform/        # paths, process identity, IPC, file trust, service backends
 ├── core/            # config, Git model, planning, analysis, ownership
 ├── adapters/        # built-in adapter implementations
 ├── daemon/          # watcher, IPC server, service lifecycle, supervisor
@@ -77,7 +57,26 @@ The core owns:
 - safe deletion policy;
 - state transitions.
 
-Core modules do not directly perform UI rendering and are not coupled to any one operating system: everything platform-specific lives behind `@wtm/platform`, and a structural test fails if a platform-specific import, literal or spawned command re-enters `core` or `protocol`.
+Core modules do not directly perform UI rendering and are not coupled to any one operating system. Composition roots select `@wtm/platform` capabilities and inject the required structural interfaces into core; core does not import that package. A structural test rejects platform-specific imports, literals and spawned commands in `core` or `protocol`, including their tests.
+
+## Platform capabilities
+
+`PlatformRuntime` exposes plain functional ports, with no platform inheritance hierarchy:
+
+| Port | Responsibility |
+| --- | --- |
+| `paths` | Data, config, log, service and IPC roots |
+| `socket` | Address limits and bound-address derivation |
+| `ipc` | Safe server publication and cleanup for Unix sockets or named pipes |
+| `process` | Process identity, presence and group/tree signaling |
+| `fileTrust` | Current-user ownership, access policy and hard-link checks |
+| `service` | Service definition, manager commands and status interpretation |
+
+Filesystem analysis can also receive a bounded mount-boundary reader from the composition
+root. Linux supplies mount-table evidence so reclaimable-byte estimates exclude same-device
+bind mounts. Core interprets that evidence without reading a platform mount table itself.
+Other platforms retain their existing device and symlink boundaries; this Linux capability
+does not establish same-device mount exclusion on every operating system.
 
 ## Daemon responsibilities
 
@@ -85,17 +84,80 @@ The daemon owns:
 
 - event-driven filesystem watching;
 - scheduling reconciliations;
-- the Unix socket server;
+- the platform IPC server;
 - persistent managed-process supervision;
 - log redirection/rotation;
-- service installation state (launchd or the systemd user manager);
+- service installation state (launchd, the systemd user manager or Scheduled Tasks);
 - background cleanup retries.
 
 The daemon never interprets a framework-specific lockfile itself; it calls the core/adapter layer.
 
+## Shared finite-task queue
+
+`wtm run <task> --enqueue` sends a configured finite task to the existing daemon. SQLite commits
+the job before the CLI receives its identifier. A transaction claims the FIFO head and its
+concurrency slot together; the default is one heavy task across every registered repository in
+this state database. Jobs in the same worktree never hold slots together. A blocked FIFO head
+deliberately holds back later jobs. Ordinary foreground `run` and background `start` retain
+their separate execution paths.
+
+Read-only waiting diagnostics use the same capacity/FIFO/worktree decision as atomic claims.
+The scheduler reports `concurrency`, `worktree_busy`, `fifo`, `memory_budget`, or `dispatch_pending`; querying
+does not reserve capacity. Terminal finalization rereads the durable stop reason inside its
+SQLite transaction so cancellation accepted during asynchronous source validation cannot
+be overwritten by an earlier success decision.
+
+The queue uses the existing process anchor, managed-process store and log safety rules. The
+job is bound to its process before the anchor receives GO. Task exit-code/signal evidence is
+written by the anchor, including timeout information when the daemon is unavailable. Recovery
+never retries a command with an uncertain outcome. A job keeps its slot until the complete
+owned process group or tree is confirmed absent; neither a STOPPED label nor a cancellation request alone
+proves that condition. Destructive repository leases and queued/running jobs exclude one
+another in the same database transaction.
+
+Final outcome selection follows owned-process absence and supervisor stop confirmation, then
+a fresh completion read. An unreadable or invalid completion remains uncertain across polls
+until an authenticated non-null record is read. Observed anchor success cannot override that
+uncertainty. Once the group is absent, the job can release its slot as `INTERRUPTED` with
+`COMPLETION_UNREADABLE`; cancellation and timeout retain their existing precedence. Recovery
+does not replay this terminal job.
+
+Queue state binds to a machine/user identity before managed process recovery. Subsequent use
+of that database by another host or user is rejected; machines with a shared HOME must use
+separate, host-local state. Legacy unscoped process records are adopted once under the existing
+host-local-state assumption; migration cannot establish which host originally created them.
+Cloned operating system images must have distinct machine identities. The queue scope is an
+application-specific HMAC of these inputs; raw machine/user identifiers are not published:
+
+| Platform | Machine identity | User identity | Reference |
+| --- | --- | --- | --- |
+| Linux | machine-id | UID | [systemd machine-id](https://www.freedesktop.org/software/systemd/man/249/machine-id.html) |
+| macOS | IOPlatformUUID | UID | [Apple platform UUID key](https://developer.apple.com/documentation/iokit/kioplatformuuidkey) |
+| Windows | SMBIOS system UUID | SID | [Microsoft system product UUID](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-computersystemproduct) |
+
+Optional global memory policy combines a task's positive `memory_estimate_mib`, a configured
+budget, headroom reserved for other applications and an available-memory sample. The SQLite
+claim reserves the full estimate alongside the concurrency slot and includes every held
+reservation, even during uncertain cleanup. Unknown available-memory evidence defers admission. A legacy
+held job with no estimate blocks new memory-aware admission until its cleanup is proved.
+Task-specific `queue_env` can limit the task's own worker parallelism.
+
+This remains cooperative estimated admission, not an operating-system memory quota. Distinct
+state directories and direct terminal commands operate outside the shared limits; task workers
+must fit the declared estimate. Available memory is sampled on admission/dispatch and explicit
+status reads; no periodic host memory scanner is added. The queue wakes for admission/completion and checks
+outstanding jobs at bounded intervals; an empty queue has no recurring scheduler timer.
+
+Source evidence covers HEAD, index and Git-visible tracked/untracked content, including file
+identity/time metadata. It is checked before launch, on completion and on result lookup. It
+does not freeze sources or measure ignored/external dependencies. File, byte and elapsed-time
+budgets fail closed; symlinks/submodules are refused. See the
+[measurement procedure](development/2026-09-09-heavy-job-memory-measurement.md) for the separate
+native two-session RAM experiment still required before claiming a saving.
+
 ## CLI responsibilities
 
-The CLI is a thin client. For commands requiring daemon state it connects to the Unix socket. If the daemon is unavailable, read-only diagnostic commands may run a local reconciliation.
+The CLI is a thin client. For commands requiring daemon state it connects through the selected platform's IPC transport. If the daemon is unavailable, read-only diagnostic commands may run a local reconciliation.
 
 The CLI owns:
 
@@ -172,7 +234,7 @@ worktree:<persistent-id>
 Owned resources can include:
 
 - endpoint/port leases;
-- managed process groups;
+- managed process groups or trees;
 - Docker project namespace;
 - temporary files;
 - generated runtime env;
@@ -183,7 +245,7 @@ This ownership is the key to deterministic cleanup.
 
 ## Why TypeScript first
 
-Node's native filesystem watcher uses FSEvents for directory watches on macOS and inotify on Linux, so the V1 watcher can be implemented without a Rust/Swift helper on either. TypeScript also lowers contribution cost and keeps protocol/CLI types shared.
+Node's native filesystem watcher provides the platform filesystem notifications; WTM keeps one structural watcher without a resident Rust/Swift helper. TypeScript also lowers contribution cost and keeps protocol/CLI types shared.
 
 Rust is intentionally reserved for a measured performance problem, not used preemptively. A native helper can later replace a narrow interface such as watcher/process inspection without changing the core contract.
 
@@ -192,7 +254,7 @@ Rust is intentionally reserved for a measured performance problem, not used pree
 - external adapter crash: adapter call fails; daemon remains alive;
 - malformed adapter JSON: rejected by protocol schema;
 - Git command failure: repository becomes degraded, other repositories continue;
-- daemon crash: the service manager restarts it — launchd's `KeepAlive`, systemd's `Restart=on-failure` — and startup reconciliation repairs state;
+- daemon crash: launchd's `KeepAlive` and systemd's `Restart=on-failure` provide restart policy; startup reconciliation repairs state whenever the daemon starts. Windows Scheduled Task recovery still needs native acceptance evidence;
 - stale process record: identity verification prevents killing unrelated PIDs;
 - unavailable Docker: cleanup remains pending and retries later;
 - invalid config: affected workspace is degraded; other registered workspaces remain operational.

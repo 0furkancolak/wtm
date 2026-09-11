@@ -2,9 +2,10 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { publishedReleaseTargets } from './artifact-targets';
 
 /** A release publishes exactly these archives; anything else is an unverified artifact. */
-export const releaseArchiveNames = ['wtm-darwin-arm64.tar.gz', 'wtm-darwin-x64.tar.gz'] as const;
+export const releaseArchiveNames: readonly string[] = publishedReleaseTargets.map(({ archiveName }) => archiveName);
 
 /** Ad-hoc and unsigned executables are tolerable for prereleases only. */
 export const releaseSigningStatuses = ['signed', 'adhoc', 'unsigned'] as const;
@@ -22,11 +23,11 @@ export type ReleaseNotarizationStatus = (typeof releaseNotarizationStatuses)[num
 
 /** The one archive a single-architecture build produces. */
 export function releaseArchiveFor(arch: string): string {
-  const name = `wtm-darwin-${arch}.tar.gz`;
-  if (!(releaseArchiveNames as readonly string[]).includes(name)) {
+  const target = publishedReleaseTargets.find((candidate) => candidate.arch === arch);
+  if (target === undefined) {
     throw new Error(`No release archive is defined for architecture ${arch}`);
   }
-  return name;
+  return target.archiveName;
 }
 
 export interface ReleaseVersion {
@@ -114,6 +115,10 @@ export function verifyReleaseArtifacts(request: ReleaseVerification): ReleaseMan
   verifyPerformance(release, request.performance);
 
   const expected = request.archives ?? releaseArchiveNames;
+  if (!Array.isArray(expected) || expected.length === 0 || new Set(expected).size !== expected.length
+    || expected.some((name) => !(releaseArchiveNames as readonly string[]).includes(name))) {
+    throw new Error('Release archive selection must be a non-empty, unique subset of the published release targets');
+  }
   const listed = parseChecksums(directory);
   for (const name of listed.keys()) {
     if (!expected.includes(name)) throw new Error(`SHA256SUMS lists unexpected entry ${name}`);
@@ -233,11 +238,22 @@ function verifyNotarization(release: ReleaseVersion, notarization: string | unde
  * release -- the one `npm install <name>` actually hands out -- is refused.
  */
 function verifyPerformance(release: ReleaseVersion, performance: readonly ReleasePerformanceReport[] | undefined): void {
-  if (performance === undefined || performance.length === 0) {
+  if (performance === undefined) {
     throw new Error('Release verification requires performance results: run bun run test:perf first');
   }
-  const blockers = performance.reduce((total, report) => total + report.blockers, 0);
-  if (!release.prerelease && blockers > 0) {
+  if (!Array.isArray(performance)) {
+    throw new Error('Release performance results must be an array with non-negative safe integers');
+  }
+  if (performance.length === 0) {
+    throw new Error('Release verification requires performance results: run bun run test:perf first');
+  }
+  for (const report of performance) {
+    if (!isPerformanceReport(report)) {
+      throw new Error('Release performance counters must be non-negative safe integers');
+    }
+  }
+  const blockers = performance.reduce((total, report) => total + BigInt(report.blockers), 0n);
+  if (!release.prerelease && blockers > 0n) {
     throw new Error(
       `Stable release ${release.tag} has ${String(blockers)} performance blocker(s); see the uploaded performance artifacts for detail`,
     );
@@ -270,10 +286,10 @@ function readPerformanceResults(value: string | undefined): readonly ReleasePerf
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new Error('WTM_RELEASE_PERFORMANCE must be a JSON array of {"blockers","warnings"} performance results');
+    throw new Error('WTM_RELEASE_PERFORMANCE must be a JSON array of {"blockers","warnings"} performance results with non-negative safe integers');
   }
   if (!Array.isArray(parsed) || parsed.some((report) => !isPerformanceReport(report))) {
-    throw new Error('WTM_RELEASE_PERFORMANCE must be a JSON array of {"blockers","warnings"} performance results');
+    throw new Error('WTM_RELEASE_PERFORMANCE must be a JSON array of {"blockers","warnings"} performance results with non-negative safe integers');
   }
   return parsed as readonly ReleasePerformanceReport[];
 }
@@ -281,7 +297,11 @@ function readPerformanceResults(value: string | undefined): readonly ReleasePerf
 function isPerformanceReport(value: unknown): boolean {
   if (typeof value !== 'object' || value === null) return false;
   const report = value as Record<string, unknown>;
-  return typeof report['blockers'] === 'number' && typeof report['warnings'] === 'number';
+  return isPerformanceCounter(report['blockers']) && isPerformanceCounter(report['warnings']);
+}
+
+function isPerformanceCounter(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 if (import.meta.main) {

@@ -13,6 +13,7 @@ import {
   type JsonEnvelope,
 } from '@wtm/protocol';
 import { DaemonClient } from '../client';
+import { fixtureIpcAddress } from '../../../testkit/src/ipc-address';
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -37,7 +38,7 @@ async function listenRaw(
   onRequest: (socket: Socket, request: IpcRequest) => void,
 ): Promise<{ path: string; server: Server }> {
   const directory = await mkdtemp(join(tmpdir(), 'wtm-client-'));
-  const path = join(directory, 'server.sock');
+  const path = fixtureIpcAddress(directory, 'server.sock');
   const server = createServer((socket) => {
     const decoder = new FrameDecoder();
     socket.on('data', (chunk) => {

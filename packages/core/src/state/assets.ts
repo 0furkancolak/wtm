@@ -16,6 +16,8 @@ export const migrationFileNames = [
   '009-lifecycle-events.sql',
   '010-repository-operation-leases.sql',
   '011-repository-operation-lease-host-identity.sql',
+  '012-heavy-jobs.sql',
+  '013-heavy-job-memory.sql',
 ] as const;
 
 export const filesystemMigrationAssets: MigrationAssetProvider = {

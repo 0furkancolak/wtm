@@ -26,21 +26,79 @@ binaries are Developer ID signed and notarized.
 
 ### Added
 
-- **Linux x64 support, proven by CI rather than asserted.** An `ubuntu-latest` x64 job runs `lint`,
-  `typecheck`, the full suite, `test:e2e`, `build`, `package:verify` and `binary:verify` — the same
-  gates as the two macOS legs, in the same order, with nothing skipped, weakened or made
-  platform-conditional to get there — and it is green. It builds the standalone executable as a
+- Local Linux x64 `.tar.gz` construction with bounded ELF architecture inspection, exact archive
+  members, executable permissions and SHA-256 output. The published release target set remains
+  Darwin arm64/x64. Header inspection refuses FIFO/device inputs without waiting for a writer.
+- Configurable `safety.untracked_symlinks = "ignore" | "review" | "block"`, resolved from the
+  selected worktree's configuration. Symlink targets are not followed, inspection failures stop
+  analysis, and `GIT_UNTRACKED_SYMLINKS` is distinct from ignored/untracked content. This policy
+  does not force Git removal or unlink files.
+- Windows anchor log authorization through bounded asynchronous SID/ACL inspection, with fresh
+  evidence for mutations, empty-file authorization before writes and retained child ownership
+  through cancellation. Windows remains experimental pending native acceptance.
+- Linux mount-boundary evidence in cleanup estimates, including same-device bind mounts.
+  Missing or changing evidence produces an unknown estimate rather than a removal permission.
+- Failed UDP probes release their socket before the next probe. Log recovery tolerates bounded
+  rename/reopen gaps while preserving ownership, generation and exact process identity checks.
+- Release gates reject malformed performance counters and empty, duplicate or unpublished
+  archive selections. Valid prerelease performance exceptions remain explicit.
+- Batched endpoint bind probing: one bounded helper per allocation for Node and standalone
+  installations, preserving preferred ports, stable leases and transactional collision checks.
+- Opt-in estimated memory admission for queued tasks: global `jobs.memory` budget/headroom,
+  per-task `memory_estimate_mib` and `queue_env` worker settings. Migration 013 preserves
+  estimates and legacy unknowns; held slots retain reservations through cancellation/restart.
+  Atomic FIFO claims consider available memory, with `memory_budget` diagnostics and explicit
+  missing/unfit estimate errors. This is not an OS-enforced RAM cap or measured RAM savings.
+- Bounded HTTP readiness for `start`/`restart --wait --timeout`: strict healthcheck config,
+  process/completion evidence, JSON observations and connection-scoped IPC cancellation.
+  Normal start reports NOT_CHECKED. Timeout/disconnect ends observation without stopping
+  the managed service. Real HTTP/TCP integration and Linux x64 native lifecycle tests pass;
+  independent observer review is complete; other native platform gates remain open.
+- Bounded metadata-only disk estimates in cleanup ranking, after existing safety/activity
+  tiers. Partial/unknown scans are distinct from zero, and estimates never authorize removal.
+- Queue records expose current `waitingReason` in list/status/result/cancel: concurrency,
+  same-worktree occupancy, FIFO position, memory admission or pending dispatch. This observation
+  shares the claim policy and does not reserve a slot.
+- Persistent FIFO heavy-task queue on the existing daemon and SQLite state. `wtm run <task>
+  --enqueue` returns a durable job ID; `wtm jobs list/status/logs/result/cancel` manages it.
+  Tasks opt in with `queue = true` and a finite timeout. Daemon global
+  `[jobs].max_concurrent_heavy` defaults to one across repositories in the same host/user/state
+  scope; this is concurrency admission, not a hard RAM limit. Foreground `run` and background
+  `start` retain their existing roles.
+- Atomic queue claims, idempotency keys, repository lease exclusion, bounded logs/history,
+  durable completion evidence and conservative restart reconciliation. Unconfirmed process
+  cleanup holds its slot. Source/config fingerprints prevent stale results being reported as
+  current validation; ignored/external inputs and filesystem snapshot races remain outside
+  that evidence. Agent Skill documents submit/continue/verify and bounded status checks.
+- State migration 012 binds future recovery to a private digest of the host and user identity.
+  First upgrade adopts legacy state under the existing host-local assumption; legacy host
+  provenance cannot be reconstructed. Native queue/process verification remains required;
+  the current development container refuses Unix socket listeners.
+- Separate ignored-file counts, paths, and classification in worktree analysis, with
+  `GIT_IGNORED_CONTENT` (exit 3). Consumers aggregating local-only content must now read both
+  `untracked` and `ignored`. Runtime cleanup continues to defer only fully reclaimable content
+  and rechecks safety before removing the worktree. Invalid UTF-8 Git paths and filesystem
+  inspection errors fail closed instead of making local content appear absent.
+- CLI documentation checks cover command and option references in the README, CLI reference,
+  Agent Skill, and example Markdown files. Fixed the README installation command to
+  `wtm skill install`.
+
+- **Linux x64 native validation.** An `ubuntu-latest` x64 job runs `lint`, `typecheck`, the full
+  suite, `test:e2e`, `build`, `package:verify` and `binary:verify`. These gates passed for
+  `75a8626` in [run 34457543774](https://github.com/0furkancolak/wtm/actions/runs/34457543774),
+  with 1627 full-suite passes and 15 existing skips. Later changes require their own native
+  evidence; the current local full/e2e/performance gates are not green. The job builds a
   real ELF and exercises it against a real repository: the daemon serves over its socket end to
   end, `wtm start` launches and supervises a managed task through the process anchor, and a trusted
   external adapter runs through its guarded child.
 
-  `package.json` now declares `"os": ["darwin", "linux"]`, with the description and keywords to
-  match, and a test pins that field to the platforms CI actually validates so the manifest cannot
-  drift ahead of the evidence.
+  The manifest now declares `"os": ["darwin", "linux", "win32"]`. Windows has a configured
+  native CI job but remains experimental with failing gates; manifest eligibility is not native
+  acceptance. See SUPPORT.md for the current evidence and distribution boundaries.
 
   Four things this deliberately does **not** claim. **Nothing is released for Linux** — the release
-  workflow, the artifact names, the signing rule and the Homebrew formula are all still macOS-only,
-  so a Linux install means building from source or using the npm package. **Not arm64**: there is
+  workflow, required published artifacts, signing rule and Homebrew formula are still macOS-only,
+  so a verified Linux installation currently starts from source; npm publication is unverified. **Not arm64**: there is
   no Linux arm64 runner and no Linux arm64 build. **Not musl or Alpine**: `ubuntu-latest` is glibc.
   And **the systemd lifecycle is not integration-tested** — a CI runner has no logind user session,
   so install → enable → start cannot be exercised there, and `HOME` isolation cannot manufacture
@@ -70,13 +128,13 @@ binaries are Developer ID signed and notarized.
   way the launchd backend has always been tested against a fake `launchctl`; the CI job above is
   what runs it on a kernel.
 
-  `docs/05-daemon-and-macos-runtime.md` — whose filename is now historical — documents both
-  backends.
+  `docs/05-daemon-and-macos-runtime.md` — whose filename is now historical — documents the
+  macOS/Linux backends and the experimental Windows backend.
 - `wtm doctor` reports a `platform` check: the selected runtime, the service manager it will use,
   the resolved data, log and socket roots, and the socket address limit in force. It is `pass` or
   `error`, and `error` only when WTM has no backend for the host.
-- `WTM_PLATFORM_UNSUPPORTED` (exit 2). Starting WTM on a platform it has no backend for — today,
-  Windows — is refused with a coded error naming the increment that will add it, rather than with
+- `WTM_PLATFORM_UNSUPPORTED` (exit 2). Starting WTM on a platform it has no backend for
+  is refused with a coded error, rather than with
   the message "WTM V1 daemon requires macOS", which was becoming false.
 - `wtm daemon status` and `install` report `definitionPath`, the platform-neutral name for the
   file WTM published. `plistPath` is retained beside it on macOS with the same value and marked
@@ -87,7 +145,7 @@ binaries are Developer ID signed and notarized.
   envelope carries a `cleanup` block — `stoppedProcesses`, `releasedEndpoints`, `collectedResources`
   and `retainedResources` with the reason each survived.
 - Cross-process destructive-operation locking. A `repository_operation_leases` table (migration
-  `010`) serializes `remove`, `gc` and `repair` per repository across separate CLI processes and the
+  `010`) serializes `remove` and `gc` per repository across separate CLI processes and the
   daemon, which a process-local mutex never could. A conflicting operation is refused with the new
   `WTM_OPERATION_CONFLICT` code (exit 3) naming the holding PID and when it took the lease.
 - `wtm remove <selector> --resume`. Each stage of a removal is journalled on the lease, so a removal
@@ -120,6 +178,26 @@ binaries are Developer ID signed and notarized.
 
 ### Fixed
 
+- Correct the performance report entrypoint import so measurement can start; ordinary tests
+  now exercise its actual JSON output and blocker exit code using fixture measurements.
+- Preserve the canonical pathname during private-directory opened-handle validation so Windows
+  ACL ownership checks do not receive an empty path. Git CLI fixtures resolve Git from PATH
+  and use a portable Node foreground task, preserving their existing assertions.
+- Job finalization honors cancellation committed during asynchronous source validation,
+  retaining numeric exit evidence without reporting the cancelled job as successful.
+  Authenticated timeout precedence and terminal result immutability are preserved.
+- Durable task completion preserves null exit codes and signals. The supervising anchor's
+  separate exit status no longer replaces a signal-ended task's missing numeric code or
+  invents an exit code for a task refused before launch.
+- Resource guards explicitly close inode pins after GC, including failures and one-shot
+  authorization. Closing drains in-flight checks and rejects later use without weakening
+  path identity checks; callers of `createResourceGuard` must close their guard in `finally`.
+- Native queue fixtures execute fingerprinted script files instead of JavaScript embedded in
+  template argv. SQLite upgrade and ignored-removal assertions match migration 012 and
+  `GIT_IGNORED_CONTENT`, retaining exact safety checks.
+- Managed completion and generation reads verify the regular path before and after opening,
+  and compare it with the held descriptor. Symlinks and swapped files are refused even when
+  the platform's `O_NOFOLLOW` does not prevent following a link.
 - **The file-identity check that guards every destructive operation did not hold on Linux.** WTM
   answers "is the object at this path still the object I inspected?" by comparing `(dev, ino, uid)`,
   in fourteen files: the destructive-operation core behind `wtm remove`, the resource sandbox, the

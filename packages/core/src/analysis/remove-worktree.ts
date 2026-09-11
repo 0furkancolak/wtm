@@ -333,7 +333,7 @@ async function runRemovalLifecycle(
 /**
  * The blockers the cleanup stage is expected to resolve, and only those.
  *
- * The coordinator is consulted only when an untracked blocker is actually standing in the way:
+ * The coordinator is consulted only when an untracked or ignored blocker is actually standing in the way:
  * no other blocker is ever deferrable, so asking otherwise would spend a runtime resolution on a
  * removal that is going to refuse anyway. Everything here fails closed — an unrecognised context,
  * a path that does not resolve inside a reclaimable one, a single real file named alongside the
@@ -345,7 +345,8 @@ async function deferrableBlockers(
   coordinator: RemovalRuntimeCoordinator | undefined,
 ): Promise<readonly WtmError[]> {
   if (coordinator === undefined) return [];
-  const candidates = analysis.safety.blockers.filter((blocker) => blocker.code === 'GIT_UNTRACKED');
+  const candidates = analysis.safety.blockers.filter((blocker) =>
+    blocker.code === 'GIT_UNTRACKED' || blocker.code === 'GIT_IGNORED_CONTENT');
   if (candidates.length === 0) return [];
   const reclaimable = await coordinator.reclaimablePaths(removalSubject(context, analysis));
   if (reclaimable.length === 0) return [];
@@ -357,7 +358,7 @@ async function deferrableBlockers(
  *
  * The paths come from the analysis worktree-relative, so they are resolved against the worktree
  * Git reported rather than against the caller's spelling of it. A blocker whose context does not
- * carry a usable `paths` array is not deferrable: an untracked blocker WTM cannot read the extent
+ * carry a usable `paths` array is not deferrable: a content blocker WTM cannot read the extent
  * of is one it cannot prove is harmless.
  */
 function namesOnlyReclaimablePaths(

@@ -117,12 +117,17 @@ export function windowsPlatformPaths({ home, env }: PlatformPathsInput): Platfor
     // derives from — rather than shared globally, which would let two accounts on the same
     // machine collide on one pipe name (D2 is where this was found; D1 shipped `dataRoot` here
     // unchanged, untested against a real `listen()` call).
-    socketRoot: win32Join('\\\\.\\pipe', `wtm-${createHash('sha256').update(dataRoot).digest('hex')}`),
+    socketRoot: windowsNamedPipeRootFor(dataRoot),
     // The Scheduled Task's staged XML (D6) — entirely WTM-owned, unlike systemd's shared
     // `~/.config/systemd/user`, so it lives under `dataRoot` rather than beside a
     // platform-provided service directory Windows has no equivalent of.
     serviceRoot: win32Join(dataRoot, 'service'),
   };
+}
+
+/** The same bounded pipe namespace for default and explicitly isolated state roots. */
+export function windowsNamedPipeRootFor(dataRoot: string): string {
+  return win32Join('\\\\.\\pipe', `wtm-${createHash('sha256').update(dataRoot).digest('hex')}`);
 }
 
 function win32AbsoluteOrNull(value: string | undefined): string | null {

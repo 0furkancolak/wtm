@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
-import { runScenario } from './packages/testkit/src/scenario-child';
+import { runScenario } from '../packages/testkit/src/scenario-child';
 
 interface Measurement { status: 'pass' | 'warning' | 'blocker' }
 

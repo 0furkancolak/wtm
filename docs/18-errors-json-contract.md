@@ -45,6 +45,49 @@ A remediation command is a suggestion, not an automatically approved action.
 
 ## Stable V1 error families
 
+### Persistent jobs
+
+```text
+WTM_JOB_NOT_FOUND
+WTM_JOB_QUEUE_FULL
+WTM_JOB_IDEMPOTENCY_CONFLICT
+WTM_JOB_NOT_QUEUEABLE
+WTM_JOB_NOT_COMPLETE
+WTM_JOB_UNSUCCESSFUL
+WTM_JOB_SOURCE_CHANGED
+WTM_JOB_MEMORY_ESTIMATE_REQUIRED
+WTM_JOB_MEMORY_BUDGET_EXCEEDED
+```
+
+Job commands retain the V1 JSON envelope. A successful enqueue is durable acceptance, not a
+successful task result. The acceptance includes `jobId`, `state`, `accepted`, `idempotencyKey`
+and `reused`. Queries preserve the recorded task exit code independently of the CLI exit code.
+
+| Error | CLI exit | Meaning |
+| --- | --- | --- |
+| `WTM_JOB_NOT_FOUND` | 2 | No visible retained job has that identifier in this queue scope. |
+| `WTM_JOB_NOT_QUEUEABLE` | 2 | The task is not eligible, local machine/user identity is unavailable, or state belongs to a different host/user. |
+| `WTM_JOB_MEMORY_ESTIMATE_REQUIRED` | 2 | Enabled memory admission requires a positive task estimate. |
+| `WTM_JOB_MEMORY_BUDGET_EXCEEDED` | 2 | The estimate cannot fit the configured or known host capacity after headroom. |
+| `WTM_JOB_QUEUE_FULL` | 3 | The bounded queue/history cannot accept another job. |
+| `WTM_JOB_IDEMPOTENCY_CONFLICT` | 3 | The key already belongs to a different request; no second job ran. |
+| `WTM_JOB_SOURCE_CHANGED` | 3 | The job's source/configuration evidence changed or cannot be verified. |
+| `WTM_JOB_NOT_COMPLETE` | 1 | The job has not reached a completed, released state. |
+| `WTM_JOB_UNSUCCESSFUL` | 1 | The completed task failed, was interrupted/cancelled, or timed out. |
+
+`jobs result` preserves its data on refusal. Agents must read the terminal state, `exitCode`,
+slot ownership and `sourceValidity`; an accepted/queued job is never evidence that tests passed.
+`UNCHANGED` describes the documented Git-visible input snapshot, not ignored/external inputs
+or an immutable source sandbox. Metadata carries command fingerprints, not resolved environment
+values or secret-bearing argv. Task output may itself contain secrets, as with ordinary logs.
+
+Temporary shortage or unknown memory evidence leaves the job queued with `memory_budget`
+when earlier concurrency/FIFO/worktree gates permit considering it. Status remains a successful
+lookup. If changed global policy makes an already queued job permanently unfit, claim records
+`FAILED` and its memory error without a process, startedAt or invented exit code. `jobs result`
+still applies the normal terminal/source/result checks. Legacy jobs retain null estimates;
+enabling memory admission never invents a reservation amount or clears their held slots.
+
 ### Scope/config
 
 ```text
@@ -144,11 +187,26 @@ GIT_WORKTREE_LOCKED
 GIT_DIRTY_STAGED
 GIT_DIRTY_UNSTAGED
 GIT_UNTRACKED
+GIT_UNTRACKED_SYMLINKS
+GIT_IGNORED_CONTENT
 GIT_BRANCH_IN_USE
 GIT_UNMERGED
 GIT_HEAD_NOT_REMOTE_PERSISTED
 GIT_UPSTREAM_MISSING
 ```
+
+`GIT_UNTRACKED` identifies untracked paths; `GIT_IGNORED_CONTENT` identifies ignored files or
+directories reported by Git (including `.gitignore`, `info/exclude`, and global excludes).
+Both carry worktree-relative `context.paths` and `context.count`, and both map to exit code 3.
+`workingTree.counts.ignored` and `workingTree.paths.ignored` are separate from `untracked`;
+consumers that need all local-only content must inspect both groups. Ignored directories can be
+reported as one path ending in `/`; counts describe Git entries, not a recursive file count.
+
+`GIT_UNTRACKED_SYMLINKS` reports `context.policy`, worktree-relative `paths` and `count`.
+With `safety.untracked_symlinks = "block"` it is a non-deferrable removal blocker (exit 3).
+With `review` it appears in warnings; a successful analysis still exits 0 and reports
+`REVIEW` when no blocker exists. `ignore` is the default. These settings affect WTM's
+decision; the final unforced Git command may still reject an untracked symlink.
 
 ### Runtime
 
@@ -159,7 +217,16 @@ RUNTIME_TASK_NOT_RUNNING
 RUNTIME_PROCESS_IDENTITY_STALE
 RUNTIME_START_FAILED
 RUNTIME_STOP_FAILED
+RUNTIME_READINESS_TIMEOUT
+RUNTIME_READINESS_FAILED
+RUNTIME_READINESS_ABORTED
 ```
+
+The three readiness errors map to exit code 1. A timeout reports `TIMED_OUT`; cancellation
+reports `ABORTED`; a failed observation distinguishes `PROCESS_EXITED`, `PROCESS_CHANGED`,
+`IDENTITY_UNCERTAIN` and `EVIDENCE_UNAVAILABLE`. Start/restart responses preserve the process
+and observation in `data` even when `ok:false`. `READY` is the successful wait observation;
+`NOT_CHECKED` is a start without a probe. Neither timeout nor abort stops the managed task.
 
 ### Adapter
 

@@ -21,7 +21,7 @@ test('the production CLI wires persistent diagnostics and the foreground task ru
     expect(JSON.parse(readFileSync(reportPath, 'utf8'))).toEqual({
       registeredStatus: [0, true, 'production', true],
       uninitializedStatus: [2, false, 'WTM_NOT_INITIALIZED'],
-      foregroundRun: [0, true, ['/bin/echo', 'greeting'], 0],
+      foregroundRun: [0, true, ['node', '-e', 'console.log("greeting")'], 0],
       multiRepoRootResolve: [2, false, 'WTM_WORKSPACE_NOT_FOUND', true, false, false, ['api', 'web']],
       multiRepoRootRunWithoutRepositories: [2, false, 'WTM_WORKSPACE_NOT_FOUND', true],
       // `--global` scopes a read for the diagnostic commands but chooses a destination here.

@@ -12,8 +12,10 @@ import {
 import { createFakeFileTrust } from './file-trust-fixture';
 
 const roots: string[] = [];
+const guards: Array<Awaited<ReturnType<typeof createResourceGuard>>> = [];
 
 afterEach(async () => {
+  await Promise.all(guards.splice(0).map((guard) => guard.close()));
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
@@ -41,6 +43,7 @@ async function fixture(tracked: readonly string[] = []) {
     git,
     fileTrust,
   });
+  guards.push(guard);
   return { root, workspaceRoot, sandboxRoot, guard, fileTrust };
 }
 
@@ -112,6 +115,7 @@ describe('resource sandbox guard', () => {
       },
       fileTrust: createFakeFileTrust(),
     });
+    guards.push(guard);
     await expect(guard.authorize(join(sandboxRoot, 'missing[1].txt'), 'delete')).rejects.toMatchObject({
       code: 'RESOURCE_TRACKED_FILE_PROTECTED',
     });
@@ -138,6 +142,7 @@ describe('resource sandbox guard', () => {
       repositoryRoots: [workspaceRoot],
       fileTrust: createFakeFileTrust(),
     });
+    guards.push(guard);
     await expect(guard.authorize(join(sandboxRoot, 'vendor', 'missing', 'cache'), 'delete')).rejects.toMatchObject({
       code: 'RESOURCE_TRACKED_FILE_PROTECTED',
     });
@@ -153,6 +158,7 @@ describe('resource sandbox guard', () => {
       git: { async isTracked() { return tracked; } },
       fileTrust: createFakeFileTrust(),
     });
+    guards.push(guard);
     const token = await guard.authorize(join(sandboxRoot, 'candidate'), 'delete');
     tracked = true;
     await expect(guard.revalidate(token)).rejects.toMatchObject({ code: 'RESOURCE_TRACKED_FILE_PROTECTED' });

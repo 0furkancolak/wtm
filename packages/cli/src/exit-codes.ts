@@ -26,6 +26,10 @@ export function exitCodeForError(code: WtmErrorCode): number {
   // the protocol and documented as exiting 2 while this function still returned 1 for it.
   if (
     code === 'WTM_CONFIG_INVALID'
+    || code === 'WTM_JOB_NOT_QUEUEABLE'
+    || code === 'WTM_JOB_MEMORY_ESTIMATE_REQUIRED'
+    || code === 'WTM_JOB_MEMORY_BUDGET_EXCEEDED'
+    || code === 'WTM_JOB_NOT_FOUND'
     || code === 'WTM_WORKSPACE_NOT_FOUND'
     || code === 'WTM_NOT_INITIALIZED'
     || code === 'WTM_SOCKET_PATH_TOO_LONG'
@@ -44,10 +48,15 @@ export function exitCodeForError(code: WtmErrorCode): number {
   ) return 2;
   if (
     code === 'GIT_MAIN_WORKTREE'
+    || code === 'WTM_JOB_QUEUE_FULL'
+    || code === 'WTM_JOB_IDEMPOTENCY_CONFLICT'
+    || code === 'WTM_JOB_SOURCE_CHANGED'
     || code === 'GIT_WORKTREE_LOCKED'
     || code === 'GIT_DIRTY_STAGED'
     || code === 'GIT_DIRTY_UNSTAGED'
     || code === 'GIT_UNTRACKED'
+    || code === 'GIT_UNTRACKED_SYMLINKS'
+    || code === 'GIT_IGNORED_CONTENT'
     || code === 'GIT_UNMERGED'
     || code === 'GIT_HEAD_NOT_REMOTE_PERSISTED'
     // `wtm create`'s two refusals. Both are decided before Git writes anything, so nothing was

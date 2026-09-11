@@ -5,6 +5,7 @@ import { access } from 'node:fs/promises';
 import { constants, homedir, hostname } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
+import { readinessDurationMs } from '@wtm/protocol';
 import { exitCodeForError } from './exit-codes';
 import {
   DaemonSocketPathTooLongError,
@@ -30,6 +31,7 @@ import type {
   ManagedProcessRecord,
   ManagedProcessState,
   WorktreeAnalysis,
+  WorktreeContext,
   WorktreeRecord,
 } from '@wtm/core';
 import {
@@ -57,6 +59,7 @@ import {
 } from './diagnostics';
 import { renderEnvelope } from './output';
 import { runCreateCommand } from './commands/create';
+import { measureCleanupCandidates } from './commands/cleanup-estimates';
 import { runStartCommand } from './commands/start';
 import { runStopCommand } from './commands/stop';
 import { runRestartCommand } from './commands/restart';
@@ -81,6 +84,7 @@ import { createProductionRemovalCoordinator } from './removal-coordinator';
 import { toGitSafetyError } from './commands/git-error';
 import { runResolveCommand, toRuntimeCommandError } from './commands/resolve';
 import { runRunCommand } from './commands/run';
+import { registerJobCommands, runEnqueueCommand } from './commands/jobs';
 import {
   runProductionInitCommand,
   type ProductionInitCommandInput,
@@ -212,10 +216,23 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     renderRuntime(envelope, runtimeJson(program, options));
   });
 
-  const runTaskCommand = program.command('run <task>').description('Run a configured task in the foreground.');
+  const runTaskCommand = program.command('run <task>').description('Run a configured task in the foreground or enqueue a finite heavy task.');
   addJsonOption(runTaskCommand);
-  runTaskCommand.action(async (taskName: string, options: ScopeOptions) => {
-    renderRuntime(await runProductionRun({ cwd, taskName }), runtimeJson(program, options));
+  runTaskCommand.option('--enqueue', 'durably enqueue a configured finite task and return its job ID');
+  runTaskCommand.option('--idempotency-key <key>', 'reuse a request key after ambiguous acceptance; requires --enqueue');
+  runTaskCommand.action(async (taskName: string, options: ScopeOptions & { enqueue?: boolean; idempotencyKey?: string }) => {
+    if (options.idempotencyKey !== undefined && options.enqueue !== true) {
+      throw new InvalidArgumentError('--idempotency-key requires --enqueue');
+    }
+    const envelope = options.enqueue === true
+      ? await runEnqueueCommand({ cwd, taskName, ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }) }, dependencies.runtimeClient)
+      : await runProductionRun({ cwd, taskName });
+    renderRuntime(envelope, runtimeJson(program, options));
+  });
+
+  registerJobCommands(program, {
+    ...(dependencies.runtimeClient === undefined ? {} : { client: dependencies.runtimeClient }),
+    render: (envelope, json) => renderRuntime(envelope, json),
   });
 
   const analyze = program.command('analyze [selector]').description('Analyze worktree removal safety.');
@@ -305,9 +322,10 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   const humanNotice: CommandNotifier = (message) => stdout(`${message}\n`);
 
   const start = program.command('start <task>').description('Start a managed background task.');
+  addReadinessOptions(start);
   addJsonOption(start);
-  start.action(async (taskName: string, options: ScopeOptions) => {
-    renderRuntime(await runStartCommand({ cwd, taskName }, dependencies.runtimeClient), runtimeJson(program, options));
+  start.action(async (taskName: string, options: ScopeOptions & ReadinessOptions) => {
+    renderRuntime(await runStartCommand({ cwd, taskName, ...readinessArguments(options) }, dependencies.runtimeClient, dependencies.signal), runtimeJson(program, options));
   });
 
   const stop = program.command('stop [task]').description('Stop one or all managed tasks.');
@@ -317,9 +335,10 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   });
 
   const restart = program.command('restart <task>').description('Safely stop and restart a managed task.');
+  addReadinessOptions(restart);
   addJsonOption(restart);
-  restart.action(async (taskName: string, options: ScopeOptions) => {
-    renderRuntime(await runRestartCommand({ cwd, taskName }, dependencies.runtimeClient), runtimeJson(program, options));
+  restart.action(async (taskName: string, options: ScopeOptions & ReadinessOptions) => {
+    renderRuntime(await runRestartCommand({ cwd, taskName, ...readinessArguments(options) }, dependencies.runtimeClient, dependencies.signal), runtimeJson(program, options));
   });
 
   const ps = program.command('ps').description('List WTM-managed process groups.');
@@ -433,6 +452,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
         globalConfigPath: defaultProductionRuntimePaths().globalConfigPath,
         cwd,
         apply,
+        fileTrust: hostPlatformRuntime().fileTrust,
         readProcessStartTime: (pid) => hostPlatformRuntime().process.readStartTime(pid),
         hostId: hostname(),
       })
@@ -637,6 +657,22 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
  */
 const hiddenCompletionDataCommand = '__complete';
 
+interface ReadinessOptions { wait?: boolean; timeout?: number }
+
+function addReadinessOptions(command: Command): void {
+  command.option('--wait', 'wait for the configured task healthcheck');
+  command.option('--timeout <duration>', 'readiness deadline, from 1ms to 5m (requires --wait)', (value) => {
+    const duration = readinessDurationMs(value);
+    if (duration === null) throw new InvalidArgumentError('readiness timeout must be 1ms to 5m');
+    return duration;
+  });
+}
+
+function readinessArguments(options: ReadinessOptions): { wait?: true; waitTimeoutMs?: number } {
+  if (options.timeout !== undefined && options.wait !== true) throw new InvalidArgumentError('--timeout requires --wait');
+  return options.wait === true ? { wait: true, ...(options.timeout === undefined ? {} : { waitTimeoutMs: options.timeout }) } : {};
+}
+
 function defaultPortableSkillInstaller(fallbackWorkspaceRoot: string): SkillInstaller {
   return {
     install(request) {
@@ -792,22 +828,21 @@ async function runProductionAnalyze(input: {
     if ('error' in refresh) return operationFailure('analyze', input.global, refresh.error);
     refreshedAt = refresh.refreshedAt;
   }
-  let allowedRemoteRefsByRepo: Map<string, readonly string[] | undefined>;
+  let safetyByWorktree: Map<string, ConfiguredGitSafety>;
   try {
-    const uniqueRepoPaths = [...new Set(selected.map(({ repoPath }) => repoPath))];
-    allowedRemoteRefsByRepo = new Map(await Promise.all(uniqueRepoPaths.map(async (repoPath) =>
-      [repoPath, await resolveConfiguredAllowedRemoteRefs(repoPath, input.globalConfigPath)] as const)));
+    const uniqueWorktreePaths = [...new Set(selected.map(({ record }) => record.path))];
+    safetyByWorktree = new Map(await Promise.all(uniqueWorktreePaths.map(async (path) =>
+      [path, await resolveConfiguredGitSafety(path, input.globalConfigPath)] as const)));
   } catch (error) {
     return operationFailure('analyze', input.global, toGitSafetyError(error, 'analyze'));
   }
   const envelopes = await Promise.all(selected.map(({ repoPath, record }) => {
     const refreshed = refreshedAt.get(repoPath);
-    const allowedRemoteRefs = allowedRemoteRefsByRepo.get(repoPath);
     return runAnalyzeCommand({
       repoPath,
       worktreePath: record.path,
       ...(refreshed === undefined ? {} : { remoteRefresh: { refreshedAt: refreshed } }),
-      ...(allowedRemoteRefs === undefined ? {} : { allowedRemoteRefs }),
+      ...safetyByWorktree.get(record.path),
     });
   }));
   if (!input.global && !input.all && !input.cleanupCandidates) return envelopes[0] as JsonEnvelope<unknown>;
@@ -819,7 +854,7 @@ async function runProductionAnalyze(input: {
   // `envelope.data` that `--json` serializes, so sorting here is what makes human and JSON output
   // structurally incapable of disagreeing about which candidate comes first.
   const analyses = input.cleanupCandidates
-    ? await rankCleanupCandidateAnalyses(analysed, cleanupState)
+    ? await rankCleanupCandidateAnalyses(analysed, cleanupState, input.globalConfigPath)
     : analysed.map(({ analysis }) => analysis);
   const errors = envelopes.flatMap(({ errors }) => errors);
   const common = {
@@ -890,12 +925,6 @@ async function runProductionRemove(input: {
   if ('error' in refresh) return operationFailure('remove', false, refresh.error);
   const refreshed = refresh.refreshedAt.get(repositoryRoot);
   const remoteRefresh = refreshed === undefined ? {} : { remoteRefresh: { refreshedAt: refreshed } };
-  let allowedRemoteRefs: readonly string[] | undefined;
-  try {
-    allowedRemoteRefs = await resolveConfiguredAllowedRemoteRefs(repositoryRoot, input.globalConfigPath);
-  } catch (error) {
-    return operationFailure('remove', false, toGitSafetyError(error, 'remove'));
-  }
   // Read-write, because removal stops processes, releases endpoint leases and reconciles — all
   // of them writes. An absent file means nothing is registered on this machine, and a removal
   // must no more bring a state directory into being by asking than a read does.
@@ -933,7 +962,7 @@ async function runProductionRemove(input: {
       repoPath: repositoryRoot,
       selector,
       ...remoteRefresh,
-      ...(allowedRemoteRefs === undefined ? {} : { allowedRemoteRefs }),
+      resolveSafety: async (worktreePath) => resolveConfiguredGitSafety(worktreePath, input.globalConfigPath),
       bindRuntime: (worktreePath) => bindRemovalRuntime({
         store,
         worktreePath,
@@ -1081,20 +1110,37 @@ function lastWtmActivity(record: WorktreeRecord, processes: readonly ManagedProc
 async function rankCleanupCandidateAnalyses(
   candidates: ReadonlyArray<{ repoPath: string; analysis: WorktreeAnalysis }>,
   state: ReadonlyMap<string, CleanupCandidateState>,
+  globalConfigPath: string,
 ): Promise<unknown[]> {
+  const measurements = await measureCleanupCandidates(candidates.map(({ repoPath, analysis }) => ({
+    path: analysis.identity.path,
+    loadConfig: async () => {
+      const workspaceRoot = await findWorkspaceRoot(repoPath) ?? repoPath;
+      const config = await resolveWorkspaceConfig({ workspaceRoot, repoRoot: analysis.identity.path, globalConfigPath });
+      return {
+        config: config.value,
+        context: {
+          workspace: { root: workspaceRoot, name: config.value.workspace?.name ?? basename(workspaceRoot) },
+          repo: { root: repoPath, name: basename(repoPath) }, main: { root: repoPath },
+          worktree: { root: analysis.identity.path }, env: process.env,
+        },
+      };
+    },
+  })));
   const inputs = await Promise.all(candidates.map(async ({ repoPath, analysis }) => {
     // Read the commit through the repository rather than the worktree: a prunable candidate is
     // one whose directory is already gone, and it still has a HEAD worth dating.
     const lastCommitAt = await readGitCommitTimestamp(repoPath, analysis.identity.headOid);
     return {
       analysis,
+      reclaimable: measurements.get(analysis.identity.path),
       ...state.get(resolve(analysis.identity.path)) ?? {},
       ...(lastCommitAt === null ? {} : { lastCommitAt }),
     };
   }));
-  return rankCleanupCandidates(inputs).map(({ analysis, rank, score, reason }) => ({
+  return rankCleanupCandidates(inputs).map(({ analysis, rank, score, reason, reclaimable }) => ({
     ...analysis,
-    cleanup: { rank, score, reason },
+    cleanup: { rank, score, reason, reclaimable },
   }));
 }
 
@@ -1438,21 +1484,26 @@ async function findWorkspaceRoot(from: string): Promise<string | null> {
 }
 
 /**
- * The `[git] allowed_remote_refs` this repository's own `wtm.toml` configures, or undefined to
- * leave the choice to `analyzeRemotePersistence`'s own default.
+ * Resolve remote persistence and untracked-symlink policy from the same configuration layers.
  *
  * `analyze` and `remove` answer a Git safety question directly, the same way for a repository
  * WTM has never been asked to manage as for one it registered — so the workspace root is found
  * by walking up from the repository the same way `unregisteredTaskResolution` does, rather than
  * requiring a registration this call may not have.
  */
-async function resolveConfiguredAllowedRemoteRefs(
+type ConfiguredGitSafety = Pick<WorktreeContext, 'allowedRemoteRefs' | 'untrackedSymlinks'>;
+
+async function resolveConfiguredGitSafety(
   repoPath: string,
   globalConfigPath: string,
-): Promise<readonly string[] | undefined> {
+): Promise<ConfiguredGitSafety> {
   const workspaceRoot = await findWorkspaceRoot(repoPath) ?? repoPath;
   const config = await resolveWorkspaceConfig({ workspaceRoot, repoRoot: repoPath, globalConfigPath });
-  return config.value.git?.allowed_remote_refs;
+  const allowedRemoteRefs = config.value.git?.allowed_remote_refs;
+  return {
+    ...(allowedRemoteRefs === undefined ? {} : { allowedRemoteRefs }),
+    untrackedSymlinks: config.value.safety?.untracked_symlinks ?? 'ignore',
+  };
 }
 
 async function readable(path: string): Promise<boolean> {
@@ -1791,7 +1842,10 @@ function isRuntimeInvocation(argv: readonly string[]): boolean {
   // `remove` is here because stopping this worktree's managed processes is the daemon's job and
   // no other process may do it: the supervisor holds the child handle, the start reservation and
   // the identity quadruple its escalation ladder depends on.
-  return command !== undefined && ['start', 'stop', 'restart', 'ps', 'logs', 'exec', 'init', 'remove'].includes(command);
+  return command !== undefined && (
+    ['start', 'stop', 'restart', 'ps', 'logs', 'exec', 'init', 'remove', 'jobs'].includes(command)
+    || command === 'run' && hasOptionIntent(argv, '--enqueue')
+  );
 }
 
 

@@ -4,6 +4,9 @@
 
 WTM commands operate on the workspace containing the current directory unless a workspace/path selector is given.
 
+`wtm jobs` queries are the exception: a job ID names a job in the daemon's shared queue, and
+listing jobs spans its registered workspaces. These commands also work outside a repository.
+
 `--global` means **all registered workspaces**, not "scan the entire home directory".
 
 Examples:
@@ -132,9 +135,163 @@ V1 ships `plan` only; there is no separate apply command. `wtm detect --write` a
 Runs a configured task in the foreground with resolved environment/context.
 
 ```text
---json      emit the stable JSON envelope
--h, --help  display help for command
+--enqueue                 enqueue a finite configured task; return after durable acceptance
+--idempotency-key <key>    retry the same submission safely; requires --enqueue
+--json                    emit the stable JSON envelope
+-h, --help                display help for command
 ```
+
+Enqueue requires the daemon and an explicitly configured task with `queue = true`,
+`background` unset or false, and a positive finite `timeout` using `ms`, `s`, `m` or `h`
+(at most 24 hours):
+
+```toml
+[tasks.typecheck]
+run = ["bun", "run", "typecheck"]
+queue = true
+timeout = "10m"
+```
+
+```bash
+wtm run typecheck --enqueue --idempotency-key <unique-request-key> --json
+```
+
+The V1 envelope's `data` contains `jobId`, `state`, `accepted: true`, `idempotencyKey` and
+`reused`. A new job is accepted as `QUEUED`; an idempotent retry may report its current state.
+`ok: true` here means durable acceptance. The daemon runs the job after the CLI exits; inspect
+its result separately. With no explicit key the CLI generates one. If the response is lost or
+unusable, the error context contains the key to use on a retry. Do not blindly submit with a
+new key after an ambiguous failure. Reusing one key for a different request is refused.
+Deduplication lasts while that job record is retained. After pruning, the same key can create
+a new job; do not treat old request keys as a permanent exactly-once guarantee.
+
+Only explicit configured tasks enter this queue; inherited adapter commands and raw argv do
+not become queueable automatically. Existing foreground execution is unchanged. Dev servers
+belong under `wtm start <task>` and do not consume a finite-job slot.
+
+### Shared job queue
+
+```bash
+wtm jobs list --limit 50 --json
+wtm jobs status <job-id> --json
+wtm jobs logs <job-id> --tail 100 --json
+wtm jobs result <job-id> --json
+wtm jobs cancel <job-id> --json
+```
+
+| Command | Data and behavior |
+| --- | --- |
+| `wtm jobs list` | `{ jobs }`; default 50 recent jobs, `--limit` from 1 to 100 |
+| `wtm jobs status <job-id>` | `{ job }`; inspect `state`, `waitingReason`, `exitCode`, `signal`, `error` and `slotHeld` |
+| `wtm jobs logs <job-id>` | `{ jobId, stdout, stderr, truncated }`; `--tail` from 1 to 1000 lines per stream, default 100; byte limits may shorten the tail |
+| `wtm jobs result <job-id>` | `{ job, terminal, successful, sourceValidity }`; fails unless completion and source evidence confirm success |
+| `wtm jobs cancel <job-id>` | `{ job }`; requests cancellation, with the slot held until process-tree termination is verified |
+
+Job states are `QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELLED`, `TIMED_OUT`, and
+`INTERRUPTED`. Status/list success means the lookup succeeded, including when the job itself
+failed. Result success requires a terminal `SUCCEEDED` job, `exitCode: 0`, `slotHeld: false`, `successful: true`,
+and `sourceValidity: "UNCHANGED"`. A pending, unsuccessful, changed or unknown-source result
+returns a nonzero CLI status and keeps the result payload in `data` for inspection. Read the
+child's actual exit code from `data.job.exitCode`; it is not the CLI's status code.
+
+Job records in list/status/result/cancel carry `waitingReason`. It is computed from the
+current queue; reading it does not claim a slot, mutate a job or run another scheduler.
+
+| `waitingReason` | Meaning |
+| --- | --- |
+| `concurrency` | All configured slots are held, including jobs still awaiting verified process cleanup |
+| `worktree_busy` | This job is the FIFO head and its worktree already holds a job slot |
+| `fifo` | An earlier queued job must be considered first |
+| `memory_budget` | The FIFO head cannot currently fit the optional memory policy, or memory evidence is unavailable |
+| `dispatch_pending` | Capacity/worktree checks permit considering the FIFO head; dispatch and source/repository validation are still pending |
+| `null` | The job is no longer queued |
+
+Capacity takes precedence, then FIFO position, then worktree occupancy and memory. A later job does not
+overtake a blocked head even if its own worktree is free. This observation is not a reservation
+or start-time guarantee. Older daemons may omit the additive field; absence is not evidence
+of any particular reason. Memory admission is opt-in; disabled policy retains the previous
+concurrency-only behavior. `data.memory` on list/status/result/cancel is null when disabled;
+otherwise it reports `budgetBytes`, `reserveBytes`, `availableBytes` and `totalBytes` from that
+observation. Unknown memory values remain null. `job.memoryEstimateBytes` is the accepted
+estimate, not measured usage. These observations do not reserve memory in the OS.
+
+Cancellation accepted before the final SQLite transaction remains cancellation even if the
+child has already exited with code zero while source verification is in progress. Its numeric
+exit evidence is retained, but `jobs result` fails. A cancellation after finalization leaves
+the existing terminal result unchanged.
+
+A completion record that fails reading or validation cannot verify success, even when the
+daemon observed the anchor exit with code zero. After confirmed process cleanup, the job is
+`INTERRUPTED` with `error: "COMPLETION_UNREADABLE"`; an already accepted cancellation or timeout
+keeps its priority. Known exit fields are retained. Only a valid completion read before
+finalization clears this uncertainty; a missing file or repeated result lookup does not.
+
+The initial quota is a fixed concurrency limit, default one heavy job across this host, OS
+user and state store. Configure it in the daemon's **global** config file, then restart the
+daemon to apply the change:
+
+```toml
+[jobs]
+max_concurrent_heavy = 1 # integer from 1 to 64
+```
+
+Workspace/repository config cannot raise this shared limit. Separate state stores have
+separate quotas; bypassing the default store can therefore bypass its limit. The database's
+machine/user owner is claimed atomically before process recovery. A different machine or
+user is refused rather than letting local PID inspection touch another host's records.
+Use host-local state directories when HOME is shared: concurrently sharing one state
+database between hosts is not supported. Identity comes from the OS machine identifier and
+UID/SID, stored only as an application-specific digest; no hostname fallback is used.
+Cloned OS images must have distinct machine identifiers.
+The first upgrade of an older unbound database adopts it under WTM's existing host-local
+state assumption. Legacy records do not identify their originating host, so that origin
+cannot be proven retrospectively. Upgrade only state local to this host; shared-host legacy
+adoption is not supported. Once bound, a different machine/user is refused before recovery.
+
+Optional `[jobs.memory]` adds estimate-based admission using available memory and headroom;
+see the [configuration specification](03-configuration-spec.md#shared-heavy-job-memory-admission).
+It requires `memory_estimate_mib` on tasks and supports `queue_env` for task-specific worker
+settings. It does not impose a hard RAM ceiling on the task, AI or other commands.
+FIFO is strict: if the oldest queued job's worktree is busy or memory is insufficient, later jobs wait even when another
+global slot is free. The queue task's deadline is also enforced by its ownership anchor,
+so the timeout continues while the daemon is stopped.
+
+| Bound | Policy |
+| --- | --- |
+| Pending jobs | At most 128 queued jobs plus jobs whose slots are held, combined |
+| Finished history | Retention target of 256 terminal jobs; entries older than seven days are eligible for pruning |
+| Total records | At most 384 pending and retained jobs; admission fails when this cap is reached |
+| Pruning | Opportunistic on enqueue; only finished jobs with confirmed process cleanup are deleted |
+| Disk logs | Each job's stdout and stderr rotate at 1 MiB, retaining one archive per stream |
+| Log query | At most 32 KiB from each stream per response, further limited by `--tail` |
+
+Pruning is not a background timer: old history may remain until another enqueue. If cleanup
+cannot be verified, its records and logs survive and can prevent new admission at the cap.
+Log rotation intentionally discards older output; a job's complete lifetime output is not
+guaranteed to remain available.
+
+Repository operation leases refuse `remove`, destructive cleanup and registration retirement
+while any job in that repository is queued or holds a slot. `WTM_OPERATION_CONFLICT` identifies
+the blocking `jobId`. Let it finish or cancel it with `wtm jobs cancel <job-id> --json`, confirm
+the final state and `slotHeld: false`, then retry the operation. Removal does not silently
+cancel queued jobs, and `--resume` does not override a job conflict.
+
+While queued/running work reads a worktree, keep its input files stable and coordinate with
+other sessions. Reading code, planning and independent development in another worktree can
+continue. HEAD equality alone does not validate uncommitted changes. A result marked changed
+or unknown must not be used as current verification. Source evidence has an explicit scope;
+external dependencies and shared inputs require coordination as well. Query the result again
+before a dependent action, and rerun validation after further edits. See the
+[Agent Skill](../skills/wtm/SKILL.md) for the asynchronous workflow and polling policy.
+
+The source snapshot covers tracked/untracked file bytes, Git index/HEAD, and file
+inode/mtime/ctime. Existing-file changes reverted to the same bytes are still detected by
+metadata. Ignored dependencies and external inputs are unmeasured. Symlinks/submodules are
+rejected; scans stop at 10,000 files, 64 MiB or 4 seconds. Scanning is non-atomic, so transient
+files created and deleted between observations can escape detection. `UNCHANGED` confirms
+this bounded evidence, not immutable execution or every possible task dependency. Ancestor
+directory metadata is also checked; creating ignored output inside a tracked source
+directory can conservatively invalidate the result even when tracked bytes did not change.
 
 ### `wtm exec <argv...>`
 
@@ -149,6 +306,22 @@ Executes raw argv in the foreground with the same resolved environment/context. 
 
 Starts a managed background task owned by the current worktree.
 
+With a configured HTTP healthcheck, `wtm start dev --wait --timeout 30s --json` waits for
+an observation of readiness. `--timeout` requires `--wait`; it overrides the healthcheck's
+timeout, accepts positive `ms`, `s` or `m` durations, and is capped at five minutes.
+Without an override the configured timeout applies (default 30 seconds). The observation
+starts after launch acknowledgement. Normal start performs no probe and reports
+`data.readiness.state: NOT_CHECKED`.
+
+With `--wait`, success requires a 2xx response and matching live process identity and
+completion evidence before and after the request. `data.readiness` includes `state`,
+`probe`, `attempts`, `elapsedMs` and `observedAt`; it does not disclose the endpoint URL.
+Timeout, process exit/replacement, unavailable evidence and cancellation return `ok:false`
+while preserving `data.process`, `data.existing` and the observation. Timeout or client
+disconnect ends the observation and leaves the managed service running. Use `wtm stop dev`
+to stop it. Readiness describes that instant; it does not guarantee future health or that
+another process could not answer the configured endpoint.
+
 ### `wtm stop [task]`
 
 Stops one task or all WTM-managed tasks for the selected worktree.
@@ -156,6 +329,10 @@ Stops one task or all WTM-managed tasks for the selected worktree.
 ### `wtm restart <task>`
 
 Equivalent to safe stop + start.
+
+Accepts the same `--wait` and `--timeout` options as start. A missing or invalid healthcheck
+is rejected before stopping an existing service. An observation never holds the lifecycle
+lock, so another session can stop or replace the task while a client waits.
 
 ### `wtm resolve <task>`
 
@@ -222,9 +399,9 @@ Options:
 ```
 
 `--cleanup-candidates` returns every linked worktree of the current repository — never the main
-one — ordered best-first, each carrying a `cleanup` block of `rank`, `score` and `reason`. The
+one — ordered best-first, each carrying `cleanup.rank`, `score`, `reason` and `reclaimable`. The
 order is lexicographic over ordered tiers (readiness, nothing running, work safely elsewhere,
-remote persistence strength, idleness, prunable), tie-broken by worktree path so the output is a
+remote persistence strength, idleness, prunable, complete disk estimate), tie-broken by worktree path so the output is a
 total order; `score` is derived from those same tiers rather than sorted on. An input nothing can
 answer ranks neutral and is named in `reason`, and a `BLOCKED` candidate is ranked last rather
 than filtered out. The sort happens in the envelope, so `--json` and the human rendering list the
@@ -374,10 +551,15 @@ A successful removal reports what the runtime gave back before Git ran:
 The block is always present and zeroed rather than omitted, including on the Git-only path a
 worktree WTM has no registration for takes, so the shape never varies.
 
-`remove` needs the daemon when — and only when — the worktree has managed process records that are
-still live or still owe durable cleanup. WTM never signals a process the daemon supervises from a
-second process, so an unreachable daemon there is `WTM_DAEMON_UNAVAILABLE` and a refusal, not a
-best-effort kill. A worktree with no such records is removed with no daemon at all.
+Queued jobs and occupied job slots anywhere in the repository block removal with
+`WTM_OPERATION_CONFLICT`. Finish or explicitly cancel them and confirm slot release before
+retrying. This applies before the repository operation lease is acquired.
+
+After job conflicts are cleared, `remove` needs the daemon when the worktree has managed
+process records that are still live or still owe durable cleanup. WTM never signals a
+process the daemon supervises from a second process, so an unreachable daemon there is
+`WTM_DAEMON_UNAVAILABLE` and a refusal, not a best-effort kill. A worktree with no such records
+and no repository job conflicts can be removed without a daemon.
 
 ## Exit codes
 
@@ -386,7 +568,7 @@ best-effort kill. A worktree with no such records is removed with no daemon at a
 | `0` | Success | — |
 | `1` | Generic operational failure | Every code not listed below |
 | `2` | Usage or configuration error | `WTM_CONFIG_INVALID`, `WTM_WORKSPACE_NOT_FOUND`, `WTM_NOT_INITIALIZED` |
-| `3` | A safety policy blocked the requested action | `GIT_MAIN_WORKTREE`, `GIT_WORKTREE_LOCKED`, `GIT_DIRTY_STAGED`, `GIT_DIRTY_UNSTAGED`, `GIT_UNTRACKED`, `GIT_UNMERGED`, `GIT_HEAD_NOT_REMOTE_PERSISTED`, `WTM_OPERATION_CONFLICT`, `RESOURCE_PATH_DENIED`, `GC_ACTIVE_WORKTREE_PROTECTED` |
+| `3` | A safety policy blocked the requested action | `GIT_MAIN_WORKTREE`, `GIT_WORKTREE_LOCKED`, `GIT_DIRTY_STAGED`, `GIT_DIRTY_UNSTAGED`, `GIT_UNTRACKED`, `GIT_IGNORED_CONTENT`, `GIT_UNMERGED`, `GIT_HEAD_NOT_REMOTE_PERSISTED`, `WTM_OPERATION_CONFLICT`, `RESOURCE_PATH_DENIED`, `GC_ACTIVE_WORKTREE_PROTECTED` |
 | `4` | The daemon is unavailable for an operation that requires it | `WTM_DAEMON_UNAVAILABLE` |
 | `5` | Protocol or adapter incompatibility | `ADAPTER_PROTOCOL_INCOMPATIBLE`, `ADAPTER_INVALID_RESPONSE` |
 
@@ -394,8 +576,8 @@ An envelope carrying several errors exits with the highest of their codes.
 
 `WTM_OPERATION_CONFLICT` is in the safety class rather than the generic one because it means the
 same thing a Git blocker does: nothing was changed, and there is somewhere concrete to look — the
-error names the holding PID, when it took the lease, and, when that holder is provably gone, the
-stage it died in.
+error names either the blocking job, or the holding PID, when it took the lease, and, when
+that holder is provably gone, the stage it died in.
 
 `wtm exec` is the one command whose exit code is not this table: it passes the child's own status
 through, and reports a signalled child as `128 + signal`.

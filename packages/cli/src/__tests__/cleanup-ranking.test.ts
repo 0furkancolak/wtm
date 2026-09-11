@@ -38,7 +38,7 @@ describe('analyze --cleanup-candidates ranking', () => {
       expect(score).toBeGreaterThanOrEqual(0);
       expect(score).toBeLessThanOrEqual(100);
     }
-    for (const reason of scenario.reasons) expect(reason).toHaveLength(7);
+    for (const reason of scenario.reasons) expect(reason).toHaveLength(8);
     expect(scenario.reasons[0]).toContain('merged');
     expect(scenario.reasons[1]).toContain('not-merged');
   });

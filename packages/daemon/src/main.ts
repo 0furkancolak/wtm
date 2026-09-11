@@ -10,6 +10,7 @@ import {
 } from '@wtm/core';
 import { UnsupportedPlatformError, supportedPlatforms } from '@wtm/platform';
 import type { IpcRequest, JsonEnvelope } from '@wtm/protocol';
+import { jobCommandNames } from '@wtm/protocol';
 import {
   ReconcilerQueue,
   type ReconcileBatch,
@@ -262,7 +263,7 @@ export class WtmDaemon {
       // fresh one, and far better than not answering.
       this.#server = this.#serverFactory({
         socketPath: this.#socketPath,
-        handler: async (request) => this.#handleRequest(request),
+        handler: async (request, context) => this.#handleRequest(request, context),
       });
       await this.#server.start();
       for (const failure of (await this.#reconcileRepositories(this.#snapshot.repositories)).failures) {
@@ -486,7 +487,7 @@ export class WtmDaemon {
     await previous?.close();
   }
 
-  async #handleRequest(request: IpcRequest): Promise<JsonEnvelope<unknown>> {
+  async #handleRequest(request: IpcRequest, context?: { signal: AbortSignal }): Promise<JsonEnvelope<unknown>> {
     if (request.command === 'ping') return successEnvelope('ping', { pid: process.pid });
     if (request.command === 'reconcile') {
       // A reconcile request is a client saying the world has changed, and a watch waiting out its
@@ -512,8 +513,8 @@ export class WtmDaemon {
       await this.#queue.flush();
       return successEnvelope('reconcile', { workspaces: this.#snapshot.workspaces.length });
     }
-    if (runtimeCommandNames.has(request.command) && this.#runtimeHandler !== null) {
-      return await this.#runtimeHandler(request);
+    if ((runtimeCommandNames.has(request.command) || jobCommandNames.has(request.command)) && this.#runtimeHandler !== null) {
+      return await this.#runtimeHandler(request, context);
     }
     return {
       schemaVersion: 1,

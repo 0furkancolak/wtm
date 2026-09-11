@@ -33,8 +33,9 @@ describe('Git environment isolation', () => {
 
   test('preserves an isolated global excludes config and blocks its ignored file', () => {
     expect(runScenario('global-excludes')).toEqual({
-      blockerCodes: ['GIT_UNTRACKED'],
-      untrackedPaths: ['global.secret'],
+      blockerCodes: ['GIT_IGNORED_CONTENT'],
+      untrackedPaths: [],
+      ignoredPaths: ['global.secret'],
       globalConfigUnchanged: true,
     });
   });

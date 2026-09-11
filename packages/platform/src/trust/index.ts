@@ -13,5 +13,8 @@ export type {
 export {
   createCurrentWindowsUserSidReader,
   createWindowsAclReader,
+  parseWindowsPathAcl,
 } from './windows-powershell';
 export type { PowershellRunner } from './windows-powershell';
+export { readWindowsAclBatch } from './windows-acl-batch';
+export type { WindowsAclBatch, WindowsAclBatchReader } from './windows-acl-batch';

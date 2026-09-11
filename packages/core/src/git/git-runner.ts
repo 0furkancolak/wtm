@@ -46,6 +46,8 @@ export const remoteFetchTimeoutMs = 120_000;
 
 export interface GitCommandOptions {
   acceptedExitCodes?: readonly number[];
+  /** Callers that enumerate source inputs can cap buffered stdout and stderr together. */
+  maxOutputBytes?: number;
   /** Overrides {@link defaultGitTimeoutMs} for a call known to need longer. */
   timeoutMs?: number;
 }
@@ -195,6 +197,8 @@ export function runGit(
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let timedOut = false;
+    let outputExceeded = false;
+    let outputBytes = 0;
     let killTimer: ReturnType<typeof setTimeout> | null = null;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -210,14 +214,33 @@ export function runGit(
       if (killTimer !== null) clearTimeout(killTimer);
     };
 
-    child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
-    child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+    const collect = (target: Buffer[], chunk: Buffer) => {
+      if (outputExceeded) return;
+      outputBytes += chunk.length;
+      if (options.maxOutputBytes !== undefined && outputBytes > options.maxOutputBytes) {
+        outputExceeded = true;
+        clearTimeout(timer);
+        child.kill('SIGTERM');
+        if (killTimer === null) {
+          killTimer = setTimeout(() => child.kill('SIGKILL'), terminationGraceMs);
+          killTimer.unref();
+        }
+        return;
+      }
+      target.push(chunk);
+    };
+    child.stdout.on('data', (chunk: Buffer) => collect(stdout, chunk));
+    child.stderr.on('data', (chunk: Buffer) => collect(stderr, chunk));
     child.once('error', (error) => {
       clearTimers();
       reject(new GitCommandError({ argv, exitCode: null, signal: null, stderr: error.message }));
     });
     child.once('close', (exitCode, signal) => {
       clearTimers();
+      if (outputExceeded) {
+        reject(new GitCommandError({ argv, exitCode, signal, stderr: 'Git output budget exceeded.' }));
+        return;
+      }
       if (timedOut) {
         reject(new GitCommandError({
           argv,

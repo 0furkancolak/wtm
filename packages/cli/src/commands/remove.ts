@@ -2,6 +2,7 @@ import { basename, isAbsolute, resolve } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import {
   analyzeWorktree,
+  GitCommandError,
   listGitWorktrees,
   removeWorktreeGuarded,
   RepositoryOperationConflictError,
@@ -48,6 +49,9 @@ export interface RemoveCommandInput {
   selector: string;
   baseRef?: string;
   allowedRemoteRefs?: readonly string[];
+  untrackedSymlinks?: WorktreeContext['untrackedSymlinks'];
+  /** Resolve target-specific config after selector resolution and before any runtime action. */
+  resolveSafety?: (worktreePath: string) => Promise<Pick<WorktreeContext, 'allowedRemoteRefs' | 'untrackedSymlinks'>>;
   /** A refresh the caller already performed, passed through to analysis unchanged. */
   remoteRefresh?: RemoteRefreshRecord;
   workspaceId?: string;
@@ -91,8 +95,9 @@ export async function runRemoveCommand(
   let warnings: WtmError[] = [];
   try {
     const selected = await resolveExplicitSelector(input);
+    const safety = await input.resolveSafety?.(selected.path);
     const binding = input.bindRuntime?.(selected.path) ?? null;
-    const context = analysisContext(input, selected, binding);
+    const context = analysisContext({ ...input, ...safety }, selected, binding);
     let result: GuardedRemovalResult;
     try {
       result = await removeWorktreeGuarded({
@@ -109,7 +114,7 @@ export async function runRemoveCommand(
         }),
       });
     } catch (error) {
-      if (error instanceof WorktreeRemovalBlockedError) warnings = await analysisWarnings(context);
+      if (error instanceof WorktreeRemovalBlockedError || error instanceof GitCommandError) warnings = await analysisWarnings(context);
       throw error;
     }
     warnings = [...result.analysis.safety.warnings];
@@ -147,7 +152,7 @@ export async function runRemoveCommand(
 }
 
 /**
- * The warnings of the analysis that refused this removal.
+ * The warnings accompanying a refused removal or a final Git veto.
  *
  * `WorktreeRemovalBlockedError` carries the blockers alone, and the analysis they came from
  * never leaves the lifecycle, so recovering them means asking again — one read-only analysis, on
@@ -192,6 +197,7 @@ function analysisContext(
     worktreePath: selected.path,
     ...(input.baseRef === undefined ? {} : { baseRef: input.baseRef }),
     ...(input.allowedRemoteRefs === undefined ? {} : { allowedRemoteRefs: input.allowedRemoteRefs }),
+    ...(input.untrackedSymlinks === undefined ? {} : { untrackedSymlinks: input.untrackedSymlinks }),
     ...(input.remoteRefresh === undefined ? {} : { remoteRefresh: input.remoteRefresh }),
     ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
     ...(repositoryId === undefined ? {} : { repositoryId }),

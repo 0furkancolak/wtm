@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { join as posixJoin } from 'node:path/posix';
 import { fileURLToPath } from 'node:url';
 import type { DaemonStateStore } from '@wtm/core';
@@ -56,7 +56,7 @@ describe('production daemon composition', () => {
    * scenario reports where it actually bound and the address is checked against the fixture, rather
    * than the agreement between two processes being taken as evidence that either was confined.
    */
-  test('default CLI client reaches the documented HOME socket without runtime injection', () => {
+  test('default CLI client reaches the isolated production IPC address without runtime injection', () => {
     const isolated = isolatedHome();
     try {
       const result = runScenario('node', ['--import', 'tsx', scenarioPath, 'default-client'], {
@@ -73,8 +73,25 @@ describe('production daemon composition', () => {
         stopExit: 0,
         stopState: 'STOPPED',
         socketPath: expect.any(String),
+        paths: {
+          dataRoot: expect.any(String), databasePath: expect.any(String), socketPath: expect.any(String),
+          logRoot: expect.any(String), globalConfigPath: expect.any(String),
+        },
       });
-      expect(output['socketPath']).toStartWith(`${isolated.path}/`);
+      const paths = output['paths'] as ProductionRuntimePaths;
+      expect(output['socketPath']).toBe(defaultProductionRuntimePaths(isolated.path, { env: isolated.env }).socketPath);
+      expect(paths.socketPath).toBe(output['socketPath'] as string);
+      // `databasePath` comes back canonical (its parent went through `ensurePrivateDirectory`), and
+      // on macOS `/tmp` is a symlink to `/private/tmp`, so confinement is judged against both
+      // spellings of the fixture root rather than the one `mkdtemp` happened to return.
+      const roots = [isolated.path, realpathSync(isolated.path)];
+      for (const path of [paths.dataRoot, paths.databasePath, paths.logRoot, paths.globalConfigPath]) {
+        const confined = roots.some((root) => {
+          const within = relative(root, path);
+          return !isAbsolute(within) && within !== '..' && !within.startsWith(`..${sep}`);
+        });
+        expect(confined, path).toBe(true);
+      }
     } finally {
       isolated.cleanup();
     }

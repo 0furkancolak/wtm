@@ -68,6 +68,7 @@ if (scenario === 'hostile-routing') {
     process.stdout.write(`${JSON.stringify({
       blockerCodes: analysis.safety.blockers.map((blocker) => blocker.code),
       untrackedPaths: analysis.workingTree.paths.untracked,
+      ignoredPaths: analysis.workingTree.paths.ignored,
       globalConfigUnchanged: process.env.GIT_CONFIG_GLOBAL === before,
     })}\n`);
   } finally {

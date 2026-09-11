@@ -3,6 +3,8 @@ import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fixtureIpcAddress } from '../../../testkit/src/ipc-address';
+import { isolatedHomeEnvironment } from '../../../testkit/src/isolated-home';
 import type { CliDependencies } from '../main';
 
 /**
@@ -20,7 +22,7 @@ const dataRoot = join(home, 'wtm');
 const databasePath = join(dataRoot, 'state.db');
 // Short on purpose: a Unix socket address has a byte limit, and a temporary directory is
 // already most of it.
-const socketPath = join(root, 'd.sock');
+const socketPath = fixtureIpcAddress(root, 'd.sock');
 const workspaceRoot = join(root, 'ws');
 const mainRepo = join(workspaceRoot, 'repo');
 const linked = join(workspaceRoot, 'repo-feature');
@@ -30,7 +32,7 @@ const gitConfig = join(root, 'gitconfig');
 function git(cwd: string, ...args: string[]): string {
   // `execFileSync` inherits stderr by default, and `git worktree add` narrates on it; this
   // scenario reports through stdout, so nothing of Git's may reach either stream.
-  return execFileSync('/usr/bin/git', args, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
 }
 
 interface Invocation {
@@ -88,7 +90,7 @@ async function listen(): Promise<Server> {
 await mkdir(dataRoot, { recursive: true, mode: 0o700 });
 await mkdir(mainRepo, { recursive: true, mode: 0o700 });
 await writeFile(gitConfig, '');
-process.env['HOME'] = home;
+Object.assign(process.env, isolatedHomeEnvironment(home));
 process.env['GIT_CONFIG_GLOBAL'] = gitConfig;
 process.env['GIT_CONFIG_NOSYSTEM'] = '1';
 

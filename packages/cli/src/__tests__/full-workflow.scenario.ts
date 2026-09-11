@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { selectPlatformRuntime } from '@wtm/platform';
-import { publishedDaemonSocketPath } from '@wtm/platform/socket';
+import { runtimePathsFor } from '../../../daemon/src/runtime-factory';
 import { isolatedHomeEnvironment } from '../../../testkit/src/isolated-home';
+import { ipcEndpointAbsent } from '../../../testkit/src/ipc-address';
 import type { CliDependencies } from '../main';
 
 const root = await realpath(await mkdtemp(join(tmpdir(), 'wtm-e2e-')));
@@ -12,10 +13,9 @@ const home = join(root, 'home');
 /**
  * The whole environment that confines this run to `home`, not `HOME` alone.
  *
- * On macOS the two are the same thing. On Linux the XDG variables are read from the ambient
- * environment and override what `HOME` implies, so a scenario that set only `HOME` would keep
- * reading and writing the runner's own state root and socket directory — the machine this fixture
- * exists to stay off. It is assigned onto `process.env` because everything below inherits it:
+ * Linux XDG and Windows profile/application-data variables override what `HOME` implies, so
+ * setting only HOME can still read or write the runner's own WTM state. The complete environment
+ * is assigned onto `process.env` because everything below inherits it:
  * `runCli` runs in this process and `git()` passes `process.env` straight through.
  */
 Object.assign(process.env, isolatedHomeEnvironment(home));
@@ -28,11 +28,12 @@ Object.assign(process.env, isolatedHomeEnvironment(home));
  * started — became vacuously true exactly where a second service manager exists to install into
  * (D3, D4). Derived from the isolated environment, both mean the same thing on either platform.
  */
-const hostPaths = selectPlatformRuntime({ home, env: process.env }).paths;
+const hostRuntime = selectPlatformRuntime({ home, env: process.env });
+const hostPaths = hostRuntime.paths;
 const serviceRoot = hostPaths.serviceRoot;
 const dataRoot = hostPaths.dataRoot;
 const databasePath = join(dataRoot, 'state.db');
-const socketPath = publishedDaemonSocketPath(hostPaths.socketRoot);
+const socketPath = runtimePathsFor(hostRuntime).socketPath;
 const gitConfig = join(root, 'gitconfig');
 const remote = join(root, 'remote.git');
 const main = join(root, 'workspace', 'repo');
@@ -47,11 +48,19 @@ const linked = join(root, 'linked-feature');
  * runner's. Failing here rather than reporting `true` about somebody else's `~/.config` is the
  * difference between a green run and a green run that proves nothing.
  */
-const escaped = Object.entries({ serviceRoot, dataRoot, socketPath })
-  .filter(([, path]) => !path.startsWith(`${home}/`));
+const escaped = Object.entries({ serviceRoot, dataRoot, configPath: hostPaths.configPath, logRoot: hostPaths.logRoot,
+  ...(hostRuntime.id === 'win32' ? {} : { socketPath }),
+}).filter(([, path]) => {
+  const within = relative(home, path);
+  return isAbsolute(within) || within === '..' || within.startsWith(`..${sep}`);
+});
 if (escaped.length > 0) {
   await rm(root, { recursive: true, force: true });
   throw new Error(`Fixture paths escaped ${home}: ${escaped.map(([name, path]) => `${name}=${path}`).join(', ')}`);
+}
+if (hostRuntime.id === 'win32' && !socketPath.startsWith('\\\\.\\pipe\\wtm-')) {
+  await rm(root, { recursive: true, force: true });
+  throw new Error(`Fixture IPC address is not a Windows named pipe: ${socketPath}`);
 }
 
 await mkdir(serviceRoot, { recursive: true, mode: 0o700 });
@@ -190,7 +199,9 @@ try {
     // `full-workflow.test.ts`; the directory it reports on is now whichever one this platform
     // installs user services into — `~/Library/LaunchAgents` or `~/.config/systemd/user`.
     serviceRootUntouched: (await readdir(serviceRoot)).length === 0,
-    socketAbsent: !(await exists(socketPath)),
+    // A named pipe has no stat-able entry. Permission failures or a stalled connection do not
+    // prove absence, so the Windows observation rejects them instead of returning true.
+    socketAbsent: hostRuntime.id === 'win32' ? await ipcEndpointAbsent(socketPath) : !(await exists(socketPath)),
     remoteProtocol: 'file',
   }));
 } finally {

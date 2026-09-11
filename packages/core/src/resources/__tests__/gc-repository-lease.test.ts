@@ -29,8 +29,10 @@ import {
 import { createFakeFileTrust } from './file-trust-fixture';
 
 const roots: string[] = [];
+const guards: Array<Awaited<ReturnType<typeof createResourceGuard>>> = [];
 
 afterEach(async () => {
+  await Promise.all(guards.splice(0).map((guard) => guard.close()));
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
@@ -52,6 +54,7 @@ async function fixture() {
     git: { async isTracked() { return false; } },
     fileTrust,
   });
+  guards.push(guard);
   return { sandbox, sandboxRoot, guard, fileTrust };
 }
 

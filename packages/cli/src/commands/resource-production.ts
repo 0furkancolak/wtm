@@ -16,6 +16,7 @@ import {
   type WorkspaceRecord,
 } from '@wtm/core';
 import type { JsonEnvelope, WtmError } from '@wtm/protocol';
+import type { FileTrustPolicy } from '@wtm/platform/ports';
 import { inspectRuntimeResources, resolveWorktreeRuntime } from '@wtm/daemon';
 import { runDiskCommand, type DiskCommandResult, type DiskUsageSummary } from './disk';
 import { runGcCommand, type GcCommandResult } from './gc';
@@ -113,6 +114,8 @@ export async function runProductionGcCommand(input: {
   databasePath: string;
   cwd: string;
   apply: boolean;
+  /** The composition root's selected policy must reach guard, apply, and recovery alike. */
+  fileTrust: FileTrustPolicy;
   globalConfigPath?: string;
   /**
    * How the repository operation lease learns whether a colliding holder is still alive. Required
@@ -170,54 +173,60 @@ export async function runProductionGcCommand(input: {
           workspaceRoot,
           repositoryRoots,
           gitDirectoryPaths: repositories.map((repository) => resolve(repository.commonGitDir)),
+          fileTrust: input.fileTrust,
         });
       } catch (error) {
         return resourceFailureEnvelope('gc', error);
       }
-      const lease = sqliteLeaseCoordinator(store);
-      const journal = sqliteJournal(store);
-      if (input.apply) {
-        const recoverable = store.listResourceGcJournal().filter((entry) =>
-          entry.sandboxId === sandbox.id
-          && entry.sandboxGeneration === sandbox.generation
-          && (entry.phase !== 'finalized' || entry.quarantineContainer !== null));
-        for (const entry of recoverable) {
-          if (entry.phase === 'finalized' && entry.quarantineContainer !== null
-            && !await lstat(entry.quarantineContainer.path).then(() => true).catch(() => false)) continue;
-          const recovered = await recoverGcJournalEntry(entry, { guard, lease, journal });
-          items.push(recovered);
-          if (recovered.outcome === 'failed' || recovered.outcome === 'lease-contended') {
-            errors.push({
-              code: recovered.error.code,
-              message: recovered.error.message,
-              severity: 'error',
-              context: { storageObjectId: recovered.storageObjectId, path: recovered.path, phase: recovered.phase },
-            });
+      try {
+        const lease = sqliteLeaseCoordinator(store);
+        const journal = sqliteJournal(store);
+        if (input.apply) {
+          const recoverable = store.listResourceGcJournal().filter((entry) =>
+            entry.sandboxId === sandbox.id
+            && entry.sandboxGeneration === sandbox.generation
+            && (entry.phase !== 'finalized' || entry.quarantineContainer !== null));
+          for (const entry of recoverable) {
+            if (entry.phase === 'finalized' && entry.quarantineContainer !== null
+              && !await lstat(entry.quarantineContainer.path).then(() => true).catch(() => false)) continue;
+            const recovered = await recoverGcJournalEntry(entry, { guard, lease, journal, fileTrust: input.fileTrust });
+            items.push(recovered);
+            if (recovered.outcome === 'failed' || recovered.outcome === 'lease-contended') {
+              errors.push({
+                code: recovered.error.code,
+                message: recovered.error.message,
+                severity: 'error',
+                context: { storageObjectId: recovered.storageObjectId, path: recovered.path, phase: recovered.phase },
+              });
+            }
           }
         }
+        const sandboxRecords = (await localRecords(
+          store.listResourceGcEvidence(now.toISOString()), workspaces, input.cwd,
+        )).filter((record) => record.sandboxId === sandbox.id && record.sandboxGeneration === sandbox.generation);
+        const plan = buildGcPlan({
+          sandbox,
+          records: sandboxRecords.map(toGcEvidence),
+          now: now.toISOString(),
+        });
+        const envelope = await runGcCommand({
+          plan,
+          guard,
+          fileTrust: input.fileTrust,
+          ...(input.apply ? {
+            apply: true,
+            lease,
+            journal,
+            ...(repositoryLease === undefined ? {} : { repositoryLease }),
+          } : {}),
+        });
+        planned += envelope.data?.planned ?? 0;
+        excluded += envelope.data?.excluded ?? 0;
+        if (envelope.data !== null) items.push(...envelope.data.items);
+        errors.push(...envelope.errors);
+      } finally {
+        await guard.close();
       }
-      const sandboxRecords = (await localRecords(
-        store.listResourceGcEvidence(now.toISOString()), workspaces, input.cwd,
-      )).filter((record) => record.sandboxId === sandbox.id && record.sandboxGeneration === sandbox.generation);
-      const plan = buildGcPlan({
-        sandbox,
-        records: sandboxRecords.map(toGcEvidence),
-        now: now.toISOString(),
-      });
-      const envelope = await runGcCommand({
-        plan,
-        guard,
-        ...(input.apply ? {
-          apply: true,
-          lease,
-          journal,
-          ...(repositoryLease === undefined ? {} : { repositoryLease }),
-        } : {}),
-      });
-      planned += envelope.data?.planned ?? 0;
-      excluded += envelope.data?.excluded ?? 0;
-      if (envelope.data !== null) items.push(...envelope.data.items);
-      errors.push(...envelope.errors);
     }
 
     const data: GcCommandResult = {

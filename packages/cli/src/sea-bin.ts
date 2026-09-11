@@ -20,7 +20,8 @@ async function run(): Promise<number> {
   });
   installSkillAssets(seaSkillAssets);
   // This executable has no `-e`, so the default probe would fail every port it was offered.
-  installEndpointProbe(spawnedEndpointProbe(process.execPath, ['__wtm_internal_endpoint_probe']));
+  installEndpointProbe(spawnedEndpointProbe(process.execPath,
+    ['__wtm_internal_endpoint_probe'], ['__wtm_internal_endpoint_batch_probe']));
   const { runCli } = await import('./main');
   return runCli(argv, { runtimeInvocation: { executable: process.execPath, prefixArgs: [] } });
 }

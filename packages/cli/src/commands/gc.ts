@@ -25,6 +25,7 @@ export async function runGcCommand(input: GcCommandInput): Promise<GcCommandEnve
     ...(input.hooks === undefined ? {} : { hooks: input.hooks }),
     ...(input.maxEntries === undefined ? {} : { maxEntries: input.maxEntries }),
     ...(input.maxDepth === undefined ? {} : { maxDepth: input.maxDepth }),
+    ...(input.fileTrust === undefined ? {} : { fileTrust: input.fileTrust }),
     ...(input.repositoryLease === undefined ? {} : { repositoryLease: input.repositoryLease }),
   });
   const failures = result.items.filter(

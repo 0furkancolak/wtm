@@ -1,10 +1,12 @@
 import { spawnSync } from 'node:child_process';
 import type {
+  EndpointAvailabilityProbe,
   EndpointCandidate,
   EndpointLease,
   EndpointRequest,
   StateStore,
 } from '../state/store';
+import { parseEndpointBatch, validEndpointBatchResults } from './endpoint-batch';
 
 const probeScript = String.raw`
 const candidate = JSON.parse(process.argv[1]);
@@ -27,6 +29,32 @@ if (candidate.protocol === 'tcp') {
 }
 `;
 
+// The plain Node helper cannot import TypeScript. Its bind operations match endpoint-probe;
+// the parent validates the request and both launch paths are covered by real TCP/UDP tests.
+const batchProbeScript = String.raw`
+let raw = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { raw += chunk; if (Buffer.byteLength(raw) > 131072) process.exit(2); });
+process.stdin.on('end', async () => {
+  const { candidates } = JSON.parse(raw);
+  const available = [];
+  for (const candidate of candidates) {
+    available.push(await new Promise(resolve => {
+      if (candidate.protocol === 'tcp') {
+        const server = require('node:net').createServer();
+        server.once('error', () => resolve(false));
+        server.listen({ host: candidate.host, port: candidate.port, exclusive: true }, () => server.close(() => resolve(true)));
+      } else {
+        const socket = require('node:dgram').createSocket(candidate.host.includes(':') ? 'udp6' : 'udp4');
+        socket.once('error', () => { try { socket.close(() => resolve(false)); } catch { resolve(false); } });
+        socket.bind({ address: candidate.host, port: candidate.port, exclusive: true }, () => socket.close(() => resolve(true)));
+      }
+    }));
+  }
+  process.stdout.write(JSON.stringify({ available }));
+});
+`;
+
 export class WtmEndpointAllocationError extends Error {
   readonly code = 'RUNTIME_PORT_UNAVAILABLE' as const;
   readonly severity = 'error' as const;
@@ -46,7 +74,7 @@ export class WtmEndpointAllocationError extends Error {
   }
 }
 
-let installedProbe: ((candidate: EndpointCandidate) => boolean) | null = null;
+let installedProbe: EndpointAvailabilityProbe | null = null;
 
 /**
  * Replaces how WTM asks whether a port is free.
@@ -56,47 +84,61 @@ let installedProbe: ((candidate: EndpointCandidate) => boolean) | null = null;
  * left alone it fails every probe, and a workspace with ports configured is told its whole
  * range is taken. That build installs a probe that re-invokes itself instead.
  */
-export function installEndpointProbe(probe: (candidate: EndpointCandidate) => boolean): void {
+export function installEndpointProbe(probe: EndpointAvailabilityProbe): void {
   installedProbe = probe;
+  // Legacy hooks must keep their original one-argument, first-free short-circuit behavior.
+  if (probe.batch === undefined) delete isEndpointAvailable.batch;
+  else isEndpointAvailable.batch = (candidates) => probe.batch!(candidates);
 }
 
-export function isEndpointAvailable(candidate: EndpointCandidate): boolean {
+const defaultProbe = spawnedEndpointProbe(process.execPath, ['-e', probeScript], ['-e', batchProbeScript]);
+
+export const isEndpointAvailable: EndpointAvailabilityProbe = Object.assign((candidate: EndpointCandidate): boolean => {
   if (installedProbe !== null) return installedProbe(candidate);
-  const result = spawnSync(process.execPath, ['-e', probeScript, JSON.stringify(candidate)], {
-    stdio: 'ignore',
-    timeout: 2_000,
-    // `spawnSync`'s `timeout` sends `killSignal` — `SIGTERM` by default — once the deadline
-    // passes and then keeps waiting for the child; a probe that does not exit on `SIGTERM` (an
-    // open handle, a stalled bind) blocks this call forever instead of after 2 seconds. Measured
-    // for the identical hazard in `2026-09-03-a-hang-that-cannot-hide.md` (Increment C3), and
-    // observed here for real: darwin x64 CI run 33774083849 stalled exactly after this probe's
-    // own test, past the job's 30-minute limit, on a commit that touched none of this code.
-    // `SIGKILL` is what turns "at most 2 seconds" from a request into a bound.
-    killSignal: 'SIGKILL',
-  });
-  return result.status === 0 && result.signal === null && result.error === undefined;
-}
+  return defaultProbe(candidate);
+}, { batch: (candidates: readonly EndpointCandidate[]): readonly boolean[] => {
+  return defaultProbe.batch!(candidates);
+} });
 
 /** Runs `executable` as the probe child, the way the default runs `node -e`. */
 export function spawnedEndpointProbe(
   executable: string,
   prefixArgs: readonly string[],
-): (candidate: EndpointCandidate) => boolean {
-  return (candidate) => {
+  batchPrefixArgs?: readonly string[],
+): EndpointAvailabilityProbe {
+  const probe: EndpointAvailabilityProbe = (candidate) => {
     const result = spawnSync(executable, [...prefixArgs, JSON.stringify(candidate)], {
       stdio: 'ignore',
       timeout: 2_000,
-      // Same reasoning as `isEndpointAvailable`'s identical option, immediately above.
+      // A SIGTERM-resistant helper must not outlive its synchronous deadline.
       killSignal: 'SIGKILL',
     });
     return result.status === 0 && result.signal === null && result.error === undefined;
   };
+  if (batchPrefixArgs !== undefined) probe.batch = (candidates) => {
+    const unavailable = () => candidates.map(() => false);
+    const raw = JSON.stringify({ candidates });
+    if (parseEndpointBatch(raw) === null) return unavailable();
+    const result = spawnSync(executable, [...batchPrefixArgs], {
+      input: raw, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'],
+      timeout: 2_000, killSignal: 'SIGKILL', maxBuffer: 4096,
+    });
+    if (result.status !== 0 || result.signal !== null || result.error !== undefined) return unavailable();
+    try {
+      const value: unknown = JSON.parse(result.stdout);
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) return unavailable();
+      const object = value as Record<string, unknown>;
+      return Object.keys(object).length === 1 && validEndpointBatchResults(object.available, candidates.length)
+        ? object.available : unavailable();
+    } catch { return unavailable(); }
+  };
+  return probe;
 }
 
 export function allocateStableEndpoint(
   store: StateStore,
   input: EndpointRequest,
-  probe: (candidate: EndpointCandidate) => boolean = isEndpointAvailable,
+  probe: EndpointAvailabilityProbe = isEndpointAvailable,
 ): EndpointLease {
   try {
     return store.allocateEndpoint(input, probe);

@@ -24,7 +24,7 @@ For every worktree, collect:
 
 ### Working tree state
 
-Use porcelain output suitable for machine parsing, including untracked files.
+Use porcelain output suitable for machine parsing, including untracked and ignored content.
 
 Classify:
 
@@ -33,10 +33,28 @@ clean
 staged
 unstaged
 untracked
+ignored
 unmerged
 ```
 
-Counts and representative paths can be returned; JSON can include the full parsed set when requested.
+`workingTree.counts` and `workingTree.paths` expose independent `untracked` and `ignored`
+groups. A worktree containing only ignored content is classified as `ignored`, not `clean`.
+Ignored directories may be represented by one trailing-slash entry; these are Git entry counts,
+not recursive file counts. Both groups block removal, using `GIT_UNTRACKED` and
+`GIT_IGNORED_CONTENT` respectively.
+
+By default WTM excludes untracked and ignored symbolic links from content blockers without
+following their targets. Configured [untracked-symlink policy](03-configuration-spec.md#untracked-symbolic-links)
+can warn or block on untracked links; ignored links retain their existing exclusion.
+A missing path can be dropped between status and inspection;
+other inspection failures abort analysis rather than classify unreadable content as safe.
+Invalid UTF-8 in porcelain output also aborts analysis (`GIT_REPOSITORY_DEGRADED`), because
+replacing invalid bytes could change pathname identity and make existing content appear absent.
+
+Runtime-aware removal can defer either content blocker only when **every** named path lies
+inside an ephemeral resource scheduled for cleanup. Ignored user data outside those resources
+still blocks removal. After cleanup the full analysis runs again; any remaining or newly created
+ignored content blocks Git removal.
 
 ### Upstream and remote safety
 
@@ -112,11 +130,15 @@ V1 blocks removal when any of these are true:
 An ignored file blocks removal for the same reason an untracked one does: Git cannot give it
 back, and a `.env` or a local database is exactly the kind of thing `.gitignore` names.
 
-A **symbolic link** is the one exception. It holds no content of its own: removing the worktree
+A **symbolic link** is excluded from ordinary content blockers by default. It holds no content of its own: removing the worktree
 removes the link, and what it points at is somewhere else and survives — and if that somewhere
 is inside this worktree, it is reported in its own right. Without the exception WTM blocked
 itself, because a `[resources]` table that links a worktree's `.env` at the main working tree's
 meant no worktree a task had ever run in could be removed.
+
+An explicit `untracked_symlinks = "block"` adds a separate blocker even for a resource-owned
+untracked link; `review` adds a warning. Neither setting changes ignored-link classification
+or bypasses Git's final unforced removal check.
 
 ## "Unpushed" definition
 
@@ -257,28 +279,35 @@ tool's own bookkeeping blocked it. That is not a hypothetical; it was the behavi
 So stage 1 partitions the blockers before it refuses. A blocker is **deferred** to stage 4 when
 both of these hold:
 
-1. its code is `GIT_UNTRACKED`, and
+1. its code is `GIT_UNTRACKED` or `GIT_IGNORED_CONTENT`, and
 2. **every** path it names resolves inside a path the cleanup stage says it is about to collect.
 
 Everything else refuses, exactly as before. The rule is deliberately narrow in three directions,
 and each narrowing is what keeps it safe:
 
-- **Per-blocker and all-or-nothing.** A single `GIT_UNTRACKED` blocker naming one reclaimable
+- **Per-blocker and all-or-nothing.** A single untracked or ignored blocker naming one reclaimable
   directory and one real file is not deferred. Half a match is no match.
 - **Code-checked, not only path-checked.** `GIT_DIRTY_STAGED`, `GIT_DIRTY_UNSTAGED` and
   `GIT_UNMERGED` carry paths through the same machinery, so without the code check an edit to a
   *tracked* file that happens to live under a declared resource path would be deferred — and
   deferring it authorizes deleting work Git could not give back.
 - **Failing closed.** A blocker whose path list is missing, empty, or holds anything that is not a
-  string is not deferrable. An untracked blocker WTM cannot read the extent of is one it cannot
+  string is not deferrable. A content blocker WTM cannot read the extent of is one it cannot
   prove is harmless. Likewise, a worktree whose configuration WTM cannot resolve reports no
   reclaimable paths at all, so it refuses at stage 1 rather than entering a cleanup that does not
   know what to collect.
 
 Deferring authorizes nothing. It moves the decision to stage 6, which sees whatever cleanup
-actually left behind: if stage 4 retains a target instead of deleting it, the untracked content is
+actually left behind: if stage 4 retains a target instead of deleting it, the untracked or ignored content is
 still there and the removal is refused — after the processes were stopped, but with the worktree
 intact.
+
+`[safety] untracked_symlinks` defaults to `ignore`; `review` adds an advisory warning and
+`block` adds the dedicated `GIT_UNTRACKED_SYMLINKS` blocker. Its context reports policy,
+paths and count. It is never deferred to resource cleanup, including for a resource-owned
+symlink. Both analyses use the resolved policy. Ignored entries retain their separate
+policy and `GIT_IGNORED_CONTENT` behavior. The final Git remove remains unforced, so an
+analysis without blockers is not permission to bypass Git's own dirty-worktree refusal.
 
 The deferred blockers are reported on the removal result as `deferredBlockers`, exactly as the
 analysis raised them. They are not warnings: a worktree that ran a task is *expected* to hold the
@@ -371,7 +400,7 @@ wtm analyze --cleanup-candidates
 ```
 
 lists every linked worktree of the current repository — the main worktree is never a candidate —
-ordered best-first, with a `cleanup` block on each entry carrying `rank`, `score` and `reason`.
+ordered best-first, with a `cleanup` block carrying `rank`, `score`, `reason` and `reclaimable`.
 
 The order is **lexicographic over ordered tiers**, not a weighted sum. Each comparison is decided
 by the first tier that separates two candidates, so every position has a one-sentence answer:
@@ -385,6 +414,8 @@ by the first tier that separates two candidates, so every position has a one-sen
    away whether or not anything merged it.
 5. **Idleness** — longest since the last WTM activity first, then since the last commit.
 6. **Prunable** — a worktree Git already reports as gone, before one that is still there.
+7. **Disk estimate** — larger complete estimates first, then unknown estimates. This never
+   overrides safety, runtime, persistence or activity evidence.
 
 Two candidates that tie on every tier are ordered by worktree path, so the output is a total
 order and the same repository produces the same sequence every run.
@@ -403,10 +434,34 @@ Ranking never deletes and never hides. A `BLOCKED` candidate is returned ranked 
 blockers, because dropping it would be a policy decision disguised as a sort. The ranking is
 advisory; WTM never bulk-removes worktrees without explicit selectors/confirmation.
 
-Reclaimable disk size is **not** a ranking input today: `wtm disk` reports its own basis as
-`not-estimated`, and turning that into a number is a measurement feature with its own cost,
-caching and staleness questions rather than a ranking one. The tier order above is written so it
-can be added later without reordering anything above it.
+`cleanup.reclaimable` reports an `exclusive-file-allocation-estimate`: allocated blocks of
+regular files with one hard link, excluding Git metadata, symlinks and their targets, other
+devices, and retained resource paths determined by the removal policy. No file contents
+are read. Directory and symlink allocation is omitted. Clones, snapshots and compressed or
+shared blocks mean this is not guaranteed freed space and is not a lower bound.
+
+On Linux, the platform reader additionally checks the current mount namespace before and
+after the walk, excluding descendant mountpoints even when they share the worktree's device.
+The worktree root may itself be a mountpoint. `excluded.mounts` counts these exclusions;
+`excluded.crossDevice` retains its separate device-change meaning. Each mount snapshot is
+bounded to 1 MiB and 20,000 records within the shared time budget. Missing or malformed
+evidence reports `mount-evidence-unavailable`; a changed relevant mount reports
+`mount-evidence-changed`. Neither yields a complete byte estimate. Unrelated mounts do not
+invalidate the scan. Other platforms retain device/symlink checks; same-device mount
+exclusion is not yet proven there. These two observations cannot detect every transient
+mount/unmount between them and are not an atomic mount snapshot.
+
+All candidates share a cooperative two-second / 20,000-entry budget and are measured
+sequentially in path order. Each walk has a depth limit of 64. A pending OS read cannot be
+interrupted. There is no persistent cache or background scan. Detected file/path changes,
+unreadable allocation metadata and unresolvable resource templates make an estimate
+unavailable. Budget exhaustion makes it partial; both use `estimatedBytes: null`, retain
+`observedExclusiveBytes` for diagnosis and carry a `reason`. Neither is ranked as zero.
+Complete estimates carry `reclaimable-estimate-<bytes>-bytes` in ranking reasons; unknown
+ones carry `reclaimable-unknown` with a reason when available. Path/metadata rechecks detect
+races but do not create an atomic filesystem snapshot. Removal always repeats its own safety
+checks. `wtm disk` retains its separate resource-footprint basis and does not report this as
+its own reclaimable total.
 
 ## JSON analysis
 
@@ -418,6 +473,8 @@ Example codes:
 GIT_DIRTY_STAGED
 GIT_DIRTY_UNSTAGED
 GIT_UNTRACKED
+GIT_UNTRACKED_SYMLINKS
+GIT_IGNORED_CONTENT
 GIT_UNMERGED
 GIT_HEAD_NOT_REMOTE_PERSISTED
 GIT_WORKTREE_LOCKED

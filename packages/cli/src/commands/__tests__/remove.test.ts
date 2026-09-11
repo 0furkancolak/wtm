@@ -83,7 +83,8 @@ describe('runRemoveCommand', () => {
 
     const envelope = await runRemoveCommand(input(fixture));
 
-    expect(errorCodes(envelope)).toEqual(['GIT_UNTRACKED']);
+    expect(errorCodes(envelope)).toEqual(['GIT_IGNORED_CONTENT']);
+    expect(envelope.errors[0]?.context).toMatchObject({ count: 1, paths: ['ignored.log'] });
     expect(await Bun.file(`${fixture.linkedWorktreePath}/ignored.log`).text()).toBe('must survive removal\n');
     await expectPreserved(fixture);
   });

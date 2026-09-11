@@ -14,7 +14,7 @@ async function temporaryRoot(): Promise<string> {
 }
 
 function git(cwd: string, ...args: string[]): void {
-  execFileSync('/usr/bin/git', args, { cwd, encoding: 'utf8' });
+  execFileSync('git', args, { cwd, encoding: 'utf8' });
 }
 
 async function capture(argv: readonly string[], dependencies: CliDependencies) {
@@ -61,7 +61,7 @@ async function foregroundRun() {
   await writeFile(join(root, 'wtm.toml'), [
     'version = 1', '', '[workspace]', 'name = "production"', '',
     '[tasks.greet]', 'description = "Print a fixed greeting."',
-    'run = ["/bin/echo", "greeting"]', 'cwd = "{worktree.root}"', '',
+    `run = ${JSON.stringify(['node', '-e', 'console.log("greeting")'])}`, 'cwd = "{worktree.root}"', '',
   ].join('\n'));
   git(root, 'add', '-A');
   git(root, 'commit', '-qm', 'configure');

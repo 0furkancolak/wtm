@@ -39,7 +39,20 @@ WTM guarantees no collision among active WTM-managed leases. External processes 
 
 A lease belongs to a worktree, so a worktree Git no longer reports gives its ports back: reconciliation releases every active lease of a worktree it marks `ORPHANED`. Otherwise a workspace that opens and finishes ten branches ends up holding ten dead leases inside a fixed band, and `wtm ports` lists addresses for directories that are gone. Releasing is reversible — a worktree that reappears reactivates its own lease and keeps its port, unless something else has taken it meanwhile.
 
-Each probe is a process, so one allocation asks the operating system about at most 256 ports before it gives up and says so. Ports already leased are refused from the registry and cost nothing. Without the bound, a probe that systematically answered "taken" — one that cannot run, or one whose process is throttled past its own timeout — turned a single allocation into one spawn per port in a band that is thirty thousand wide by default.
+One allocation sends at most 256 candidates to one short-lived helper, inside the same
+SQLite transaction that checks leases and persists the selected endpoint. The compatible
+existing lease is considered first, then the configured preference and ascending range.
+Other active leases are excluded before probing. The helper binds/closes candidates
+sequentially and returns positional booleans, so host/protocol identity is preserved.
+Node and standalone installations both support this path; older injected single-candidate
+probes remain supported with a bounded search.
+
+The entire helper has a two-second deadline and is killed if it exceeds it. Requests use
+bounded stdin (128 KiB) to avoid Windows command-line limits; responses are bounded to 4 KiB.
+A failed, incomplete or malformed response cannot authorize a lease or partially update an
+existing one. No helper service or cached availability is added. These are observations:
+an unrelated process can still bind after the helper releases a port and before the task
+starts. The SQLite transaction only serializes WTM's own leases.
 
 ## Stable dynamic strategy
 
@@ -100,6 +113,21 @@ wtm start dev
 ```
 
 does not start two copies. The second call reports the existing process. Explicit `wtm restart dev` replaces it.
+
+## Readiness observations
+
+An HTTP healthcheck and `wtm start dev --wait` (also supported by restart) request a bounded
+readiness observation after launch. Normal start reports `NOT_CHECKED`. A successful wait
+requires a 2xx response plus the same live PID/group/start-time/fingerprint and no authenticated
+completion evidence before and after the probe. An anchor PID alone is insufficient.
+
+The observation runs outside the supervisor lock and cannot mark a replacement task ready.
+Timeout, IPC cancellation and disconnect release its HTTP request and timers; they leave the
+managed service running. IPC cancellation is scoped to the submitting connection and remains
+available when its normal request capacity is full. Unrelated requests keep their existing
+five-second transport deadline. Readiness has a separate bounded deadline plus launch allowance.
+There is no persisted health state or periodic health monitor. See the configuration and CLI
+references for durations and result/error states.
 
 ## Logs
 

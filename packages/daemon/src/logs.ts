@@ -5,13 +5,17 @@ import {
   mkdir,
   open,
   realpath,
+  readdir,
   rename,
   rm,
+  rmdir,
   type FileHandle,
 } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { z } from 'zod';
 import { selectPlatformRuntime } from '@wtm/platform';
 import type { FileTrustPolicy } from '@wtm/platform/ports';
+import { retainedLogCount } from './log-policy';
 
 const defaultRotationBytes = 20 * 1024 * 1024;
 const defaultRetainedFiles = 3;
@@ -61,9 +65,20 @@ export interface PreparedManagedLogs {
   stdoutPath: string;
   stderrPath: string;
   launchMarkerPath: string;
+  completionMarkerPath: string;
   rotationBytes: number;
   retainedFiles: number;
 }
+
+const completionSchema = z.object({
+  pid: z.number().int().positive(),
+  exitCode: z.number().int().nonnegative().nullable(),
+  signal: z.string().regex(/^SIG[A-Z0-9]+$/).max(32).nullable(),
+  completedAt: z.string().datetime(),
+  logFailed: z.boolean(),
+  timedOut: z.boolean().optional(),
+}).strict();
+export type ManagedProcessCompletion = z.infer<typeof completionSchema>;
 
 export interface ManagedLogCursor {
   dev: number;
@@ -90,7 +105,7 @@ export class ManagedLogStore {
     if (!isAbsolute(options.root)) throw new TypeError('Managed log root must be absolute');
     this.#root = resolve(options.root);
     this.#rotationBytes = positiveInteger(options.rotationBytes ?? defaultRotationBytes, 'Log rotation size');
-    this.#retainedFiles = positiveInteger(options.retainedFiles ?? defaultRetainedFiles, 'Retained log count');
+    this.#retainedFiles = retainedLogCount(options.retainedFiles ?? defaultRetainedFiles);
     positiveInteger(options.rotationCheckMs ?? 250, 'Log rotation check interval');
     this.#raceHook = options.raceHook ?? (() => {});
     this.#fileTrust = options.fileTrust ?? hostFileTrustPolicy();
@@ -104,11 +119,13 @@ export class ManagedLogStore {
     const opened = await this.#open(worktreeId, taskName, false);
     await opened.close();
     const launchMarkerPath = join(resolve(opened.stdoutPath, '..'), 'launch.json');
+    const completionMarkerPath = join(resolve(opened.stdoutPath, '..'), 'completion.json');
     const directory = resolve(launchMarkerPath, '..');
     const parent = await directoryIdentity(directory, this.#fileTrust);
-    if (await safeLogStat(launchMarkerPath, this.#fileTrust) !== null) {
+    for (const marker of [launchMarkerPath, completionMarkerPath]) {
+      if (await safeLogStat(marker, this.#fileTrust) === null) continue;
       await assertDirectoryIdentity(directory, parent, this.#fileTrust);
-      await rm(launchMarkerPath);
+      await rm(marker);
       await assertDirectoryIdentity(directory, parent, this.#fileTrust);
     }
     return {
@@ -116,6 +133,7 @@ export class ManagedLogStore {
       stdoutPath: opened.stdoutPath,
       stderrPath: opened.stderrPath,
       launchMarkerPath,
+      completionMarkerPath,
       rotationBytes: this.#rotationBytes,
       retainedFiles: this.#retainedFiles,
     };
@@ -182,9 +200,18 @@ export class ManagedLogStore {
     await assertSecureDirectoryChain(this.#root, directory, this.#fileTrust);
     const parent = await directoryIdentity(directory, this.#fileTrust);
     for (const path of [stdout, stderr]) {
-      const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      let handle: FileHandle;
+      try { handle = await openExistingSafeLog(path, this.#fileTrust); }
+      catch (error) {
+        if (!isMissing(error) && !(error instanceof ManagedLogIdentityChangedError)) throw error;
+        // The live anchor closes and archives current before reopening it. Verify that gap
+        // through the same bounded generation protocol as log reads, without creating a file
+        // or replacing the writer's inode. Stable current files need no marker/ACL round trips.
+        await this.readCursor(path, undefined, 1);
+        await assertDirectoryIdentity(directory, parent, this.#fileTrust);
+        continue;
+      }
       try {
-        await assertSafeFileHandle(handle, path, this.#fileTrust);
         await assertDirectoryIdentity(directory, parent, this.#fileTrust);
       } finally {
         await handle.close();
@@ -249,6 +276,48 @@ export class ManagedLogStore {
     }
   }
 
+  /** Completion belongs to this unique job log directory and the exact recorded anchor PID. */
+  async readCompletion(stdoutPath: string, pid: number): Promise<ManagedProcessCompletion | null> {
+    const directory = resolve(stdoutPath, '..');
+    assertContained(this.#root, directory);
+    await assertSecureDirectoryChain(this.#root, directory, this.#fileTrust);
+    const parent = await directoryIdentity(directory, this.#fileTrust);
+    let handle: FileHandle;
+    try { handle = await openExistingSafeLog(join(directory, 'completion.json'), this.#fileTrust); }
+    catch (error) { if (isMissing(error)) return null; throw error; }
+    try {
+      const stat = await handle.stat();
+      if (stat.size > 1024) throw new Error('Invalid completion marker');
+      const bytes = Buffer.alloc(stat.size);
+      const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+      const parsed = completionSchema.safeParse(JSON.parse(bytes.subarray(0, bytesRead).toString('utf8')));
+      await assertDirectoryIdentity(directory, parent, this.#fileTrust);
+      if (!parsed.success || parsed.data.pid !== pid) throw new Error('Invalid completion identity');
+      return parsed.data;
+    } finally { await handle.close(); }
+  }
+
+  /** Only terminal queue jobs call this, after their full process group was confirmed absent. */
+  async removeJob(worktreeId: string, jobId: string): Promise<void> {
+    assertSafeIdentifier(worktreeId); assertSafeIdentifier(jobId);
+    const directory = join(this.#root, worktreeId, `job-${jobId}`);
+    try { await assertSecureDirectoryChain(this.#root, directory, this.#fileTrust); }
+    catch (error) { if (isMissing(error)) return; throw error; }
+    const parent = await directoryIdentity(directory, this.#fileTrust);
+    const files = await readdir(directory);
+    if (files.length > 64 || files.some((file) => !/^(?:stdout\.log|stderr\.log)(?:\.\d+|\.generation)?$|^(?:launch|completion)\.json$/.test(file))) {
+      throw new Error('Unexpected file in job log directory');
+    }
+    for (const file of files) {
+      const path = join(directory, file);
+      await safeLogStat(path, this.#fileTrust);
+      await assertDirectoryIdentity(directory, parent, this.#fileTrust);
+      await rm(path);
+    }
+    await assertDirectoryIdentity(directory, parent, this.#fileTrust);
+    await rmdir(directory);
+  }
+
   async readCursor(
     path: string,
     cursor?: Pick<ManagedLogCursor, 'dev' | 'ino' | 'offset'> & { generation?: string },
@@ -261,36 +330,44 @@ export class ManagedLogStore {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await assertSecureDirectoryChain(this.#root, directory, this.#fileTrust);
       const parentIdentity = await directoryIdentity(directory, this.#fileTrust);
-      const before = await readGenerationMarker(absolute, this.#fileTrust);
-      await this.#raceHook('after-generation-read', absolute);
-      let result: ManagedLogCursorRead;
       try {
-        const rotation = before.startsWith('rotating-')
-          ? await resolveRotationSnapshot(absolute, before, cursor?.generation, this.#fileTrust)
-          : null;
-        result = rotation !== null && cursor !== undefined
-          ? await this.#readRotatingCursor(absolute, cursor, maxBytes, parentIdentity)
-            ?? await this.#readCursorGeneration(
-              absolute, String(rotation.generation), cursor, maxBytes, parentIdentity, rotation.currentPath,
-            )
-          : await this.#readCursorGeneration(
-            absolute,
-            rotation === null ? before : String(rotation.generation),
-            cursor,
-            maxBytes,
-            parentIdentity,
-            rotation?.currentPath ?? absolute,
-          );
-      } catch (error) {
-        const afterFailure = await readGenerationMarker(absolute, this.#fileTrust);
+        const before = await readGenerationMarker(absolute, this.#fileTrust);
+        await this.#raceHook('after-generation-read', absolute);
+        let result: ManagedLogCursorRead;
+        try {
+          const rotation = before.startsWith('rotating-')
+            ? await resolveRotationSnapshot(absolute, before, cursor?.generation, this.#fileTrust)
+            : null;
+          result = rotation !== null && cursor !== undefined
+            ? await this.#readRotatingCursor(absolute, cursor, maxBytes, parentIdentity)
+              ?? await this.#readCursorGeneration(
+                absolute, String(rotation.generation), cursor, maxBytes, parentIdentity, rotation.currentPath,
+              )
+            : await this.#readCursorGeneration(
+              absolute,
+              rotation === null ? before : String(rotation.generation),
+              cursor,
+              maxBytes,
+              parentIdentity,
+              rotation?.currentPath ?? absolute,
+            );
+        } catch (error) {
+          if (error instanceof ManagedLogIdentityChangedError || error instanceof UnsafeManagedLogTargetError) throw error;
+          const afterFailure = await readGenerationMarker(absolute, this.#fileTrust);
+          await assertDirectoryIdentity(directory, parentIdentity, this.#fileTrust);
+          if (before !== afterFailure || isMissing(error)) { await shortYield(); continue; }
+          throw error;
+        }
+        await this.#raceHook('during-cursor-read', absolute);
+        const after = await readGenerationMarker(absolute, this.#fileTrust);
         await assertDirectoryIdentity(directory, parentIdentity, this.#fileTrust);
-        if (before !== afterFailure || isMissing(error)) { await shortYield(); continue; }
-        throw error;
+        if (before === after) return result;
+      } catch (error) {
+        // Atomic marker replacement and segment shifts can invalidate any read in this
+        // attempt. Retry only identity conflicts; unsafe targets remain immediate refusals.
+        if (!(error instanceof ManagedLogIdentityChangedError)) throw error;
+        await assertDirectoryIdentity(directory, parentIdentity, this.#fileTrust);
       }
-      await this.#raceHook('during-cursor-read', absolute);
-      const after = await readGenerationMarker(absolute, this.#fileTrust);
-      await assertDirectoryIdentity(directory, parentIdentity, this.#fileTrust);
-      if (before === after) return result;
       await shortYield();
     }
     throw new Error('Managed log rotated during bounded read');
@@ -570,10 +647,33 @@ async function openSafeLog(path: string, fileTrust: FileTrustPolicy): Promise<Fi
   }
 }
 
+class ManagedLogIdentityChangedError extends Error {
+  constructor() { super('Managed log path identity changed during open'); }
+}
+
+class UnsafeManagedLogTargetError extends Error {
+  constructor() { super('Unsafe managed log target'); }
+}
+
 async function openExistingSafeLog(path: string, fileTrust: FileTrustPolicy): Promise<FileHandle> {
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  // O_NOFOLLOW is not portable. Inspect the path as well as the held descriptor so an
+  // external symlink, even one restored before the second inspection, cannot supply evidence.
+  const before = await safeLogStat(path, fileTrust);
+  let handle: FileHandle;
+  try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ELOOP') throw new UnsafeManagedLogTargetError();
+    throw error;
+  }
   try {
     await assertSafeFileHandle(handle, path, fileTrust);
+    const opened = await handle.stat();
+    const after = await safeLogStat(path, fileTrust);
+    if (before === null || after === null
+      || before.dev !== opened.dev || before.ino !== opened.ino || before.uid !== opened.uid
+      || after.dev !== opened.dev || after.ino !== opened.ino || after.uid !== opened.uid) {
+      throw new ManagedLogIdentityChangedError();
+    }
     return handle;
   } catch (error) {
     await handle.close();
@@ -589,7 +689,7 @@ async function safeLogStat(path: string, fileTrust: FileTrustPolicy): Promise<St
       || !fileTrust.isNotSharedByHardLink(stat)
       || !fileTrust.currentIdentityAvailable()
       || !(await fileTrust.isOwnedByCurrentUser(stat, path));
-    if (unsafe) throw new Error('Unsafe managed log target');
+    if (unsafe) throw new UnsafeManagedLogTargetError();
     return stat;
   } catch (error) {
     if (isMissing(error)) return null;
@@ -675,7 +775,7 @@ async function assertSafeFileHandle(handle: FileHandle, path: string, fileTrust:
     || !fileTrust.isNotSharedByHardLink(stat)
     || !fileTrust.currentIdentityAvailable()
     || !(await fileTrust.isOwnedByCurrentUser(stat, path));
-  if (unsafe) throw new Error('Unsafe managed log target');
+  if (unsafe) throw new UnsafeManagedLogTargetError();
 }
 
 function assertSafeIdentifier(value: string): void {

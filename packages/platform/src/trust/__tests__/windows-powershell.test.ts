@@ -9,7 +9,7 @@ import { createCurrentWindowsUserSidReader, createWindowsAclReader } from '../wi
 describe('createWindowsAclReader', () => {
   test('parses an owner SID and a list of access rules out of the rendered PSCustomObject JSON', async () => {
     const fixture = JSON.stringify({
-      OwnerSid: 'S-1-5-21-1-2-3-1001',
+      DaclPresent: true, OwnerSid: 'S-1-5-21-1-2-3-1001',
       AccessRules: [
         { Sid: 'S-1-5-21-1-2-3-1001', Rights: 'FullControl', ControlType: 'Allow' },
         { Sid: 'S-1-5-18', Rights: 'FullControl', ControlType: 'Allow' },
@@ -29,7 +29,7 @@ describe('createWindowsAclReader', () => {
     // ConvertTo-Json collapses a single-element PowerShell array to a bare object unless `-AsArray`
     // is used; the parser must accept both shapes rather than assuming an array.
     const fixture = JSON.stringify({
-      OwnerSid: 'S-1-5-21-1-2-3-1001',
+      DaclPresent: true, OwnerSid: 'S-1-5-21-1-2-3-1001',
       AccessRules: { Sid: 'S-1-5-18', Rights: 'FullControl', ControlType: 'Allow' },
     });
     const reader = createWindowsAclReader(async () => ({ stdout: fixture }));
@@ -52,30 +52,44 @@ describe('createWindowsAclReader', () => {
     await expect(missingOwner('C:\\x')).resolves.toBeUndefined();
   });
 
-  test('a malformed individual access rule is dropped rather than failing the whole read', async () => {
+  test('a malformed individual access rule invalidates the whole ACL evidence', async () => {
     const fixture = JSON.stringify({
-      OwnerSid: 'S-1-5-21-1-2-3-1001',
+      DaclPresent: true, OwnerSid: 'S-1-5-21-1-2-3-1001',
       AccessRules: [
         { Sid: 'S-1-5-18', Rights: 'FullControl', ControlType: 'Allow' },
         { Rights: 'FullControl' }, // no Sid
       ],
     });
     const reader = createWindowsAclReader(async () => ({ stdout: fixture }));
-    await expect(reader('C:\\x')).resolves.toEqual({
-      ownerSid: 'S-1-5-21-1-2-3-1001',
-      accessRules: [{ identitySid: 'S-1-5-18', fileSystemRights: 'FullControl', accessControlType: 'Allow' }],
-    });
+    await expect(reader('C:\\x')).resolves.toBeUndefined();
   });
 
-  test('an unrecognised ControlType is treated as Allow-only-if-explicitly-Deny, i.e. defaults to Allow', async () => {
+  test('an unrecognised ControlType invalidates the entire ACL evidence', async () => {
     const fixture = JSON.stringify({
-      OwnerSid: 'S-1-5-21-1-2-3-1001',
+      DaclPresent: true, OwnerSid: 'S-1-5-21-1-2-3-1001',
       AccessRules: [{ Sid: 'S-1-5-18', Rights: 'FullControl', ControlType: 'SomethingElse' }],
     });
     const reader = createWindowsAclReader(async () => ({ stdout: fixture }));
     const result = await reader('C:\\x');
-    expect(result?.accessRules[0]?.accessControlType).toBe('Allow');
+    expect(result).toBeUndefined();
   });
+
+  test('missing or malformed rule collections and SID evidence cannot become an empty trusted ACL', async () => {
+    for (const evidence of [
+      { DaclPresent: true, OwnerSid: 'S-1-5-18' },
+      { DaclPresent: true, OwnerSid: 'S-1-5-18', AccessRules: null },
+      { DaclPresent: true, OwnerSid: 'S-1-5-18', AccessRules: [null] },
+      { DaclPresent: true, OwnerSid: 'S-1-5-18', AccessRules: [42] },
+      { DaclPresent: true, OwnerSid: '', AccessRules: [] },
+      { DaclPresent: true, OwnerSid: 'Administrator', AccessRules: [] },
+      { DaclPresent: true, OwnerSid: 'S-1-5-18', AccessRules: [{ Sid: '', Rights: 'FullControl', ControlType: 'Allow' }] },
+      { DaclPresent: true, OwnerSid: 'S-1-5-18', AccessRules: [{ Sid: 'S-1-1-0', Rights: '', ControlType: 'Allow' }] },
+    ]) {
+      const reader = createWindowsAclReader(async () => ({ stdout: JSON.stringify(evidence) }));
+      expect(await reader('C:\\x')).toBeUndefined();
+    }
+  });
+
 });
 
 describe('createWindowsAclReader command construction', () => {
@@ -88,7 +102,7 @@ describe('createWindowsAclReader command construction', () => {
     let capturedCommand: string | undefined;
     const reader = createWindowsAclReader(async (args) => {
       capturedCommand = args[args.indexOf('-Command') + 1];
-      return { stdout: JSON.stringify({ OwnerSid: 'S-1-5-18', AccessRules: [] }) };
+      return { stdout: JSON.stringify({ DaclPresent: true, OwnerSid: 'S-1-5-18', AccessRules: [] }) };
     });
     await reader('C:\\x');
     expect(capturedCommand).toContain('Import-Module -Name "$PSHOME\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1"');
@@ -134,4 +148,28 @@ describe('createCurrentWindowsUserSidReader', () => {
     await expect(reader()).resolves.toBe('S-1-5-21-1-2-3-1001');
     expect(calls).toBe(3);
   });
+});
+
+
+test('invalid current-user SID output is rejected and never memoized', async () => {
+  let calls = 0;
+  const reader = createCurrentWindowsUserSidReader(async () => ({ stdout: ++calls === 1 ? 'permission denied' : 'S-1-5-21-1-2-3-1001' }));
+  expect(await reader()).toBeNull();
+  expect(await reader()).toBe('S-1-5-21-1-2-3-1001');
+  expect(calls).toBe(2);
+});
+
+
+test('an absent or unobserved DACL cannot be confused with an empty deny-all DACL', async () => {
+  for (const evidence of [
+    { OwnerSid: 'S-1-5-18', AccessRules: [] },
+    { DaclPresent: false, OwnerSid: 'S-1-5-18', AccessRules: [] },
+    { DaclPresent: null, OwnerSid: 'S-1-5-18', AccessRules: [] },
+    { DaclPresent: 'true', OwnerSid: 'S-1-5-18', AccessRules: [] },
+  ]) {
+    const reader = createWindowsAclReader(async () => ({ stdout: JSON.stringify(evidence) }));
+    expect(await reader('C:\\x')).toBeUndefined();
+  }
+  const emptyDacl = createWindowsAclReader(async () => ({ stdout: JSON.stringify({ DaclPresent: true, OwnerSid: 'S-1-5-18', AccessRules: [] }) }));
+  expect(await emptyDacl('C:\\x')).toEqual({ ownerSid: 'S-1-5-18', accessRules: [] });
 });

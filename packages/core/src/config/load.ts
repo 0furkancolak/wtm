@@ -15,6 +15,7 @@ export const builtInConfig: WtmConfig = {
   // here instead of left implicit so `wtm explain` has a "WTM's own default" to report and a
   // `[git]` override in `wtm.toml` has a documented value to replace.
   git: { allowed_remote_refs: [...defaultAllowedRemoteRefs] },
+  safety: { untracked_symlinks: 'ignore' },
 };
 
 async function loadConfigFile(path: string): Promise<ConfigLayer | undefined> {

@@ -351,6 +351,10 @@ timeout            duration
 on_failure         fail|warn|continue
 requires           capability[]
 env                 map<string,string>
+healthcheck         optional HTTP readiness configuration
+queue               boolean, opt in a finite task to the shared queue
+memory_estimate_mib  positive integer, estimated peak for the whole task/worker tree
+queue_env           environment overrides applied only to enqueued execution
 ```
 
 `main`/`worktree` are mutually exclusive with `run`.
@@ -358,6 +362,83 @@ env                 map<string,string>
 `shell` is required when a command is written as a single string and rejected when a command is written as an argv array.
 
 `expose` is accepted by the configuration schema but has no CLI dispatch effect in V1: it does not create a top-level `wtm <task>` word. Tasks are always addressed by name through `wtm run`, `wtm start`, `wtm restart` or `wtm resolve`.
+
+### HTTP readiness
+
+```toml
+[tasks.dev.healthcheck]
+type = "http"
+url = "http://127.0.0.1:{port.web}/health"
+timeout = "30s"
+interval = "500ms"
+```
+
+The URL uses the task's template context. Only HTTP and HTTPS URLs without credentials or
+fragments are accepted. `timeout` defaults to 30 seconds and accepts positive `ms`, `s`
+or `m` durations up to five minutes; `interval` defaults to 500 ms and accepts 100 ms
+through 30 seconds. Duration values must resolve to whole milliseconds. Unknown fields
+and probe types are rejected. TCP, process and command probes are not implemented.
+
+Only `wtm start dev --wait` and `wtm restart dev --wait` perform the probe. A 2xx response
+is successful; redirects are not followed and response bodies are not buffered. Probes
+run within one bounded observation, without a persistent health monitor. The optional
+CLI `--timeout` overrides the configuration for that observation. An invalid healthcheck
+is rejected before a wait operation launches or stops a process.
+
+### Shared heavy-job memory admission
+
+In the daemon's global configuration, optionally enable memory admission alongside concurrency:
+
+```toml
+[jobs]
+max_concurrent_heavy = 2
+
+[jobs.memory]
+budget_mib = 8192
+reserve_mib = 2048
+```
+
+Both quantities use MiB (1,048,576 bytes). `budget_mib` is required and positive; `reserve_mib`
+defaults to 1024 and may be zero. Each is capped at 1,048,576 MiB. Omitting `jobs.memory`
+keeps concurrency-only behavior. Restart the daemon to apply global policy changes;
+workspace/repository files cannot raise this shared limit.
+
+```toml
+[tasks.build]
+run = ["cargo", "build"]
+queue = true
+timeout = "10m"
+memory_estimate_mib = 2048
+
+[tasks.build.queue_env]
+CARGO_BUILD_JOBS = "2"
+```
+
+Estimate the whole task tree at the configured worker count. `queue_env` requires `queue=true`,
+uses the existing environment/template resolver, and overrides task `env` only on enqueued
+execution. Foreground run, start and resolve keep their ordinary environment. WTM does not
+guess a universal worker option: configure the build tool's actual worker setting. Changing
+that setting or the estimate invalidates a queued command's fingerprint.
+
+Admission requires an explicit positive task estimate when memory policy is enabled.
+The estimate must fit both the configured budget and known physical/OS-constrained capacity
+after headroom. Missing or permanently unfit estimates are refused before acceptance.
+The SQLite claim also accounts for all held estimates and the current available-memory sample
+after headroom. Full held estimates are subtracted conservatively even though available memory
+already reflects current task use, reserving future worker growth; this can underutilize RAM.
+
+Memory observation failure defers launches. Strict FIFO does not let smaller followers
+overtake a memory-blocked head. Jobs rendered impossible by a policy change fail before launch
+with the corresponding memory error recorded; cancelled/running/uncertain jobs retain their
+reservations until process cleanup is proved. Legacy queued jobs without estimates fail when
+memory admission is enabled; legacy held jobs keep blocking admission until cleanup is proved.
+
+The daemon samples Node's available/constrained memory at admission/dispatch and explicit
+queries, using the existing queue wakeup while jobs remain. There is no process-tree RSS scan
+or extra polling service. Dev servers and other apps reduce the observed available memory
+without owning a finite-job slot. This is estimated admission, not an OS-enforced limit;
+tasks, other apps and direct commands can grow after a sample. Native platform validation
+and real two-AI RAM/swap measurements are still required before claiming measured savings.
 
 ## Events
 
@@ -457,9 +538,10 @@ creates nothing for them and only reports whether it is there.
 `wtm status` lists every declared resource and whether this worktree has it, and `wtm doctor`
 reports the ones that could not be created, with the reason.
 
-A symbolic link a resource creates does not block `wtm remove`: the link holds no content of
-its own, and whatever it points at lives outside the worktree and survives. A copied or cloned
-resource is real content in the worktree, and does block, like any other untracked file.
+A symbolic link a resource creates does not add a WTM content blocker by default. The
+untracked-symlink policy below can explicitly warn or block even for resource-owned links.
+Copied or cloned resources are real content; removal's resource cleanup and final Git safety
+gate determine whether they can be removed.
 
 ## Git safety
 
@@ -496,6 +578,33 @@ offending pattern, rather than surfacing later as a crash from inside the analys
 
 The segment after `refs/remotes/` also names which remotes `--refresh-remotes` fetches from, so
 narrowing this list narrows what a refresh talks to.
+
+### Untracked symbolic links
+
+```toml
+[safety]
+untracked_symlinks = "ignore"
+```
+
+| Value | WTM analysis and removal policy |
+| --- | --- |
+| `ignore` (default) | A Git-untracked symlink adds no WTM warning or blocker. |
+| `review` | Adds `GIT_UNTRACKED_SYMLINKS` as a warning and yields `REVIEW` when no blocker exists. |
+| `block` | Adds `GIT_UNTRACKED_SYMLINKS` as a blocker; removal exits 3 before runtime cleanup. |
+
+The setting uses the same built-in/global/workspace/nested/repository configuration layers
+as remote-ref safety, including `.wtm.toml` overrides and `wtm explain` provenance. Missing
+values preserve the parent layer; invalid values are `WTM_CONFIG_INVALID`. The policy
+applies only to Git's untracked entries. Ignored content and ignored-symlink behavior are
+unchanged; tracked edits remain blockers. File contents and link targets are not read or
+modified to evaluate a symlink. Inspection errors other than disappearance fail closed.
+
+Warnings do not introduce a confirmation prompt or override another blocker. Explicit
+`block` is not deferred to resource cleanup, even for a WTM-owned link. The final safety
+analysis repeats the policy, catching links created during cleanup and links replaced by
+ordinary untracked files. `ignore`/`review` do not force deletion: Git's final unforced
+worktree removal can still refuse an arbitrary untracked symlink. WTM does not unlink such
+links or add `--force` to bypass that refusal.
 
 ## Capability provider override
 

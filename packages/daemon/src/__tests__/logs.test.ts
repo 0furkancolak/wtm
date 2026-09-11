@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { lstat, mkdtemp, open, readFile, rename, rm, symlink, link, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { createWindowsFileTrustPolicy } from '@wtm/platform';
+import { isAbsolute, join, relative, sep } from 'node:path';
+import { createWindowsFileTrustPolicy, selectPlatformRuntime } from '@wtm/platform';
 import { ManagedLogStore } from '../logs';
 
 const roots: string[] = [];
@@ -18,6 +18,13 @@ async function root(): Promise<string> {
 }
 
 describe('ManagedLogStore', () => {
+  test('rejects unsupported archive counts before creating log paths', () => {
+    for (const retainedFiles of [0, 1.5, 33, 128, Number.MAX_SAFE_INTEGER]) {
+      expect(() => new ManagedLogStore({ root: join(tmpdir(), 'unused-log-policy-fixture'), retainedFiles })).toThrow(RangeError);
+    }
+    expect(() => new ManagedLogStore({ root: join(tmpdir(), 'unused-log-policy-fixture'), retainedFiles: 32 })).not.toThrow();
+  });
+
   test('redirects output to user-only files below the injected log root', async () => {
     const logRoot = await root();
     const logs = new ManagedLogStore({ root: logRoot, rotationBytes: 1024, retainedFiles: 3 });
@@ -28,9 +35,16 @@ describe('ManagedLogStore', () => {
 
     expect(await readFile(opened.stdoutPath, 'utf8')).toBe('out\n');
     expect(await readFile(opened.stderrPath, 'utf8')).toBe('err\n');
-    expect((await lstat(opened.stdoutPath)).mode & 0o777).toBe(0o600);
-    expect((await lstat(opened.stderrPath)).mode & 0o777).toBe(0o600);
-    expect(opened.stdoutPath.startsWith(`${logRoot}/`)).toBe(true);
+    const runtime = selectPlatformRuntime();
+    for (const path of [opened.stdoutPath, opened.stderrPath]) {
+      const stat = await lstat(path);
+      expect(await runtime.fileTrust.isOwnedByCurrentUser(stat, path)).toBe(true);
+      expect(await runtime.fileTrust.isWritableOnlyByOwner(stat, path, 0o077)).toBe(true);
+      expect(runtime.fileTrust.isNotSharedByHardLink(stat)).toBe(true);
+      if (runtime.id !== 'win32') expect(stat.mode & 0o777).toBe(0o600);
+      const rel = relative(logRoot, path);
+      expect(rel !== '' && !isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`)).toBe(true);
+    }
   });
 
   test('rotates at the configured bound and retains only the configured generations', async () => {
@@ -330,6 +344,73 @@ describe('ManagedLogStore', () => {
       await inherited.close();
       await recovered.close();
     }
+  });
+
+  for (const marker of ['rotating-7-archived-fixture', 'rotating-7-shifted-fixture', 'rotating-4242-123456']) {
+    test(`recovery verifies the archived stream during the writer reopen gap: ${marker}`, async () => {
+      const logRoot = await root();
+      const logs = new ManagedLogStore({ root: logRoot });
+      const opened = await logs.open('worktree-1', 'recover-gap');
+      await opened.stdout.write('before-stdout');
+      await opened.stderr.write('before-stderr');
+      await opened.close();
+      const snapshots = [];
+      for (const path of [opened.stdoutPath, opened.stderrPath]) {
+        await writeFile(`${path}.generation`, marker, { mode: 0o600 });
+        await rename(path, `${path}.1`);
+        snapshots.push({ path, stat: await lstat(`${path}.1`), content: await readFile(`${path}.1`, 'utf8') });
+      }
+
+      await logs.recover(opened.stdoutPath, opened.stderrPath);
+
+      for (const snapshot of snapshots) {
+        await expect(lstat(snapshot.path)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect((await lstat(`${snapshot.path}.1`)).ino).toBe(snapshot.stat.ino);
+        expect(await readFile(`${snapshot.path}.1`, 'utf8')).toBe(snapshot.content);
+        expect(await readFile(`${snapshot.path}.generation`, 'utf8')).toBe(marker);
+      }
+    });
+  }
+
+  test('recovery refuses an unsafe archive instead of accepting it as rotation evidence', async () => {
+    const logRoot = await root();
+    const logs = new ManagedLogStore({ root: logRoot });
+    const opened = await logs.open('worktree-1', 'unsafe-recovery-gap');
+    await opened.close();
+    await writeFile(`${opened.stdoutPath}.generation`, 'rotating-1-archived-fixture', { mode: 0o600 });
+    await rm(opened.stdoutPath);
+    const other = join(logRoot, 'other.log');
+    await writeFile(other, 'unrelated', { mode: 0o600 });
+    await link(other, `${opened.stdoutPath}.1`);
+
+    await expect(logs.recover(opened.stdoutPath, opened.stderrPath)).rejects.toThrow('Unsafe managed log target');
+    expect(await readFile(other, 'utf8')).toBe('unrelated');
+    await expect(lstat(opened.stdoutPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('recovery refuses continuously changing rotation evidence after a bounded observation', async () => {
+    const logRoot = await root();
+    const initial = new ManagedLogStore({ root: logRoot });
+    const opened = await initial.open('worktree-1', 'changing-recovery-gap');
+    await opened.stdout.write('archived');
+    await opened.close();
+    await rename(opened.stdoutPath, `${opened.stdoutPath}.1`);
+    await writeFile(`${opened.stdoutPath}.generation`, 'rotating-1-archived-fixture-0', { mode: 0o600 });
+    let observations = 0;
+    const recovered = new ManagedLogStore({
+      root: logRoot,
+      raceHook: async (phase, path) => {
+        if (phase !== 'after-generation-read' || path !== opened.stdoutPath) return;
+        observations += 1;
+        await writeFile(`${path}.generation`, `rotating-1-archived-fixture-${observations}`, { mode: 0o600 });
+      },
+    });
+
+    await expect(recovered.recover(opened.stdoutPath, opened.stderrPath)).rejects.toThrow('Managed log rotated during bounded read');
+    expect(observations).toBeGreaterThan(0);
+    expect(observations).toBeLessThanOrEqual(3);
+    expect(await readFile(`${opened.stdoutPath}.1`, 'utf8')).toBe('archived');
+    await expect(lstat(opened.stdoutPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   // The race this proves closed needs the directory to be renameable while a file inside it is

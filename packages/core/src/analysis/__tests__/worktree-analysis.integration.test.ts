@@ -31,8 +31,8 @@ describe('analyzeWorktree', () => {
     expect(analysis.workingTree).toEqual({
       available: true,
       classifications: ['clean'],
-      counts: { staged: 0, unstaged: 0, untracked: 0, unmerged: 0, submoduleDirty: 0 },
-      paths: { staged: [], unstaged: [], untracked: [], unmerged: [], submoduleDirty: [] },
+      counts: { staged: 0, unstaged: 0, untracked: 0, ignored: 0, unmerged: 0, submoduleDirty: 0 },
+      paths: { staged: [], unstaged: [], untracked: [], ignored: [], unmerged: [], submoduleDirty: [] },
     });
     expect(analysis.upstream).toEqual({
       configuredRef: 'refs/remotes/origin/feature/safe',
@@ -115,8 +115,10 @@ describe('analyzeWorktree', () => {
 
     const analysis = await analyze(fixture);
 
-    expect(blockerCodes(analysis)).toEqual(['GIT_UNTRACKED']);
-    expect(analysis.workingTree.paths.untracked).toEqual(['ignored.log']);
+    expect(blockerCodes(analysis)).toEqual(['GIT_IGNORED_CONTENT']);
+    expect(analysis.workingTree.counts).toMatchObject({ untracked: 0, ignored: 1 });
+    expect(analysis.workingTree.paths.untracked).toEqual([]);
+    expect(analysis.workingTree.paths.ignored).toEqual(['ignored.log']);
   });
 
   test('a symbolic link is not work a removal could lose', async () => {
@@ -142,9 +144,37 @@ describe('analyzeWorktree', () => {
 
     const analysis = await analyze(fixture);
 
-    expect(blockerCodes(analysis)).toEqual(['GIT_UNTRACKED']);
-    expect(analysis.workingTree.paths.untracked).toEqual(['private.cache']);
+    expect(blockerCodes(analysis)).toEqual(['GIT_IGNORED_CONTENT']);
+    expect(analysis.workingTree.paths.ignored).toEqual(['private.cache']);
+    expect(analysis.workingTree.paths.untracked).toEqual([]);
   });
+
+  test('reports independent blockers for ignored and untracked content', async () => {
+    const fixture = await createFixture();
+    await fixture.write(fixture.repoPath, '.git/info/exclude', '.env\n');
+    await fixture.write(fixture.linkedWorktreePath, '.env', 'private data\n');
+    await fixture.write(fixture.linkedWorktreePath, 'notes.txt', 'keep these notes\n');
+    const analysis = await analyze(fixture);
+    expect(analysis.workingTree.classifications).toEqual(['untracked', 'ignored']);
+    expect(analysis.safety.blockers).toMatchObject([
+      { code: 'GIT_UNTRACKED', context: { count: 1, paths: ['notes.txt'] } },
+      { code: 'GIT_IGNORED_CONTENT', context: { count: 1, paths: ['.env'] } },
+    ]);
+  });
+
+  for (const dangling of [false, true]) {
+    test(`ignored symlinks remain removable (dangling: ${dangling})`, async () => {
+      const fixture = await createFixture();
+      await fixture.write(fixture.repoPath, '.git/info/exclude', '.env\n');
+      if (!dangling) await fixture.write(fixture.repoPath, '.env', 'external content\n');
+      await symlink(join(fixture.repoPath, '.env'), join(fixture.linkedWorktreePath, '.env'));
+      const analysis = await analyze(fixture);
+      expect(analysis.workingTree.counts).toMatchObject({ untracked: 0, ignored: 0 });
+      expect(analysis.workingTree.paths.ignored).toEqual([]);
+      expect(analysis.workingTree.classifications).toEqual(['clean']);
+      expect(blockerCodes(analysis)).toEqual([]);
+    });
+  }
 
   test('classifies unresolved paths only as unmerged and preserves the worktree state', async () => {
     const fixture = await createFixture();
