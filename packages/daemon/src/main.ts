@@ -688,15 +688,17 @@ async function missingDirectory(path: string, kind: string): Promise<Error | nul
     // A root that is refused is not a root that is gone, and calling both "unavailable" hid
     // the only condition a person can actually do something about behind the one they cannot.
     const code = (error as NodeJS.ErrnoException).code;
+    // A missing root is a warning about the workspace, not a fault in the daemon, so its frames
+    // are worth nothing: they are the daemon's own call stack, not a clue about the workspace.
     if (code === 'EACCES' || code === 'EPERM') {
-      return new Error(`Registered ${kind} root cannot be opened: ${path} (${code}). A daemon `
+      return Object.assign(new Error(`Registered ${kind} root cannot be opened: ${path} (${code}). A daemon `
         + 'launched by launchd holds no file-access grant of its own; grant it once in System '
-        + 'Settings > Privacy & Security > Full Disk Access, to the installed wtm executable.');
+        + 'Settings > Privacy & Security > Full Disk Access, to the installed wtm executable.'), { retainFrames: false as const });
     }
     // The registration is deliberately kept — an unmounted volume comes back — but a root that
     // has genuinely gone reports this on every pass forever, so the line says how to end it.
-    return new Error(`Registered ${kind} root is unavailable: ${path}`
-      + ' (the registration is kept in case it returns; retire it with `wtm forget`)');
+    return Object.assign(new Error(`Registered ${kind} root is unavailable: ${path}`
+      + ' (the registration is kept in case it returns; retire it with `wtm forget`)'), { retainFrames: false as const });
   }
   return stat.isDirectory() ? null : new Error(`Registered ${kind} root is not a directory: ${path}`);
 }

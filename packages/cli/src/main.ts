@@ -75,6 +75,14 @@ import {
   type DaemonSignalSource,
   type ForegroundDaemonRuntime,
 } from './commands/daemon';
+import {
+  daemonStatusPath,
+  nextDaemonStatus,
+  readDaemonStatus,
+  servicePathsForHost,
+  writeDaemonStatus,
+  type DaemonStartupOutcome,
+} from './daemon-status';
 import { runProductionDiskCommand, runProductionGcCommand } from './commands/resource-production';
 import { runForgetCommand, type ForgetCommandEnvelope } from './commands/forget';
 import { runAdapterCommand } from './commands/adapter';
@@ -412,7 +420,12 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   serve.action(async (options: ScopeOptions) => {
     // One reporter for the whole daemon: startup failures and every error raised while it
     // runs land in the same log, which is the only place an unattended process can speak.
-    const reportError = createDaemonErrorReporter();
+    const service = servicePathsForHost();
+    const statusPath = service === null ? null : daemonStatusPath(service.logRoot);
+    const previous = statusPath === null ? null : readDaemonStatus(statusPath);
+    const reportError = createDaemonErrorReporter(undefined, undefined, undefined, {
+      repeatedCondition: previous?.state === 'failed' ? previous.condition : null,
+    });
     const result = await serveDaemon({
       reportError,
       runtimeFactory: dependencies.daemonRuntimeFactory
@@ -421,6 +434,11 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
           runtimeInvocation: dependencies.runtimeInvocation ?? defaultRuntimeInvocation(),
         })),
       supervised: process.env.WTM_DAEMON_SUPERVISED === '1',
+      ...(statusPath === null ? {} : {
+        recordOutcome: (outcome: DaemonStartupOutcome) => {
+          writeDaemonStatus(statusPath, nextDaemonStatus(previous, outcome, new Date(), process.pid));
+        },
+      }),
       ...(dependencies.daemonSignals === undefined ? {} : { signals: dependencies.daemonSignals }),
     });
     renderRuntime(result.envelope, runtimeJson(program, options));

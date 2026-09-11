@@ -7,6 +7,7 @@ import type { PlatformRuntime } from '@wtm/platform/ports';
 import { errorSeveritySchema, remediationSchema, wtmErrorCodeSchema } from '@wtm/protocol';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
 import { exitCodeForError } from '../exit-codes';
+import type { DaemonStartupOutcome } from '../daemon-status';
 import { servicePathsFor } from '@wtm/daemon/service-lifecycle';
 import type { ServiceLifecycle } from '@wtm/daemon/service-lifecycle';
 
@@ -38,6 +39,8 @@ export interface DaemonServeDependencies {
    * wrote 162 MB of log in a week (spec R2). Run by hand, the exit keeps its normal class.
    */
   supervised?: boolean;
+  /** Called exactly once per startup, with whether it succeeded or how it failed. */
+  recordOutcome?: (outcome: DaemonStartupOutcome) => void;
 }
 
 export interface DaemonServeResult {
@@ -162,13 +165,27 @@ export async function serveDaemon(dependencies: DaemonServeDependencies): Promis
     try {
       runtime = await dependencies.runtimeFactory();
       await runtime.start();
+      dependencies.recordOutcome?.({ started: true });
     } catch (error) {
       reportError(error);
       await closeOnce().catch(() => {});
       const failed = serveFailure('WTM daemon could not start.', error);
-      return dependencies.supervised === true && isPermanentStartupFailure(failed)
-        ? { ...failed, exitCode: 0 }
-        : failed;
+      const permanent = isPermanentStartupFailure(failed);
+      const reported = failed.envelope.errors[0];
+      if (reported !== undefined) {
+        const condition = reportableCondition(error);
+        dependencies.recordOutcome?.({
+          started: false,
+          code: reported.code,
+          condition,
+          // An uncoded failure's envelope message is deliberately generic; the local record is
+          // not an envelope, and the condition is what tells a person what happened.
+          message: reported.code === 'WTM_DAEMON_REQUEST_FAILED' ? condition : reported.message,
+          remediation: reported.remediation?.[0]?.argv ?? null,
+          permanent,
+        });
+      }
+      return dependencies.supervised === true && permanent ? { ...failed, exitCode: 0 } : failed;
     }
     const signal = await termination;
     try {
@@ -227,6 +244,12 @@ export function createDaemonErrorReporter(
   write: (line: string) => void = (line) => { process.stderr.write(line); },
   clock: () => number = () => Date.now(),
   retain: (entry: string) => void = appendToDaemonErrorLog,
+  /**
+   * The condition the previous launch already failed on, from `daemon-status.json`. Its frames
+   * are in the log once already; a crash loop writing them again on every launch is how the
+   * reported log reached 162 MB (spec R4).
+   */
+  options: { repeatedCondition?: string | null } = {},
 ): (error: unknown) => void {
   const seen = new Map<string, { since: number; suppressed: number }>();
   return (error: unknown) => {
@@ -248,7 +271,10 @@ export function createDaemonErrorReporter(
     const stamp = new Date(at).toISOString();
     write(`${stamp} ${detail}${recurrence(previous)}\n`);
     const frames = error instanceof Error ? error.stack : undefined;
-    if (frames !== undefined && frames !== '') retain(`${stamp} ${frames}\n`);
+    const warningGrade = isRecord(error) && error.retainFrames === false;
+    if (!warningGrade && detail !== options.repeatedCondition && frames !== undefined && frames !== '') {
+      retain(`${stamp} ${frames}\n`);
+    }
   };
 }
 

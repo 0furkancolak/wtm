@@ -19,10 +19,12 @@ import { jsonEnvelopeSchema } from '@wtm/protocol';
 import { launchdPaths } from '@wtm/daemon/launchd';
 import { servicePathsFor, type ServiceLifecycle } from '@wtm/daemon/service-lifecycle';
 import {
+  createDaemonErrorReporter,
   runDaemonLifecycleCommand,
   serveDaemon,
   type DaemonSignalSource,
 } from '../daemon';
+import type { DaemonStartupOutcome } from '../../daemon-status';
 import { exitCodeForError } from '../../exit-codes';
 import { createCli, runCli } from '../../main';
 import { isolatedHomeEnvironment } from '../../../../testkit/src/isolated-home';
@@ -467,6 +469,33 @@ describe('daemon serve', () => {
     expect(signals.listenerCount()).toBe(0);
   });
 
+  test('records the outcome of every startup, successful or not', async () => {
+    const outcomes: DaemonStartupOutcome[] = [];
+    const signals = new FakeSignals();
+    const serving = serveDaemon({
+      runtimeFactory: async () => ({ start: async () => {}, close: async () => {} }),
+      signals,
+      recordOutcome: (outcome) => { outcomes.push(outcome); },
+    });
+    await until(() => signals.listenerCount() === 2 && outcomes.length === 1);
+    signals.emit('SIGTERM');
+    await serving;
+    expect(outcomes).toEqual([{ started: true }]);
+
+    const failure = new DaemonSocketPathTooLongError(measureDaemonSocketPath(overLimitOnDarwin, darwinSocketPathLimitBytes));
+    const failed: DaemonStartupOutcome[] = [];
+    await serveDaemon({
+      runtimeFactory: async () => { throw failure; },
+      signals: new FakeSignals(),
+      reportError: () => {},
+      recordOutcome: (outcome) => { failed.push(outcome); },
+    });
+    expect(failed).toEqual([{
+      started: false, code: 'WTM_SOCKET_PATH_TOO_LONG', condition: failure.message, message: failure.message,
+      remediation: ['wtm', 'doctor'], permanent: true,
+    }]);
+  });
+
   test('a signal during startup waits for startup then closes exactly once', async () => {
     const events: string[] = [];
     const signals = new FakeSignals();
@@ -660,6 +689,21 @@ describe('daemon failure output', () => {
       await rm(fixture.root, { recursive: true, force: true });
     }
   }, scenarioTimeoutMs);
+
+  test('frames are kept once per condition across launches, and never for a warning-grade condition', () => {
+    const retained: string[] = [];
+    const repeat = createDaemonErrorReporter(() => {}, () => 0, (entry) => { retained.push(entry); }, {
+      repeatedCondition: 'socket path is a directory',
+    });
+    repeat(new Error('socket path is a directory'));
+    expect(retained).toEqual([]);
+    repeat(new Error('something new'));
+    expect(retained).toHaveLength(1);
+
+    const quiet = createDaemonErrorReporter(() => {}, () => 0, (entry) => { retained.push(entry); });
+    quiet(Object.assign(new Error('Registered repository root is unavailable: /gone'), { retainFrames: false }));
+    expect(retained).toHaveLength(1);
+  });
 });
 
 /**
