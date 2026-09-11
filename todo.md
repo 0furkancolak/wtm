@@ -774,6 +774,61 @@ tam stack trace ile yazıldığı için log hacmini büyütüyorlar.
 
 ---
 
+### [ ] 51. Kodsuz ama kalıcı açılış hataları hâlâ yeniden başlatma döngüsüne giriyor
+
+45. maddenin final review'ında bulundu (I3). `PrivateDirectoryError` (`WTM_PRIVATE_DIRECTORY_UNSAFE`,
+kayıtlı bir `WtmErrorCode` değil) ve `unix.ts`'teki `secureSocketParent`'ın iki reddi kodsuz kaldığı
+için `codedError` bunları tanımıyor, exit 1 ile bitiyor, ve supervised bir daemon bunları 10 sn'de
+bir sonsuza kadar deniyor. Linux'ta durum daha kötü: 45. maddenin R3'ü kaldırdığı
+`StartLimitIntervalSec=0` sınırı olmadan, dağıtımın varsayılan start limiti artık bu sınıfı
+durdurmuyor — sembolik bağlanmış bir `~/Library/Application Support/WTM` (bazı kullanıcılar bunu
+yapıyor) tam bu döngüye giriyor.
+
+Ayrıca M9: elle çalıştırılan `wtm daemon serve`, soket zaten kullanımdaysa ("already in use")
+başarısız olur ve bunu `daemon-status.json`'a yazar. Servis daemon'ı sonra çökerse, `wtm doctor`
+"already in use" sebebini gösterir — oysa bu, kaydı yazan elle yapılan denemenin sebebidir.
+
+#### Yapılacaklar
+
+- [ ] `PrivateDirectoryError`'ı yalnızca mod/sahiplik/symlink dallarında sınıf 2'ye kaydet, `chmod
+      700 <path>` remediation'ı ile; ENOENT olmayan `lstat` hatasını (EIO/EACCES, muhtemelen
+      geçici) kodsuz bırak.
+- [ ] `secureSocketParent`'ın aynı iki sahiplik/tip reddine aynı muameleyi uygula.
+- [ ] Linux için `StartLimitBurst`'ün bu sınıfa karşı bir yedek olarak tutulup tutulmayacağına karar
+      ver.
+- [ ] Elle çalıştırılan `wtm daemon serve`'in "already in use" reddi çalışan servisin
+      `daemon-status.json` kaydını ezmesin (M9): ya bu red için `recordOutcome`'u atla, ya da
+      `wtm doctor` `pid`'i karşılaştırsın.
+
+#### Kabul kriterleri
+
+- [ ] `WTM_PRIVATE_DIRECTORY_UNSAFE` mod/sahiplik/symlink dallarında sınıf 2, supervised iken exit
+      0.
+- [ ] Aynı hatanın ENOENT olmayan `lstat` dalı kodsuz ve geçici kalıyor.
+- [ ] `secureSocketParent`'ın iki reddi aynı sınıfta.
+- [ ] Elle koşan bir `serve`'in "already in use" reddi, çalışan servisin kaydını ezmiyor.
+
+---
+
+### [ ] 52. `wtm doctor`, kayıtlı workspace yokken daemon'ın neden kalkmadığını söylemiyor
+
+45. maddenin final review'ında bulundu (T8). Kayıtlı hiçbir workspace yokken `collect()` herhangi
+bir veri kaynağı çalışmadan `WTM_NOT_INITIALIZED` ile duruyor; dolayısıyla hiç `wtm init`
+çalıştırmamış taze bir kurulumda `wtm doctor` daemon'ın neden ayakta olmadığını söylemiyor.
+`wtm daemon install` bunu zaten bildiriyor, bu yüzden öncelik düşük.
+
+#### Yapılacaklar
+
+- [ ] Kayıtlı workspace olmayan bir makinede de `daemon-status.json`'ı okuyup nedeni yüzeye
+      çıkaran bir kontrol ekle; `WTM_NOT_INITIALIZED` erken dönüşü bunun önüne geçmesin.
+
+#### Kabul kriterleri
+
+- [ ] Hiç `wtm init` çalıştırılmamış bir makinede `wtm doctor`, daemon kayıtlı bir başarısızlıkla
+      duruyorsa bunu ve nedenini raporluyor.
+
+---
+
 ## P1 — V1 deneyimini tamamlayacak işler
 
 ### [ ] 50. AI oturumları için ortak ağır iş kuyruğu ve RAM bütçesi
