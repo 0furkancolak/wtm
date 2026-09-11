@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { chmod, lstat, mkdir, mkdtemp, readdir, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { chmod, link, lstat, mkdir, mkdtemp, readdir, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { createConnection, createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -481,6 +481,56 @@ async function exchangeRaw(path: string, payload: string): Promise<IpcResponse> 
     expect(String((failure as Error).message)).toContain('too recent to reclaim');
     expect((failure as { code?: unknown }).code).toBeUndefined();
     expect((await lstat(privatePath)).isFile()).toBeTrue();
+  });
+
+  test('refuses a stale but otherwise placeholder-shaped file that carries a second hard link', async () => {
+    // Not the placeholder shape `isShieldPlaceholderShape` reclaims (M8): a second link means a
+    // person or another process can still reach these bytes by another name, so it is left alone
+    // and reported like any other file WTM does not own the whole of.
+    expect(serverModule).not.toBeNull();
+    if (serverModule === null) return;
+    const path = await socketPath();
+    const privatePath = expectedPrivateSocketPath(path);
+    await writeFile(privatePath, '', { mode: 0o600 });
+    await chmod(privatePath, 0o600);
+    const old = new Date(Date.now() - 60_000);
+    await utimes(privatePath, old, old);
+    const secondLink = join(dirname(privatePath), 'second-link');
+    await link(privatePath, secondLink);
+    cleanups.push(() => rm(secondLink, { force: true }));
+    const server = new serverModule.UnixIpcServer({
+      socketPath: path,
+      handler: async (value) => success(value.command, null),
+    });
+    cleanups.push(() => server.close());
+
+    await expect(server.start()).rejects.toMatchObject({
+      code: 'WTM_IPC_PATH_UNUSABLE',
+      context: { path: privatePath, occupant: 'file' },
+    });
+    expect((await lstat(privatePath)).nlink).toBe(2);
+  });
+
+  test('refuses a stale but otherwise placeholder-shaped file that is not mode 0600', async () => {
+    expect(serverModule).not.toBeNull();
+    if (serverModule === null) return;
+    const path = await socketPath();
+    const privatePath = expectedPrivateSocketPath(path);
+    await writeFile(privatePath, '', { mode: 0o644 });
+    await chmod(privatePath, 0o644);
+    const old = new Date(Date.now() - 60_000);
+    await utimes(privatePath, old, old);
+    const server = new serverModule.UnixIpcServer({
+      socketPath: path,
+      handler: async (value) => success(value.command, null),
+    });
+    cleanups.push(() => server.close());
+
+    await expect(server.start()).rejects.toMatchObject({
+      code: 'WTM_IPC_PATH_UNUSABLE',
+      context: { path: privatePath, occupant: 'file' },
+    });
+    expect((await lstat(privatePath)).mode & 0o777).toBe(0o644);
   });
 
   test('refuses a directory at the published path with a coded, actionable error', async () => {
