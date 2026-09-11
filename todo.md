@@ -350,9 +350,9 @@ uçtan uca çalıştırılarak bulundu. Aracın kendisi çalışıyor: `init`, `
 Numaralandırma dosyanın sonundan devam ediyor; mevcut madde numaraları kasıtlı olarak
 değiştirilmedi.
 
-**Bir sonraki tag'den önce:** 36 ve 45; 37 kapandı. 36 kod değil, paketleme ve dokümantasyon
-işi. 45 kod işi ve tek başına daemon'ı kullanılamaz bırakıyor: bulunduğu makinede yedi gün
-boyunca hiç ayağa kalkmamıştı ve bunu söyleyen bir çıktı yoktu.
+**Bir sonraki tag'den önce:** yalnızca 36; 37 ve 45 kapandı. 36 kod değil, paketleme ve
+dokümantasyon işi ve Apple kimlik bilgilerini (notarization secret'ları) bekliyor. 45 (daemon'ı
+yedi gün boyunca sessizce ayağa kaldırmayan crash döngüsü) 2026-09-11'de kapandı.
 
 ---
 
@@ -663,7 +663,33 @@ Bu 39. maddenin aynı sınıfı: kullanıcıya giden bir hata, alt katmanın ham
 
 ---
 
-### [ ] 45. Soket olmayan bir IPC yolu daemon'ı süresiz crash döngüsünde bırakıyor
+### [x] 45. Soket olmayan bir IPC yolu daemon'ı süresiz crash döngüsünde bırakıyor
+
+**2026-09-11:** Kapandı, `claude/item-45-daemon-crash-loop` üzerinde. Spec:
+`docs/superpowers/specs/2026-09-09-daemon-startup-crash-loop.md`, plan:
+`docs/superpowers/plans/2026-09-09-daemon-startup-crash-loop.md`. Commit'ler: `ee39fea`
+(`WTM_IPC_PATH_UNUSABLE`, exit 2), `feb6045` (bayat close-shield placeholder'ı geri alma, diğer her
+şeyi kodla reddetme), `104d9fc` (supervised daemon kalıcı hatada exit 0; tek restart politikası),
+`45b12c5` (`daemon-status.json`, frame'lerin açılışlar arası tek kez yazılması), `d3f41ea` (daemon
+loglarının rotation'ı), `3b496de` (`wtm doctor` sebebi söylüyor), `ce04b80` + `17bbde4`
+(`wtm daemon install` başlamayan daemon'ı sebebiyle bildiriyor).
+
+Kodu okuduktan sonra spec'e beş revizyon eklendi (spec'teki "Revisions after reading the code
+(2026-09-11)" bölümü): R1 yalnızca bize ait, 0 bayt, `0600`, tek link ve en az 30 sn eski dosya geri
+alınır; R2 kalıcı hatada exit 0 yalnızca `WTM_DAEMON_SUPERVISED=1` iken; R3 plist
+`ThrottleInterval` 10, unit `RestartSec=10` + `StartLimitIntervalSec=0`; R4 frame tekilleştirmesi
+`daemon-status.json` üzerinden; R5 doctor var olmayan `daemon start` yerine `wtm daemon install`
+diyor.
+
+Elle doğrulama, geçici bir `HOME` altında (`mktemp -d /tmp/wtm-item45-XXXX`, gerçek `~/Library`'ye
+dokunmadan, `WTM_DAEMON_SUPERVISED=1 wtm daemon serve --json`):
+
+- `.tmd.sock` yolunda 2026-09-02 tarihli 0 baytlık `0600` dosya: placeholder geri alındı, daemon
+  ayağa kalktı, SIGTERM ile `{"ok":true,"data":{"state":"stopped","signal":"SIGTERM"}}` ve exit 0.
+- `.tmd.sock` yolunda bir dizin: daemon exit 0 ile durdu, zarf `WTM_IPC_PATH_UNUSABLE`
+  (`occupant: "directory"`, "WTM will not remove a directory. Move it aside, then run
+  `wtm daemon install`.") taşıdı; `Library/Logs/WTM/daemon-status.json` `state: "failed"`,
+  `permanent: true`, `attempts: 1` kaydetti.
 
 2026-09-09'da, bu repodan temiz bir `make install` yapılırken bulundu. Kurulum başarılı raporladı,
 ama daemon hiç ayağa kalkmadı ve bunu söyleyen bir çıktı yoktu.
@@ -720,26 +746,26 @@ tam stack trace ile yazıldığı için log hacmini büyütüyorlar.
 
 #### Yapılacaklar
 
-- [ ] Soket olmayan bir IPC yolunu, aynı sahiplik/identity doğrulamasından geçirdikten sonra bayat
+- [x] Soket olmayan bir IPC yolunu, aynı sahiplik/identity doğrulamasından geçirdikten sonra bayat
       soketle aynı quarantine yolundan geçir. Fail-closed kalması gereken durumları (başkasına ait,
       dizin, symlink) ayır ve gerekçesini yaz.
-- [ ] Reddedilen her durum için eyleme dönük mesaj ve stable JSON error code üret: hangi yol, neden
+- [x] Reddedilen her durum için eyleme dönük mesaj ve stable JSON error code üret: hangi yol, neden
       reddedildi, kullanıcı ne yapmalı.
-- [ ] `wtm doctor`, daemon `reachable: false` olduğunda sebebini raporlasın. Bugün ulaşılamadığını
+- [x] `wtm doctor`, daemon `reachable: false` olduğunda sebebini raporlasın. Bugün ulaşılamadığını
       biliyor, nedenini bilmiyor — oysa neden daemon'ın kendi log'unda yazılı.
-- [ ] Daemon'ın kendi stderr'ine rotation ve üst sınır ekle.
-- [ ] Tekrarlayan açılış hatasına backoff ver; aynı hata üst üste tekrarlıyorsa tam stack trace'i
+- [x] Daemon'ın kendi stderr'ine rotation ve üst sınır ekle.
+- [x] Tekrarlayan açılış hatasına backoff ver; aynı hata üst üste tekrarlıyorsa tam stack trace'i
       her turda yeniden basma.
-- [ ] Diskte olmayan kayıtlı depoları stack trace ile değil, tek satırlık uyarı ile bildir.
-- [ ] Regresyon testi: IPC yolunda normal bir dosya varken daemon'ın davranışını sabitle.
+- [x] Diskte olmayan kayıtlı depoları stack trace ile değil, tek satırlık uyarı ile bildir.
+- [x] Regresyon testi: IPC yolunda normal bir dosya varken daemon'ın davranışını sabitle.
 
 #### Kabul kriterleri
 
-- [ ] IPC yolunda soket olmayan bir dosya varken daemon ya kendiliğinden toparlanıyor ya da ne
+- [x] IPC yolunda soket olmayan bir dosya varken daemon ya kendiliğinden toparlanıyor ya da ne
       yapılacağını söyleyen tek bir hata veriyor.
-- [ ] Hiçbir açılış hatası sınırsız log büyümesi üretmiyor.
-- [ ] `wtm doctor` ulaşılamayan bir daemon'ın sebebini söylüyor.
-- [ ] Yeni kurulum yapan kullanıcı, daemon ayağa kalkmadığında bunu kurulum çıktısından anlıyor.
+- [x] Hiçbir açılış hatası sınırsız log büyümesi üretmiyor.
+- [x] `wtm doctor` ulaşılamayan bir daemon'ın sebebini söylüyor.
+- [x] Yeni kurulum yapan kullanıcı, daemon ayağa kalkmadığında bunu kurulum çıktısından anlıyor.
 
 ---
 

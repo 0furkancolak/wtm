@@ -2,7 +2,9 @@
 
 ## Status
 
-Draft — 2026-09-09, revised 2026-09-11 (see "Revisions after reading the code"). Covers `todo.md` item 45, which the pre-tag list names alongside item 36 as the
+Implemented — 2026-09-11, on `claude/item-45-daemon-crash-loop` (plan:
+`docs/superpowers/plans/2026-09-09-daemon-startup-crash-loop.md`). Drafted 2026-09-09, revised
+2026-09-11 (see "Revisions after reading the code"). Covers `todo.md` item 45, which the pre-tag list names alongside item 36 as the
 last code work before the next tag. Not part of any increment in
 `docs/superpowers/specs/2026-08-31-v1-stable-program-map.md`: it is a field defect found after
 Increment B closed, in the same class as items 39, 41 and 43 — a condition WTM diagnoses correctly

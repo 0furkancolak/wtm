@@ -297,6 +297,25 @@ binaries are Developer ID signed and notarized.
   `WTM_OPERATION_CONFLICT` and the three daemon codes were flattened to `GIT_REPOSITORY_DEGRADED`
   and lost their exit codes. `docs/18-errors-json-contract.md` and the enum are now held together by
   a test.
+- A non-socket file at the daemon's socket path no longer leaves the daemon restarting forever. On
+  one machine a 0-byte file at `.tmd.sock` kept it down for seven days, silently, and grew
+  `daemon.error.log` to 162 MB. WTM's own leftover close-shield placeholder — ours, empty, `0600`,
+  one link, at least 30 s old — is now reclaimed. Anything else (a directory, a symlink, another
+  user's file, a file with content) stops the daemon with `WTM_IPC_PATH_UNUSABLE` (exit 2), naming
+  the path, what occupies it and what to do. Each startup outcome is recorded in
+  `daemon-status.json` beside the daemon's logs: `wtm doctor` says why an unreachable daemon is down
+  and since when, and `wtm daemon install` warns when the daemon it installed did not start, with
+  the reason. A repeated startup failure writes its stack frames once rather than on every launch,
+  a registered repository missing from disk is one line instead of a stack trace, and the daemon's
+  own logs are rotated at startup so no failure grows them without bound.
+
+### Changed
+
+- Both service definitions now retry a failed daemon every 10 s (launchd `ThrottleInterval` 10;
+  systemd `RestartSec=10` with `StartLimitIntervalSec=0`) and set `WTM_DAEMON_SUPERVISED=1`. A
+  supervised daemon exits 0 on a startup failure only a person can fix (exit class 2), so the
+  supervisor stops restarting it; anything else is still retried. Re-run `wtm daemon install` to
+  pick up the new definition.
 
 ## [0.1.0-rc.1] - 2026-08-30
 
