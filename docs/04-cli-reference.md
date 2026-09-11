@@ -94,11 +94,13 @@ it is the cause — the limit `socket-path` measures against is that platform's 
 | `socket-path` | How much room is left under the platform's Unix socket path limit, reported as a warning while there is still headroom rather than only once the daemon cannot bind |
 
 With no registered workspace, as on a machine that has never run `wtm init`, none of these checks
-has anything to run against, and `doctor` fails with `WTM_NOT_INITIALIZED` (exit 2). The daemon
-can still be the problem there. If it is not answering and `daemon-status.json` records a failed
-start, that record comes back beside the error as a warning: the daemon's own code, how long and
-how often it has failed, and its remedy. It is a warning rather than a second error, as it is a
-finding rather than an error on a registered machine, so the exit code stays 2.
+has anything to run against, and `wtm doctor` fails with `WTM_NOT_INITIALIZED` (exit 2). The
+daemon can still be the problem there. If it is not answering and `daemon-status.json` records a
+failed start, that record comes back beside the error as a warning: the daemon's own code, how long
+and how often it has failed, and its remedy. It is a warning rather than a second error, as it is a
+finding rather than an error on a registered machine, so the exit code stays 2. This applies only
+to `wtm doctor` with no selector. With a selector the answer is `WTM_WORKSPACE_NOT_FOUND`, and
+`wtm doctor --global` with no workspace is an empty success; neither carries the warning.
 
 ### `wtm explain [selector]`
 

@@ -83,6 +83,14 @@ describe('the daemon failure doctor reports without a registry', () => {
     expect(item?.message).toEndWith('Run `wtm daemon install` to start it again.');
   });
 
+  test('a long recorded message never pushes the remedy past the envelope message limit', async () => {
+    const item = await diagnosticWith(failedRecord({ message: `${'x'.repeat(3000)} tail` })).failureItem();
+
+    expect(item?.message.length).toBeLessThanOrEqual(1024);
+    expect(item?.message).not.toContain('tail');
+    expect(item?.message).toEndWith(`Run \`chmod 700 ${unsafeHome}\`, then \`wtm daemon install\` to start it again.`);
+  });
+
   test('nothing on record is no answer, because a daemon never installed is not a failure', async () => {
     expect(await diagnosticWith(null).failureItem()).toBeNull();
   });

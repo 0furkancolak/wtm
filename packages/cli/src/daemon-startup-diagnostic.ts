@@ -12,6 +12,12 @@ import { formatRemediation, readDaemonStatus, type DaemonStatus } from './daemon
  */
 const daemonProbeTimeoutMs = 500;
 
+/**
+ * How much of the daemon's recorded message is repeated. The record's message has no bound; the
+ * lead clause and the remedy around it need the rest of an envelope message's 1024 characters.
+ */
+const maxRecordedMessageLength = 600;
+
 export interface DaemonStartupDiagnosticOptions {
   /** The address to probe, or `null` when there is none: no platform, or a path too long to dial. */
   socketPath: () => string | null;
@@ -83,9 +89,12 @@ export function createDaemonStartupDiagnostic(options: DaemonStartupDiagnosticOp
     const next = failure.remediation === null
       ? 'Run `wtm daemon install` to start it again.'
       : `Run \`${formatRemediation(failure.remediation)}\`, then \`wtm daemon install\` to start it again.`;
+    const recorded = (failure.message ?? '').trim();
     return [
       `${lead}: it failed to start ${attempts} since ${failure.since}.`,
-      (failure.message ?? '').trim(),
+      // An envelope message is cut at 1024 characters, and the remedy comes last. A long recorded
+      // message is shortened here, so that the cut can never take the remedy with it.
+      recorded.length > maxRecordedMessageLength ? `${recorded.slice(0, maxRecordedMessageLength)}…` : recorded,
       next,
     ].filter((part) => part !== '').join(' ');
   };

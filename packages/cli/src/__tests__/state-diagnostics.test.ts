@@ -14,7 +14,7 @@ import type {
 import { selectPlatformRuntime, UnsupportedPlatformError } from '@wtm/platform';
 import { daemonSocketFileName, publishedDaemonSocketPath } from '@wtm/platform/socket';
 import { nextDaemonStatus, writeDaemonStatus } from '../daemon-status';
-import { doctorChecks } from '../diagnostics';
+import { doctorChecks, runDoctorCommand } from '../diagnostics';
 import { createStateDiagnosticDataSource } from '../state-diagnostics';
 
 const workspace: WorkspaceRecord = {
@@ -340,6 +340,36 @@ function socketPathOfBytes(bytes: number): string {
   if (Buffer.byteLength(path) !== bytes) throw new Error('fixture did not hit the requested length');
   return path;
 }
+
+describe('doctor with a database but no workspace left in it (todo item 52)', () => {
+  test('reports the recorded daemon failure beside WTM_NOT_INITIALIZED, as with no database at all', async () => {
+    const statusPath = join(await tempDir(), 'daemon-status.json');
+    writeDaemonStatus(statusPath, nextDaemonStatus(null, {
+      started: false, code: 'WTM_PRIVATE_DIRECTORY_UNSAFE',
+      condition: 'WTM private directory is unsafe: /x is readable by others (mode 755); run chmod 700 on it.',
+      message: 'WTM private directory is unsafe: /x is readable by others (mode 755); run chmod 700 on it.',
+      remediation: ['chmod', '700', '/x'], permanent: true,
+    }, new Date('2026-09-11T10:00:00.000Z'), 7));
+    // Every workspace forgotten: the database opens, and it has nothing registered in it.
+    const emptied = { ...store, listWorkspaces: () => [] } as unknown as DaemonStateStore;
+
+    const envelope = await runDoctorCommand({ cwd: '/fresh' }, createStateDiagnosticDataSource(emptied, {
+      cwd: '/fresh',
+      globalConfigPath: '/workspace/config.toml',
+      daemonSocketPath: join(await tempDir(), 'absent.sock'),
+      daemonStatusPath: statusPath,
+    }));
+
+    expect(envelope.errors.map(({ code }) => code)).toEqual(['WTM_NOT_INITIALIZED']);
+    expect(envelope.warnings).toHaveLength(1);
+    expect(envelope.warnings[0]).toMatchObject({
+      code: 'WTM_PRIVATE_DIRECTORY_UNSAFE',
+      severity: 'warning',
+      remediation: [{ kind: 'command-suggestion', argv: ['chmod', '700', '/x'] }],
+    });
+    expect(envelope.warnings[0]?.message).toContain('it failed to start once since 2026-09-11T10:00:00.000Z.');
+  });
+});
 
 describe('socket-path', () => {
   it('reports the headroom left before the path becomes unbindable', async () => {

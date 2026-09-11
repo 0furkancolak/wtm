@@ -900,6 +900,18 @@ bunu kullanıyor. Kararlar:
 - Açık bırakılan: `wtm doctor --global` kayıtlı workspace yokken hâlâ boş bir başarı döndürüyor ve
   daemon hakkında bir şey söylemiyor. Kabul kriteri yerel `doctor`'ı kapsıyor.
 
+Bağımsız final review: 0 kritik, 1 önemli, 5 küçük bulgu.
+- I1: Uyarının `context`'i, docs/18'de `WTM_PRIVATE_DIRECTORY_UNSAFE` için yazılı `path`/`reason`
+  alanlarını taşımıyordu. Uyarının biçimi docs/18'e yazılarak düzeltildi.
+- M1: docs/04, selector ve `--global` durumlarını da kapsıyormuş gibi yazıyordu. Metin daraltıldı.
+- M2: Store'lu kaynağın yeni metodu için test yoktu. DB açık ama workspace'siz senaryo için test
+  eklendi.
+- M3: Kayıtlı uzun bir mesaj, 1024 karakter sınırında çare cümlesini kesiyordu. Kayıtlı mesaj
+  600 karaktere kısaltılıyor.
+- Açık kalanlar:
+  - M4: Status yolu iki yerde türetiliyor; üretimde ikisi aynı yolu veriyor.
+  - M5: Uyarıyı tetikleyen, "workspace yok" koşulu değil hata kodunun metni. Bugün doğru çalışıyor.
+
 ---
 
 ## P1 — V1 deneyimini tamamlayacak işler
