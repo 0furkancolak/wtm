@@ -26,6 +26,7 @@ import {
   type WorktreeRuntime,
 } from '@wtm/daemon';
 import { planChanges } from './changes';
+import { daemonStatusPath, formatRemediation, readDaemonStatus, type DaemonStatus } from './daemon-status';
 import { explainDecisions } from './decisions';
 import type {
   DiagnosticDataSource,
@@ -45,6 +46,12 @@ export interface StateDiagnosticOptions {
    * `doctor` is answering about the machine it is running on; tests point it elsewhere.
    */
   daemonSocketPath?: string;
+  /**
+   * Where the daemon records its last startup outcome. Defaults to this host's log root; tests
+   * point it elsewhere. Read only when the daemon does not answer, because that is the only time
+   * a person needs to know why.
+   */
+  daemonStatusPath?: string;
   /**
    * How the host platform is chosen, and the subject of the `platform` check.
    *
@@ -112,6 +119,19 @@ export function createStateDiagnosticDataSource(
     return runtime === null ? null : publishedDaemonSocketPath(runtime.paths.socketRoot);
   };
   let reachabilityProbe: Promise<boolean> | null = null;
+
+  /**
+   * The daemon's own account of its last startup, when it says it failed.
+   *
+   * Read only from `unreachableFinding`, so a healthy daemon never pays for this file's
+   * existence, and a running daemon's earlier crash is never mistaken for its current state.
+   */
+  const recordedStartupFailure = (): DaemonStatus | null => {
+    const runtime = options.daemonStatusPath === undefined ? platform().runtime : null;
+    const path = options.daemonStatusPath ?? (runtime === null ? null : daemonStatusPath(runtime.paths.logRoot));
+    const status = path === null ? null : readDaemonStatus(path);
+    return status?.state === 'failed' ? status : null;
+  };
 
   /**
    * The worktree the question is about — only ever one that actually contains the directory
@@ -299,13 +319,50 @@ export function createStateDiagnosticDataSource(
         message: 'This worktree is registered, and the daemon is answering.',
         details: { code: null, registered: true, daemonReachable: true },
       }
-      : {
+      : unreachableFinding();
+  };
+
+  /**
+   * Why the daemon is not answering, when there is a reason on record.
+   *
+   * `readDaemonStatus` is the only way to tell "the daemon has not been started yet" apart from
+   * "the daemon has been crash-looping for a week": both look identical from here, an absent
+   * socket, until the status file is read. Without it, this finding could only ever say
+   * `wtm daemon install` and hope — which is what sent the daemon down for 7 days.
+   */
+  const unreachableFinding = (): DoctorDiagnostic['findings'][number] => {
+    const failure = recordedStartupFailure();
+    if (failure === null) {
+      return {
         check: 'registration',
         status: 'warning',
         message: 'This worktree is registered, but the daemon is not answering on its socket. '
-          + 'Start it with `wtm daemon start`.',
+          + 'Start it with `wtm daemon install`.',
         details: { code: 'WTM_DAEMON_UNAVAILABLE', registered: true, daemonReachable: false },
       };
+    }
+    const attempts = failure.attempts === 1 ? 'once' : `${String(failure.attempts)} times`;
+    const next = failure.remediation === null
+      ? 'Run `wtm daemon install` to start it again.'
+      : `Run \`${formatRemediation(failure.remediation)}\`, then \`wtm daemon install\` to start it again.`;
+    return {
+      check: 'registration',
+      status: 'error',
+      message: [
+        `This worktree is registered, but the daemon is not running: it failed to start ${attempts} since ${failure.since}.`,
+        (failure.message ?? '').trim(),
+        next,
+      ].filter((part) => part !== '').join(' '),
+      details: {
+        code: failure.code ?? 'WTM_DAEMON_UNAVAILABLE',
+        registered: true,
+        daemonReachable: false,
+        startupFailedSince: failure.since,
+        startupAttempts: failure.attempts,
+        startupPermanent: failure.permanent,
+        startupRemediation: failure.remediation === null ? null : formatRemediation(failure.remediation),
+      },
+    };
   };
 
   /**
