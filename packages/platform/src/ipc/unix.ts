@@ -11,6 +11,7 @@ import { chmod, link, lstat, mkdir, open, rename, unlink } from 'node:fs/promise
 import { createConnection, type Server } from 'node:net';
 import { dirname, join } from 'node:path';
 import { boundDaemonSocketPath } from '../socket';
+import { IpcPathUnusableError, type IpcPathOccupant } from './path-unusable';
 import type { IpcServerPublisher, PublishedIpcServer, PublishOptions } from './types';
 
 interface SocketIdentity {
@@ -292,6 +293,17 @@ async function assertDirectoryIdentity(
   }
 }
 
+/**
+ * How old a close-shield placeholder must be before a starting daemon treats it as litter.
+ *
+ * The shield (`closeServerWithPrivatePathShield`) puts exactly this file at the bound path for the
+ * few milliseconds a server takes to close, and a daemon starting in that window finds the
+ * published socket already refusing connections. Reclaiming a young placeholder would undo the
+ * shield. A daemon killed mid-close leaves one that only ages. The service manager's retry
+ * interval (10 s) is what makes waiting it out cheap (spec R1).
+ */
+export const staleShieldPlaceholderMs = 30_000;
+
 async function prepareSocketPath(
   path: string,
   parent: DirectoryIdentity,
@@ -307,20 +319,55 @@ async function prepareSocketPath(
     if (isFileError(error, 'ENOENT')) return;
     throw error;
   }
-  if (!initial.isSocket()) throw new Error(`IPC path exists and is not a Unix socket: ${path}`);
   const currentUid = process.getuid?.();
-  if (currentUid === undefined || initial.uid !== currentUid) {
-    throw new Error(`IPC socket is not owned by the current user: ${path}`);
+  const ours = currentUid !== undefined && initial.uid === currentUid;
+  if (initial.isSocket()) {
+    if (!ours) throw new IpcPathUnusableError(path, 'foreign-socket', initial.uid);
+    if (await hooks.probe(path)) throw new Error(`IPC socket is already in use: ${path}`);
+    await quarantineAndUnlink(path, parent, {
+      dev: initial.dev,
+      ino: initial.ino,
+      uid: initial.uid,
+    }, {
+      beforeQuarantine: hooks.beforeQuarantine,
+      mismatchMessage: `IPC socket changed while checking stale ownership: ${path}`,
+    });
+    return;
   }
-  if (await hooks.probe(path)) throw new Error(`IPC socket is already in use: ${path}`);
-  await quarantineAndUnlink(path, parent, {
-    dev: initial.dev,
-    ino: initial.ino,
-    uid: initial.uid,
-  }, {
-    beforeQuarantine: hooks.beforeQuarantine,
-    mismatchMessage: `IPC socket changed while checking stale ownership: ${path}`,
-  });
+  if (ours && isShieldPlaceholderShape(initial)) {
+    if (Date.now() - initial.mtimeMs < staleShieldPlaceholderMs) {
+      // Deliberately uncoded: this is transient, and a coded class-2 failure would stop a
+      // supervised daemon from ever retrying past it.
+      throw new Error(`IPC path holds a close-shield placeholder too recent to reclaim: ${path}`);
+    }
+    const expected = { dev: initial.dev, ino: initial.ino, uid: initial.uid };
+    await quarantineAndUnlink(path, parent, expected, {
+      mismatchMessage: `IPC path changed while reclaiming a stale close-shield placeholder: ${path}`,
+      // Age too, not only shape and identity: a same-uid unlink of the stale placeholder between
+      // the `lstat` above and the `rename` below, racing a fresh shield created with a reused
+      // inode, would otherwise pass shape-and-identity and unlink a shield that is not stale at
+      // all. `Number(...)` because `lstat` is never called with `bigint: true` here (see
+      // `isShieldPlaceholderShape`).
+      matches: (stat) => isShieldPlaceholderShape(stat) && matchesPathIdentity(stat, expected)
+        && Number(stat.mtimeMs) === Number(initial.mtimeMs),
+    });
+    return;
+  }
+  throw new IpcPathUnusableError(path, occupantOf(initial, ours), initial.uid);
+}
+
+/** The exact file `installClosePlaceholder` creates, and nothing wider. */
+function isShieldPlaceholderShape(stat: Awaited<ReturnType<typeof lstat>>): boolean {
+  // `lstat` is never called with `bigint: true` here, so `mode` is always a `number` at runtime;
+  // the cast only works around `ReturnType<typeof lstat>` widening to `Stats | BigIntStats`.
+  return stat.isFile() && stat.size === 0 && (Number(stat.mode) & 0o777) === 0o600 && stat.nlink === 1;
+}
+
+function occupantOf(stat: Awaited<ReturnType<typeof lstat>>, ours: boolean): IpcPathOccupant {
+  if (stat.isSymbolicLink()) return 'symlink';
+  if (stat.isDirectory()) return 'directory';
+  if (stat.isFile()) return ours ? 'file' : 'foreign-file';
+  return 'other';
 }
 
 async function quarantineAndUnlink(
@@ -330,6 +377,7 @@ async function quarantineAndUnlink(
   options: {
     beforeQuarantine?: () => Promise<void> | void;
     mismatchMessage: string;
+    matches?: (stat: Awaited<ReturnType<typeof lstat>>) => boolean;
   },
 ): Promise<void> {
   await options.beforeQuarantine?.();
@@ -353,7 +401,8 @@ async function quarantineAndUnlink(
     await restoreQuarantinedPath(quarantinePath, path);
     throw error;
   }
-  if (!matchesSocketIdentity(candidate, expected)) {
+  const matches = options.matches ?? ((stat) => matchesSocketIdentity(stat, expected));
+  if (!matches(candidate)) {
     await restoreQuarantinedPath(quarantinePath, path);
     throw new Error(options.mismatchMessage);
   }

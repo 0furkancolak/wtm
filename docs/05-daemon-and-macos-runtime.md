@@ -238,6 +238,21 @@ systemd does not throttle a user unit's CPU or I/O by default — which is the s
 exists to ask launchd for. `Type=exec` and `StandardOutput=append:` both require systemd 240
 (2018) or newer.
 
+Both platforms retry a failed startup every 10 seconds, indefinitely: `RestartSec=10` and
+`StartLimitIntervalSec=0` on Linux, `ThrottleInterval` `10` on macOS — the same interval stated in
+each manager's own terms rather than left to the distro's default rate limit. But not every startup
+failure is worth retrying. Both definitions set `WTM_DAEMON_SUPERVISED=1`, and `wtm daemon serve`
+reads it to tell a permanent failure — a coded error a person has to clear, such as a socket path
+that does not fit — from a transient one. A permanent failure then exits `0`: launchd's
+`KeepAlive{SuccessfulExit: false}` and systemd's `Restart=on-failure` both restart only a
+*non-zero* exit, so exiting `0` is what makes the manager leave the daemon stopped instead of
+retrying a condition no retry can clear. `wtm doctor` reports the recorded reason, and
+`wtm daemon install` starts the daemon again once it is fixed. Run by hand — without
+`WTM_DAEMON_SUPERVISED` set — the same failure keeps its normal exit class. This includes
+`WTM_WATCH_UNAVAILABLE`: an inotify watch budget exhausted at startup is class 2 like any other
+configuration a person has to change, so a supervised daemon stays stopped on it too, even though
+the budget can free up on its own — `wtm daemon install` is what starts the daemon again.
+
 Two escapes in the rendered unit are not optional. `%` introduces a specifier systemd expands
 everywhere in a unit file, so a `HOME` containing one would silently become a different path; `$`
 introduces variable expansion inside `ExecStart`, and a `"` or a `\` inside a quoted argument would

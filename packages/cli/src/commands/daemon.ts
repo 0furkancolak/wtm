@@ -3,12 +3,14 @@ import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { assertDaemonSocketPathFits, publishedDaemonSocketPath } from '@wtm/platform/socket';
 import { selectPlatformRuntime } from '@wtm/platform';
-import type { PlatformRuntime } from '@wtm/platform/ports';
+import type { FileTrustPolicy, PlatformRuntime } from '@wtm/platform/ports';
 import { errorSeveritySchema, remediationSchema, wtmErrorCodeSchema } from '@wtm/protocol';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
+import { ManagedLogStore } from '@wtm/daemon/logs';
 import { exitCodeForError } from '../exit-codes';
+import type { DaemonStartupOutcome, DaemonStatus } from '../daemon-status';
 import { servicePathsFor } from '@wtm/daemon/service-lifecycle';
-import type { ServiceLifecycle } from '@wtm/daemon/service-lifecycle';
+import type { ServiceLifecycle, ServicePaths } from '@wtm/daemon/service-lifecycle';
 
 export type DaemonLifecycleAction = 'install' | 'uninstall' | 'status';
 
@@ -31,11 +33,43 @@ export interface DaemonServeDependencies {
    * service and every command against the dead daemon reads as an unexplained failure.
    */
   reportError?: (error: unknown) => void;
+  /**
+   * Whether a service manager started this process (`WTM_DAEMON_SUPERVISED=1`, which only the
+   * launchd and systemd definitions set). A permanent startup failure then exits 0: both managers
+   * restart only a non-zero exit, and retrying a condition a person has to clear is the loop that
+   * wrote 162 MB of log in a week (spec R2). Run by hand, the exit keeps its normal class.
+   */
+  supervised?: boolean;
+  /** Called exactly once per startup, with whether it succeeded or how it failed. */
+  recordOutcome?: (outcome: DaemonStartupOutcome) => void;
 }
 
 export interface DaemonServeResult {
   exitCode: number;
   envelope: JsonEnvelope<{ state: 'stopped'; signal: 'SIGINT' | 'SIGTERM' } | null>;
+}
+
+/**
+ * Rotates the daemon's own stdout and stderr the way a managed task's logs are rotated (20 MiB,
+ * three generations). It runs once per launch, before anything is written, and both service
+ * managers reopen the path on the next launch. That bounds a loop that predates the fix,
+ * including a 162 MB file already on disk (spec decision 5).
+ */
+export async function rotateDaemonServiceLogs(
+  paths: Pick<ServicePaths, 'logRoot' | 'stdoutPath' | 'stderrPath'>,
+  fileTrust: FileTrustPolicy,
+  rotationBytes?: number,
+): Promise<void> {
+  try {
+    const store = new ManagedLogStore({
+      root: paths.logRoot,
+      fileTrust,
+      ...(rotationBytes === undefined ? {} : { rotationBytes }),
+    });
+    await store.rotate([paths.stderrPath, paths.stdoutPath]);
+  } catch {
+    // A log that cannot be rotated is not a reason to refuse to start.
+  }
 }
 
 /** How long `install` waits for the daemon the service manager just started to answer on its socket. */
@@ -68,6 +102,12 @@ export async function runDaemonLifecycleCommand(
    * the caller as a `WTM_PLATFORM_UNSUPPORTED` envelope rather than as a thrown default argument.
    */
   platform?: PlatformRuntime,
+  /**
+   * The daemon's own record of its last startup. After `install` starts the service, a failure
+   * recorded since the install began is the reason it is not answering, and waiting out the
+   * readiness deadline would only delay saying so (spec decision 4).
+   */
+  readStartupStatus?: () => DaemonStatus | null,
 ): Promise<JsonEnvelope<unknown>> {
   let manager = unknownServiceManagerName;
   try {
@@ -78,10 +118,28 @@ export async function runDaemonLifecycleCommand(
     // it is the same preflight the daemon's own bind side runs, so the two cannot disagree. The
     // limit is this host's `sizeof(sun_path)` — 104 on macOS, 108 on Linux — not a constant.
     if (action === 'install') assertDaemonSocketPathFits(address, host.socket.limitBytes);
+    const startedAt = Date.now();
     const data = published(host, await lifecycle[action]());
     if (action === 'uninstall' || reachable === undefined) return successEnvelope(`daemon ${action}`, data);
-    const ready = action === 'install' ? await waitUntilReachable(reachable) : await reachable();
-    return successEnvelope(`daemon ${action}`, { ...data, reachable: ready });
+    const freshFailure = (): DaemonStatus | null => {
+      const status = readStartupStatus?.() ?? null;
+      return status !== null && status.state === 'failed' && Date.parse(status.at) >= startedAt ? status : null;
+    };
+    const ready = action === 'install'
+      // Only a *permanent* fresh failure is worth cutting the wait short for: a transient one
+      // (an in-use socket while the previous daemon is still going down, a young close-shield
+      // placeholder, any uncoded error) is exactly the condition R2 has the service manager
+      // retry 10 s later, well inside this 20 s deadline. Stopping here for it is the "trust the
+      // installer" defect turned inside out (review I1): it would report `reachable: false` at
+      // once while the retry was seconds from succeeding.
+      ? await waitUntilReachable(reachable, () => { const failure = freshFailure(); return failure !== null && failure.permanent; })
+      : await reachable();
+    const failure = action === 'install' && !ready ? freshFailure() : null;
+    if (failure === null) return successEnvelope(`daemon ${action}`, { ...data, reachable: ready });
+    return {
+      ...successEnvelope(`daemon ${action}`, { ...data, reachable: false, startup: startupSummary(failure) }),
+      warnings: [startupWarning(failure)],
+    };
   } catch (error) {
     return {
       schemaVersion: 1,
@@ -116,13 +174,34 @@ function published<T extends { definitionPath: string }>(
   return host.service.id === 'darwin' ? { ...result, plistPath: result.definitionPath } : result;
 }
 
-async function waitUntilReachable(reachable: () => Promise<boolean>): Promise<boolean> {
+async function waitUntilReachable(
+  reachable: () => Promise<boolean>,
+  startupFailed: () => boolean = () => false,
+): Promise<boolean> {
   const deadline = Date.now() + readinessDeadlineMs;
   for (;;) {
     if (await reachable()) return true;
-    if (Date.now() >= deadline) return false;
+    if (startupFailed() || Date.now() >= deadline) return false;
     await new Promise((settle) => { setTimeout(settle, readinessIntervalMs); });
   }
+}
+
+function startupSummary(status: DaemonStatus) {
+  return {
+    state: status.state, code: status.code, message: status.message, since: status.since,
+    attempts: status.attempts, permanent: status.permanent, remediation: status.remediation,
+  };
+}
+
+function startupWarning(status: DaemonStatus): WtmError {
+  const code = wtmErrorCodeSchema.safeParse(status.code);
+  return {
+    code: code.success ? code.data : 'WTM_DAEMON_UNAVAILABLE',
+    message: `The daemon service was installed, but the daemon did not start: ${status.message ?? 'no reason was recorded.'}`,
+    severity: 'warning',
+    context: { action: 'install', since: status.since, attempts: status.attempts, permanent: status.permanent },
+    ...(status.remediation === null ? {} : { remediation: [{ kind: 'command-suggestion' as const, argv: status.remediation }] }),
+  };
 }
 
 export async function serveDaemon(dependencies: DaemonServeDependencies): Promise<DaemonServeResult> {
@@ -155,10 +234,27 @@ export async function serveDaemon(dependencies: DaemonServeDependencies): Promis
     try {
       runtime = await dependencies.runtimeFactory();
       await runtime.start();
+      dependencies.recordOutcome?.({ started: true });
     } catch (error) {
       reportError(error);
       await closeOnce().catch(() => {});
-      return serveFailure('WTM daemon could not start.', error);
+      const failed = serveFailure('WTM daemon could not start.', error);
+      const permanent = isPermanentStartupFailure(failed);
+      const reported = failed.envelope.errors[0];
+      if (reported !== undefined) {
+        const condition = reportableCondition(error);
+        dependencies.recordOutcome?.({
+          started: false,
+          code: reported.code,
+          condition,
+          // An uncoded failure's envelope message is deliberately generic; the local record is
+          // not an envelope, and the condition is what tells a person what happened.
+          message: reported.code === 'WTM_DAEMON_REQUEST_FAILED' ? condition : reported.message,
+          remediation: reported.remediation?.[0]?.argv ?? null,
+          permanent,
+        });
+      }
+      return dependencies.supervised === true && permanent ? { ...failed, exitCode: 0 } : failed;
     }
     const signal = await termination;
     try {
@@ -217,6 +313,12 @@ export function createDaemonErrorReporter(
   write: (line: string) => void = (line) => { process.stderr.write(line); },
   clock: () => number = () => Date.now(),
   retain: (entry: string) => void = appendToDaemonErrorLog,
+  /**
+   * The condition the previous launch already failed on, from `daemon-status.json`. Its frames
+   * are in the log once already; a crash loop writing them again on every launch is how the
+   * reported log reached 162 MB (spec R4).
+   */
+  options: { repeatedCondition?: string | null } = {},
 ): (error: unknown) => void {
   const seen = new Map<string, { since: number; suppressed: number }>();
   return (error: unknown) => {
@@ -238,7 +340,10 @@ export function createDaemonErrorReporter(
     const stamp = new Date(at).toISOString();
     write(`${stamp} ${detail}${recurrence(previous)}\n`);
     const frames = error instanceof Error ? error.stack : undefined;
-    if (frames !== undefined && frames !== '') retain(`${stamp} ${frames}\n`);
+    const warningGrade = isRecord(error) && error.retainFrames === false;
+    if (!warningGrade && detail !== options.repeatedCondition && frames !== undefined && frames !== '') {
+      retain(`${stamp} ${frames}\n`);
+    }
   };
 }
 
@@ -334,6 +439,16 @@ function serveEnvelope(error: WtmError): DaemonServeResult['envelope'] {
  */
 function startupFailureExitCode(code: WtmErrorCode): number {
   return exitCodeForError(code);
+}
+
+/**
+ * A startup failure no retry can clear: a coded error in exit class 2, the class for
+ * configuration a person has to change. Not a second list, so a code classified there later is
+ * treated as permanent here without this function changing.
+ */
+export function isPermanentStartupFailure(result: DaemonServeResult): boolean {
+  const code = result.envelope.errors[0]?.code;
+  return code !== undefined && exitCodeForError(code) === 2;
 }
 
 /**

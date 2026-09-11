@@ -174,19 +174,27 @@ export function renderSystemdUnit(options: SystemdUnitOptions): string {
   // to. TimeoutStopSec is ExitTimeOut. UMask=0077 is Umask 63 written the way systemd writes it.
   // launchd's ProcessType has no systemd counterpart -- systemd does not throttle a user unit's
   // CPU or I/O by default, which is the state Adaptive exists to ask launchd for.
+  //
+  // StartLimitIntervalSec=0 and RestartSec=10 state the restart policy explicitly rather than
+  // inheriting the distro's default rate limit: retry a transient failure every 10 seconds,
+  // indefinitely. WTM_DAEMON_SUPERVISED=1 is what lets `serveDaemon` tell the two situations
+  // apart -- it exits 0 for a permanent failure (a coded error in exit class 2, which no retry
+  // clears) so systemd leaves the unit stopped instead of restarting it forever, and keeps its
+  // normal exit status for a transient one, which this policy is what retries.
   return `[Unit]
 Description=WTM daemon for ${unitText(options.home)}
 Documentation=https://github.com/0furkancolak/wtm
+StartLimitIntervalSec=0
 
 [Service]
 Type=exec
 ExecStart=${execStart}
 WorkingDirectory=${unitText(options.workingDirectory)}
-Environment="HOME=${quoteUnitArgument(options.home)}" "PATH=${quoteUnitArgument(options.pathEnvironment)}"
+Environment="HOME=${quoteUnitArgument(options.home)}" "PATH=${quoteUnitArgument(options.pathEnvironment)}" "WTM_DAEMON_SUPERVISED=1"
 StandardOutput=append:${unitText(options.stdoutPath)}
 StandardError=append:${unitText(options.stderrPath)}
 Restart=on-failure
-RestartSec=1
+RestartSec=10
 TimeoutStopSec=5
 UMask=0077
 

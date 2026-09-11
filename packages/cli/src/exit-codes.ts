@@ -33,6 +33,9 @@ export function exitCodeForError(code: WtmErrorCode): number {
     || code === 'WTM_WORKSPACE_NOT_FOUND'
     || code === 'WTM_NOT_INITIALIZED'
     || code === 'WTM_SOCKET_PATH_TOO_LONG'
+    // Something occupies the daemon's socket path that WTM will not remove. A retry finds the same
+    // occupant; only a person can clear it, which is the class a supervised daemon stops on.
+    || code === 'WTM_IPC_PATH_UNUSABLE'
     || code === 'WTM_PLATFORM_UNSUPPORTED'
     // No backend for this operating system. Nothing about the workspace is wrong and no retry
     // helps, which is the same class as a socket path that cannot fit: the user has to change

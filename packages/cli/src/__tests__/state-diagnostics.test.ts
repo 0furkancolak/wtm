@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -13,6 +13,7 @@ import type {
 } from '@wtm/core';
 import { selectPlatformRuntime, UnsupportedPlatformError } from '@wtm/platform';
 import { daemonSocketFileName, publishedDaemonSocketPath } from '@wtm/platform/socket';
+import { nextDaemonStatus, writeDaemonStatus } from '../daemon-status';
 import { doctorChecks } from '../diagnostics';
 import { createStateDiagnosticDataSource } from '../state-diagnostics';
 
@@ -218,7 +219,7 @@ describe('registration', () => {
       check: 'registration',
       status: 'warning',
       message: 'This worktree is registered, but the daemon is not answering on its socket. '
-        + 'Start it with `wtm daemon start`.',
+        + 'Start it with `wtm daemon install`.',
       details: { code: 'WTM_DAEMON_UNAVAILABLE', registered: true, daemonReachable: false },
     });
     expect(notRegistered).toEqual({
@@ -252,6 +253,65 @@ describe('registration', () => {
       status: 'unknown',
       message: 'Adapter detection needs a registered worktree; see the registration check.',
     });
+  });
+
+  test('an unreachable daemon with a recorded startup failure is reported with its reason and its remedy', async () => {
+    const statusPath = join(await tempDir(), 'daemon-status.json');
+    writeDaemonStatus(statusPath, nextDaemonStatus(null, {
+      started: false, code: 'WTM_IPC_PATH_UNUSABLE',
+      condition: 'The WTM daemon socket path is a directory: /x.', message: 'The WTM daemon socket path is a directory: /x.',
+      remediation: ['wtm', 'doctor'], permanent: true,
+    }, new Date('2026-09-11T10:00:00.000Z'), 7));
+    const finding = await registrationFinding('/workspace/web-feature', join(await tempDir(), 'absent.sock'), statusPath);
+
+    expect(finding?.status).toBe('error');
+    expect(finding?.message).toContain('The WTM daemon socket path is a directory: /x.');
+    expect(finding?.message).toContain('since 2026-09-11T10:00:00.000Z');
+    expect(finding?.message).toContain('`wtm daemon install`');
+    expect(finding?.details).toMatchObject({
+      code: 'WTM_IPC_PATH_UNUSABLE', daemonReachable: false,
+      startupFailedSince: '2026-09-11T10:00:00.000Z', startupAttempts: 1, startupPermanent: true,
+      startupRemediation: 'wtm doctor',
+    });
+  });
+
+  test('an unregistered worktree with an unreachable daemon reports its recorded startup failure too (review M4)', async () => {
+    const statusPath = join(await tempDir(), 'daemon-status.json');
+    writeDaemonStatus(statusPath, nextDaemonStatus(null, {
+      started: false, code: 'WTM_IPC_PATH_UNUSABLE',
+      condition: 'The WTM daemon socket path is a directory: /x.', message: 'The WTM daemon socket path is a directory: /x.',
+      remediation: ['wtm', 'doctor'], permanent: true,
+    }, new Date('2026-09-11T10:00:00.000Z'), 7));
+    const finding = await registrationFinding('/elsewhere', join(await tempDir(), 'absent.sock'), statusPath);
+
+    expect(finding?.status).toBe('error');
+    expect(finding?.message).toContain('This directory is not inside a worktree WTM has registered.');
+    expect(finding?.message).toContain('The WTM daemon socket path is a directory: /x.');
+    expect(finding?.message).toContain('since 2026-09-11T10:00:00.000Z');
+    expect(finding?.details).toMatchObject({
+      code: 'WTM_WORKSPACE_NOT_FOUND', registered: false, daemonReachable: false,
+      startupFailedSince: '2026-09-11T10:00:00.000Z', startupAttempts: 1, startupPermanent: true,
+      startupRemediation: 'wtm doctor',
+    });
+  });
+
+  test('an unregistered worktree with a reachable daemon does not report a stale startup failure', async () => {
+    const statusPath = join(await tempDir(), 'daemon-status.json');
+    writeDaemonStatus(statusPath, nextDaemonStatus(null, {
+      started: false, code: 'WTM_IPC_PATH_UNUSABLE', condition: 'old', message: 'old', remediation: null, permanent: true,
+    }, new Date('2026-09-11T10:00:00.000Z'), 7));
+    const finding = await registrationFinding('/elsewhere', await socketServer(), statusPath);
+
+    expect(finding?.details).toMatchObject({ code: 'WTM_WORKSPACE_NOT_FOUND', daemonReachable: true });
+    expect(finding?.message).not.toContain('old');
+  });
+
+  test('a recorded successful start is not presented as the reason the daemon is down', async () => {
+    const statusPath = join(await tempDir(), 'daemon-status.json');
+    writeDaemonStatus(statusPath, nextDaemonStatus(null, { started: true }, new Date(), 7));
+    const finding = await registrationFinding('/workspace/web-feature', join(await tempDir(), 'absent.sock'), statusPath);
+    expect(finding?.status).toBe('warning');
+    expect(finding?.details).toMatchObject({ code: 'WTM_DAEMON_UNAVAILABLE' });
   });
 });
 
@@ -452,16 +512,17 @@ async function socketServer(): Promise<string> {
   return path;
 }
 
-async function findingsAt(cwd: string, daemonSocketPath: string) {
+async function findingsAt(cwd: string, daemonSocketPath: string, daemonStatusPath?: string) {
   return (await createStateDiagnosticDataSource(store, {
     cwd,
     globalConfigPath: '/workspace/config.toml',
     daemonSocketPath,
+    daemonStatusPath: daemonStatusPath ?? join(await tempDir(), 'daemon-status.json'),
   }).readDoctor(registered)).findings;
 }
 
-async function registrationFinding(cwd: string, daemonSocketPath: string) {
-  return (await findingsAt(cwd, daemonSocketPath)).find(({ check }) => check === 'registration');
+async function registrationFinding(cwd: string, daemonSocketPath: string, daemonStatusPath?: string) {
+  return (await findingsAt(cwd, daemonSocketPath, daemonStatusPath)).find(({ check }) => check === 'registration');
 }
 
 async function socketPathFinding(daemonSocketPath: string) {

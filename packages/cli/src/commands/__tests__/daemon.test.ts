@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { join as posixJoin } from 'node:path/posix';
@@ -19,10 +19,13 @@ import { jsonEnvelopeSchema } from '@wtm/protocol';
 import { launchdPaths } from '@wtm/daemon/launchd';
 import { servicePathsFor, type ServiceLifecycle } from '@wtm/daemon/service-lifecycle';
 import {
+  createDaemonErrorReporter,
+  rotateDaemonServiceLogs,
   runDaemonLifecycleCommand,
   serveDaemon,
   type DaemonSignalSource,
 } from '../daemon';
+import { daemonStatusPath, nextDaemonStatus, readDaemonStatus, type DaemonStartupOutcome, type DaemonStatus } from '../../daemon-status';
 import { exitCodeForError } from '../../exit-codes';
 import { createCli, runCli } from '../../main';
 import { isolatedHomeEnvironment } from '../../../../testkit/src/isolated-home';
@@ -253,6 +256,72 @@ describe('daemon lifecycle command', () => {
     expect(refusal.errors[0]?.context).toMatchObject({ limitBytes: linuxSocketPathLimitBytes });
     expect(String(refusal.errors[0]?.context?.path)).toContain('/wtm/wtmd.sock');
   });
+
+  test('an install whose daemon records a startup failure says so at once, instead of waiting out the deadline', async () => {
+    let status: DaemonStatus | null = null;
+    const manager: ServiceLifecycle = {
+      ...fakeManager(),
+      install: async () => {
+        // The service manager starts the daemon, which fails and records why.
+        status = nextDaemonStatus(null, {
+          started: false, code: 'WTM_IPC_PATH_UNUSABLE', condition: 'occupied', message: 'The WTM daemon socket path is a directory: /x.',
+          remediation: ['wtm', 'doctor'], permanent: true,
+        }, new Date(), 9);
+        return await fakeManager().install();
+      },
+    };
+    const started = Date.now();
+    const envelope = await runDaemonLifecycleCommand(
+      'install', manager, async () => false,
+      publishedDaemonSocketPath(selectPlatformRuntime({ home: '/Users/x' }).paths.socketRoot),
+      undefined, () => status,
+    );
+
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(jsonEnvelopeSchema.parse(envelope)).toEqual(envelope);
+    expect(envelope).toMatchObject({
+      ok: true,
+      data: { reachable: false, startup: { state: 'failed', code: 'WTM_IPC_PATH_UNUSABLE', permanent: true } },
+      warnings: [{ code: 'WTM_IPC_PATH_UNUSABLE', severity: 'warning', remediation: [{ kind: 'command-suggestion', argv: ['wtm', 'doctor'] }] }],
+    });
+  });
+
+  test('a failure recorded before this install is not blamed on it', async () => {
+    const stale = nextDaemonStatus(null, {
+      started: false, code: 'WTM_IPC_PATH_UNUSABLE', condition: 'old', message: 'old', remediation: null, permanent: true,
+    }, new Date(Date.now() - 60_000), 9);
+    let callCount = 0;
+    const reachable = async () => {
+      callCount++;
+      return callCount > 1;
+    };
+    const envelope = await runDaemonLifecycleCommand('install', fakeManager(), reachable, undefined, undefined, () => stale);
+    expect(envelope).toMatchObject({ ok: true, data: { reachable: true }, warnings: [] });
+    expect(callCount).toBeGreaterThanOrEqual(2);
+  });
+
+  test('a fresh transient failure does not cut the readiness wait short (review I1)', async () => {
+    // A transient failure -- an in-use socket while the previous daemon is still going down, a
+    // young close-shield placeholder, any uncoded error -- is exactly what R2 has the service
+    // manager retry 10 s later, comfortably inside the 20 s deadline. Stopping at the first sight
+    // of it, as `install` used to, reported the daemon dead while the retry was seconds away from
+    // succeeding.
+    const fresh = nextDaemonStatus(null, {
+      started: false, code: 'WTM_DAEMON_REQUEST_FAILED',
+      condition: 'IPC socket is already in use: /x', message: 'IPC socket is already in use: /x',
+      remediation: null, permanent: false,
+    }, new Date(Date.now() + 1_000), 9);
+    let callCount = 0;
+    const reachable = async () => {
+      callCount++;
+      return callCount > 1;
+    };
+    const envelope = await runDaemonLifecycleCommand('install', fakeManager(), reachable, undefined, undefined, () => fresh);
+    expect(envelope).toMatchObject({ ok: true, data: { reachable: true }, warnings: [] });
+    // Reached a second poll rather than stopping after the first, which is what proves the
+    // transient failure did not cut the wait short.
+    expect(callCount).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe('the published definition path', () => {
@@ -467,6 +536,33 @@ describe('daemon serve', () => {
     expect(signals.listenerCount()).toBe(0);
   });
 
+  test('records the outcome of every startup, successful or not', async () => {
+    const outcomes: DaemonStartupOutcome[] = [];
+    const signals = new FakeSignals();
+    const serving = serveDaemon({
+      runtimeFactory: async () => ({ start: async () => {}, close: async () => {} }),
+      signals,
+      recordOutcome: (outcome) => { outcomes.push(outcome); },
+    });
+    await until(() => signals.listenerCount() === 2 && outcomes.length === 1);
+    signals.emit('SIGTERM');
+    await serving;
+    expect(outcomes).toEqual([{ started: true }]);
+
+    const failure = new DaemonSocketPathTooLongError(measureDaemonSocketPath(overLimitOnDarwin, darwinSocketPathLimitBytes));
+    const failed: DaemonStartupOutcome[] = [];
+    await serveDaemon({
+      runtimeFactory: async () => { throw failure; },
+      signals: new FakeSignals(),
+      reportError: () => {},
+      recordOutcome: (outcome) => { failed.push(outcome); },
+    });
+    expect(failed).toEqual([{
+      started: false, code: 'WTM_SOCKET_PATH_TOO_LONG', condition: failure.message, message: failure.message,
+      remediation: ['wtm', 'doctor'], permanent: true,
+    }]);
+  });
+
   test('a signal during startup waits for startup then closes exactly once', async () => {
     const events: string[] = [];
     const signals = new FakeSignals();
@@ -559,6 +655,36 @@ describe('daemon serve', () => {
     expect(reported).toEqual([failure]);
     expect(signals.listenerCount()).toBe(0);
   });
+
+  test('under a service manager, a permanent failure exits 0 so it is not restarted forever', async () => {
+    const failure = new DaemonSocketPathTooLongError(measureDaemonSocketPath(overLimitOnDarwin, darwinSocketPathLimitBytes));
+    const supervised = await serveDaemon({
+      runtimeFactory: async () => { throw failure; },
+      signals: new FakeSignals(),
+      reportError: () => {},
+      supervised: true,
+    });
+    // The envelope still says exactly what went wrong; only the status the manager reads changes.
+    expect(supervised.exitCode).toBe(0);
+    expect(supervised.envelope.errors[0]?.code).toBe('WTM_SOCKET_PATH_TOO_LONG');
+
+    const byHand = await serveDaemon({
+      runtimeFactory: async () => { throw failure; },
+      signals: new FakeSignals(),
+      reportError: () => {},
+    });
+    expect(byHand.exitCode).toBe(2);
+  });
+
+  test('under a service manager, a transient failure still exits non-zero and is retried', async () => {
+    const result = await serveDaemon({
+      runtimeFactory: async () => { throw new Error('IPC path holds a close-shield placeholder too recent to reclaim: /x'); },
+      signals: new FakeSignals(),
+      reportError: () => {},
+      supervised: true,
+    });
+    expect(result.exitCode).toBe(1);
+  });
 });
 
 describe('daemon failure output', () => {
@@ -630,6 +756,21 @@ describe('daemon failure output', () => {
       await rm(fixture.root, { recursive: true, force: true });
     }
   }, scenarioTimeoutMs);
+
+  test('frames are kept once per condition across launches, and never for a warning-grade condition', () => {
+    const retained: string[] = [];
+    const repeat = createDaemonErrorReporter(() => {}, () => 0, (entry) => { retained.push(entry); }, {
+      repeatedCondition: 'socket path is a directory',
+    });
+    repeat(new Error('socket path is a directory'));
+    expect(retained).toEqual([]);
+    repeat(new Error('something new'));
+    expect(retained).toHaveLength(1);
+
+    const quiet = createDaemonErrorReporter(() => {}, () => 0, (entry) => { retained.push(entry); });
+    quiet(Object.assign(new Error('Registered repository root is unavailable: /gone'), { retainFrames: false }));
+    expect(retained).toHaveLength(1);
+  });
 });
 
 /**
@@ -686,6 +827,11 @@ describe('daemon CLI surface', () => {
     const signals = new FakeSignals();
     let started = false;
     const running = runCli(['daemon', 'serve', '--json'], {
+      // No log rotation and no `daemon-status.json` here: this test is only about the runtime
+      // factory and signal wiring, and without this seam `servicePathsForHost()` would rotate
+      // this developer's real `daemon.error.log` and overwrite their real `daemon-status.json`
+      // with a record of this test run (review I2).
+      daemonServicePaths: () => null,
       daemonRuntimeFactory: async () => ({
         start: async () => { started = true; },
         close: async () => {},
@@ -699,6 +845,35 @@ describe('daemon CLI surface', () => {
 
     expect(await running).toBe(0);
     expect(JSON.parse(stdout)).toMatchObject({ ok: true, command: 'daemon serve' });
+  });
+
+  test('writes daemon-status.json under the injected service paths, never the real HOME (review I2)', async () => {
+    const home = await mkdtemp(join(shortTmpRoot(), 'wtm-daemon-serve-status-'));
+    try {
+      const env = isolatedHomeEnvironment(home);
+      const servicePaths = servicePathsFor(selectPlatformRuntime({ home, env }).service, { home, env });
+      const signals = new FakeSignals();
+      let stdout = '';
+      const running = runCli(['daemon', 'serve', '--json'], {
+        daemonServicePaths: () => servicePaths,
+        daemonRuntimeFactory: async () => ({ start: async () => {}, close: async () => {} }),
+        daemonSignals: signals,
+        stdout: (value) => { stdout += value; },
+        stderr: () => {},
+      });
+      // `recordOutcome` runs synchronously right after `runtime.start()` resolves, but before the
+      // process waits on termination -- polling the file itself, rather than a flag the runtime
+      // factory flips, is what avoids a race against that ordering.
+      await untilAsync(async () => readDaemonStatus(daemonStatusPath(servicePaths.logRoot)) !== null, 5_000);
+      signals.emit('SIGTERM');
+
+      expect(await running).toBe(0);
+      expect(readDaemonStatus(daemonStatusPath(servicePaths.logRoot))).toMatchObject({
+        state: 'running', pid: process.pid,
+      });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   test('wires serve to the production runtime factory and closes its real socket on SIGTERM', async () => {
@@ -803,3 +978,26 @@ async function childResult(child: ReturnType<typeof spawn>): Promise<{
     child.once('exit', (code, signal) => resolve({ code, signal, stdout, stderr }));
   });
 }
+
+describe('daemon log rotation', () => {
+  test('rotates an over-size daemon log before the daemon writes to it, and keeps the old content', async () => {
+    const logRoot = await mkdtemp(join(shortTmpRoot(), 'wtm-daemon-logs-'));
+    try {
+      const stderrPath = join(logRoot, 'daemon.error.log');
+      const stdoutPath = join(logRoot, 'daemon.log');
+      await writeFile(stderrPath, 'x'.repeat(2048), { mode: 0o600 });
+      await rotateDaemonServiceLogs({ logRoot, stdoutPath, stderrPath }, selectPlatformRuntime().fileTrust, 1024);
+      expect(await readFile(`${stderrPath}.1`, 'utf8')).toBe('x'.repeat(2048));
+      await expect(lstat(stderrPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(logRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('a log root that cannot be rotated is not a reason to refuse to start', async () => {
+    await rotateDaemonServiceLogs(
+      { logRoot: '/nonexistent/wtm', stdoutPath: '/nonexistent/wtm/daemon.log', stderrPath: '/nonexistent/wtm/daemon.error.log' },
+      selectPlatformRuntime().fileTrust,
+    );
+  });
+});

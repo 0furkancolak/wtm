@@ -86,6 +86,8 @@ describe('launchd plist', () => {
     <key>SuccessfulExit</key>
     <false/>
   </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
   <key>ProcessType</key>
   <string>Adaptive</string>
   <key>ExitTimeOut</key>

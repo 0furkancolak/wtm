@@ -102,6 +102,7 @@ WTM_DAEMON_REQUEST_FAILED
 WTM_OPERATION_CONFLICT
 WTM_WORKTREE_PATH_OCCUPIED
 WTM_SOCKET_PATH_TOO_LONG
+WTM_IPC_PATH_UNUSABLE
 WTM_PLATFORM_UNSUPPORTED
 WTM_WATCH_UNAVAILABLE
 ```
@@ -137,6 +138,17 @@ was measured), `byteLength`, `limitBytes`, `exceededBy`, and both `publishedPath
 the daemon binds a private sibling and links the published name onto it, and the check measures
 whichever of the two is longer. Nothing was bound or connected: the check runs before either. It is
 a configuration the user has to change — a shorter home directory — so it exits with code 2.
+
+`WTM_IPC_PATH_UNUSABLE` means the daemon's socket path, published or private, is occupied by
+something WTM will not remove: a file other than WTM's own empty, `0600`, single-link placeholder
+at least 30 s old, a symbolic link, a directory, or a file or socket owned by another user. WTM
+reclaims only a stale socket of its own and that empty placeholder file its own shutdown leaves
+behind when it is killed mid-close — a younger one is refused as transient instead, since a
+service manager's next retry is expected to find it gone. `context` carries
+`path`, `occupant` (`file`, `foreign-file`, `directory`, `symlink`, `foreign-socket` or `other`)
+and `ownerUid`. The remediation is `rm <path>` where removing the path is the remedy, and
+`wtm doctor` where it is not. A daemon run by launchd or systemd stops retrying on this code
+instead of restarting forever. It is a condition a person has to clear, so it exits with code 2.
 
 `WTM_PLATFORM_UNSUPPORTED` means WTM has no backend for the operating system it was started on.
 `context` carries `platform`, the `process.platform` value that was refused, and `supported`, the
