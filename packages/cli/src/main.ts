@@ -411,7 +411,17 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
           ?? daemonProgramArguments(dependencies.runtimeInvocation ?? defaultRuntimeInvocation()),
       });
       renderRuntime(
-        await runDaemonLifecycleCommand(action, manager, () => daemonReachable(defaultDaemonSocketPath())),
+        await runDaemonLifecycleCommand(
+          action,
+          manager,
+          () => daemonReachable(defaultDaemonSocketPath()),
+          undefined,
+          undefined,
+          () => {
+            const service = servicePathsForHost();
+            return service === null ? null : readDaemonStatus(daemonStatusPath(service.logRoot));
+          },
+        ),
         runtimeJson(program, options),
       );
     });

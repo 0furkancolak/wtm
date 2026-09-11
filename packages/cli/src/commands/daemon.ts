@@ -8,7 +8,7 @@ import { errorSeveritySchema, remediationSchema, wtmErrorCodeSchema } from '@wtm
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
 import { ManagedLogStore } from '@wtm/daemon/logs';
 import { exitCodeForError } from '../exit-codes';
-import type { DaemonStartupOutcome } from '../daemon-status';
+import type { DaemonStartupOutcome, DaemonStatus } from '../daemon-status';
 import { servicePathsFor } from '@wtm/daemon/service-lifecycle';
 import type { ServiceLifecycle, ServicePaths } from '@wtm/daemon/service-lifecycle';
 
@@ -102,6 +102,12 @@ export async function runDaemonLifecycleCommand(
    * the caller as a `WTM_PLATFORM_UNSUPPORTED` envelope rather than as a thrown default argument.
    */
   platform?: PlatformRuntime,
+  /**
+   * The daemon's own record of its last startup. After `install` starts the service, a failure
+   * recorded since the install began is the reason it is not answering, and waiting out the
+   * readiness deadline would only delay saying so (spec decision 4).
+   */
+  readStartupStatus?: () => DaemonStatus | null,
 ): Promise<JsonEnvelope<unknown>> {
   let manager = unknownServiceManagerName;
   try {
@@ -112,10 +118,22 @@ export async function runDaemonLifecycleCommand(
     // it is the same preflight the daemon's own bind side runs, so the two cannot disagree. The
     // limit is this host's `sizeof(sun_path)` — 104 on macOS, 108 on Linux — not a constant.
     if (action === 'install') assertDaemonSocketPathFits(address, host.socket.limitBytes);
+    const startedAt = Date.now();
     const data = published(host, await lifecycle[action]());
     if (action === 'uninstall' || reachable === undefined) return successEnvelope(`daemon ${action}`, data);
-    const ready = action === 'install' ? await waitUntilReachable(reachable) : await reachable();
-    return successEnvelope(`daemon ${action}`, { ...data, reachable: ready });
+    const freshFailure = (): DaemonStatus | null => {
+      const status = readStartupStatus?.() ?? null;
+      return status !== null && status.state === 'failed' && Date.parse(status.at) >= startedAt ? status : null;
+    };
+    const ready = action === 'install'
+      ? await waitUntilReachable(reachable, () => freshFailure() !== null)
+      : await reachable();
+    const failure = action === 'install' && !ready ? freshFailure() : null;
+    if (failure === null) return successEnvelope(`daemon ${action}`, { ...data, reachable: ready });
+    return {
+      ...successEnvelope(`daemon ${action}`, { ...data, reachable: false, startup: startupSummary(failure) }),
+      warnings: [startupWarning(failure)],
+    };
   } catch (error) {
     return {
       schemaVersion: 1,
@@ -150,13 +168,34 @@ function published<T extends { definitionPath: string }>(
   return host.service.id === 'darwin' ? { ...result, plistPath: result.definitionPath } : result;
 }
 
-async function waitUntilReachable(reachable: () => Promise<boolean>): Promise<boolean> {
+async function waitUntilReachable(
+  reachable: () => Promise<boolean>,
+  startupFailed: () => boolean = () => false,
+): Promise<boolean> {
   const deadline = Date.now() + readinessDeadlineMs;
   for (;;) {
     if (await reachable()) return true;
-    if (Date.now() >= deadline) return false;
+    if (startupFailed() || Date.now() >= deadline) return false;
     await new Promise((settle) => { setTimeout(settle, readinessIntervalMs); });
   }
+}
+
+function startupSummary(status: DaemonStatus) {
+  return {
+    state: status.state, code: status.code, message: status.message, since: status.since,
+    attempts: status.attempts, permanent: status.permanent, remediation: status.remediation,
+  };
+}
+
+function startupWarning(status: DaemonStatus): WtmError {
+  const code = wtmErrorCodeSchema.safeParse(status.code);
+  return {
+    code: code.success ? code.data : 'WTM_DAEMON_UNAVAILABLE',
+    message: `The daemon service was installed, but the daemon did not start: ${status.message ?? 'no reason was recorded.'}`,
+    severity: 'warning',
+    context: { action: 'install', since: status.since, attempts: status.attempts, permanent: status.permanent },
+    ...(status.remediation === null ? {} : { remediation: [{ kind: 'command-suggestion' as const, argv: status.remediation }] }),
+  };
 }
 
 export async function serveDaemon(dependencies: DaemonServeDependencies): Promise<DaemonServeResult> {

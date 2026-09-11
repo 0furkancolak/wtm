@@ -25,7 +25,7 @@ import {
   serveDaemon,
   type DaemonSignalSource,
 } from '../daemon';
-import type { DaemonStartupOutcome } from '../../daemon-status';
+import { nextDaemonStatus, type DaemonStartupOutcome, type DaemonStatus } from '../../daemon-status';
 import { exitCodeForError } from '../../exit-codes';
 import { createCli, runCli } from '../../main';
 import { isolatedHomeEnvironment } from '../../../../testkit/src/isolated-home';
@@ -255,6 +255,43 @@ describe('daemon lifecycle command', () => {
     expect(refusal.errors[0]?.code).toBe('WTM_SOCKET_PATH_TOO_LONG');
     expect(refusal.errors[0]?.context).toMatchObject({ limitBytes: linuxSocketPathLimitBytes });
     expect(String(refusal.errors[0]?.context?.path)).toContain('/wtm/wtmd.sock');
+  });
+
+  test('an install whose daemon records a startup failure says so at once, instead of waiting out the deadline', async () => {
+    let status: DaemonStatus | null = null;
+    const manager: ServiceLifecycle = {
+      ...fakeManager(),
+      install: async () => {
+        // The service manager starts the daemon, which fails and records why.
+        status = nextDaemonStatus(null, {
+          started: false, code: 'WTM_IPC_PATH_UNUSABLE', condition: 'occupied', message: 'The WTM daemon socket path is a directory: /x.',
+          remediation: ['wtm', 'doctor'], permanent: true,
+        }, new Date(), 9);
+        return await fakeManager().install();
+      },
+    };
+    const started = Date.now();
+    const envelope = await runDaemonLifecycleCommand(
+      'install', manager, async () => false,
+      publishedDaemonSocketPath(selectPlatformRuntime({ home: '/Users/x' }).paths.socketRoot),
+      undefined, () => status,
+    );
+
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(jsonEnvelopeSchema.parse(envelope)).toEqual(envelope);
+    expect(envelope).toMatchObject({
+      ok: true,
+      data: { reachable: false, startup: { state: 'failed', code: 'WTM_IPC_PATH_UNUSABLE', permanent: true } },
+      warnings: [{ code: 'WTM_IPC_PATH_UNUSABLE', severity: 'warning', remediation: [{ kind: 'command-suggestion', argv: ['wtm', 'doctor'] }] }],
+    });
+  });
+
+  test('a failure recorded before this install is not blamed on it', async () => {
+    const stale = nextDaemonStatus(null, {
+      started: false, code: 'WTM_IPC_PATH_UNUSABLE', condition: 'old', message: 'old', remediation: null, permanent: true,
+    }, new Date(Date.now() - 60_000), 9);
+    const envelope = await runDaemonLifecycleCommand('install', fakeManager(), async () => true, undefined, undefined, () => stale);
+    expect(envelope).toMatchObject({ ok: true, data: { reachable: true }, warnings: [] });
   });
 });
 
