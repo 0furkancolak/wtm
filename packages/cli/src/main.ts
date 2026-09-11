@@ -45,7 +45,7 @@ import {
   taskResolutionInput,
 } from '@wtm/daemon';
 import { createServiceLifecycle } from '@wtm/daemon/service-lifecycle';
-import type { ServiceLifecycle } from '@wtm/daemon/service-lifecycle';
+import type { ServiceLifecycle, ServicePaths } from '@wtm/daemon/service-lifecycle';
 import {
   emptyDiagnosticDataSource,
   runDoctorCommand,
@@ -123,6 +123,14 @@ export interface CliDependencies {
   daemonRuntimeFactory?: () => Promise<ForegroundDaemonRuntime>;
   daemonSignals?: DaemonSignalSource;
   daemonProgramArguments?: readonly string[];
+  /**
+   * Where the daemon's own logs and `daemon-status.json` live. Defaults to `servicePathsForHost`,
+   * which reads the real `HOME`. Every in-process test that drives `daemon serve` or the
+   * install/uninstall/status lifecycle through `runCli` must override this — otherwise the test
+   * suite rotates a developer's real `daemon.error.log` and overwrites their real
+   * `daemon-status.json` with a record of the test run (spec item 45, review I2).
+   */
+  daemonServicePaths?: () => ServicePaths | null;
   runtimeInvocation?: RuntimeInvocation;
   diskRunner?: (input: { cwd: string }) => Promise<JsonEnvelope<unknown>>;
   gcRunner?: (input: { cwd: string; apply: boolean }) => Promise<JsonEnvelope<unknown>>;
@@ -187,6 +195,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   const stderr = dependencies.stderr ?? ((value: string) => process.stderr.write(value));
   const source = dependencies.dataSource ?? emptyDiagnosticDataSource;
   const cwd = dependencies.cwd ?? process.cwd();
+  const daemonServicePaths = dependencies.daemonServicePaths ?? servicePathsForHost;
   const program = new Command()
     .name('wtm')
     .description('Worktree Runtime Manager')
@@ -418,7 +427,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
           undefined,
           undefined,
           () => {
-            const service = servicePathsForHost();
+            const service = daemonServicePaths();
             return service === null ? null : readDaemonStatus(daemonStatusPath(service.logRoot));
           },
         ),
@@ -431,7 +440,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   serve.action(async (options: ScopeOptions) => {
     // One reporter for the whole daemon: startup failures and every error raised while it
     // runs land in the same log, which is the only place an unattended process can speak.
-    const service = servicePathsForHost();
+    const service = daemonServicePaths();
     if (service !== null) await rotateDaemonServiceLogs(service, hostPlatformRuntime().fileTrust);
     const statusPath = service === null ? null : daemonStatusPath(service.logRoot);
     const previous = statusPath === null ? null : readDaemonStatus(statusPath);

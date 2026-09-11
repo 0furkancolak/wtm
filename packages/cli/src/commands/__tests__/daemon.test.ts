@@ -25,7 +25,7 @@ import {
   serveDaemon,
   type DaemonSignalSource,
 } from '../daemon';
-import { nextDaemonStatus, type DaemonStartupOutcome, type DaemonStatus } from '../../daemon-status';
+import { daemonStatusPath, nextDaemonStatus, readDaemonStatus, type DaemonStartupOutcome, type DaemonStatus } from '../../daemon-status';
 import { exitCodeForError } from '../../exit-codes';
 import { createCli, runCli } from '../../main';
 import { isolatedHomeEnvironment } from '../../../../testkit/src/isolated-home';
@@ -827,6 +827,11 @@ describe('daemon CLI surface', () => {
     const signals = new FakeSignals();
     let started = false;
     const running = runCli(['daemon', 'serve', '--json'], {
+      // No log rotation and no `daemon-status.json` here: this test is only about the runtime
+      // factory and signal wiring, and without this seam `servicePathsForHost()` would rotate
+      // this developer's real `daemon.error.log` and overwrite their real `daemon-status.json`
+      // with a record of this test run (review I2).
+      daemonServicePaths: () => null,
       daemonRuntimeFactory: async () => ({
         start: async () => { started = true; },
         close: async () => {},
@@ -840,6 +845,35 @@ describe('daemon CLI surface', () => {
 
     expect(await running).toBe(0);
     expect(JSON.parse(stdout)).toMatchObject({ ok: true, command: 'daemon serve' });
+  });
+
+  test('writes daemon-status.json under the injected service paths, never the real HOME (review I2)', async () => {
+    const home = await mkdtemp(join(shortTmpRoot(), 'wtm-daemon-serve-status-'));
+    try {
+      const env = isolatedHomeEnvironment(home);
+      const servicePaths = servicePathsFor(selectPlatformRuntime({ home, env }).service, { home, env });
+      const signals = new FakeSignals();
+      let stdout = '';
+      const running = runCli(['daemon', 'serve', '--json'], {
+        daemonServicePaths: () => servicePaths,
+        daemonRuntimeFactory: async () => ({ start: async () => {}, close: async () => {} }),
+        daemonSignals: signals,
+        stdout: (value) => { stdout += value; },
+        stderr: () => {},
+      });
+      // `recordOutcome` runs synchronously right after `runtime.start()` resolves, but before the
+      // process waits on termination -- polling the file itself, rather than a flag the runtime
+      // factory flips, is what avoids a race against that ordering.
+      await untilAsync(async () => readDaemonStatus(daemonStatusPath(servicePaths.logRoot)) !== null, 5_000);
+      signals.emit('SIGTERM');
+
+      expect(await running).toBe(0);
+      expect(readDaemonStatus(daemonStatusPath(servicePaths.logRoot))).toMatchObject({
+        state: 'running', pid: process.pid,
+      });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   test('wires serve to the production runtime factory and closes its real socket on SIGTERM', async () => {
