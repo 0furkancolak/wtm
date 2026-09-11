@@ -109,6 +109,7 @@ import {
 import { configureProductMetadata } from './product';
 import { withAdapterTasks } from '@wtm/daemon/adapter-tasks';
 import { createStateDiagnosticDataSource } from './state-diagnostics';
+import { createDaemonStartupDiagnostic } from './daemon-startup-diagnostic';
 import { renderCompletionScript, validateCompletionKind, type CompletionDataKind } from './commands/completion';
 
 export interface CliDependencies {
@@ -1626,6 +1627,21 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
         cwd: dependencies.cwd ?? process.cwd(),
         globalConfigPath: defaultProductionRuntimePaths().globalConfigPath,
       }),
+    }),
+    // No database is a machine that has never run `wtm init`. It still has a daemon that may be
+    // refusing to start, and that answer needs a socket and a status file, not a registry (todo
+    // item 52). Every other question still gets the empty source's "nothing registered".
+    ...(diagnosticStore !== null || dependencies.dataSource !== undefined || !isDiagnosticInvocation(argv) ? {} : {
+      dataSource: {
+        ...emptyDiagnosticDataSource,
+        readDaemonStartupFailure: createDaemonStartupDiagnostic({
+          socketPath: () => (socketPathRefusal === null ? socketPath : null),
+          statusPath: () => {
+            const service = (dependencies.daemonServicePaths ?? servicePathsForHost)();
+            return service === null ? null : daemonStatusPath(service.logRoot);
+          },
+        }).failureItem,
+      },
     }),
     ...(cancellation === null ? {} : { signal: cancellation.signal }),
     ...(jsonRequested ? { stderr: () => {} } : {}),

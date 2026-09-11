@@ -178,6 +178,11 @@ binaries are Developer ID signed and notarized.
 
 ### Fixed
 
+- `wtm doctor` on a machine with no registered workspace, such as one that has never run
+  `wtm init`, now says why the daemon is down when it has recorded a failed start. The failure
+  still exits 2 with `WTM_NOT_INITIALIZED`, and the daemon's own code, how long it has been
+  failing and its remedy are carried beside it as a warning. Before, `doctor` stopped before
+  reading anything, and with no state database there was nothing for it to read.
 - Correct the performance report entrypoint import so measurement can start; ordinary tests
   now exercise its actual JSON output and blocker exit code using fixture measurements.
 - Preserve the canonical pathname during private-directory opened-handle validation so Windows

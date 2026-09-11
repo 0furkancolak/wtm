@@ -1,5 +1,4 @@
 import { lstat } from 'node:fs/promises';
-import { createConnection } from 'node:net';
 import {
   DaemonSocketPathTooLongError,
   measureDaemonSocketPath,
@@ -26,7 +25,8 @@ import {
   type WorktreeRuntime,
 } from '@wtm/daemon';
 import { planChanges } from './changes';
-import { daemonStatusPath, formatRemediation, readDaemonStatus, type DaemonStatus } from './daemon-status';
+import { createDaemonStartupDiagnostic } from './daemon-startup-diagnostic';
+import { daemonStatusPath, formatRemediation } from './daemon-status';
 import { explainDecisions } from './decisions';
 import type {
   DiagnosticDataSource,
@@ -66,16 +66,6 @@ export interface StateDiagnosticOptions {
    */
   selectPlatform?: () => PlatformRuntime;
 }
-
-/**
- * How long the reachability probe waits before calling the daemon absent.
- *
- * `doctor` is a read command a person is watching, so the probe is bounded rather than left to
- * the operating system's connect timeout. A daemon that has accepted the connection answers in
- * microseconds — a Unix socket has no network in it — so this budget is for a machine under
- * load, not for a slow answer.
- */
-const daemonProbeTimeoutMs = 500;
 
 /**
  * How little headroom is worth warning about, in bytes.
@@ -118,38 +108,24 @@ export function createStateDiagnosticDataSource(
     const runtime = platform().runtime;
     return runtime === null ? null : publishedDaemonSocketPath(runtime.paths.socketRoot);
   };
-  let reachabilityProbe: Promise<boolean> | null = null;
-
   /**
-   * The daemon's own account of its last startup, when it says it failed.
-   *
-   * Read only from `unreachableFinding`, so a healthy daemon never pays for this file's
-   * existence, and a running daemon's earlier crash is never mistaken for its current state.
+   * The daemon's reachability and its own account of its last startup. They need no store, so
+   * they live in their own module, where a machine with no database can ask them too (todo item
+   * 52). One instance per data source, so the socket is probed once per command, however many
+   * workspaces ask. The record is read only from the unreachable paths, so a healthy daemon never
+   * pays for the file, and a running daemon's earlier crash is never mistaken for its state now.
    */
-  const recordedStartupFailure = (): DaemonStatus | null => {
-    const runtime = options.daemonStatusPath === undefined ? platform().runtime : null;
-    const path = options.daemonStatusPath ?? (runtime === null ? null : daemonStatusPath(runtime.paths.logRoot));
-    const status = path === null ? null : readDaemonStatus(path);
-    return status?.state === 'failed' ? status : null;
-  };
-
-  /**
-   * How long a recorded startup failure has been going on, and the remedy for it -- the part of
-   * the answer that does not depend on which finding is reporting it. `lead` is the finding's own
-   * opening clause. Shared by `unreachableFinding` and the unregistered path, so the two cannot
-   * describe the same record two different ways.
-   */
-  const startupFailureNote = (failure: DaemonStatus, lead: string): string => {
-    const attempts = failure.attempts === 1 ? 'once' : `${String(failure.attempts)} times`;
-    const next = failure.remediation === null
-      ? 'Run `wtm daemon install` to start it again.'
-      : `Run \`${formatRemediation(failure.remediation)}\`, then \`wtm daemon install\` to start it again.`;
-    return [
-      `${lead}: it failed to start ${attempts} since ${failure.since}.`,
-      (failure.message ?? '').trim(),
-      next,
-    ].filter((part) => part !== '').join(' ');
-  };
+  const startup = createDaemonStartupDiagnostic({
+    socketPath: socketPathFor,
+    statusPath: () => {
+      if (options.daemonStatusPath !== undefined) return options.daemonStatusPath;
+      const runtime = platform().runtime;
+      return runtime === null ? null : daemonStatusPath(runtime.paths.logRoot);
+    },
+  });
+  const daemonReachable = startup.reachable;
+  const recordedStartupFailure = startup.recordedFailure;
+  const startupFailureNote = startup.note;
 
   /**
    * The worktree the question is about — only ever one that actually contains the directory
@@ -444,52 +420,6 @@ export function createStateDiagnosticDataSource(
       };
   };
 
-  /**
-   * Whether something is listening on the daemon's socket, without asking it anything.
-   *
-   * A connect is the whole question: the socket file outliving the process it belonged to is
-   * exactly the case a stat cannot tell apart, and a running daemon accepts. Nothing is sent,
-   * so this cannot disturb a daemon that is mid-request.
-   */
-  const daemonReachable = async (): Promise<boolean> => {
-    // One answer per command, not one per workspace: the socket is a property of the host, so
-    // `doctor --global` across five workspaces would otherwise open five connections and wait
-    // up to five timeouts to learn the same fact five times.
-    reachabilityProbe ??= probeDaemon();
-    return await reachabilityProbe;
-  };
-
-  const probeDaemon = async (): Promise<boolean> => new Promise<boolean>((settle) => {
-    const socketPath = socketPathFor();
-    // No platform, no address to dial. Reporting the daemon absent is the truthful answer: a host
-    // WTM has no backend for has no daemon on it either, and `platform` says why.
-    if (socketPath === null) {
-      settle(false);
-      return;
-    }
-    let socket: ReturnType<typeof createConnection>;
-    try {
-      socket = createConnection({ path: socketPath });
-    } catch {
-      // A path too long for an address raises synchronously; `socket-path` explains that one.
-      settle(false);
-      return;
-    }
-    socket.unref();
-    let settled = false;
-    const answer = (reachable: boolean) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      settle(reachable);
-    };
-    // `on`, not `once`: the listener has to outlive the answer, or the `destroy` below can
-    // raise an `error` event with nothing listening, which Node turns into a thrown exception.
-    socket.on('error', () => answer(false));
-    socket.setTimeout(daemonProbeTimeoutMs, () => answer(false));
-    socket.once('connect', () => answer(true));
-  });
-
   const configFinding = async (
     workspace: RegisteredWorkspace,
     worktree: WorktreeRecord | undefined,
@@ -674,6 +604,9 @@ export function createStateDiagnosticDataSource(
 
   return {
     listRegisteredWorkspaces: async () => store.listWorkspaces().map(registered),
+    // A database with no workspace left in it (every one forgotten) is the same question as no
+    // database at all, and gets the same answer.
+    readDaemonStartupFailure: () => startup.failureItem(),
     readStatus: async (workspace) => {
       const worktree = currentWorktree(workspace.id);
       const processes = worktree === undefined ? [] : store.listManagedProcesses({ worktreeId: worktree.id }).map((process) => ({
