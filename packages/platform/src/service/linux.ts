@@ -181,6 +181,16 @@ export function renderSystemdUnit(options: SystemdUnitOptions): string {
   // apart -- it exits 0 for a permanent failure (a coded error in exit class 2, which no retry
   // clears) so systemd leaves the unit stopped instead of restarting it forever, and keeps its
   // normal exit status for a transient one, which this policy is what retries.
+  //
+  // There is deliberately no `StartLimitBurst` backstop either (todo item 51), for three reasons:
+  // - launchd has no counterpart, so a backstop would make the backends differ where the platforms
+  //   do not.
+  // - The permanent failures WTM recognises all carry a class-2 code and exit 0 under supervision.
+  // - A unit systemd stops for hitting its start limit stays `failed`, and even `systemctl --user
+  //   start` refuses it until `reset-failed`. That would turn a transient failure, such as a home
+  //   directory mounted late, into exactly the outage this policy exists to avoid.
+  // An unrecognised permanent failure costs a wakeup every 10 seconds instead. The daemon's logs
+  // rotate at startup and write a repeated failure's frames only once.
   return `[Unit]
 Description=WTM daemon for ${unitText(options.home)}
 Documentation=https://github.com/0furkancolak/wtm

@@ -28,6 +28,47 @@ export class IpcPathUnusableError extends Error {
   }
 }
 
+/** Why the daemon's socket directory was refused. Each stays true until a person changes it. */
+export type SocketDirectoryRefusal = 'is a symbolic link' | 'is not a directory' | 'belongs to another user';
+
+/**
+ * The daemon's socket directory is one WTM will not use (todo item 51).
+ *
+ * It uses the same code, message shape and context as core's `PrivateDirectoryError` for the same
+ * refusal. The socket directory is one of WTM's private directories like any other, and
+ * `@wtm/platform` cannot import `@wtm/core`. There is no remediation: whether to remove a link or
+ * a file depends on why it is there, and WTM does not know that.
+ */
+export class SocketDirectoryUnsafeError extends Error {
+  readonly code = 'WTM_PRIVATE_DIRECTORY_UNSAFE' as const;
+  readonly severity = 'error' as const;
+  readonly context: { path: string; reason: SocketDirectoryRefusal };
+  readonly remediation: readonly Remediation[] = [];
+
+  constructor(path: string, reason: SocketDirectoryRefusal) {
+    super(`WTM private directory is unsafe: ${path} ${reason}.`);
+    this.name = 'SocketDirectoryUnsafeError';
+    this.context = { path, reason };
+  }
+}
+
+/**
+ * Another process is already serving at the socket path.
+ *
+ * Deliberately uncoded, because it clears when that process stops, so a supervisor keeps retrying.
+ * It has its own class so `daemon serve` can tell it apart and leave the serving daemon's startup
+ * record alone (todo item 51, M9).
+ */
+export class IpcSocketInUseError extends Error {
+  readonly path: string;
+
+  constructor(path: string) {
+    super(`IPC socket is already in use: ${path}`);
+    this.name = 'IpcSocketInUseError';
+    this.path = path;
+  }
+}
+
 function messageFor(path: string, occupant: IpcPathOccupant): string {
   switch (occupant) {
     case 'file':

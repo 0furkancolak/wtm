@@ -11,7 +11,12 @@ import { chmod, link, lstat, mkdir, open, rename, unlink } from 'node:fs/promise
 import { createConnection, type Server } from 'node:net';
 import { dirname, join } from 'node:path';
 import { boundDaemonSocketPath } from '../socket';
-import { IpcPathUnusableError, type IpcPathOccupant } from './path-unusable';
+import {
+  IpcPathUnusableError,
+  IpcSocketInUseError,
+  SocketDirectoryUnsafeError,
+  type IpcPathOccupant,
+} from './path-unusable';
 import type { IpcServerPublisher, PublishedIpcServer, PublishOptions } from './types';
 
 interface SocketIdentity {
@@ -251,15 +256,24 @@ async function closeServerWithPrivatePathShield(
 }
 
 async function secureSocketParent(path: string): Promise<DirectoryIdentity> {
-  await mkdir(path, { recursive: true, mode: 0o700 });
+  // A file at the path makes `mkdir` fail with EEXIST. A dangling link makes it fail with ENOENT
+  // under Node, which the shipped binary runs on, and with EEXIST under Bun. Either way the
+  // `lstat` below is what says which it is, and says so with a code. A path that is genuinely
+  // missing still fails there with ENOENT, uncoded, as a race should.
+  await mkdir(path, { recursive: true, mode: 0o700 }).catch((error: unknown) => {
+    if (!isFileError(error, 'EEXIST') && !isFileError(error, 'ENOENT')) throw error;
+  });
   const initial = await lstat(path);
   const currentUid = process.getuid?.();
-  if (!initial.isDirectory() || initial.isSymbolicLink()) {
-    throw new Error(`IPC socket parent is not a directory: ${path}`);
+  // Coded, because a retry finds the same link, file or owner and a supervised daemon should stop
+  // on it (todo item 51). A directory that changes under the `chmod` below stays uncoded: that is
+  // a race, and a retry can clear it.
+  if (initial.isSymbolicLink()) throw new SocketDirectoryUnsafeError(path, 'is a symbolic link');
+  if (!initial.isDirectory()) throw new SocketDirectoryUnsafeError(path, 'is not a directory');
+  if (currentUid === undefined) {
+    throw new Error(`IPC socket parent ownership cannot be checked without a POSIX uid: ${path}`);
   }
-  if (currentUid === undefined || initial.uid !== currentUid) {
-    throw new Error(`IPC socket parent is not owned by the current user: ${path}`);
-  }
+  if (initial.uid !== currentUid) throw new SocketDirectoryUnsafeError(path, 'belongs to another user');
   await chmod(path, 0o700);
   const secured = await lstat(path);
   if (
@@ -323,7 +337,7 @@ async function prepareSocketPath(
   const ours = currentUid !== undefined && initial.uid === currentUid;
   if (initial.isSocket()) {
     if (!ours) throw new IpcPathUnusableError(path, 'foreign-socket', initial.uid);
-    if (await hooks.probe(path)) throw new Error(`IPC socket is already in use: ${path}`);
+    if (await hooks.probe(path)) throw new IpcSocketInUseError(path);
     await quarantineAndUnlink(path, parent, {
       dev: initial.dev,
       ino: initial.ino,
