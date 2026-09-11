@@ -865,7 +865,7 @@ olarak raporluyor. Bu değişmedi, kapsam dışı.
 
 ---
 
-### [ ] 52. `wtm doctor`, kayıtlı workspace yokken daemon'ın neden kalkmadığını söylemiyor
+### [x] 52. `wtm doctor`, kayıtlı workspace yokken daemon'ın neden kalkmadığını söylemiyor
 
 45. maddenin final review'ında bulundu (T8). Kayıtlı hiçbir workspace yokken `collect()` herhangi
 bir veri kaynağı çalışmadan `WTM_NOT_INITIALIZED` ile duruyor; dolayısıyla hiç `wtm init`
@@ -874,13 +874,43 @@ bir veri kaynağı çalışmadan `WTM_NOT_INITIALIZED` ile duruyor; dolayısıyl
 
 #### Yapılacaklar
 
-- [ ] Kayıtlı workspace olmayan bir makinede de `daemon-status.json`'ı okuyup nedeni yüzeye
+- [x] Kayıtlı workspace olmayan bir makinede de `daemon-status.json`'ı okuyup nedeni yüzeye
       çıkaran bir kontrol ekle; `WTM_NOT_INITIALIZED` erken dönüşü bunun önüne geçmesin.
 
 #### Kabul kriterleri
 
-- [ ] Hiç `wtm init` çalıştırılmamış bir makinede `wtm doctor`, daemon kayıtlı bir başarısızlıkla
+- [x] Hiç `wtm init` çalıştırılmamış bir makinede `wtm doctor`, daemon kayıtlı bir başarısızlıkla
       duruyorsa bunu ve nedenini raporluyor.
+
+**Not (2026-09-11):** Sorun iki katmanlıydı. `collect()` erken dönüyordu, ama daha önemlisi
+`wtm init` hiç çalışmamış makinede state DB yok. Bu durumda doctor boş veri kaynağına düşüyor ve
+sorulacak hiçbir şey kalmıyordu. Daemon'a erişim yoklaması ile `daemon-status.json` okuması store
+gerektirmediği için `daemon-startup-diagnostic.ts`'e taşındı. Store'lu kaynak da DB'siz kaynak da
+bunu kullanıyor. Kararlar:
+
+- `WTM_NOT_INITIALIZED` tek hata olarak kalıyor; kayıtlı başarısızlık yanına **warning** olarak
+  ekleniyor. Envelope'un exit kodu en kötü hatanın sınıfı olduğu için ikinci bir hata exit 2'yi
+  4'e çevirebilirdi. Kayıtlı makinede aynı kayıt bir bulgu ve exit kodunu etkilemiyor, burada da
+  etkilememeli.
+- Uyarı daemon'ın kendi kodunu (tanımlı bir kod değilse `WTM_DAEMON_UNAVAILABLE`), ne zamandır
+  ve kaç kez başarısız olduğunu ve varsa remediation'ı taşıyor.
+- Yalnızca `doctor`, yalnızca yerel modda ve kayıtlı workspace hiç yokken soruyor. Bilinmeyen bir
+  selector ayrı bir hata ve kendi çaresi var. Kayıtlı makinede aynı bilgi zaten `registration`
+  bulgusunda.
+- Açık bırakılan: `wtm doctor --global` kayıtlı workspace yokken hâlâ boş bir başarı döndürüyor ve
+  daemon hakkında bir şey söylemiyor. Kabul kriteri yerel `doctor`'ı kapsıyor.
+
+Bağımsız final review: 0 kritik, 1 önemli, 5 küçük bulgu.
+- I1: Uyarının `context`'i, docs/18'de `WTM_PRIVATE_DIRECTORY_UNSAFE` için yazılı `path`/`reason`
+  alanlarını taşımıyordu. Uyarının biçimi docs/18'e yazılarak düzeltildi.
+- M1: docs/04, selector ve `--global` durumlarını da kapsıyormuş gibi yazıyordu. Metin daraltıldı.
+- M2: Store'lu kaynağın yeni metodu için test yoktu. DB açık ama workspace'siz senaryo için test
+  eklendi.
+- M3: Kayıtlı uzun bir mesaj, 1024 karakter sınırında çare cümlesini kesiyordu. Kayıtlı mesaj
+  600 karaktere kısaltılıyor.
+- Açık kalanlar:
+  - M4: Status yolu iki yerde türetiliyor; üretimde ikisi aynı yolu veriyor.
+  - M5: Uyarıyı tetikleyen, "workspace yok" koşulu değil hata kodunun metni. Bugün doğru çalışıyor.
 
 ---
 
