@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runScenario } from '../../packages/testkit/src/scenario-child';
 import {
   buildReleaseManifest,
   verifyReleaseArtifacts,
@@ -396,12 +396,11 @@ describe('release artifact gate', () => {
     const root = fileURLToPath(new URL('../..', import.meta.url));
     const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version: string };
     for (const counters of ['-1', '0.5', '1e400', '9007199254740992']) {
-      const child = spawnSync(process.execPath, [join(root, 'scripts/verify-release.ts'), `v${version}`], {
+      const child = runScenario(process.execPath, [join(root, 'scripts/verify-release.ts'), `v${version}`], {
         cwd: root,
         env: { ...process.env, WTM_RELEASE_PERFORMANCE: `[{"blockers":0,"warnings":${counters}}]` },
-        encoding: 'utf8', timeout: 5000,
+        timeoutMs: 5000,
       });
-      expect(child.error).toBeUndefined();
       expect(child.status).toBe(1);
       expect(child.stderr).toContain('WTM_RELEASE_PERFORMANCE');
       expect(child.stderr).toContain('non-negative safe integers');

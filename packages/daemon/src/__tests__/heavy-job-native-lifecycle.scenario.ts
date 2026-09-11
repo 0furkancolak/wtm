@@ -144,6 +144,11 @@ try {
   if (mode === 'completed-during-downtime') {
     assert.equal(job.exitCode, 0);
     assert.equal(job.signal, null);
+  } else if (mode === 'timeout') {
+    // The anchor ended the task itself, so the task's own exit is not evidence of anything and
+    // the completion records it as unknown (anchor-deadline.test.ts pins the same contract).
+    assert.equal(job.exitCode, null, evidence(job));
+    assert.equal(job.signal, null, evidence(job));
   } else if (process.platform !== 'win32') {
     assert.equal(job.exitCode, null, evidence(job));
     assert.equal(job.signal, 'SIGTERM', evidence(job));

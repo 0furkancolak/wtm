@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { join as posixJoin } from 'node:path/posix';
 import { fileURLToPath } from 'node:url';
@@ -81,10 +81,16 @@ describe('production daemon composition', () => {
       const paths = output['paths'] as ProductionRuntimePaths;
       expect(output['socketPath']).toBe(defaultProductionRuntimePaths(isolated.path, { env: isolated.env }).socketPath);
       expect(paths.socketPath).toBe(output['socketPath'] as string);
+      // `databasePath` comes back canonical (its parent went through `ensurePrivateDirectory`), and
+      // on macOS `/tmp` is a symlink to `/private/tmp`, so confinement is judged against both
+      // spellings of the fixture root rather than the one `mkdtemp` happened to return.
+      const roots = [isolated.path, realpathSync(isolated.path)];
       for (const path of [paths.dataRoot, paths.databasePath, paths.logRoot, paths.globalConfigPath]) {
-        const within = relative(isolated.path, path);
-        expect(isAbsolute(within), path).toBe(false);
-        expect(within === '..' || within.startsWith(`..${sep}`), path).toBe(false);
+        const confined = roots.some((root) => {
+          const within = relative(root, path);
+          return !isAbsolute(within) && within !== '..' && !within.startsWith(`..${sep}`);
+        });
+        expect(confined, path).toBe(true);
       }
     } finally {
       isolated.cleanup();
