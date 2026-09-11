@@ -815,7 +815,8 @@ Kapandı, branch `claude/item-51-uncoded-permanent-failures`.
 - **Kod:** `WTM_PRIVATE_DIRECTORY_UNSAFE` protokole kaydedildi (exit 2).
 - **Kalıcı dallar:** `PrivateDirectoryError` bu kodu yalnızca dört dalda taşıyor: symlink, dizin
   değil, başka kullanıcının, başkalarınca okunabilir. Yalnızca sonuncusuna `chmod 700 <path>`
-  remediation'ı eklendi; win32'de o da yok, çünkü orada karar ACL'den geliyor.
+  remediation'ı eklendi. `@wtm/core` işletim sistemini bilmediği için bu öneri, mesajın zaten her
+  platformda söylediği "run chmod 700 on it" kadar platformdan bağımsız.
 - **Geçici dallar:** okunamayan, açılamayan ya da kontrol sırasında değişen dizin
   (`replaced` senaryosu dahil) kayıtsız `WTM_PRIVATE_DIRECTORY_UNAVAILABLE` taşıyor. Kodsuz
   kalıyor, yani yeniden deneniyor.

@@ -63,17 +63,15 @@ function unsafeDirectory(path: string, reason: string): PrivateDirectoryError {
 }
 
 /**
- * The one refusal with a single obvious remedy. It is offered only where `chmod` is the remedy:
- * on Windows the same verdict comes from an ACL, which `chmod` does not change.
+ * The one refusal with a single obvious remedy, which the message already names. `@wtm/core`
+ * does not know the operating system, so the remediation is exactly as platform-blind as that
+ * message has always been.
  */
 function readableByOthers(path: string, stat: Stats): PrivateDirectoryError {
   return new PrivateDirectoryError(
     path,
     `is readable by others (mode ${(stat.mode & 0o7777).toString(8)}); run chmod 700 on it`,
-    {
-      unsafe: true,
-      remediation: process.platform === 'win32' ? [] : [{ kind: 'command-suggestion', argv: ['chmod', '700', path] }],
-    },
+    { unsafe: true, remediation: [{ kind: 'command-suggestion', argv: ['chmod', '700', path] }] },
   );
 }
 

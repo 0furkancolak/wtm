@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { wtmErrorCodeSchema } from '@wtm/protocol';
 import { defaultCoreFileTrustPolicy, type FileTrustPolicy } from '../../file-trust-policy';
 import { ensurePrivateDirectory, PrivateDirectoryError } from '../private-directory';
+import { isWindowsTestHost } from '../../../../testkit/src/platform';
 
 /**
  * Which refusals a retry can clear (todo item 51).
@@ -14,7 +15,6 @@ import { ensurePrivateDirectory, PrivateDirectoryError } from '../private-direct
  * until a person changes it, so it carries the registered code. A directory that could not be read
  * at all may be a disk or mount that is not there yet, so it must stay uncoded and be retried.
  */
-const posix = process.platform !== 'win32';
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
@@ -45,7 +45,9 @@ function expectPermanent(error: PrivateDirectoryError, path: string): void {
   expect(error.context.path).toBe(path);
 }
 
-describe.skipIf(!posix)('private directory refusals', () => {
+// Real POSIX modes and links. Windows answers the same questions through ACLs, which these
+// fixtures cannot set up.
+describe.skipIf(isWindowsTestHost)('private directory refusals', () => {
   test('a directory readable by others is permanent, and names the chmod that fixes it', async () => {
     const root = await privateRoot();
     const state = join(root, 'state');
@@ -99,12 +101,15 @@ describe.skipIf(!posix)('private directory refusals', () => {
     expect(error.context.reason).toBe('belongs to another user');
   });
 
-  test.skipIf(process.getuid?.() === 0)('a directory that cannot be read stays uncoded, so it is retried', async () => {
+  test('a directory that cannot be read stays uncoded, so it is retried', async () => {
     const root = await privateRoot();
     const locked = join(root, 'locked');
     await mkdir(locked, { mode: 0o700 });
     await chmod(locked, 0o000);
     cleanups.push(() => chmod(locked, 0o700));
+    // Root reads through mode 000, so there is nothing to observe. The filesystem is asked rather
+    // than the process's uid, which @wtm/core may only consult through its FileTrustPolicy.
+    if (await readdir(locked).then(() => true, () => false)) return;
 
     const error = await refusal(join(locked, 'state'));
 
