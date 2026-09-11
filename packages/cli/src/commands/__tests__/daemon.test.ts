@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { join as posixJoin } from 'node:path/posix';
@@ -20,6 +20,7 @@ import { launchdPaths } from '@wtm/daemon/launchd';
 import { servicePathsFor, type ServiceLifecycle } from '@wtm/daemon/service-lifecycle';
 import {
   createDaemonErrorReporter,
+  rotateDaemonServiceLogs,
   runDaemonLifecycleCommand,
   serveDaemon,
   type DaemonSignalSource,
@@ -877,3 +878,26 @@ async function childResult(child: ReturnType<typeof spawn>): Promise<{
     child.once('exit', (code, signal) => resolve({ code, signal, stdout, stderr }));
   });
 }
+
+describe('daemon log rotation', () => {
+  test('rotates an over-size daemon log before the daemon writes to it, and keeps the old content', async () => {
+    const logRoot = await mkdtemp(join(shortTmpRoot(), 'wtm-daemon-logs-'));
+    try {
+      const stderrPath = join(logRoot, 'daemon.error.log');
+      const stdoutPath = join(logRoot, 'daemon.log');
+      await writeFile(stderrPath, 'x'.repeat(2048), { mode: 0o600 });
+      await rotateDaemonServiceLogs({ logRoot, stdoutPath, stderrPath }, selectPlatformRuntime().fileTrust, 1024);
+      expect(await readFile(`${stderrPath}.1`, 'utf8')).toBe('x'.repeat(2048));
+      await expect(lstat(stderrPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(logRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('a log root that cannot be rotated is not a reason to refuse to start', async () => {
+    await rotateDaemonServiceLogs(
+      { logRoot: '/nonexistent/wtm', stdoutPath: '/nonexistent/wtm/daemon.log', stderrPath: '/nonexistent/wtm/daemon.error.log' },
+      selectPlatformRuntime().fileTrust,
+    );
+  });
+});

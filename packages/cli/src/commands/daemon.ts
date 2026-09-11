@@ -3,13 +3,14 @@ import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { assertDaemonSocketPathFits, publishedDaemonSocketPath } from '@wtm/platform/socket';
 import { selectPlatformRuntime } from '@wtm/platform';
-import type { PlatformRuntime } from '@wtm/platform/ports';
+import type { FileTrustPolicy, PlatformRuntime } from '@wtm/platform/ports';
 import { errorSeveritySchema, remediationSchema, wtmErrorCodeSchema } from '@wtm/protocol';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
+import { ManagedLogStore } from '@wtm/daemon/logs';
 import { exitCodeForError } from '../exit-codes';
 import type { DaemonStartupOutcome } from '../daemon-status';
 import { servicePathsFor } from '@wtm/daemon/service-lifecycle';
-import type { ServiceLifecycle } from '@wtm/daemon/service-lifecycle';
+import type { ServiceLifecycle, ServicePaths } from '@wtm/daemon/service-lifecycle';
 
 export type DaemonLifecycleAction = 'install' | 'uninstall' | 'status';
 
@@ -46,6 +47,29 @@ export interface DaemonServeDependencies {
 export interface DaemonServeResult {
   exitCode: number;
   envelope: JsonEnvelope<{ state: 'stopped'; signal: 'SIGINT' | 'SIGTERM' } | null>;
+}
+
+/**
+ * Rotates the daemon's own stdout and stderr the way a managed task's logs are rotated (20 MiB,
+ * three generations). It runs once per launch, before anything is written, and both service
+ * managers reopen the path on the next launch. That bounds a loop that predates the fix,
+ * including a 162 MB file already on disk (spec decision 5).
+ */
+export async function rotateDaemonServiceLogs(
+  paths: Pick<ServicePaths, 'logRoot' | 'stdoutPath' | 'stderrPath'>,
+  fileTrust: FileTrustPolicy,
+  rotationBytes?: number,
+): Promise<void> {
+  try {
+    const store = new ManagedLogStore({
+      root: paths.logRoot,
+      fileTrust,
+      ...(rotationBytes === undefined ? {} : { rotationBytes }),
+    });
+    await store.rotate([paths.stderrPath, paths.stdoutPath]);
+  } catch {
+    // A log that cannot be rotated is not a reason to refuse to start.
+  }
 }
 
 /** How long `install` waits for the daemon the service manager just started to answer on its socket. */

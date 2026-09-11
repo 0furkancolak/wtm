@@ -70,6 +70,7 @@ import type { RuntimeDaemonClient } from './commands/runtime-client';
 import { DaemonClient } from './client';
 import {
   createDaemonErrorReporter,
+  rotateDaemonServiceLogs,
   runDaemonLifecycleCommand,
   serveDaemon,
   type DaemonSignalSource,
@@ -421,6 +422,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     // One reporter for the whole daemon: startup failures and every error raised while it
     // runs land in the same log, which is the only place an unattended process can speak.
     const service = servicePathsForHost();
+    if (service !== null) await rotateDaemonServiceLogs(service, hostPlatformRuntime().fileTrust);
     const statusPath = service === null ? null : daemonStatusPath(service.logRoot);
     const previous = statusPath === null ? null : readDaemonStatus(statusPath);
     const reportError = createDaemonErrorReporter(undefined, undefined, undefined, {
