@@ -162,7 +162,7 @@ The root implemented/reviewed this slice; independent subagent review remains un
   review. No attempt was made to evade that quota.
 - TODO count after this wave: 14/45 numbered headings, 188/359 sub-checkboxes checked,
   five partial sub-checkboxes. These are checklist ratios, not an engineering effort estimate.
-  Headings 7, 10 and 45 remain open for their documented proof/review requirements.
+  Headings 7, 10 and 50 remain open for their documented proof/review requirements.
 - Remaining work includes native Windows/macOS ARM64 and Linux ARM64 proof, real two-AI
   memory/swap measurements, multi-repo create/recovery, batched endpoint probing, symlink
   policy, local domains, PR awareness, idle runtime suspension, TUI, presets and adapter work.

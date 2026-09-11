@@ -15,7 +15,7 @@ göre listeler.
 **2026-09-09 analiz ve ilk geliştirme dilimi:**
 [`docs/development/2026-09-09-todo-analysis.md`](docs/development/2026-09-09-todo-analysis.md).
 Madde 16 ve 34 tamamlandı; kalan P0/P1 bağımlılıkları ve doğrulama sınırları bu notta.
-Eşzamanlı AI oturumlarının ağır komutlarından doğan RAM baskısı için madde 45, P1'e eklendi;
+Eşzamanlı AI oturumlarının ağır komutlarından doğan RAM baskısı için madde 50, P1'e eklendi;
 ortak iş kuyruğunun sabit eşzamanlılık dilimi uygulandı. Devamında iptal/finalizasyon yarışı,
 GC descriptor sızıntısı ve native CI fixture uyumsuzlukları giderildi; bekleme nedenleri eklendi.
 `04b42bb` Linux x64 CI tam test/e2e/binary/package adımlarını geçti; macOS takip bulguları
@@ -745,7 +745,11 @@ tam stack trace ile yazıldığı için log hacmini büyütüyorlar.
 
 ## P1 — V1 deneyimini tamamlayacak işler
 
-### [ ] 45. AI oturumları için ortak ağır iş kuyruğu ve RAM bütçesi
+### [ ] 50. AI oturumları için ortak ağır iş kuyruğu ve RAM bütçesi
+
+> **Numara notu (2026-09-11):** Bu madde ayrı bir branch'te 45 olarak açıldı; aynı gün main'de
+> 45 numarası daemon crash döngüsüne verildi. Birleştirmede bu madde 50'ye taşındı. 2026-09-09 ve
+> 2026-09-10 tarihli commit mesajlarında geçen "45" bu maddeyi kastediyor.
 
 **2026-09-09 kullanıcı ihtiyacı:** Birden fazla Claude/AI oturumu kullanıldığında yüksek RAM
 tüketimi gözleniyor. Araştırılacak çözüm, eşzamanlı build/test/typecheck yükünü sınırlamak:
@@ -1990,8 +1994,8 @@ Rust yalnızca profiler bunun gerçek bottleneck olduğunu gösterirse düşün�
 ### [ ] 19. Resource budgets
 
 **Öncelik güncellemesi (2026-09-09):** Ağır iş eşzamanlılığı ve RAM'e göre kuyruktan iş
-başlatma kısmı P1 madde 45'e taşındı. Bu madde genel process/disk bütçeleri ve platforma
-özel sert sınırları kapsar; madde 45 ile aynı kaynak muhasebesini kullanmalı.
+başlatma kısmı P1 madde 50'ye taşındı. Bu madde genel process/disk bütçeleri ve platforma
+özel sert sınırları kapsar; madde 50 ile aynı kaynak muhasebesini kullanmalı.
 
 Opsiyonel config taslağı (henüz uygulanmadı):
 
@@ -2628,7 +2632,7 @@ Hedef `v0.2.0` tag'i aşağıdakiler tamamlanmadan çıkarılmamalı:
 # Önerilen geliştirme sırası
 
 **2026-09-09 güncellemesi:** Tamamlanan madde 16/34'ün native CI doğrulamasıyla birlikte
-madde 45'in ilk dilimi (kalıcı kuyruk, sabit ağır iş sınırı, asenkron CLI ve agent skill akışı)
+madde 50'nin ilk dilimi (kalıcı kuyruk, sabit ağır iş sınırı, asenkron CLI ve agent skill akışı)
 uygulandı; native CI'da ortaya çıkan regresyonlar ve bekleme nedenleri devam dilimidir.
 Native süreç kanıtı ve gerçek makine bellek ölçümü alınmadan RAM kriterleri kapatılmaz.
 2026-09-10: HTTP readiness, cleanup disk tahmini ve isteğe bağlı RAM kabulü uygulandı.

@@ -71,5 +71,5 @@ atanmalı; ağır doğrulamalar ana agent tarafından sırayla yürütülmelidir
 - Template/duration/URL doğrulaması; tam JSON durumları, hata kodları ve doküman CLI parity.
 
 TODO 10 ancak gerçek davranış ve native HTTP/IPC kanıtı alındığında işaretlenmelidir.
-Bu not, TODO 45'in açık macOS/native süreç ağacı ve gerçek iki AI oturumlu RAM ölçümü
+Bu not, TODO 50'nin açık macOS/native süreç ağacı ve gerçek iki AI oturumlu RAM ölçümü
 gereksinimlerini kapatmaz.

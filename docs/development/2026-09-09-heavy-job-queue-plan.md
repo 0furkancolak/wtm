@@ -1,7 +1,7 @@
 # Shared heavy-job queue implementation plan
 
-Goal: complete TODO 45's fixed-concurrency slice without replacing foreground run or the existing process supervisor.
-Spec: `todo.md`, item 45, and the explicit continuation request on 2026-09-09.
+Goal: complete TODO 50's fixed-concurrency slice without replacing foreground run or the existing process supervisor.
+Spec: `todo.md`, item 50 (numbered 45 when this was written), and the explicit continuation request on 2026-09-09.
 Architecture: the existing per-user daemon dispatches a persistent SQLite FIFO. Atomic database guards cover slots, idempotency, same-worktree exclusion and destructive repository leases. The supervisor remains the authority for process identity and group termination.
 
 ## Boundaries and decisions

@@ -5,7 +5,7 @@ Sürüm hedefi: `v0.2.0`; mevcut paket sürümü `0.1.0-rc.1`.
 
 **Devam oturumu güncellemesi:** `816fb11` ve `7962428` aynı çalışma kopyasında içerikleriyle
 doğrulandı; eksik devir yoktu, başlangıç çalışma ağacı temizdi. Aşağıdaki ilk analiz ve
-135 testlik sonuç önceki dilimin kaydıdır. Madde 45'in uygulaması ve bu oturumun bağımsız
+135 testlik sonuç önceki dilimin kaydıdır. Madde 50'nin uygulaması ve bu oturumun bağımsız
 doğrulama sonuçları dosyanın sonundaki **Ortak kuyruk uygulaması** bölümündedir.
 
 ## Sonuç
@@ -39,13 +39,13 @@ kriteri nedeniyle açık. Dokümandaki eski tasarım dosyaları da uygulama tama
 | 6: create | Tek depoda yeni/var olan branch, `--from`, çakışma kontrolleri, local reconcile mevcut. CLI create testleri başarılı. | Çok depolu feature identity, kalıcı creation journal, lock sırası ve partial failure recovery tasarlanmalı. |
 | 7: cleanup ranking | Güvenlik, çalışan process, persistence, aktivite, commit yaşı ve prunable bilgisi sıralamaya giriyor. | Reclaimable disk ölçümü yok; recursive tarama bütçesi ve hardlink/symlink/shared storage semantiği belirlenmeden sayı eklenmemeli. |
 | 9: platformlar | Üç platform için katmanlar ve CI matrix girdileri var. | TODO'nun Windows native doğrulama ve Linux ARM64 açık kriterleri korunmalı; matrix satırı tek başına destek kanıtı değil. |
-| 10: readiness | `start` ve supervisor mevcut; task healthcheck config'i ve readiness sonucu henüz yok. | Madde 45'in ilk diliminden sonra ele alınacak. |
+| 10: readiness | `start` ve supervisor mevcut; task healthcheck config'i ve readiness sonucu henüz yok. | Madde 50'nin ilk diliminden sonra ele alınacak. |
 | 16: ignored ayrımı | Ignored `!` kayıtları untracked `?` kayıtlarıyla birleşiyordu. | Bu dilimde tamamlandı. |
 | 18: port probing | `endpoint-probe.ts` bir candidate için bind kontrolü yapıyor. | Transaction ve helper iletişimi birlikte incelenerek batch tasarlanmalı; bu dilimde değiştirilmedi. |
 | 22–33: sunum/dağıtım | Bazı metadata ve doküman değişiklikleri zaten var. | Gerçek platform kanıtlarına göre güncellenmeli; Windows desteği doğrulanmadan sunumda tamamlanmış gösterilmemeli. |
 | 34: docs parity | Hata kodları için parity testi vardı; komut/flag referansları için eşdeğer kontrol yoktu. | Bu dilimde eklendi; gerçek README hatası yakalandı. |
 | 35: lifecycle parity | Removal, ranking, release ve event testleri farklı dosyalara dağılmış. | İlgili kabul kriterlerini testlerle eşleştirmek gerekiyor; tek bir başarılı testle başlık kapatılmamalı. |
-| 45, 19: ortak iş kuyruğu ve RAM | Devam diliminde CLI/protocol/state/daemon ve skill birlikte uygulandı; sabit eşzamanlılık varsayılanı 1. | Native iki CLI/süreç ağacı kanıtı, gerçek makine bellek ölçümü ve belleğe göre iş başlatma açık. |
+| 50, 19: ortak iş kuyruğu ve RAM | Devam diliminde CLI/protocol/state/daemon ve skill birlikte uygulandı; sabit eşzamanlılık varsayılanı 1. | Native iki CLI/süreç ağacı kanıtı, gerçek makine bellek ölçümü ve belleğe göre iş başlatma açık. |
 
 ## Uygulanan değişiklikler
 
@@ -92,7 +92,7 @@ kriteri nedeniyle açık. Dokümandaki eski tasarım dosyaları da uygulama tama
 
 **İlk planlama kaydı, 2026-09-09:** Claude/AI oturumları ağır komutlarını bir skill üzerinden WTM'ye
 göndersin; WTM sırayla çalıştırırken AI bağımsız işlere devam etsin. Bu ihtiyaç `todo.md`
-madde 45 olarak P1'e eklendi. O anda yalnızca planlama değişikliğiydi; aşağıdaki devam
+madde 50 olarak P1'e eklendi. O anda yalnızca planlama değişikliğiydi; aşağıdaki devam
 bölümünde uygulama ve doğrulama durumu ayrıca kaydedildi.
 
 Kod incelemesi: `packages/cli/src/commands/run.ts` içindeki `runForegroundTask`, task'ı
@@ -120,13 +120,13 @@ dosyaları değiştirmek yerine kod okuma, planlama veya başka worktree'de bağ
 sürer. Kaynaklar değişirse sonuç geçersiz sayılabilir; yalnızca HEAD kontrolü yeterli değildir.
 Başarılı kabul yanıtı testin geçtiği anlamına gelmez; son durum ve exit code ayrıca okunur.
 İptal, daemon restart, removal yarışı, sınırlı log/state ve iki oturumlu bellek ölçümleri
-madde 45'in kabul kriterlerine dahil edildi. Otomatik agent bildirimi ayrı entegrasyon dilimidir.
+madde 50'nin kabul kriterlerine dahil edildi. Otomatik agent bildirimi ayrı entegrasyon dilimidir.
 
 ## İlk analizde önerilen geliştirme sırası
 
 1. **Native CI doğrulaması:** Bu dalın Git analizi ve removal değişikliklerini normal Linux,
    macOS ve Windows runner'larında çalıştır. Mevcut Windows sorunlarını ayrı takip et.
-2. **Madde 45, ortak ağır iş kuyruğu:** Kalıcı job/IPC sözleşmesi, atomik slot yönetimi,
+2. **Madde 50, ortak ağır iş kuyruğu:** Kalıcı job/IPC sözleşmesi, atomik slot yönetimi,
    hemen dönen CLI ve agent skill akışı. İlk dilimde sabit eşzamanlılık sınırı; sonra bellek
    farkındalığı. Native process doğrulaması gerekir; yayın hesabı işleri bunu bloke etmez.
 3. **Madde 10, readiness:** Config şeması, template çözümleme, supervisor sonucu ve CLI
@@ -272,7 +272,7 @@ Gerçek iki oturumlu önce/sonra ölçümü
 Tepe bellek/swap/baskı, toplam süre, daemon ek maliyeti ve task worker sayısı beraber ölçülmeden
 RAM tasarruf oranı söylenemez. Sabit eşzamanlılık, sert bellek üst sınırı değildir.
 
-Madde 45 bütünü kapatılmadı. Sıradaki işler: normal Linux/macOS runner'da gerçek socket ve
+Madde 50 bütünü kapatılmadı. Sıradaki işler: normal Linux/macOS runner'da gerçek socket ve
 süreç ağacı, daemon kapalıyken timeout/restart kanıtı; kullanıcının iki AI oturumunda ölçüm;
 sonra kullanılabilir bellek, task tahmini, diğer uygulamalara bırakılan pay ve task'ın worker
 paralelliğini birlikte kullanan RAM dilimi. Otomatik agent bildirimi ayrı entegrasyondur.
@@ -312,7 +312,7 @@ ve interruption sırası korunur. Exit code/signal kaybolmaz; sonuç kalıcıla�
 geçmişi yeniden yazmaz. Eski sürümün bırakmış olabileceği `SUCCEEDED` + non-null `stopReason`
 kaydı da sonuç okurken başarı sayılmaz; daemon ve CLI bağımsız olarak reddeder.
 
-Madde 45'in sonraki küçük ürün dilimi `waitingReason` oldu. Atomik claim ve salt okunur
+Madde 50'nin sonraki küçük ürün dilimi `waitingReason` oldu. Atomik claim ve salt okunur
 tanı aynı karar fonksiyonunu kullanır: önce `concurrency`, sonra `fifo`, sonra
 `worktree_busy`, aksi hâlde `dispatch_pending`. Aktif kayıt sayısı admission ile 128'e
 sınırlı; tek SQL snapshot kullanılır. Yeni migration, dependency, scheduler veya sürekli
@@ -328,7 +328,7 @@ eksik davranışları yakaladıkları doğrulandı. Düzeltmelerden sonra ilgili
 fixture grubundaki 89 test ve kuyruk integration grubundaki 19 test başarılı oldu. Gruplar
 örtüştüğü için sayıları benzersiz test toplamı gibi toplanmamalı.
 
-Madde 45 bütünü, RAM ölçümü ve RAM tabanlı admission açık kalır. Readiness/healthcheck için
+Madde 50 bütünü, RAM ölçümü ve RAM tabanlı admission açık kalır. Readiness/healthcheck için
 mevcut kod incelendi: task probe'u yok, IPC isteği varsayılan 5 saniyede kesiliyor ve managed
 PID uygulama yerine ownership anchor'ını gösteriyor. Sonraki HTTP/TCP readiness dilimi bu
 sınırları birlikte ele almalı; yalnız PID canlılığından “servis hazır” sonucu çıkarmamalı.
@@ -493,7 +493,7 @@ grubunda 19 pass / 0 fail alındı. Tanı eklemek native sorunu çözülmüş sa
 
 Readiness için `2026-09-09-readiness-next-slice.md` tasarım notu kaydedildi ve TODO 10'daki
 örnekler açıkça uygulanmamış taslak olarak etiketlendi. Çalışan CLI belgelerine readiness
-flag'i eklenmedi; TODO 10 ve madde 45'in RAM/gerçek AI oturumu kriterleri açık kalır.
+flag'i eklenmedi; TODO 10 ve madde 50'nin RAM/gerçek AI oturumu kriterleri açık kalır.
 
 Son üretim koduyla lint, typecheck ve package:verify başarılı (66 paket dosyası). Bağımsız
 native test review'ında PID işaretinin başlangıç logundan önce görünmesi yarışı bulundu;
@@ -517,7 +517,7 @@ dalında korundu. [CI koşusu 34364462861](https://github.com/0furkancolak/wtm/a
 Her üç job lint, typecheck, build ve package adımlarını da geçti. Cache kapalı iki CLI/iki
 repo kuyruğu ve gerçek descendant içeren dört iptal/timeout/restart/downtime senaryosu üç
 platformda da başarılı. Önceki macOS kuyruk timeout'u task deadline yükseltilmeden giderildi.
-Madde 45'in süreç ağacı kriteri mevcut macOS/Linux kapsamı belirtilerek kapatıldı. Windows
+Madde 50'nin süreç ağacı kriteri mevcut macOS/Linux kapsamı belirtilerek kapatıldı. Windows
 bu kayıt sırasında sürüyordu; önceki `4939b93` Windows sonucu 1203 pass / 104 fail / 199
 mevcut skip'ti. Windows ve gerçek iki AI oturumu RAM ölçümü yeşil kabul edilmedi.
 
