@@ -559,6 +559,36 @@ describe('daemon serve', () => {
     expect(reported).toEqual([failure]);
     expect(signals.listenerCount()).toBe(0);
   });
+
+  test('under a service manager, a permanent failure exits 0 so it is not restarted forever', async () => {
+    const failure = new DaemonSocketPathTooLongError(measureDaemonSocketPath(overLimitOnDarwin, darwinSocketPathLimitBytes));
+    const supervised = await serveDaemon({
+      runtimeFactory: async () => { throw failure; },
+      signals: new FakeSignals(),
+      reportError: () => {},
+      supervised: true,
+    });
+    // The envelope still says exactly what went wrong; only the status the manager reads changes.
+    expect(supervised.exitCode).toBe(0);
+    expect(supervised.envelope.errors[0]?.code).toBe('WTM_SOCKET_PATH_TOO_LONG');
+
+    const byHand = await serveDaemon({
+      runtimeFactory: async () => { throw failure; },
+      signals: new FakeSignals(),
+      reportError: () => {},
+    });
+    expect(byHand.exitCode).toBe(2);
+  });
+
+  test('under a service manager, a transient failure still exits non-zero and is retried', async () => {
+    const result = await serveDaemon({
+      runtimeFactory: async () => { throw new Error('IPC path holds a close-shield placeholder too recent to reclaim: /x'); },
+      signals: new FakeSignals(),
+      reportError: () => {},
+      supervised: true,
+    });
+    expect(result.exitCode).toBe(1);
+  });
 });
 
 describe('daemon failure output', () => {

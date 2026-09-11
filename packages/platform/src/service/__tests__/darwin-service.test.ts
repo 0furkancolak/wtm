@@ -58,4 +58,19 @@ describe('launchd descriptor', () => {
   test('carries the legacy migration, which is the one thing Linux does not', () => {
     expect(darwinServiceBackend.legacyMigration?.label).toBe('dev.wtm.daemon');
   });
+
+  test('marks the daemon as supervised, which is what lets a permanent failure stop the restarts', () => {
+    const plist = darwinServiceBackend.renderDefinition({
+      label: 'dev.wtm.daemon.test',
+      executable: '/opt/wtm/bin/wtm',
+      args: ['daemon', 'serve'],
+      workingDirectory: '/Users/test',
+      standardOutPath: '/Users/test/Library/Logs/WTM/daemon.log',
+      standardErrorPath: '/Users/test/Library/Logs/WTM/daemon.error.log',
+      home: '/Users/test',
+      pathEnvironment: '/usr/bin:/bin',
+    });
+    expect(plist).toContain('<key>WTM_DAEMON_SUPERVISED</key>\n    <string>1</string>');
+    expect(plist).toContain('<key>ThrottleInterval</key>\n  <integer>10</integer>');
+  });
 });

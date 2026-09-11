@@ -169,6 +169,8 @@ ${environmentXml}  <key>WorkingDirectory</key>
     <key>SuccessfulExit</key>
     <false/>
   </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
   <key>ProcessType</key>
   <string>Adaptive</string>
   <key>ExitTimeOut</key>
@@ -328,10 +330,13 @@ export const darwinServiceBackend: ServiceBackend = {
     home: options.workingDirectory,
     stdoutPath: options.standardOutPath,
     stderrPath: options.standardErrorPath,
-    // HOME and PATH are the only two variables the agent inherits, and it inherits nothing else:
-    // a launchd agent starts with an environment that has no relation to any shell the user ever
-    // configured, so anything the daemon needs has to be stated here.
-    environment: { HOME: options.home, PATH: options.pathEnvironment },
+    // HOME, PATH and WTM_DAEMON_SUPERVISED are the only three variables the agent inherits, and it
+    // inherits nothing else: a launchd agent starts with an environment that has no relation to
+    // any shell the user ever configured, so anything the daemon needs has to be stated here.
+    // WTM_DAEMON_SUPERVISED is what tells `serveDaemon` that launchd -- not a person at a
+    // terminal -- started it, so a permanent startup failure can exit 0 rather than feed the
+    // restart it can never survive.
+    environment: { HOME: options.home, PATH: options.pathEnvironment, WTM_DAEMON_SUPERVISED: '1' },
   }),
   commands: ({ uid, definitionPath }) => launchdCommands({ uid, plistPath: definitionPath }),
   interpretStatus: interpretLaunchdStatus,

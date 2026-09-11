@@ -88,16 +88,17 @@ describe('systemd unit body', () => {
     })).toBe(`[Unit]
 Description=WTM daemon for /home/a b
 Documentation=https://github.com/0furkancolak/wtm
+StartLimitIntervalSec=0
 
 [Service]
 Type=exec
 ExecStart="/opt/node bin/node" "/opt/wtm/cli.js" "daemon" "serve" "q\\"$$HOME\\\\100%%"
 WorkingDirectory=/home/a b
-Environment="HOME=/home/a b" "PATH=/usr/bin:/bin"
+Environment="HOME=/home/a b" "PATH=/usr/bin:/bin" "WTM_DAEMON_SUPERVISED=1"
 StandardOutput=append:/home/a b/.local/state/wtm/logs/daemon.log
 StandardError=append:/home/a b/.local/state/wtm/logs/daemon.error.log
 Restart=on-failure
-RestartSec=1
+RestartSec=10
 TimeoutStopSec=5
 UMask=0077
 

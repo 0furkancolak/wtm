@@ -420,6 +420,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
           onError: reportError,
           runtimeInvocation: dependencies.runtimeInvocation ?? defaultRuntimeInvocation(),
         })),
+      supervised: process.env.WTM_DAEMON_SUPERVISED === '1',
       ...(dependencies.daemonSignals === undefined ? {} : { signals: dependencies.daemonSignals }),
     });
     renderRuntime(result.envelope, runtimeJson(program, options));

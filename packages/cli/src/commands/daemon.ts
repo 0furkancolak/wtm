@@ -31,6 +31,13 @@ export interface DaemonServeDependencies {
    * service and every command against the dead daemon reads as an unexplained failure.
    */
   reportError?: (error: unknown) => void;
+  /**
+   * Whether a service manager started this process (`WTM_DAEMON_SUPERVISED=1`, which only the
+   * launchd and systemd definitions set). A permanent startup failure then exits 0: both managers
+   * restart only a non-zero exit, and retrying a condition a person has to clear is the loop that
+   * wrote 162 MB of log in a week (spec R2). Run by hand, the exit keeps its normal class.
+   */
+  supervised?: boolean;
 }
 
 export interface DaemonServeResult {
@@ -158,7 +165,10 @@ export async function serveDaemon(dependencies: DaemonServeDependencies): Promis
     } catch (error) {
       reportError(error);
       await closeOnce().catch(() => {});
-      return serveFailure('WTM daemon could not start.', error);
+      const failed = serveFailure('WTM daemon could not start.', error);
+      return dependencies.supervised === true && isPermanentStartupFailure(failed)
+        ? { ...failed, exitCode: 0 }
+        : failed;
     }
     const signal = await termination;
     try {
@@ -334,6 +344,16 @@ function serveEnvelope(error: WtmError): DaemonServeResult['envelope'] {
  */
 function startupFailureExitCode(code: WtmErrorCode): number {
   return exitCodeForError(code);
+}
+
+/**
+ * A startup failure no retry can clear: a coded error in exit class 2, the class for
+ * configuration a person has to change. Not a second list, so a code classified there later is
+ * treated as permanent here without this function changing.
+ */
+export function isPermanentStartupFailure(result: DaemonServeResult): boolean {
+  const code = result.envelope.errors[0]?.code;
+  return code !== undefined && exitCodeForError(code) === 2;
 }
 
 /**
