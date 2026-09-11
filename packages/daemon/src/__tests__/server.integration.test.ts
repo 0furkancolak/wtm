@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { chmod, lstat, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readdir, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { createConnection, createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -434,9 +434,93 @@ async function exchangeRaw(path: string, payload: string): Promise<IpcResponse> 
     });
     cleanups.push(() => server.close());
 
-    await expect(server.start()).rejects.toThrow('not a Unix socket');
+    await expect(server.start()).rejects.toMatchObject({
+      code: 'WTM_IPC_PATH_UNUSABLE',
+      context: { path: privatePath, occupant: 'file' },
+      remediation: [{ kind: 'command-suggestion', argv: ['rm', privatePath] }],
+    });
     expect(await Bun.file(privatePath).text()).toBe('private path occupant');
     await expect(lstat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('reclaims a stale close-shield placeholder at the private bind path and starts', async () => {
+    expect(serverModule).not.toBeNull();
+    if (serverModule === null) return;
+    const path = await socketPath();
+    const privatePath = expectedPrivateSocketPath(path);
+    // Exactly what a daemon killed mid-close leaves behind: empty, 0600, ours, and old.
+    await writeFile(privatePath, '', { mode: 0o600 });
+    await chmod(privatePath, 0o600);
+    const old = new Date(Date.now() - 60_000);
+    await utimes(privatePath, old, old);
+    const server = new serverModule.UnixIpcServer({
+      socketPath: path,
+      handler: async (value) => success(value.command, null),
+    });
+    cleanups.push(() => server.close());
+
+    await server.start();
+    expect((await lstat(path)).isSocket()).toBeTrue();
+    await expect(lstat(privatePath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('leaves a placeholder that is too young alone, and fails as transient rather than coded', async () => {
+    expect(serverModule).not.toBeNull();
+    if (serverModule === null) return;
+    const path = await socketPath();
+    const privatePath = expectedPrivateSocketPath(path);
+    await writeFile(privatePath, '', { mode: 0o600 });
+    await chmod(privatePath, 0o600);
+    const server = new serverModule.UnixIpcServer({
+      socketPath: path,
+      handler: async (value) => success(value.command, null),
+    });
+    cleanups.push(() => server.close());
+
+    const failure = await server.start().then(() => null, (error: unknown) => error);
+    expect(String((failure as Error).message)).toContain('too recent to reclaim');
+    expect((failure as { code?: unknown }).code).toBeUndefined();
+    expect((await lstat(privatePath)).isFile()).toBeTrue();
+  });
+
+  test('refuses a directory at the published path with a coded, actionable error', async () => {
+    expect(serverModule).not.toBeNull();
+    if (serverModule === null) return;
+    const path = await socketPath();
+    await mkdir(path);
+    const server = new serverModule.UnixIpcServer({
+      socketPath: path,
+      handler: async (value) => success(value.command, null),
+    });
+    cleanups.push(() => server.close());
+
+    await expect(server.start()).rejects.toMatchObject({
+      code: 'WTM_IPC_PATH_UNUSABLE',
+      context: { path, occupant: 'directory' },
+      remediation: [{ kind: 'command-suggestion', argv: ['wtm', 'doctor'] }],
+    });
+    expect((await lstat(path)).isDirectory()).toBeTrue();
+  });
+
+  test('refuses a symbolic link at the published path without touching its target', async () => {
+    expect(serverModule).not.toBeNull();
+    if (serverModule === null) return;
+    const path = await socketPath();
+    const target = join(dirname(path), 'target');
+    await writeFile(target, 'target content');
+    await symlink(target, path);
+    const server = new serverModule.UnixIpcServer({
+      socketPath: path,
+      handler: async (value) => success(value.command, null),
+    });
+    cleanups.push(() => server.close());
+
+    await expect(server.start()).rejects.toMatchObject({
+      code: 'WTM_IPC_PATH_UNUSABLE',
+      context: { occupant: 'symlink' },
+    });
+    expect((await lstat(path)).isSymbolicLink()).toBeTrue();
+    expect(await Bun.file(target).text()).toBe('target content');
   });
 
   test('allows exactly one concurrent daemon to publish without displacing it', async () => {
@@ -554,7 +638,7 @@ async function exchangeRaw(path: string, payload: string): Promise<IpcResponse> 
       socketPath: occupiedPath,
       handler: async () => success('blocked', null),
     });
-    await expect(blocked.start()).rejects.toThrow('not a Unix socket');
+    await expect(blocked.start()).rejects.toMatchObject({ code: 'WTM_IPC_PATH_UNUSABLE', context: { occupant: 'file' } });
     expect(await Bun.file(occupiedPath).text()).toBe('owned by another process');
 
     const path = await socketPath();
