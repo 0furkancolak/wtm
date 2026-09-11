@@ -681,6 +681,11 @@ alınır; R2 kalıcı hatada exit 0 yalnızca `WTM_DAEMON_SUPERVISED=1` iken; R3
 `daemon-status.json` üzerinden; R5 doctor var olmayan `daemon start` yerine `wtm daemon install`
 diyor.
 
+Aşağıdaki "Yapılacaklar" kutusundaki "backoff" maddesi farklı bir tasarımla karşılandı: üstel geri
+çekilme değil, kalıcı hatada durma, sabit 10 sn'lik tek bir yeniden deneme aralığı, ve frame'lerin
+açılışlar arası tek kez yazılması. Açık kalan iki parça 51 (kodsuz ama kalıcı açılış hataları) ve
+52 (`wtm doctor` kayıtlı workspace yokken) maddelerine taşındı; bu madde onları kapsamıyor.
+
 Elle doğrulama, geçici bir `HOME` altında (`mktemp -d /tmp/wtm-item45-XXXX`, gerçek `~/Library`'ye
 dokunmadan, `WTM_DAEMON_SUPERVISED=1 wtm daemon serve --json`):
 
