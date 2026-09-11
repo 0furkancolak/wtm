@@ -841,6 +841,20 @@ Kapandı, branch `claude/item-51-uncoded-permanent-failures`.
 **Yerinde kalan davranış:** `wtm init` kendi eşlemesiyle bu hatayı hâlâ `WTM_CONFIG_INVALID`
 olarak raporluyor. Bu değişmedi, kapsam dışı.
 
+**Final review'dan (opus):**
+
+- **I1, düzeltildi.** Hedef dizin henüz yoksa kod, var olan en yakın üst dizine kadar çıkıyor. Bu
+  üst dizin başka kullanıcınınsa, örneğin henüz mount edilmemiş bir HOME'un root'a ait `/home`'u ya
+  da `/Volumes/<disk>`, hata ilk sürümde kalıcı sayılıp daemon'ı durduruyordu. Artık geçici
+  sayılıyor ve yeniden deneniyor. Başka kullanıcıya ait *hedef* dizin kalıcı kalıyor.
+- **M1, düzeltildi.** Node'da kırık link üzerinde `mkdir` ENOENT veriyor; artık o da `lstat`'a
+  bırakılıyor.
+- **M4, düzeltildi.** Geçici hataların mesajı artık "unsafe" değil "unavailable" diyor.
+- **M6, düzeltildi.** docs/18 artık grup/diğer izin bitlerinin hepsini sayıyor.
+- **M5, kısmen.** I1 ve kırık link için testler eklendi.
+- **Açık kalan:** M2 (`ENOTDIR`/`ELOOP` kodsuz) ve M3 (Windows'ta ACL okuma hatasının kalıcı
+  sayılması). Windows daemon'ı dağıtılmadan önce M3 ele alınmalı.
+
 **Doğrulama (throwaway HOME'da, supervised `daemon serve`):**
 
 - (A) `~/Library` 755: exit 0, `WTM_PRIVATE_DIRECTORY_UNSAFE`, `chmod 700` önerisi,

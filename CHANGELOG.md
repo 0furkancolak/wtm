@@ -316,7 +316,8 @@ binaries are Developer ID signed and notarized.
   with the new `WTM_PRIVATE_DIRECTORY_UNSAFE` code (exit 2), naming the path and the reason. A
   directory that is only readable by others also gets `chmod 700 <path>` as the remediation. A
   directory that could not be read at all, or changed while it was checked, is still retried,
-  because that can clear on its own.
+  because that can clear on its own. So is one WTM has yet to create inside a directory that is
+  not the user's, such as a home directory whose volume is not mounted yet.
 - A `wtm daemon serve` refused because a daemon is already serving (usually one run by hand next to
   the service) no longer overwrites that daemon's record in `daemon-status.json`. `wtm doctor` used
   to blame the service's next failure on that refusal.

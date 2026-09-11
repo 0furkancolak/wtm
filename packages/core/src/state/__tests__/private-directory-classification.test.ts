@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { chmod, mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { wtmErrorCodeSchema } from '@wtm/protocol';
 import { defaultCoreFileTrustPolicy, type FileTrustPolicy } from '../../file-trust-policy';
 import { ensurePrivateDirectory, PrivateDirectoryError } from '../private-directory';
@@ -99,6 +99,25 @@ describe.skipIf(isWindowsTestHost)('private directory refusals', () => {
 
     expectPermanent(error, state);
     expect(error.context.reason).toBe('belongs to another user');
+  });
+
+  test("a missing target under another user's directory is retried, as for a volume not mounted yet", async () => {
+    const root = await privateRoot();
+    // `root` stands in for a root-owned `/home` whose user directory has not been mounted. Its
+    // ancestors must be foreign too, as `/` is: the real `$TMPDIR` is this user's own 0700
+    // directory, and a foreign directory *below* one of those is permanent (no volume mounts
+    // there), which is a different case from the one this test is about.
+    const foreign = (path: string) => path === root || root.startsWith(path.endsWith(sep) ? path : `${path}${sep}`);
+    const fileTrust: FileTrustPolicy = {
+      ...defaultCoreFileTrustPolicy,
+      isOwnedByCurrentUser: async (stat, path) => !foreign(path) && await defaultCoreFileTrustPolicy.isOwnedByCurrentUser(stat, path),
+    };
+
+    const error = await refusal(join(root, 'me', '.local', 'state', 'wtm'), fileTrust);
+
+    expect(error.code).toBe('WTM_PRIVATE_DIRECTORY_UNAVAILABLE');
+    expect(error.context.path).toBe(root);
+    expect(error.message).not.toContain('unsafe');
   });
 
   test('a directory that cannot be read stays uncoded, so it is retried', async () => {

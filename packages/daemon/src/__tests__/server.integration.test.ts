@@ -426,6 +426,25 @@ async function exchangeRaw(path: string, payload: string): Promise<IpcResponse> 
     expect(await readdir(real)).toEqual([]);
   });
 
+  test('refuses a dangling link where the socket directory should be with a code a supervisor stops on', async () => {
+    expect(serverModule).not.toBeNull();
+    if (serverModule === null) return;
+    const directory = dirname(await socketPath());
+    const dangling = join(directory, 'dangling');
+    await symlink(join(directory, 'gone'), dangling);
+    const server = new serverModule.UnixIpcServer({
+      socketPath: join(dangling, 'wtmd.sock'),
+      handler: async (value) => success(value.command, null),
+    });
+    cleanups.push(() => server.close());
+
+    await expect(server.start()).rejects.toMatchObject({
+      code: 'WTM_PRIVATE_DIRECTORY_UNSAFE',
+      context: { path: dangling, reason: 'is a symbolic link' },
+    });
+    await expect(lstat(join(directory, 'gone'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   test('refuses a file where the socket directory should be with a code a supervisor stops on', async () => {
     expect(serverModule).not.toBeNull();
     if (serverModule === null) return;

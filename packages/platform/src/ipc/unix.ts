@@ -256,10 +256,12 @@ async function closeServerWithPrivatePathShield(
 }
 
 async function secureSocketParent(path: string): Promise<DirectoryIdentity> {
-  // A file or a dangling link at the path makes `mkdir` fail with EEXIST. The `lstat` below is
-  // what says which it is, and says so with a code.
+  // A file at the path makes `mkdir` fail with EEXIST. A dangling link makes it fail with ENOENT
+  // under Node, which the shipped binary runs on, and with EEXIST under Bun. Either way the
+  // `lstat` below is what says which it is, and says so with a code. A path that is genuinely
+  // missing still fails there with ENOENT, uncoded, as a race should.
   await mkdir(path, { recursive: true, mode: 0o700 }).catch((error: unknown) => {
-    if (!isFileError(error, 'EEXIST')) throw error;
+    if (!isFileError(error, 'EEXIST') && !isFileError(error, 'ENOENT')) throw error;
   });
   const initial = await lstat(path);
   const currentUid = process.getuid?.();

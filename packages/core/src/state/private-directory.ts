@@ -44,11 +44,15 @@ export class PrivateDirectoryError extends Error {
     reason?: string,
     classification: { unsafe?: boolean; remediation?: readonly Remediation[] } = {},
   ) {
+    const unsafe = classification.unsafe === true;
+    // "Unsafe" only for the verdict a person has to act on. The rest is retried, and the log line
+    // should not send anyone looking for a permission problem that is not there.
+    const verdict = unsafe ? 'unsafe' : 'unavailable';
     super(path === undefined
-      ? 'WTM private directory is unsafe.'
-      : `WTM private directory is unsafe: ${path} ${reason ?? 'is not a directory only you can read'}.`);
+      ? `WTM private directory is ${verdict}.`
+      : `WTM private directory is ${verdict}: ${path} ${reason ?? 'is not a directory only you can read'}.`);
     this.name = 'PrivateDirectoryError';
-    this.code = classification.unsafe === true ? 'WTM_PRIVATE_DIRECTORY_UNSAFE' : 'WTM_PRIVATE_DIRECTORY_UNAVAILABLE';
+    this.code = unsafe ? 'WTM_PRIVATE_DIRECTORY_UNSAFE' : 'WTM_PRIVATE_DIRECTORY_UNAVAILABLE';
     this.context = {
       ...(path === undefined ? {} : { path }),
       ...(reason === undefined ? {} : { reason }),
@@ -96,7 +100,9 @@ export async function ensurePrivateDirectory(
       throw new PrivateDirectoryError();
     });
     if (stat !== undefined) {
-      const established = await inspectPrivateDirectory(anchor, fileTrust, stat);
+      // An anchor above the target is only where WTM would create its directory. See
+      // `assertPrivateDirectory` for why that changes what another user's ownership means.
+      const established = await inspectPrivateDirectory(anchor, fileTrust, stat, { ancestor: components.length > 0 });
       let current = established.path;
       const identities = [established];
       for (const component of components.reverse()) {
@@ -166,11 +172,12 @@ async function inspectPrivateDirectory(
   path: string,
   fileTrust: FileTrustPolicy,
   initial?: Stats,
+  options: { ancestor?: boolean } = {},
 ): Promise<PrivateDirectory> {
   const before = initial ?? await lstat(path).catch(() => {
     throw new PrivateDirectoryError(path, 'cannot be read');
   });
-  await assertPrivateDirectory(before, fileTrust, path);
+  await assertPrivateDirectory(before, fileTrust, path, options);
   const canonicalPath = await realpath(path).catch(() => {
     throw new PrivateDirectoryError(path, 'cannot be resolved');
   });
@@ -183,7 +190,7 @@ async function inspectPrivateDirectory(
     });
     // Descriptor metadata does not carry ACL ownership on every host. Keep the pathname for
     // policy inspection, then bind it back to this descriptor with the identity checks below.
-    await assertPrivateDirectory(opened, fileTrust, canonicalPath);
+    await assertPrivateDirectory(opened, fileTrust, canonicalPath, options);
     const after = await lstat(canonicalPath).catch(() => {
       throw new PrivateDirectoryError();
     });
@@ -199,10 +206,32 @@ async function inspectPrivateDirectory(
   }
 }
 
-async function assertPrivateDirectory(stat: Stats, fileTrust: FileTrustPolicy, path: string): Promise<void> {
+/**
+ * `ancestor` marks the nearest existing directory above a target that does not exist yet.
+ *
+ * Another user's ownership means something different there. Take a home directory on a volume
+ * that is not mounted yet: the walk up stops at the root-owned `/home` or `/Volumes/<disk>`, and
+ * that is not a directory anyone has to fix. It is one WTM cannot create in *yet*, so it stays
+ * retryable, and a supervised daemon comes up once the volume appears (todo item 51). A target
+ * that itself belongs to another user is still permanent, and so is an ancestor that is this
+ * user's but too permissive, because only a person changes either.
+ *
+ * So is another user's directory *below* one of this user's private directories. No volume mounts
+ * there, and `assertNoSymlinkComponents` refuses it before this function is reached.
+ */
+async function assertPrivateDirectory(
+  stat: Stats,
+  fileTrust: FileTrustPolicy,
+  path: string,
+  options: { ancestor?: boolean } = {},
+): Promise<void> {
   if (!fileTrust.currentIdentityAvailable()) throw new PrivateDirectoryError();
   if (!stat.isDirectory()) throw unsafeDirectory(path, 'is not a directory');
-  if (!(await fileTrust.isOwnedByCurrentUser(stat, path))) throw unsafeDirectory(path, 'belongs to another user');
+  if (!(await fileTrust.isOwnedByCurrentUser(stat, path))) {
+    throw options.ancestor === true
+      ? new PrivateDirectoryError(path, 'belongs to another user, so WTM cannot create its directory there yet')
+      : unsafeDirectory(path, 'belongs to another user');
+  }
   if (!(await fileTrust.isWritableOnlyByOwner(stat, path, 0o077))) throw readableByOthers(path, stat);
 }
 
