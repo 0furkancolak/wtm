@@ -275,6 +275,37 @@ describe('registration', () => {
     });
   });
 
+  test('an unregistered worktree with an unreachable daemon reports its recorded startup failure too (review M4)', async () => {
+    const statusPath = join(await tempDir(), 'daemon-status.json');
+    writeDaemonStatus(statusPath, nextDaemonStatus(null, {
+      started: false, code: 'WTM_IPC_PATH_UNUSABLE',
+      condition: 'The WTM daemon socket path is a directory: /x.', message: 'The WTM daemon socket path is a directory: /x.',
+      remediation: ['wtm', 'doctor'], permanent: true,
+    }, new Date('2026-09-11T10:00:00.000Z'), 7));
+    const finding = await registrationFinding('/elsewhere', join(await tempDir(), 'absent.sock'), statusPath);
+
+    expect(finding?.status).toBe('error');
+    expect(finding?.message).toContain('This directory is not inside a worktree WTM has registered.');
+    expect(finding?.message).toContain('The WTM daemon socket path is a directory: /x.');
+    expect(finding?.message).toContain('since 2026-09-11T10:00:00.000Z');
+    expect(finding?.details).toMatchObject({
+      code: 'WTM_WORKSPACE_NOT_FOUND', registered: false, daemonReachable: false,
+      startupFailedSince: '2026-09-11T10:00:00.000Z', startupAttempts: 1, startupPermanent: true,
+      startupRemediation: 'wtm doctor',
+    });
+  });
+
+  test('an unregistered worktree with a reachable daemon does not report a stale startup failure', async () => {
+    const statusPath = join(await tempDir(), 'daemon-status.json');
+    writeDaemonStatus(statusPath, nextDaemonStatus(null, {
+      started: false, code: 'WTM_IPC_PATH_UNUSABLE', condition: 'old', message: 'old', remediation: null, permanent: true,
+    }, new Date('2026-09-11T10:00:00.000Z'), 7));
+    const finding = await registrationFinding('/elsewhere', await socketServer(), statusPath);
+
+    expect(finding?.details).toMatchObject({ code: 'WTM_WORKSPACE_NOT_FOUND', daemonReachable: true });
+    expect(finding?.message).not.toContain('old');
+  });
+
   test('a recorded successful start is not presented as the reason the daemon is down', async () => {
     const statusPath = join(await tempDir(), 'daemon-status.json');
     writeDaemonStatus(statusPath, nextDaemonStatus(null, { started: true }, new Date(), 7));

@@ -134,6 +134,24 @@ export function createStateDiagnosticDataSource(
   };
 
   /**
+   * How long a recorded startup failure has been going on, and the remedy for it -- the part of
+   * the answer that does not depend on which finding is reporting it. Shared with
+   * `unreachableFinding` so the registered and unregistered paths cannot describe the same record
+   * two different ways.
+   */
+  const startupFailureNote = (failure: DaemonStatus): string => {
+    const attempts = failure.attempts === 1 ? 'once' : `${String(failure.attempts)} times`;
+    const next = failure.remediation === null
+      ? 'Run `wtm daemon install` to start it again.'
+      : `Run \`${formatRemediation(failure.remediation)}\`, then \`wtm daemon install\` to start it again.`;
+    return [
+      `The daemon is also not running: it failed to start ${attempts} since ${failure.since}.`,
+      (failure.message ?? '').trim(),
+      next,
+    ].filter((part) => part !== '').join(' ');
+  };
+
+  /**
    * The worktree the question is about — only ever one that actually contains the directory
    * the question was asked in.
    *
@@ -305,11 +323,27 @@ export function createStateDiagnosticDataSource(
     try {
       findRegistration(store, options.cwd);
     } catch (error) {
+      // The worktree is unregistered either way, so that finding still leads. But when the
+      // daemon is also not answering, the recorded startup failure is exactly as informative
+      // here as it is on the registered path below (spec item 45 review M4) -- there is no
+      // reason a person standing in the wrong directory should get a worse answer about the
+      // daemon than one standing in the right one.
+      const failure = reachable ? null : recordedStartupFailure();
       return {
         check: 'registration',
         status: 'error',
-        message: messageOf(error),
-        details: { code: 'WTM_WORKSPACE_NOT_FOUND', registered: false, daemonReachable: reachable },
+        message: [messageOf(error), failure === null ? '' : startupFailureNote(failure)]
+          .filter((part) => part !== '')
+          .join(' '),
+        details: {
+          code: 'WTM_WORKSPACE_NOT_FOUND', registered: false, daemonReachable: reachable,
+          ...(failure === null ? {} : {
+            startupFailedSince: failure.since,
+            startupAttempts: failure.attempts,
+            startupPermanent: failure.permanent,
+            startupRemediation: failure.remediation === null ? null : formatRemediation(failure.remediation),
+          }),
+        },
       };
     }
     return reachable
