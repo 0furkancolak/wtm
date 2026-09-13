@@ -5,6 +5,7 @@ import {
   defaultOperationLeaseTtlMs,
   RepositoryOperationConflictError,
   withRepositoryOperationLease,
+  withRepositoryOperationLeases,
   type ProcessStartTimeReader,
   type RepositoryOperationLeaseStore,
 } from '../operation-lease';
@@ -744,4 +745,63 @@ test('takes, journals, releases, refuses and adopts a lease in a real SQLite sta
     resumedFrom: 'stop-processes',
     leaseAfterResume: null,
   });
+});
+
+class OrderSpyStore extends FakeLeaseStore {
+  readonly events: string[] = [];
+
+  override acquireRepositoryOperationLease(input: RepositoryOperationLeaseRequest, now: string): RepositoryOperationLeaseResult {
+    this.events.push(`acquire:${input.repositoryId}`);
+    return super.acquireRepositoryOperationLease(input, now);
+  }
+
+  override renewRepositoryOperationLease(key: RepositoryOperationLeaseKey, token: string, now: string, ttlMs: number): boolean {
+    this.events.push(`renew:${key.repositoryId}`);
+    return super.renewRepositoryOperationLease(key, token, now, ttlMs);
+  }
+
+  override releaseRepositoryOperationLease(key: RepositoryOperationLeaseKey, token: string): boolean {
+    this.events.push(`release:${key.repositoryId}`);
+    return super.releaseRepositoryOperationLease(key, token);
+  }
+}
+
+const onlySelfIsAlive: ProcessStartTimeReader = async (pid) => (pid === process.pid ? selfStartTime : null);
+
+test('multi-repository leases are taken in repository id order and released in reverse', async () => {
+  const store = new OrderSpyStore();
+  const seen = await withRepositoryOperationLeases({
+    store, readProcessStartTime: onlySelfIsAlive, hostId: myHostId,
+    repositoryIds: ['repo-c', 'repo-a', 'repo-b', 'repo-a'], operation: 'create',
+  }, async (session) => {
+    session.renewAll();
+    return session.repositoryIds;
+  });
+
+  expect(seen).toEqual(['repo-a', 'repo-b', 'repo-c']);
+  expect(store.events).toEqual([
+    'acquire:repo-a', 'acquire:repo-b', 'acquire:repo-c',
+    'renew:repo-a', 'renew:repo-b', 'renew:repo-c',
+    'release:repo-c', 'release:repo-b', 'release:repo-a',
+  ]);
+});
+
+test('a refused repository releases the leases already held and never runs the body', async () => {
+  const store = new OrderSpyStore();
+  store.seed({
+    repositoryId: 'repo-b', operation: 'gc', token: 'held', pid: holderPid, processStartTime: holderStartTime,
+    hostId: myHostId, subjectWorktreeId: null, stage: null,
+    acquiredAt: '2026-09-13T00:00:00.000Z', renewedAt: '2026-09-13T00:00:00.000Z', expiresAt: '2999-01-01T00:00:00.000Z',
+  });
+  let ran = false;
+
+  const attempt = withRepositoryOperationLeases({
+    store, readProcessStartTime: onlySelfIsAlive, hostId: myHostId,
+    repositoryIds: ['repo-c', 'repo-b', 'repo-a'], operation: 'create',
+  }, async () => { ran = true; });
+
+  await expect(attempt).rejects.toBeInstanceOf(RepositoryOperationConflictError);
+  expect(ran).toBe(false);
+  expect(store.events).toEqual(['acquire:repo-a', 'acquire:repo-b', 'release:repo-a']);
+  expect([...store.rows.values()].map((row) => row.token)).toEqual(['held']);
 });

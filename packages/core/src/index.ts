@@ -76,12 +76,15 @@ export {
   defaultOperationLeaseTtlMs,
   RepositoryOperationConflictError,
   withRepositoryOperationLease,
+  withRepositoryOperationLeases,
 } from './analysis/operation-lease';
 export type {
   ProcessStartIdentity,
   ProcessStartTimeReader,
   RepositoryOperationConflictDetail,
   RepositoryOperationLeaseInput,
+  RepositoryOperationLeasesInput,
+  RepositoryOperationLeasesSession,
   RepositoryOperationLeaseStore,
   RepositoryOperationSession,
 } from './analysis/operation-lease';
