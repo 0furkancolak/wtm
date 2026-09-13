@@ -936,6 +936,31 @@ kullanmaz. Bu bir RAM kotası değildir. Ayrıntılar ve doğrulama sınırları
 `docs/development/2026-09-09-todo-analysis.md`; tekrarlanabilir gerçek makine ölçümü:
 `docs/development/2026-09-09-heavy-job-memory-measurement.md`.
 
+**2026-09-13 ölçümü:** Tarif, tek bir gerçek makinede (macOS arm64, 16 GiB) ilk kez uygulandı:
+`docs/development/2026-09-13-heavy-job-memory-results.md`. Kurulum:
+- geçici `HOME`, ayrı daemon ve build edilmiş CLI;
+- iki bağımsız klon; görev olarak her birinde `bun run typecheck`;
+- kuyruksuz, limit 1 ve RAM kabulü modları, her biri 3 kez.
+
+Sonuçlar:
+- İki task ağacının tepe RSS toplamı kuyruksuzda 1184 MiB, limit 1'de 655 MiB, RAM kabulünde
+  634 MiB (medyan).
+- Toplam süre 7,6 sn'den yaklaşık 15–16 sn'ye çıkıyor.
+- Daemon iş sırasında yaklaşık 25 MiB ekliyor.
+- Kabul yaklaşık 0,3 sn sürüyor. Bekleme nedeni limit 1'de `concurrency`, RAM kabulünde
+  `memory_budget` olarak doğru raporlanıyor.
+- 12 işin hepsi `SUCCEEDED`, exit code 0 ve kaynak `UNCHANGED` ile bitti.
+- Claude süreçlerinin RSS'i (3,4–3,6 GiB) moddan etkilenmedi.
+- Bellek baskısı ve swap hiç oluşmadı. Bu yüzden kuyruğun baskıyı veya swap'ı azalttığı bu
+  ölçümden çıkarılamaz.
+
+Açık kalanlar: gerçek iki AI oturumu, daha ağır bir görev ve Linux/Windows ölçümleri.
+
+Ayrıca ölçüm sırasında bulunan bir sınır: kaynaktan `node --import tsx` ile başlatılan daemon
+kuyruktaki işi başlatamıyor (`RUNTIME_START_FAILED`). Özel runner modları için yeniden çağrılan
+giriş noktası tsx yükleyicisini almıyor. Ölçüm build ile yapıldı. Testler bu durumu
+`developmentRuntimeInvocation()` ile aşıyor.
+
 #### Kapsam ve ilk dilim
 
 - [ ] Önce temsili iki oturumda süreç ağacını ölç; Claude'un kendi belleği, ağır komutlar ve
@@ -1039,9 +1064,13 @@ korur. Geçici yetersizlikte strict FIFO bekler. Native ve gerçek makine ölç�
       slot sızdırmaz. Kuyrukta bekleyen iş worktree silme güvenliğini aşamaz.
 - [ ] İşin kaynakları değiştiğinde eski sonuç güncel doğrulama gibi sunulmaz. Skill'in
       gönderme/devam etme/sonuç okuma akışı gerçek iki oturumlu senaryoyla doğrulanır.
-- [ ] Aynı görev setiyle kuyruk öncesi/sonrası tepe bellek, bellek baskısı/swap, toplam süre
+- [x] Aynı görev setiyle kuyruk öncesi/sonrası tepe bellek, bellek baskısı/swap, toplam süre
       ve WTM daemon ek maliyeti ölçülür. Claude'un kendi bellek tüketimindeki değişim ayrıca
       ayrıştırılır; ölçüm yapılmadan belirli bir RAM tasarrufu oranı vaat edilmez.
+      2026-09-13, tek makine (macOS arm64, 16 GiB) ve tek görev (`bun run typecheck`) için:
+      `docs/development/2026-09-13-heavy-job-memory-results.md`. Tasarruf oranı yine vaat
+      edilmiyor. Baskı/swap bu makinede hiç oluşmadığı için bu kısım "değişmedi" olarak
+      ölçüldü, azalma olarak değil.
 
 ---
 
