@@ -1305,7 +1305,10 @@ export class SQLiteStateStore implements StateStore {
     }
     const expiresAt = repositoryOperationLeaseExpiry(now, input.ttlMs);
     return this.transaction(() => {
-      assertNoHeavyJobs(this.#database, input.repositoryId);
+      // The heavy-job guard protects work a destructive operation could pull out from under a
+      // job. A create only adds a worktree, so a job queued elsewhere in the repository is no
+      // reason to refuse it.
+      if (input.operation !== 'create') assertNoHeavyJobs(this.#database, input.repositoryId);
       // Exclusivity is repository-wide, not per operation. The primary key is
       // `(repository_id, operation)` because a row *is* one operation's journal, but which
       // operations exclude each other was always a decision for the code rather than for the

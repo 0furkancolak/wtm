@@ -179,8 +179,11 @@ export interface ManagedProcessQuery {
   states?: readonly ManagedProcessState[];
 }
 
-/** The destructive operations that take a repository-wide lease before they start. */
-export type RepositoryOperation = 'remove' | 'gc' | 'repair';
+/**
+ * The operations that take a repository-wide lease before they start: the three that destroy,
+ * and a multi-repository `create`, which holds its members still while it journals and writes.
+ */
+export type RepositoryOperation = 'remove' | 'gc' | 'repair' | 'create';
 
 export interface RepositoryOperationLeaseKey {
   repositoryId: string;
