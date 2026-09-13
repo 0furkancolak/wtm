@@ -141,6 +141,7 @@ export { queueTaskTimeoutMs } from './config/task-timeout';
 export { ensurePrivateDirectory, PrivateDirectoryError, verifyPrivateDirectory } from './state/private-directory';
 export type { PrivateDirectory, PrivateDirectoryIdentity } from './state/private-directory';
 export type {
+  BeginFeatureCreationInput,
   EndpointLease,
   EndpointLeaseQuery,
   EndpointLeaseState,
@@ -148,6 +149,13 @@ export type {
   EndpointCandidate,
   EndpointProtocol,
   EndpointRequest,
+  FeatureCreationMemberInput,
+  FeatureCreationMemberRecord,
+  FeatureCreationPhase,
+  FeatureCreationRecord,
+  FeatureCreationState,
+  FeatureCreationStore,
+  FeatureRecord,
   ManagedProcessInput,
   ManagedProcessCreateOptions,
   ManagedProcessQuery,

@@ -10,10 +10,16 @@ import type {
   LifecycleEventSubject,
   AdapterTrustInput,
   AdapterTrustRecord,
+  BeginFeatureCreationInput,
   EndpointLease,
   EndpointLeaseQuery,
   EndpointAvailabilityProbe,
   EndpointRequest,
+  FeatureCreationPhase,
+  FeatureCreationRecord,
+  FeatureCreationState,
+  FeatureCreationStore,
+  FeatureRecord,
   ManagedProcessInput,
   ManagedProcessCreateOptions,
   ManagedProcessQuery,
@@ -132,6 +138,17 @@ interface RepositoryOperationLeaseRow {
   expires_at: string;
 }
 
+interface FeatureRow { id: string; workspace_id: string; branch: string; created_at: string }
+interface FeatureCreationRow {
+  id: string; feature_id: string; state: FeatureCreationState; from_ref: string | null;
+  created_at: string; updated_at: string; completed_at: string | null;
+}
+interface FeatureCreationMemberRow {
+  creation_id: string; repository_id: string; repository_main_root: string; position: number;
+  worktree_path: string; branch_existed: number; start_oid: string; phase: FeatureCreationPhase;
+  last_error_code: string | null; updated_at: string;
+}
+
 function repositoryOperationLeaseHolderFromRow(row: RepositoryOperationLeaseRow): RepositoryOperationLeaseHolder {
   return {
     repositoryId: row.repository_id,
@@ -244,7 +261,7 @@ export interface SQLiteStateStoreOptions {
   databaseFactory?: SqliteDatabaseFactory;
 }
 
-export class SQLiteStateStore implements StateStore {
+export class SQLiteStateStore implements StateStore, FeatureCreationStore {
   readonly #database: SqliteDatabase;
   readonly jobs: HeavyJobStore;
   #closed = false;
@@ -1483,6 +1500,138 @@ export class SQLiteStateStore implements StateStore {
       ORDER BY started_at DESC, id DESC LIMIT 1
     `).get(worktreeId, taskName) as ManagedProcessRow | undefined;
     return row === undefined ? null : managedProcessFromRow(row);
+  }
+
+  upsertFeature(workspaceId: string, branch: string): FeatureRecord {
+    this.#assertOpen();
+    this.#database.prepare(`
+      INSERT INTO features (id, workspace_id, branch, created_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT (workspace_id, branch) DO NOTHING
+    `).run(randomUUID(), workspaceId, branch, new Date().toISOString());
+    const row = this.#database.prepare('SELECT * FROM features WHERE workspace_id = ? AND branch = ?')
+      .get(workspaceId, branch) as FeatureRow;
+    return { id: row.id, workspaceId: row.workspace_id, branch: row.branch, createdAt: row.created_at };
+  }
+
+  /**
+   * Opens a creation with every member PLANNED, in one transaction. The partial unique index is
+   * what refuses a second open creation of the same feature, so two racing callers cannot both
+   * journal one.
+   */
+  beginFeatureCreation(input: BeginFeatureCreationInput): FeatureCreationRecord {
+    this.#assertOpen();
+    if (input.members.length === 0) throw new TypeError('A feature creation needs at least one member');
+    return this.transaction(() => {
+      const feature = this.upsertFeature(input.workspaceId, input.branch);
+      if (input.supersedeCreationId !== undefined) this.#supersede(input.supersedeCreationId, feature.id);
+      const id = randomUUID();
+      const timestamp = new Date().toISOString();
+      this.#database.prepare(`
+        INSERT INTO feature_creations (id, feature_id, state, from_ref, created_at, updated_at, completed_at)
+        VALUES (?, ?, 'IN_PROGRESS', ?, ?, ?, NULL)
+      `).run(id, feature.id, input.fromRef, timestamp, timestamp);
+      const insert = this.#database.prepare(`
+        INSERT INTO feature_creation_members (
+          creation_id, repository_id, repository_main_root, position, worktree_path, branch_existed,
+          start_oid, phase, last_error_code, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PLANNED', NULL, ?)
+      `);
+      for (const member of input.members) {
+        insert.run(id, member.repositoryId, member.repositoryMainRoot, member.position, member.worktreePath,
+          member.branchExisted ? 1 : 0, member.startOid, timestamp);
+      }
+      return this.#featureCreation(id)!;
+    });
+  }
+
+  advanceCreationMember(creationId: string, repositoryId: string, phase: FeatureCreationPhase, lastErrorCode: string | null): void {
+    this.#assertOpen();
+    this.transaction(() => {
+      const timestamp = new Date().toISOString();
+      const changed = this.#database.prepare(`
+        UPDATE feature_creation_members SET phase = ?, last_error_code = ?, updated_at = ?
+        WHERE creation_id = ? AND repository_id = ?
+      `).run(phase, lastErrorCode, timestamp, creationId, repositoryId).changes;
+      if (changed !== 1) throw new Error(`Creation ${creationId} has no member for repository ${repositoryId}`);
+      this.#database.prepare('UPDATE feature_creations SET updated_at = ? WHERE id = ?').run(timestamp, creationId);
+    });
+  }
+
+  /** Only an open creation whose every member is REGISTERED can complete. */
+  completeFeatureCreation(creationId: string): void {
+    this.#assertOpen();
+    this.transaction(() => {
+      const timestamp = new Date().toISOString();
+      const changed = this.#database.prepare(`
+        UPDATE feature_creations SET state = 'COMPLETED', updated_at = ?, completed_at = ?
+        WHERE id = ? AND state = 'IN_PROGRESS' AND NOT EXISTS (
+          SELECT 1 FROM feature_creation_members m
+          WHERE m.creation_id = feature_creations.id AND m.phase <> 'REGISTERED'
+        )
+      `).run(timestamp, timestamp, creationId).changes;
+      if (changed !== 1) throw new Error(`Creation ${creationId} is not an open creation with every member registered`);
+    });
+  }
+
+  supersedeFeatureCreation(creationId: string): void {
+    this.#assertOpen();
+    this.transaction(() => this.#supersede(creationId, null));
+  }
+
+  readOpenFeatureCreation(workspaceId: string, branch: string): FeatureCreationRecord | null {
+    this.#assertOpen();
+    const row = this.#database.prepare(`
+      SELECT c.id FROM feature_creations c JOIN features f ON f.id = c.feature_id
+      WHERE f.workspace_id = ? AND f.branch = ? AND c.state = 'IN_PROGRESS'
+    `).get(workspaceId, branch) as { id: string } | undefined;
+    return row === undefined ? null : this.#featureCreation(row.id);
+  }
+
+  readFeatureCreation(creationId: string): FeatureCreationRecord | null {
+    this.#assertOpen();
+    return this.#featureCreation(creationId);
+  }
+
+  /** Nothing was written to Git while every member is PLANNED, which is the only time a creation may be replaced. */
+  #supersede(creationId: string, featureId: string | null): void {
+    const changed = this.#database.prepare(`
+      UPDATE feature_creations SET state = 'SUPERSEDED', updated_at = ?
+      WHERE id = ? AND (? IS NULL OR feature_id = ?) AND state = 'IN_PROGRESS' AND NOT EXISTS (
+        SELECT 1 FROM feature_creation_members m
+        WHERE m.creation_id = feature_creations.id AND m.phase <> 'PLANNED'
+      )
+    `).run(new Date().toISOString(), creationId, featureId, featureId).changes;
+    if (changed !== 1) throw new Error(`Creation ${creationId} cannot be superseded: it is not open with every member still PLANNED`);
+  }
+
+  #featureCreation(creationId: string): FeatureCreationRecord | null {
+    const creation = this.#database.prepare('SELECT * FROM feature_creations WHERE id = ?')
+      .get(creationId) as FeatureCreationRow | undefined;
+    if (creation === undefined) return null;
+    const feature = this.#database.prepare('SELECT * FROM features WHERE id = ?').get(creation.feature_id) as FeatureRow;
+    const members = this.#database.prepare('SELECT * FROM feature_creation_members WHERE creation_id = ? ORDER BY position')
+      .all(creationId) as FeatureCreationMemberRow[];
+    return {
+      id: creation.id,
+      feature: { id: feature.id, workspaceId: feature.workspace_id, branch: feature.branch, createdAt: feature.created_at },
+      state: creation.state,
+      fromRef: creation.from_ref,
+      createdAt: creation.created_at,
+      updatedAt: creation.updated_at,
+      completedAt: creation.completed_at,
+      members: members.map((row) => ({
+        creationId: row.creation_id,
+        repositoryId: row.repository_id,
+        repositoryMainRoot: row.repository_main_root,
+        position: row.position,
+        worktreePath: row.worktree_path,
+        branchExisted: row.branch_existed === 1,
+        startOid: row.start_oid,
+        phase: row.phase,
+        lastErrorCode: row.last_error_code,
+        updatedAt: row.updated_at,
+      })),
+    };
   }
 
   transaction<T>(fn: () => T): T {
