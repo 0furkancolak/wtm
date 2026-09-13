@@ -16,7 +16,13 @@ kendi içindeki worker sayısını sınırlamaz. Bu ilk dilim yeni bir bellek ta
 aşağıdaki iki koşuya, aynı worker ayarları korunarak üçüncü bir RAM kabul koşusu ekleyin.
 Global budget/reserve, task tahminleri ve her sorgunun `data.memory` gözlemini kaydedin.
 Gerçek kullanılabilir bellek ile kayıtlı tahminler farklıdır; hiçbir koşu OS tarafından
-zorlanan sert RAM kotası değildir. Native ve gerçek iki AI ölçüm kanıtı henüz alınmadı.
+zorlanan sert RAM kotası değildir. Gerçek iki AI ölçüm kanıtı henüz alınmadı.
+
+2026-09-13 eklemesi: Bu tarif tek bir gerçek macOS arm64 makinede, iki CLI'dan gönderilen
+`bun run typecheck` işleriyle uygulandı. Sonuçlar ve sınırlar:
+[`2026-09-13-heavy-job-memory-results.md`](2026-09-13-heavy-job-memory-results.md). Daemon'ı
+ölçmek için build edilmiş CLI'yı (`dist/cli/bin.js`) kullanın. Kaynaktan `node --import tsx`
+ile başlatılan daemon kuyruktaki işi başlatamaz.
 
 ## Native macOS/Linux deneyi
 
