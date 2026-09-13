@@ -49,6 +49,13 @@ export type {
   WorktreeCreationInput,
   WorktreeCreationPlan,
 } from './analysis/create-worktree';
+export { planFeatureCreation, resolveCommit, resolveFeatureMembers } from './analysis/create-feature';
+export type {
+  FeatureCreationDecision,
+  FeatureMemberMeasurement,
+  FeatureMemberPlan,
+  FeatureMemberResolution,
+} from './analysis/create-feature';
 export { rankCleanupCandidates } from './analysis/cleanup-ranking';
 export type {
   CleanupCandidateInput,
