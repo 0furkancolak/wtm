@@ -56,6 +56,8 @@ export type {
   FeatureMemberPlan,
   FeatureMemberResolution,
 } from './analysis/create-feature';
+export { classifyMemberRecovery } from './analysis/create-feature-recovery';
+export type { MemberRecoveryAction, MemberRecoveryInput } from './analysis/create-feature-recovery';
 export { rankCleanupCandidates } from './analysis/cleanup-ranking';
 export type {
   CleanupCandidateInput,
