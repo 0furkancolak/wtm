@@ -37,6 +37,7 @@ try {
   store.advanceCreationMember(superseding.id, web.id, 'REGISTERED', null);
   store.advanceCreationMember(superseding.id, api.id, 'REGISTERED', null);
   store.completeFeatureCreation(superseding.id);
+  const advanceAfterComplete = outcome(() => store.advanceCreationMember(superseding.id, web.id, 'APPLIED', null));
   const completed = store.readFeatureCreation(superseding.id);
   const openAfterComplete = store.readOpenFeatureCreation(workspace.id, branch);
 
@@ -68,6 +69,8 @@ try {
     afterFailure,
     supersedeOnceApplied,
     completeBeforeRegistered,
+    advanceAfterComplete,
+    completedMemberPhases: completed?.members.map((m) => m.phase),
     completedState: completed?.state,
     completedAtSet: completed?.completedAt !== null,
     openAfterComplete,

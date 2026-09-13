@@ -17,6 +17,8 @@ test('the feature creation journal keeps one open creation per feature and guard
     afterFailure: [['PLANNED', 'GIT_COMMAND_FAILED'], ['PLANNED', null]],
     supersedeOnceApplied: 'refused',
     completeBeforeRegistered: 'refused',
+    advanceAfterComplete: 'refused',
+    completedMemberPhases: ['REGISTERED', 'REGISTERED'],
     completedState: 'COMPLETED',
     completedAtSet: true,
     openAfterComplete: null,

@@ -1546,15 +1546,19 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
     });
   }
 
+  /** Only a member of an IN_PROGRESS creation moves: a completed or superseded journal is history. */
   advanceCreationMember(creationId: string, repositoryId: string, phase: FeatureCreationPhase, lastErrorCode: string | null): void {
     this.#assertOpen();
     this.transaction(() => {
       const timestamp = new Date().toISOString();
       const changed = this.#database.prepare(`
         UPDATE feature_creation_members SET phase = ?, last_error_code = ?, updated_at = ?
-        WHERE creation_id = ? AND repository_id = ?
+        WHERE creation_id = ? AND repository_id = ? AND EXISTS (
+          SELECT 1 FROM feature_creations c
+          WHERE c.id = feature_creation_members.creation_id AND c.state = 'IN_PROGRESS'
+        )
       `).run(phase, lastErrorCode, timestamp, creationId, repositoryId).changes;
-      if (changed !== 1) throw new Error(`Creation ${creationId} has no member for repository ${repositoryId}`);
+      if (changed !== 1) throw new Error(`Creation ${creationId} is not open, or has no member for repository ${repositoryId}`);
       this.#database.prepare('UPDATE feature_creations SET updated_at = ? WHERE id = ?').run(timestamp, creationId);
     });
   }
