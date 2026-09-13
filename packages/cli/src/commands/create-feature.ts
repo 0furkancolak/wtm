@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { JsonEnvelope, WtmError } from '@wtm/protocol';
+import type { JsonEnvelope, Remediation, WtmError } from '@wtm/protocol';
 import {
   classifyMemberRecovery,
   containsPath,
@@ -43,6 +43,13 @@ export interface FeatureCreateCommandInput {
   hostId: string;
   /** Test seam for the Git write. Defaults to `createWorktree`. */
   applyWorktree?: ((repoPath: string, plan: WorktreeCreationPlan) => Promise<GitWorktreeRecord>) | undefined;
+  /**
+   * Test seam: runs first once every lease is held, before the open creation is read again and
+   * pre-flight is measured again, so a scenario can change the world between planning and leasing.
+   */
+  afterLeases?: (() => Promise<void>) | undefined;
+  /** Test seam for the topology a local registration reconciles. Defaults to `listGitWorktrees`. */
+  registrationTopology?: ((repoPath: string) => Promise<GitWorktreeRecord[]>) | undefined;
 }
 
 export interface FeatureCreateMemberData {
@@ -83,8 +90,8 @@ export async function runFeatureCreateCommand(input: FeatureCreateCommandInput):
   } catch {
     return failure([notInitialized()]);
   }
+  const branch = shortBranch(input.branch);
   try {
-    const branch = shortBranch(input.branch);
     const workspace = workspaceContaining(store, input.cwd);
     if (workspace === undefined) return failure([notInitialized()]);
     const repositories = store.listRepositories(workspace.id);
@@ -96,7 +103,8 @@ export async function runFeatureCreateCommand(input: FeatureCreateCommandInput):
     if (error instanceof RepositoryOperationConflictError) {
       return failure([{
         code: error.code, message: error.message, severity: error.severity,
-        context: { ...error.context }, remediation: [...error.remediation],
+        context: { ...error.context },
+        remediation: error.remediation.map((remediation) => runnableResume(remediation, branch, input.repos)),
       }]);
     }
     // An invalid workspace configuration, including several `[repos]` entries naming one
@@ -110,6 +118,23 @@ export async function runFeatureCreateCommand(input: FeatureCreateCommandInput):
   }
 }
 
+/**
+ * Core cannot know the branch or the names the caller gave, so the `--resume` it suggests for an
+ * abandoned lease is the bare `wtm create --resume`, which the CLI cannot run. Handing the
+ * caller's own branch and `--repos` back makes it runnable, as `remove` does with its selector.
+ */
+function runnableResume(remediation: Remediation, branch: string, repos: readonly string[] | undefined): Remediation {
+  const [program, command] = remediation.argv;
+  if (program !== 'wtm' || command !== 'create' || !remediation.argv.includes('--resume')) return remediation;
+  return { ...remediation, argv: resumeArgv(branch, repos) };
+}
+
+function resumeArgv(branch: string, repos: readonly string[] | undefined): string[] {
+  return repos === undefined
+    ? ['wtm', 'create', branch, '--resume']
+    : ['wtm', 'create', branch, '--repos', repos.join(','), '--resume'];
+}
+
 async function createFresh(
   input: FeatureCreateCommandInput,
   store: SQLiteStateStore,
@@ -118,9 +143,8 @@ async function createFresh(
   branch: string,
   open: FeatureCreationRecord | null,
 ): Promise<Envelope> {
-  if (input.repos === undefined) {
-    return failure([configInvalid('--repos names the repositories to create the feature in.', { branch })]);
-  }
+  // Defensive only: the CLI routes a create here without `--resume` only when `--repos` was given.
+  if (input.repos === undefined) throw new TypeError('A multi-repository create without --resume needs --repos');
   const config = await resolveWorkspaceConfig({ workspaceRoot: workspace.root, globalConfigPath: input.globalConfigPath });
   const resolution = resolveFeatureMembers({ config: config.value, workspaceRoot: workspace.root, repositories, names: input.repos });
   if (resolution.outcome === 'refused') return failure([resolution.error]);
@@ -143,24 +167,38 @@ async function createFresh(
     repositoryIds: resolution.repositories.map(({ id }) => id),
     operation: 'create',
   }, async (leases) => {
+    await input.afterLeases?.();
+    // A creation over a different member set takes different leases, so the open creation this
+    // run planned against can still change before its leases are held.
+    if (!sameOpenCreation(open, readOpen(store, workspace, branch))) return failure([openCreationChanged(branch)]);
     // Measured again under the leases: a branch checked out or a path filled since planning is
     // refused here, before the journal exists and before Git writes.
     const second = planFeatureCreation({ ...planInput, members: await measure(resolution.repositories, branch, input.from) });
     if (second.outcome === 'refused') return failure(second.errors);
-    const creation = store.beginFeatureCreation({
-      workspaceId: workspace.id,
-      branch: `refs/heads/${branch}`,
-      fromRef: input.from ?? null,
-      members: second.members.map((member) => ({
-        repositoryId: member.repository.id,
-        repositoryMainRoot: member.repository.mainRoot,
-        position: member.position,
-        worktreePath: member.plan.path,
-        branchExisted: member.branchExisted,
-        startOid: member.startOid,
-      })),
-      ...(supersedeCreationId === undefined ? {} : { supersedeCreationId }),
-    });
+    let creation: FeatureCreationRecord;
+    try {
+      creation = store.beginFeatureCreation({
+        workspaceId: workspace.id,
+        branch: `refs/heads/${branch}`,
+        fromRef: input.from ?? null,
+        members: second.members.map((member) => ({
+          repositoryId: member.repository.id,
+          repositoryMainRoot: member.repository.mainRoot,
+          position: member.position,
+          worktreePath: member.plan.path,
+          branchExisted: member.branchExisted,
+          startOid: member.startOid,
+        })),
+        ...(supersedeCreationId === undefined ? {} : { supersedeCreationId }),
+      });
+    } catch (error) {
+      // The one-open-creation index, or the supersede guard, refusing a creation another process
+      // opened or advanced in the moment since the re-read above. Nothing was journalled.
+      if (isConstraintViolation(error) || !sameOpenCreation(open, readOpen(store, workspace, branch))) {
+        return failure([openCreationChanged(branch)]);
+      }
+      throw error;
+    }
     const work = second.members.map((member): MemberWork => ({
       repository: member.repository, plan: member.plan, worktree: null, alreadyRegistered: false,
     }));
@@ -177,7 +215,9 @@ async function resume(
   open: FeatureCreationRecord | null,
 ): Promise<Envelope> {
   if (open === null) {
-    return failure([configInvalid(`There is no unfinished creation of ${branch} in this workspace to resume.`, { branch })]);
+    const nothing = `There is no unfinished creation of ${branch} in this workspace to resume.`;
+    if (input.repos === undefined) return failure([configInvalid(nothing, { branch })]);
+    return await clearAbandonedCreateLeases(input, store, workspace, repositories, branch, nothing);
   }
   if (input.from !== undefined) {
     return failure([configInvalid('--from cannot be combined with --resume: the start commits were pinned when the creation began.', { branch, from: input.from })]);
@@ -222,6 +262,9 @@ async function resume(
     operation: 'create',
     adopt: true,
   }, async (leases) => {
+    await input.afterLeases?.();
+    // Classified against the journal as it stands under the leases, not as it stood before them.
+    if (!sameOpenCreation(open, readOpen(store, workspace, branch))) return failure([openCreationChanged(branch)]);
     const recovered = new Map<string, FeatureCreationPhase>();
     const existing = new Map<string, GitWorktreeRecord>();
     const work: MemberWork[] = [];
@@ -264,6 +307,42 @@ async function resume(
 }
 
 /**
+ * `--resume --repos …` with no open creation. A process killed after taking its `create` leases
+ * but before journalling leaves lease rows and no creation, so a fresh `create` is refused as
+ * abandoned and `--resume` has nothing to resume. Taking the leases with adoption and releasing
+ * them at once clears those rows, exactly as `remove --resume` clears an abandoned `remove`; the
+ * command still refuses, because there was nothing to resume.
+ */
+async function clearAbandonedCreateLeases(
+  input: FeatureCreateCommandInput,
+  store: SQLiteStateStore,
+  workspace: WorkspaceRecord,
+  repositories: readonly RepositoryRecord[],
+  branch: string,
+  nothing: string,
+): Promise<Envelope> {
+  const config = await resolveWorkspaceConfig({ workspaceRoot: workspace.root, globalConfigPath: input.globalConfigPath });
+  const resolution = resolveFeatureMembers({ config: config.value, workspaceRoot: workspace.root, repositories, names: input.repos ?? [] });
+  if (resolution.outcome === 'refused') return failure([resolution.error]);
+  const held = resolution.repositories.filter(({ id }) => store.listRepositoryOperationLeases(id).some(({ operation }) => operation === 'create'));
+  await withRepositoryOperationLeases({
+    store,
+    readProcessStartTime: input.readProcessStartTime,
+    hostId: input.hostId,
+    repositoryIds: resolution.repositories.map(({ id }) => id),
+    operation: 'create',
+    adopt: true,
+  }, async () => {});
+  // The acquisition succeeded, so every `create` row seen before it is gone: a live holder would
+  // have refused it.
+  const cleared = held.map(({ mainRoot }) => mainRoot);
+  return failure([configInvalid(
+    cleared.length === 0 ? nothing : `${nothing} The abandoned create lease on ${cleared.join(', ')} was cleared, so a new create can start.`,
+    { branch, ...(cleared.length === 0 ? {} : { clearedLeases: cleared }) },
+  )]);
+}
+
+/**
  * A resume whose every member is REGISTERED and whose every repository is forgotten: a creation
  * that finished registering but was never marked COMPLETED. Nothing is leased or written to Git.
  */
@@ -297,10 +376,26 @@ async function applyAndRegister(
     if (item.worktree !== null) worktrees.set(item.repository.id, item.worktree);
     if (item.plan === null) continue;
     const plan = item.plan;
-    leases?.renewAll();
+    try {
+      leases?.renewAll();
+    } catch (error) {
+      // The journal exists, so what is done so far is reported and the caller can resume.
+      return failure(
+        [withResume({
+          code: 'WTM_OPERATION_CONFLICT',
+          message: `${message(error)} Another wtm process took over this creation's repositories; nothing more was written.`,
+          severity: 'error',
+          context: { branch, creationId: creation.id },
+        }, branch)],
+        envelopeData(store, creation.id, worktrees, null, resumed, recovered),
+      );
+    }
     store.advanceCreationMember(creation.id, item.repository.id, 'APPLYING', null);
     try {
       const record = await apply(item.repository.mainRoot, plan);
+      if (record.branch !== plan.branchRef) {
+        throw new Error(`git worktree add left ${plan.path} on ${String(record.branch)}, not on ${plan.branchRef}.`);
+      }
       if (plan.createsBranch && record.head !== plan.startPoint) {
         throw new Error(`git worktree add started ${plan.branch} at ${String(record.head)}, not at the pinned ${String(plan.startPoint)}.`);
       }
@@ -322,12 +417,14 @@ async function applyAndRegister(
   }
 
   const registration: CreateRegistration = await reconciledByDaemon(input.client) ? 'daemon' : 'local';
+  const topologyOf = input.registrationTopology ?? listGitWorktrees;
   const failures: WtmError[] = [];
+  const registeredLocally: string[] = [];
   for (const item of work) {
     if (item.alreadyRegistered) continue;
     if (registration === 'local') {
       try {
-        store.reconcileWorktrees(item.repository.id, await listGitWorktrees(item.repository.mainRoot));
+        store.reconcileWorktrees(item.repository.id, await topologyOf(item.repository.mainRoot));
       } catch (error) {
         failures.push(withResume({
           code: 'GIT_REPOSITORY_DEGRADED',
@@ -337,16 +434,20 @@ async function applyAndRegister(
         }, branch));
         continue;
       }
+      const path = worktrees.get(item.repository.id)?.path;
+      if (path !== undefined) registeredLocally.push(path);
     }
     store.advanceCreationMember(creation.id, item.repository.id, 'REGISTERED', null);
   }
-  const warnings: WtmError[] = registration === 'local' ? [{
+  // Only about the worktrees this run registered itself: one registered by an earlier run, or
+  // one whose registration just failed, did not skip its hooks here.
+  const warnings: WtmError[] = registeredLocally.length > 0 ? [{
     code: 'WTM_DAEMON_UNAVAILABLE',
     message: 'The daemon is unreachable, so these worktrees were registered locally. Their '
       + '`worktree.created` tasks did not run and `[prepare] mode = "eager"` did not prepare their '
       + 'resources; the first task you run in each prepares them.',
     severity: 'warning',
-    context: { paths: [...worktrees.values()].map(({ path }) => path) },
+    context: { paths: registeredLocally },
   }] : [];
   if (failures.length > 0) {
     return { ...failure(failures, envelopeData(store, creation.id, worktrees, registration, resumed, recovered)), warnings };
@@ -370,6 +471,23 @@ async function measure(repositories: readonly RepositoryRecord[], branch: string
     branchOid: await resolveCommit(repository.mainRoot, `refs/heads/${branch}`),
     fromOid: from === undefined ? null : await resolveCommit(repository.mainRoot, from),
   })));
+}
+
+function readOpen(store: SQLiteStateStore, workspace: WorkspaceRecord, branch: string): FeatureCreationRecord | null {
+  return store.readOpenFeatureCreation(workspace.id, `refs/heads/${branch}`);
+}
+
+/** The same open creation, with every member at the same phase: nothing another process did shows. */
+function sameOpenCreation(before: FeatureCreationRecord | null, now: FeatureCreationRecord | null): boolean {
+  if (before === null || now === null) return before === now;
+  if (before.id !== now.id || before.members.length !== now.members.length) return false;
+  const phases = new Map(now.members.map((member) => [member.repositoryId, member.phase]));
+  return before.members.every((member) => phases.get(member.repositoryId) === member.phase);
+}
+
+function isConstraintViolation(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT');
 }
 
 /**
@@ -431,6 +549,16 @@ function openCreationConflict(branch: string, open: FeatureCreationRecord): WtmE
       members: open.members.map(({ repositoryMainRoot, phase }) => ({ repository: repositoryMainRoot, phase })),
     },
     remediation: [{ kind: 'command-suggestion', argv: ['wtm', 'create', branch, '--resume'] }],
+  };
+}
+
+function openCreationChanged(branch: string): WtmError {
+  return {
+    code: 'WTM_OPERATION_CONFLICT',
+    message: `Another wtm process changed the unfinished creation of ${branch} while this one was taking its leases. `
+      + 'Nothing was written; run the command again.',
+    severity: 'error',
+    context: { branch },
   };
 }
 

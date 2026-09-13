@@ -164,6 +164,10 @@ export interface CliDependencies {
   completionDatabasePath?: string;
   /** Test seam: the Git write of a multi-repository create, so a scenario can make one member fail. */
   featureCreateApply?: (repoPath: string, plan: WorktreeCreationPlan) => Promise<GitWorktreeRecord>;
+  /** Test seam: runs once a multi-repository create holds its leases, before it re-reads and re-plans. */
+  featureCreateAfterLeases?: () => Promise<void>;
+  /** Test seam: the topology a multi-repository create's local registration reconciles. */
+  featureCreateRegistrationTopology?: (repoPath: string) => Promise<GitWorktreeRecord[]>;
 }
 
 export interface RuntimeInvocation {
@@ -309,6 +313,10 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
         readProcessStartTime: (pid) => hostPlatformRuntime().process.readStartTime(pid),
         hostId: hostname(),
         ...(dependencies.featureCreateApply === undefined ? {} : { applyWorktree: dependencies.featureCreateApply }),
+        ...(dependencies.featureCreateAfterLeases === undefined ? {} : { afterLeases: dependencies.featureCreateAfterLeases }),
+        ...(dependencies.featureCreateRegistrationTopology === undefined
+          ? {}
+          : { registrationTopology: dependencies.featureCreateRegistrationTopology }),
       }), runtimeJson(program, options));
       return;
     }
