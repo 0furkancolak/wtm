@@ -1097,7 +1097,7 @@ wtm create feat/auth --repos web,api,worker
 `docs/superpowers/plans/2026-09-13-multi-repo-create.md`. Feature kimliği mevcut "aynı workspace,
 aynı branch" gruplamasının kalıcı kaydı; yarım kalan oluşturma silinmez, `--resume` ile tamamlanır.
 Kapsam dışı bırakılanlar: `--abandon`, daemon açılışında otomatik tamamlama, `wtm doctor` bulgusu,
-feature düzeyinde olay, repolar arasında farklı branch adları.
+feature düzeyinde olay, repolar arasında farklı branch adları, tek repolu create için lease.
 
 Dokuz alt maddenin üçü zaten yazılmıştı — `create`'in işi onları kurmak değil, tetiklemek: worktree
 var olduktan sonrasının tamamı daemon'da. Bu, uygulamayı yazmadan önce spec'i yazmanın kazandırdığı

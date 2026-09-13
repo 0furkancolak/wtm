@@ -216,12 +216,34 @@ carries `branch` and `worktreePath`, the worktree holding it.
 
 Both exit with code 3: nothing was done, and the caller has somewhere to look.
 
-A multi-repository `wtm create --repos` (and `--resume`) reports every pre-flight refusal in
-`errors`, one item per member, each with `context.repository`. Its `data` is present on failure as
-well as success once the creation is journalled: `feature` (`id`, `branch`), `members[]`
-(`repository`, `worktree` or null, `branch` with the pinned `startPoint`, `phase`, and on resume
-`recoveredFrom`), `registration` (`daemon`, `local`, or null when registration was not reached)
-and `resumed`. A member's Git failure carries a `wtm create <branch> --resume` remediation.
+A multi-repository `wtm create --repos` reports some refusals about one member at a time, each as
+its own item in `errors` with `context.repository` naming that member: a planning refusal (a
+branch/path conflict, or a missing start commit) can name several members at once, one item each;
+on `--resume`, a repository forgotten by a member that still has work left is reported the same
+way, one item per forgotten member; and a recovery classification refusal (the path or the branch
+is already in the way) stops at the first member `classifyMemberRecovery` refuses, so it is always
+exactly one item. Three refusals are never about a single member: an unknown or ambiguous `--repos`
+name is one item with `context` `{ unknown, ambiguous, known }`; an unfinished creation already
+open for the branch is one item with `context` `{ branch, creationId, members }`; and a `create`
+lease already held on a member is one item with `context.repositoryId` (no `repository`).
+
+`data` is present once the code has read the creation record back, not merely once a creation
+record exists. For a fresh `--repos` creation, that only happens after `beginFeatureCreation`
+journals it, so `data` is `null` for a missing `--repos`, an unresolvable `--repos`, an already-open
+unfinished creation, and both the initial and the re-measured pre-flight plan refusal — the last of
+these happens after the `create` leases are already held, but still before the journal exists. For
+`--resume`, `data` is `null` when there is no open creation to resume, since nothing is journalled
+yet to read back, and it stays `null` through every check that runs afterward but before per-member
+recovery classification starts under the lease, even though a creation is already journalled by
+then: `--from` combined with `--resume`, an unresolvable `--repos`, a `--repos` set that resolves
+but does not match the creation being resumed, and a forgotten repository for a member that still
+has work left. From there on — the recovery classification refusal itself, and everything
+`applyAndRegister` can fail on — `data` is present, on failure as well as success: `feature` (`id`,
+`branch`), `members[]` (`repository`, `worktree` or null, `branch` with the pinned `startPoint`,
+`phase`, and on resume `recoveredFrom`), `registration` (`daemon`, `local`, or null when
+registration was not reached) and `resumed`.
+
+A member's Git failure carries a `wtm create <branch> --resume` remediation.
 `WTM_OPERATION_CONFLICT` means a `create` lease on a member is held, or the feature has an
 unfinished creation; `WTM_CONFIG_INVALID` covers an unknown or ambiguous `--repos` name, a
 `--repos` set that does not match the creation being resumed, `--from` with `--resume`, `--resume`
