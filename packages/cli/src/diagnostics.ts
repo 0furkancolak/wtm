@@ -156,6 +156,11 @@ export interface DiagnosticDataSource {
   readPlan(workspace: RegisteredWorkspace): Promise<PlanDiagnostic>;
   readEnv(workspace: RegisteredWorkspace): Promise<EnvDiagnostic>;
   readPorts(workspace: RegisteredWorkspace): Promise<PortsDiagnostic>;
+  /**
+   * Why the daemon is not running, when it is not and a failure is on record. Optional: only
+   * `doctor` asks, and only when there is no workspace to put a finding in (todo item 52).
+   */
+  readDaemonStartupFailure?(): Promise<WtmError | null>;
 }
 
 export interface DiagnosticCommandInput {
@@ -193,6 +198,39 @@ export async function runStatusCommand(
 }
 
 export async function runDoctorCommand(
+  input: DiagnosticCommandInput,
+  source: DiagnosticDataSource,
+): Promise<DiagnosticCommandEnvelope<DoctorDiagnostic>> {
+  return withDaemonStartupFailure(await collectDoctor(input, source), source);
+}
+
+/**
+ * A machine with no registered workspace used to stop `doctor` before a single check ran. That is
+ * precisely a fresh install that has never run `wtm init`, and it may also have a daemon that
+ * cannot start. `WTM_NOT_INITIALIZED` is still the only error, so the exit code is unchanged. The
+ * daemon's recorded failure goes beside it as a warning, because "run `wtm init`" does nothing
+ * for a daemon that refuses its own data directory (todo item 52). A warning, as on a registered
+ * machine, where the same record is a finding and does not move the exit code either: an envelope
+ * exits with its worst error's class, so an extra error would have turned 2 into 4 here.
+ */
+async function withDaemonStartupFailure(
+  envelope: DiagnosticCommandEnvelope<DoctorDiagnostic>,
+  source: DiagnosticDataSource,
+): Promise<DiagnosticCommandEnvelope<DoctorDiagnostic>> {
+  if (envelope.ok || envelope.errors[0]?.code !== 'WTM_NOT_INITIALIZED') return envelope;
+  if (source.readDaemonStartupFailure === undefined) return envelope;
+  let failure: WtmError | null;
+  try {
+    failure = await source.readDaemonStartupFailure();
+  } catch {
+    // The daemon half is extra evidence; it must never cost the reader the answer they already had.
+    return envelope;
+  }
+  if (failure === null) return envelope;
+  return { ...envelope, warnings: [...envelope.warnings, toDiagnosticError(failure, 'doctor')] };
+}
+
+async function collectDoctor(
   input: DiagnosticCommandInput,
   source: DiagnosticDataSource,
 ): Promise<DiagnosticCommandEnvelope<DoctorDiagnostic>> {

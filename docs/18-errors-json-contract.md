@@ -168,6 +168,15 @@ Some failures are not reported with this code, because they may clear on its own
 Each of these stays an uncoded failure that a service manager retries. The coded condition is one a
 person has to clear, so it exits with code 2.
 
+`wtm doctor` run without a selector or `--global` on a machine with no registered workspace fails
+with `WTM_NOT_INITIALIZED`. When the daemon is not answering and has recorded a failed start, the
+envelope also carries one item in `warnings`, with severity `warning`, and the exit code stays 2.
+That item's `code` is the one the daemon recorded, or `WTM_DAEMON_UNAVAILABLE` when the record
+names a code WTM does not define. Its `context` is not the context that code has elsewhere. It
+carries `startupFailedSince`, `startupAttempts`, `startupPermanent` and `command`, and the recorded
+reason is part of `message`, so a `WTM_PRIVATE_DIRECTORY_UNSAFE` warning here has no `path` or
+`reason` field. `remediation` is the one the daemon recorded, when it recorded one.
+
 `WTM_PLATFORM_UNSUPPORTED` means WTM has no backend for the operating system it was started on.
 `context` carries `platform`, the `process.platform` value that was refused, and `supported`, the
 list of platform ids WTM does have a backend for. It exits with code 2: nothing about the workspace

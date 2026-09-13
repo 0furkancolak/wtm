@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DaemonRegistrationError } from '@wtm/daemon';
-import { jsonEnvelopeSchema } from '@wtm/protocol';
+import type { ServicePaths } from '@wtm/daemon/service-lifecycle';
+import { jsonEnvelopeSchema, type WtmError } from '@wtm/protocol';
 import {
   DiagnosticSourceError,
   doctorChecks,
@@ -596,6 +597,116 @@ describe('diagnostic command envelopes', () => {
       }]);
     } finally {
       await rm(sentinel, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('doctor on a machine with no registered workspace (todo item 52)', () => {
+  const recorded: WtmError = {
+    code: 'WTM_PRIVATE_DIRECTORY_UNSAFE',
+    message: 'The daemon is not running: it failed to start 3 times since 2026-09-11T10:00:00.000Z.',
+    severity: 'warning',
+    remediation: [{ kind: 'command-suggestion', argv: ['chmod', '700', '/home/x/.local/state/wtm'] }],
+  };
+  const unregistered = (overrides: Partial<DiagnosticDataSource> = {}) =>
+    source({ listRegisteredWorkspaces: async () => [], ...overrides });
+
+  test('keeps WTM_NOT_INITIALIZED as the only error and reports the daemon failure beside it', async () => {
+    const envelope = await runDoctorCommand({ cwd: '/fresh' }, unregistered({ readDaemonStartupFailure: async () => recorded }));
+
+    expect(jsonEnvelopeSchema.parse(envelope)).toEqual(envelope);
+    expect(envelope.ok).toBe(false);
+    expect(envelope.errors.map(({ code }) => code)).toEqual(['WTM_NOT_INITIALIZED']);
+    expect(envelope.warnings).toHaveLength(1);
+    expect(envelope.warnings[0]).toMatchObject({ ...recorded, context: { command: 'doctor' } });
+  });
+
+  test('says nothing more when the daemon has no failure on record', async () => {
+    const envelope = await runDoctorCommand({ cwd: '/fresh' }, unregistered({ readDaemonStartupFailure: async () => null }));
+
+    expect(envelope.errors.map(({ code }) => code)).toEqual(['WTM_NOT_INITIALIZED']);
+    expect(envelope.warnings).toEqual([]);
+  });
+
+  test('a daemon question that fails costs the reader nothing they already had', async () => {
+    const envelope = await runDoctorCommand({ cwd: '/fresh' }, unregistered({
+      readDaemonStartupFailure: async () => { throw new Error('status file unreadable'); },
+    }));
+
+    expect(envelope.errors.map(({ code }) => code)).toEqual(['WTM_NOT_INITIALIZED']);
+    expect(envelope.warnings).toEqual([]);
+  });
+
+  test('is asked only by doctor, and only when no workspace answered', async () => {
+    let asked = 0;
+    const readDaemonStartupFailure = async () => { asked += 1; return recorded; };
+
+    await runStatusCommand({ cwd: '/fresh' }, unregistered({ readDaemonStartupFailure }));
+    // A registered workspace carries the same record in its `registration` finding instead.
+    await runDoctorCommand({ cwd: '/registered/demo' }, source({ readDaemonStartupFailure }));
+    // An unknown selector is a different mistake, with its own remedy.
+    await runDoctorCommand({ cwd: '/fresh', selector: 'nope' }, unregistered({ readDaemonStartupFailure }));
+
+    expect(asked).toBe(0);
+  });
+
+  test('exits 2 as before, and a person reading it sees why the daemon is down', async () => {
+    let written = '';
+    const exitCode = await runCli(['doctor'], {
+      dataSource: unregistered({ readDaemonStartupFailure: async () => recorded }),
+      cwd: '/fresh',
+      stdout: (value: string) => { written += value; },
+      stderr: () => {},
+    });
+
+    expect(exitCode).toBe(2);
+    expect(written).toContain('WTM_NOT_INITIALIZED');
+    expect(written).toContain('it failed to start 3 times');
+  });
+
+  test('a machine with no state database at all still hears why the daemon is down', async () => {
+    // The acceptance case itself: `wtm init` never ran, so there is no database to open, and the
+    // answer has to come from the daemon's status file alone.
+    const root = await mkdtemp(join(tmpdir(), 'wtm-fresh-'));
+    try {
+      const logRoot = join(root, 'logs');
+      await mkdir(logRoot);
+      await writeFile(join(logRoot, 'daemon-status.json'), JSON.stringify({
+        schemaVersion: 1,
+        state: 'failed',
+        at: '2026-09-11T10:05:00.000Z',
+        pid: 4242,
+        since: '2026-09-11T10:00:00.000Z',
+        attempts: 3,
+        code: 'WTM_PRIVATE_DIRECTORY_UNSAFE',
+        condition: 'private directory unsafe',
+        message: `WTM private directory is unsafe: ${root} is readable by others (mode 755); run chmod 700 on it.`,
+        remediation: ['chmod', '700', root],
+        permanent: true,
+      }));
+      let written = '';
+      const exitCode = await runCli(['doctor', '--json'], {
+        cwd: root,
+        diagnosticsDatabasePath: join(root, 'absent', 'state.db'),
+        daemonSocketPath: join(root, 'absent.sock'),
+        // Only `logRoot` is read on this path; the rest of a real HOME's paths are not needed.
+        daemonServicePaths: () => ({ logRoot }) as unknown as ServicePaths,
+        stdout: (value: string) => { written += value; },
+        stderr: () => {},
+      });
+
+      expect(exitCode).toBe(2);
+      const envelope = jsonEnvelopeSchema.parse(JSON.parse(written));
+      expect(envelope.errors.map(({ code }) => code)).toEqual(['WTM_NOT_INITIALIZED']);
+      expect(envelope.warnings).toHaveLength(1);
+      expect(envelope.warnings[0]).toMatchObject({
+        code: 'WTM_PRIVATE_DIRECTORY_UNSAFE',
+        severity: 'warning',
+        remediation: [{ kind: 'command-suggestion', argv: ['chmod', '700', root] }],
+      });
+      expect(envelope.warnings[0]?.message).toContain('is readable by others (mode 755)');
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });
