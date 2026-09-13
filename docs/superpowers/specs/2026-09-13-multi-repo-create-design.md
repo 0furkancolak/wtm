@@ -119,8 +119,9 @@ wtm create <branch> --repos web,api,worker [--from <ref>] [--resume] [--json]
   'SUPERSEDED'))`, `from_ref TEXT`, `created_at`, `updated_at`, `completed_at`. A partial unique
   index allows one `IN_PROGRESS` row per feature.
 - **`feature_creation_members`**: `creation_id` (references `feature_creations`,
-  `ON DELETE CASCADE`), `repository_id` (references `repositories`, `ON DELETE CASCADE`),
-  `position INTEGER NOT NULL` (lease order), `worktree_path TEXT NOT NULL`,
+  `ON DELETE CASCADE`), `repository_id TEXT NOT NULL` (deliberately *no* foreign key, so a
+  forgotten repository stays visible to `--resume`), `repository_main_root TEXT NOT NULL` (so the
+  refusal can name it), `position INTEGER NOT NULL` (lease order), `worktree_path TEXT NOT NULL`,
   `branch_existed INTEGER NOT NULL`, `start_oid TEXT NOT NULL`, `phase TEXT NOT NULL CHECK (phase IN
   ('PLANNED', 'APPLYING', 'APPLIED', 'REGISTERED'))`, `last_error_code TEXT`, `updated_at`.
   `PRIMARY KEY (creation_id, repository_id)`.
@@ -128,14 +129,18 @@ wtm create <branch> --repos web,api,worker [--from <ref>] [--resume] [--json]
   into a new table, drop, rename, recreate `idx_repository_operation_lease_expiry`. Every existing
   row, including `host_id` (migration 011), is preserved. This follows the rebuild pattern of
   migrations 007 and 008.
-- **Forgetting.** Forgetting a workspace or repository removes its rows by cascade. A resume whose
-  journal names a repository that is no longer registered is refused, naming that repository (§4).
+- **Forgetting.** Forgetting a workspace removes its features, creations and members by cascade.
+  Forgetting a repository leaves member rows in place: a resume whose journal names a repository
+  that is no longer registered is refused, naming that repository (§4), before any lease is taken
+  (the lease table's foreign key would reject a lease on it).
 - **Retention.** `COMPLETED` and `SUPERSEDED` creations are kept. The rows are small and record
   when and from which commits a feature was created.
-- **Store API** (`StateStore`, with TypeScript records in `packages/core/src/state/store.ts`):
-  `upsertFeature`, `beginFeatureCreation` (feature, creation and every member in one transaction),
-  `advanceCreationMember`, `completeFeatureCreation`, `supersedeFeatureCreation`,
-  `readOpenFeatureCreation(workspaceId, branch)`.
+- **Store API**: a separate `FeatureCreationStore` interface in `packages/core/src/state/store.ts`,
+  implemented by `SQLiteStateStore`. It is not added to `StateStore`, whose key set is pinned by a
+  type-level test and implemented by a test double. Methods: `upsertFeature`,
+  `beginFeatureCreation` (feature, optional supersede, creation and every member in one
+  transaction), `advanceCreationMember`, `completeFeatureCreation`, `supersedeFeatureCreation`,
+  `readOpenFeatureCreation(workspaceId, branch)`, `readFeatureCreation(id)`.
 
 ### 3. Execution order, leases and heavy jobs
 
@@ -195,7 +200,8 @@ wtm create <branch> --resume [--repos …] [--json]
   | --- | --- |
   | Phase `REGISTERED` | Skip. |
   | A worktree at the planned path on the planned branch | Treat as `APPLIED`, go to registration. Covers `APPLYING` rows that actually completed before a crash. A HEAD that moved past `start_oid` is accepted and reported. |
-  | No worktree, path absent, and the branch either absent or (with `branch_existed = 0`) at `start_oid` and checked out nowhere | Safe: apply. A branch at exactly `start_oid` is taken to be the one this creation made before `worktree add` failed, and is checked out. |
+  | No worktree, path absent, and the branch either absent, or checked out nowhere and (with `branch_existed = 0`) at `start_oid` | Safe: apply. An absent branch is created at `start_oid`. A branch at exactly `start_oid` is taken to be the one this creation made before `worktree add` failed, and is checked out. |
+  | No worktree, path absent, `branch_existed = 1`, branch checked out nowhere | Apply: check the existing branch out, wherever it now points. It was the user's branch before this creation, and it moving is not evidence of anything. |
   | The member's repository is no longer registered | Refuse, naming the repository. |
   | Anything else: path exists but is not a worktree; a worktree at the path on another branch; the branch at a different OID or checked out elsewhere; a stale (prunable) Git worktree entry | Refuse with `WTM_WORKTREE_PATH_OCCUPIED` or `GIT_BRANCH_IN_USE`, naming what was found, with a concrete remediation such as `git worktree prune`. WTM deletes nothing. |
 
