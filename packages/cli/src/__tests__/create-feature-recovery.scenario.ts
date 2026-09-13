@@ -1,4 +1,5 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
@@ -167,7 +168,9 @@ const resumedWrongHead = await create(['feat/wrong-head', '--resume']);
 // The PID of a child that has already exited: a real, valid PID with no process behind it, so the
 // holder reads as gone on every platform (macOS `ps` rejects a PID above its range as an error, not
 // as an absent process, and the lease rightly refuses to guess from that).
-const deadPid = spawnSync(process.execPath, ['-e', '']).pid;
+const exited = spawn(process.execPath, ['-e', '']);
+await once(exited, 'exit');
+const deadPid = exited.pid!;
 sql(`INSERT INTO repository_operation_leases (repository_id, operation, token, pid, process_start_time, subject_worktree_id,
   stage, acquired_at, renewed_at, expires_at, host_id) VALUES (?, 'create', 'dead', ?, 'x', NULL, NULL,
   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '2026-01-01T00:02:00.000Z', ?)`, web, deadPid, hostname());
