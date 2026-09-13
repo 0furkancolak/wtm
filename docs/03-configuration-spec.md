@@ -179,6 +179,10 @@ several repositories is one feature, and every worktree of it resolves `{port.<n
 same port. That is what lets a web application address the API of its own branch. A worktree
 with no branch (a detached HEAD) is a feature of one.
 
+A feature is still "one workspace, one branch". `wtm create --repos` records that group with a
+persistent id when it creates it, but the grouping rule itself does not change: a worktree on the
+same branch that WTM did not create joins the feature exactly as before.
+
 Every named endpoint may publish itself:
 
 ```toml

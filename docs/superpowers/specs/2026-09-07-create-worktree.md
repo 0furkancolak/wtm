@@ -2,8 +2,10 @@
 
 ## Status
 
-Open — planned, not started. `todo.md` item 6 states the gap in one line: *"WTM worktree
-lifecycle'ın sonunu yönetiyor fakat başlangıcını doğrudan yönetmiyor."*
+Shipped for a single repository. The multi-repository half deferred below is specified in
+[`2026-09-13-multi-repo-create-design.md`](2026-09-13-multi-repo-create-design.md). "`create` takes
+no repository operation lease" still holds for single-repository create; a multi-repository create
+takes a `create` lease on each member.
 
 ## Problem, with real evidence
 

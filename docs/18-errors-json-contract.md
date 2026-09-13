@@ -216,6 +216,17 @@ carries `branch` and `worktreePath`, the worktree holding it.
 
 Both exit with code 3: nothing was done, and the caller has somewhere to look.
 
+A multi-repository `wtm create --repos` (and `--resume`) reports every pre-flight refusal in
+`errors`, one item per member, each with `context.repository`. Its `data` is present on failure as
+well as success once the creation is journalled: `feature` (`id`, `branch`), `members[]`
+(`repository`, `worktree` or null, `branch` with the pinned `startPoint`, `phase`, and on resume
+`recoveredFrom`), `registration` (`daemon`, `local`, or null when registration was not reached)
+and `resumed`. A member's Git failure carries a `wtm create <branch> --resume` remediation.
+`WTM_OPERATION_CONFLICT` means a `create` lease on a member is held, or the feature has an
+unfinished creation; `WTM_CONFIG_INVALID` covers an unknown or ambiguous `--repos` name, a
+`--repos` set that does not match the creation being resumed, `--from` with `--resume`, `--resume`
+with nothing to resume, and a member repository that is no longer registered.
+
 ### Git
 
 ```text

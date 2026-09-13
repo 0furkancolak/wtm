@@ -1074,7 +1074,7 @@ korur. Geçici yetersizlikte strict FIFO bekler. Native ve gerçek makine ölç�
 
 ---
 
-### [ ] 6. `wtm create` ekle
+### [x] 6. `wtm create` ekle
 
 WTM worktree lifecycle'ın sonunu yönetiyor fakat başlangıcını doğrudan yönetmiyor.
 
@@ -1092,11 +1092,12 @@ wtm create feat/auth --json
 wtm create feat/auth --repos web,api,worker
 ```
 
-**Kısmen kapandı.** Tek repo `wtm create` çalışıyor; multi-repo, veri modelinde olmayan bir kavram
-gerektirdiği için gerekçesiyle açık bırakıldı. Spec
-`docs/superpowers/specs/2026-09-07-create-worktree.md`, plan
-`docs/superpowers/plans/2026-09-07-create-worktree.md`. Başlık, multi-repo satırları açık olduğu
-için madde 2 ve 7'nin kullandığı aynı kuralla `[ ]` kalıyor.
+**Kapandı (2026-09-13).** Tek repo create 2026-09-07'de, çok repolu create ve kurtarma
+2026-09-13'te: spec `docs/superpowers/specs/2026-09-13-multi-repo-create-design.md`, plan
+`docs/superpowers/plans/2026-09-13-multi-repo-create.md`. Feature kimliği mevcut "aynı workspace,
+aynı branch" gruplamasının kalıcı kaydı; yarım kalan oluşturma silinmez, `--resume` ile tamamlanır.
+Kapsam dışı bırakılanlar: `--abandon`, daemon açılışında otomatik tamamlama, `wtm doctor` bulgusu,
+feature düzeyinde olay, repolar arasında farklı branch adları.
 
 Dokuz alt maddenin üçü zaten yazılmıştı — `create`'in işi onları kurmak değil, tetiklemek: worktree
 var olduktan sonrasının tamamı daemon'da. Bu, uygulamayı yazmadan önce spec'i yazmanın kazandırdığı
@@ -1117,10 +1118,8 @@ var olduktan sonrasının tamamı daemon'da. Bu, uygulamayı yazmadan önce spec
       seçildi. Slug çakışması (`feat/auth` ve `feat-auth`) üretilmiş bir sonek yerine
       occupied-path reddiyle karşılanıyor: hesaplanmış bir yol ancak tahmin edilebildiği sürece
       işe yarar.
-- [ ] Multi-repo branch alignment. — **açık.** Runtime bugün workspace + tam branch ref ile
-      feature gruplaması yapıyor; eksik olan kalıcı feature kimliği ve creation journal'ı.
-      `--repos` henüz kayıtlı CLI değildir. Ayrı repository başlangıç commit'leri önceden
-      sabitlenmeli; aynı branch adı aynı commit OID'si anlamına gelmez.
+- [x] Multi-repo branch alignment. — `--repos`; spec
+      `docs/superpowers/specs/2026-09-13-multi-repo-create-design.md`.
 - [x] Worktree oluşturulduktan sonra reconcile. — daemon ayaktaysa `reconcile` isteği (daemon
       cevaplamadan önce kuyruğunu boşaltıyor, yani cevap geldiğinde iş bitmiş oluyor); değilse
       CLI kendi reconcile ediyor. **Asla ikisi birden** — bir registry'nin iki yazıcısı olması
@@ -1133,11 +1132,7 @@ var olduktan sonrasının tamamı daemon'da. Bu, uygulamayı yazmadan önce spec
       yazıcının karar vermesi tam olarak `claimLifecycleEvent`'in önlemek için var olduğu şey.
 - [x] `--json` stable output. — `registration: 'daemon' | 'local'` alanı dahil, ki `--json`
       çağıranı hook'ların çalışıp çalışmadığını daemon'u yoklamadan bilebilsin.
-- [ ] Partial multi-repo creation rollback/recovery. — **açık.** Tek `git worktree add` bile
-      CLI crash sonrası yaşayan Git/hook çocuğu veya kısmi yazma bırakabilir. Kalıcı üye
-      aşamaları ve create lease migration'ı gerekir; belirsiz APPLYING aşaması otomatik
-      tekrar çalıştırılamaz. Mevcut lease beklemek yerine çakışmayı reddeder; deterministik
-      edinme sırası ve bütün repository'ler için mutasyon öncesi edinme yine gereklidir.
+- [x] Partial multi-repo creation rollback/recovery. — journal + `--resume`; aynı spec, §4.
 
 #### Kabul kriterleri
 
@@ -1145,10 +1140,11 @@ var olduktan sonrasının tamamı daemon'da. Bu, uygulamayı yazmadan önce spec
       noktası, ve Git yazmadan önce verilen her ret. Yeni dal **main worktree'nin HEAD'inden**
       başlıyor, kullanıcının içinde durduğu worktree'den değil: "starts a new branch at the main
       worktree HEAD" hem core hem CLI seviyesinde bunu doğruluyor.
-- [ ] Multi-repo create aynı feature identity altında çalışıyor. — **bu dalganın kapsamı dışında.**
-      Adını verdiği kimlik veri modelinde yok (yukarıya bakınız).
-- [ ] Yarım kalan creation güvenli biçimde recover ediliyor. — **bu dalganın kapsamı dışında.**
-      Tek repository'lik create'te kurtarılacak yarım bir durum yok.
+- [x] Multi-repo create aynı feature identity altında çalışıyor. —
+      `packages/cli/src/__tests__/create-feature.test.ts`.
+- [x] Yarım kalan creation güvenli biçimde recover ediliyor. —
+      `packages/cli/src/__tests__/create-feature-recovery.test.ts` ve
+      `packages/core/src/analysis/__tests__/create-feature-recovery.test.ts`.
 
 ---
 

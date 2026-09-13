@@ -26,6 +26,12 @@ binaries are Developer ID signed and notarized.
 
 ### Added
 
+- `wtm create <branch> --repos web,api,worker` creates the branch in several repositories of a
+  workspace as one feature, with a start commit pinned per repository, every refusal decided
+  before Git writes, and a `create` lease on each member. A partial creation is journalled, and
+  `wtm create <branch> --resume` finishes it by inspecting each member's real Git state; it never
+  re-runs an uncertain step blindly and never deletes anything. Migration 014 adds the feature
+  and creation journal tables.
 - Local Linux x64 `.tar.gz` construction with bounded ELF architecture inspection, exact archive
   members, executable permissions and SHA-256 output. The published release target set remains
   Darwin arm64/x64. Header inspection refuses FIFO/device inputs without waiting for a writer.
