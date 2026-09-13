@@ -1,0 +1,198 @@
+import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
+import { createWorktree } from '@wtm/core';
+import type { CliDependencies } from '../main';
+
+/** Partial multi-repository creations and `--resume`, against real Git and a real state store. */
+const root = await realpath(await mkdtemp(join(tmpdir(), 'wtm-create-recovery-')));
+const home = join(root, 'home');
+const dataRoot = join(home, 'wtm');
+const databasePath = join(dataRoot, 'state.db');
+const workspaceRoot = join(root, 'ws');
+const gitConfig = join(root, 'gitconfig');
+const repos = ['web', 'api', 'worker'] as const;
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+}
+
+async function invoke(argv: readonly string[], dependencies: CliDependencies = {}) {
+  const { runCli } = await import('../main');
+  let out = '';
+  const code = await runCli(argv, {
+    cwd: workspaceRoot,
+    analysisDatabasePath: databasePath,
+    diagnosticsDatabasePath: databasePath,
+    removalGlobalConfigPath: join(dataRoot, 'config.toml'),
+    daemonSocketPath: join(root, 'd.sock'),
+    ...dependencies,
+    stdout: (value) => { out += value; },
+    stderr: () => {},
+  });
+  return { code, envelope: JSON.parse(out) as { ok: boolean; data: any; errors: Array<{ code: string; context?: any; remediation?: any }> } };
+}
+
+/** `CliDependencies['featureCreateApply']` without the `| undefined`, so these helpers can be
+ * spread into a dependencies object without violating `exactOptionalPropertyTypes`. */
+type ApplyWorktree = NonNullable<CliDependencies['featureCreateApply']>;
+
+const create = (argv: string[], dependencies: CliDependencies = {}) => invoke(['create', ...argv, '--json'], dependencies);
+const failFor = (name: string): ApplyWorktree => async (repoPath, plan) => {
+  if (repoPath.endsWith(`${'/'}${name}`) || repoPath.endsWith(`\\${name}`)) throw new Error(`injected failure in ${name}`);
+  return await createWorktree(repoPath, plan);
+};
+/** Git succeeds for `name`, then the process "crashes" before the journal records it. */
+const crashAfterGitFor = (name: string): ApplyWorktree => async (repoPath, plan) => {
+  const record = await createWorktree(repoPath, plan);
+  if (repoPath.endsWith(`/${name}`) || repoPath.endsWith(`\\${name}`)) throw new Error(`injected crash in ${name}`);
+  return record;
+};
+const alwaysFail: ApplyWorktree = async () => { throw new Error('injected failure'); };
+const onDisk = (branch: string) => repos.map((repo) => existsSync(join(workspaceRoot, `${repo}-${branch.replace('/', '-')}`)));
+const phases = (envelope: { data: any }) => Object.fromEntries((envelope.data?.members ?? [])
+  .map((member: any) => [member.repository.mainRoot.split(/[\\/]/).pop(), member.phase]));
+const recoveredFrom = (envelope: { data: any }) => Object.fromEntries((envelope.data?.members ?? [])
+  .map((member: any) => [member.repository.mainRoot.split(/[\\/]/).pop(), member.recoveredFrom ?? null]));
+const sql = (statement: string, ...parameters: unknown[]) => {
+  const database = new Database(databasePath);
+  try { return database.prepare(statement).run(...parameters); } finally { database.close(); }
+};
+const query = (statement: string, ...parameters: unknown[]) => {
+  const database = new Database(databasePath);
+  try { return database.prepare(statement).all(...parameters); } finally { database.close(); }
+};
+
+await mkdir(dataRoot, { recursive: true, mode: 0o700 });
+await writeFile(gitConfig, '[safe]\n\tdirectory = *\n');
+process.env['HOME'] = home;
+process.env['GIT_CONFIG_GLOBAL'] = gitConfig;
+process.env['GIT_CONFIG_NOSYSTEM'] = '1';
+for (const repo of repos) {
+  const path = join(workspaceRoot, repo);
+  await mkdir(path, { recursive: true });
+  git(path, 'init', '--initial-branch=main');
+  git(path, 'config', 'user.name', 'WTM Recovery');
+  git(path, 'config', 'user.email', 'wtm-recovery@example.invalid');
+  await writeFile(join(path, 'README.md'), `${repo}\n`);
+  git(path, 'add', 'README.md');
+  git(path, 'commit', '-m', repo);
+}
+const reconcileOk = { request: async () => ({ schemaVersion: 1, ok: true, command: 'reconcile', data: null, warnings: [], errors: [] }) } as never;
+const initialized = await invoke(['init', '--yes', '--json'], { initDatabasePath: databasePath, initUserDataDir: dataRoot, runtimeClient: reconcileOk });
+if (initialized.code !== 0) throw new Error('wtm init failed');
+
+// Members are applied in repository id order, and ids are random. Failing the member with the
+// highest id makes "every member before it was created" deterministic.
+const last = (query('SELECT main_root FROM repositories ORDER BY id DESC LIMIT 1') as Array<{ main_root: string }>)[0]!
+  .main_root.split(/[\\/]/).pop()!;
+const others = repos.filter((repo) => repo !== last);
+const exists = (repo: string, branch: string) => existsSync(join(workspaceRoot, `${repo}-${branch.replace('/', '-')}`));
+
+// 1. A Git failure in one member: the others stay, a plain create is refused, resume finishes.
+const partial = await create(['feat/partial', '--repos', 'web,api,worker'], { featureCreateApply: failFor(last) });
+const partialFailedOnDisk = exists(last, 'feat/partial');
+const partialOthersOnDisk = others.map((repo) => exists(repo, 'feat/partial'));
+const plainWhileOpen = await create(['feat/partial', '--repos', 'web,api,worker']);
+const resumedPartial = await create(['feat/partial', '--resume']);
+
+// 2. Git finished for a member, but the process died before the journal said so.
+const crashed = await create(['feat/crashed', '--repos', 'web,api,worker'], { featureCreateApply: crashAfterGitFor('api') });
+const crashedPhaseApi = phases(crashed.envelope)['api'];
+const resumedCrashed = await create(['feat/crashed', '--resume']);
+
+// 3. The journal says APPLYING, and Git never started.
+const halted = await create(['feat/halted', '--repos', 'web,api,worker'], { featureCreateApply: failFor('api') });
+sql(`UPDATE feature_creation_members SET phase = 'APPLYING' WHERE worktree_path = ?`, join(workspaceRoot, 'api-feat-halted'));
+const resumedHalted = await create(['feat/halted', '--resume']);
+
+// 4. APPLYING, and something that is not a worktree sits at the path: refused, nothing deleted.
+const leftover = await create(['feat/leftover', '--repos', 'web,api,worker'], { featureCreateApply: failFor(last) });
+const leftoverPath = join(workspaceRoot, `${last}-feat-leftover`);
+sql(`UPDATE feature_creation_members SET phase = 'APPLYING' WHERE worktree_path = ?`, leftoverPath);
+await mkdir(leftoverPath, { recursive: true });
+await writeFile(join(leftoverPath, 'keep.txt'), 'mine\n');
+const resumedLeftover = await create(['feat/leftover', '--resume']);
+
+// 5. Nothing written anywhere: a new create with a different member set replaces it.
+const nothing = await create(['feat/super', '--repos', 'web,api,worker'], { featureCreateApply: alwaysFail });
+const superseding = await create(['feat/super', '--repos', 'web,api']);
+const superStates = (query(`SELECT c.state FROM feature_creations c JOIN features f ON f.id = c.feature_id
+  WHERE f.branch = 'refs/heads/feat/super' ORDER BY c.created_at`) as Array<{ state: string }>).map(({ state }) => state);
+
+// 6. --resume guards.
+const mismatchSetup = await create(['feat/mismatch', '--repos', 'web,api'], { featureCreateApply: failFor('api') });
+const mismatch = await create(['feat/mismatch', '--resume', '--repos', 'web']);
+const fromWithResume = await create(['feat/mismatch', '--resume', '--from', 'main']);
+
+// 7. A live lease on one member refuses the creation before anything is written.
+const web = (query('SELECT id FROM repositories WHERE main_root = ?', join(workspaceRoot, 'web')) as Array<{ id: string }>)[0]!.id;
+sql(`INSERT INTO repository_operation_leases (repository_id, operation, token, pid, process_start_time, subject_worktree_id,
+  stage, acquired_at, renewed_at, expires_at, host_id) VALUES (?, 'gc', 'held', 999999, 'x', NULL, NULL,
+  '2026-09-13T00:00:00.000Z', '2026-09-13T00:00:00.000Z', '2999-01-01T00:00:00.000Z', 'elsewhere')`, web);
+const busy = await create(['feat/busy', '--repos', 'web,api']);
+const busyOnDisk = onDisk('feat/busy');
+sql(`DELETE FROM repository_operation_leases WHERE token = 'held'`);
+
+// 8. A resume treats a forgotten repository specially: a member with no work left (REGISTERED) is
+// skipped even though its repository is gone; a member with work left whose repository is gone is
+// refused by name. These delete a repository row, so nothing may run after them.
+const forgotDoneSetup = await create(['feat/forgot-done', '--repos', 'web,api,worker'], { featureCreateApply: failFor(last) });
+const forgotLeftSetup = await create(['feat/forgot-left', '--repos', 'web,api,worker'], { featureCreateApply: failFor(last) });
+sql(
+  `UPDATE feature_creation_members SET phase = 'REGISTERED' WHERE worktree_path IN (?, ?)`,
+  join(workspaceRoot, `${others[0]}-feat-forgot-done`),
+  join(workspaceRoot, `${others[1]}-feat-forgot-done`),
+);
+{
+  const database = new Database(databasePath);
+  database.pragma('foreign_keys = ON');
+  database.prepare('DELETE FROM repositories WHERE main_root = ?').run(join(workspaceRoot, others[0]!));
+  database.close();
+}
+const forgotDone = await create(['feat/forgot-done', '--resume']);
+const forgotLeft = await create(['feat/forgot-left', '--resume']);
+
+process.stdout.write(JSON.stringify({
+  partial: {
+    ok: partial.envelope.ok,
+    code: partial.envelope.errors[0]?.code ?? null,
+    remediation: partial.envelope.errors[0]?.remediation ?? null,
+    failedOnDisk: partialFailedOnDisk,
+    othersOnDisk: partialOthersOnDisk,
+    failedPhase: phases(partial.envelope)[last],
+    otherPhases: others.map((repo) => phases(partial.envelope)[repo]),
+  },
+  plainWhileOpen: { code: plainWhileOpen.envelope.errors[0]?.code ?? null },
+  resumedPartial: {
+    ok: resumedPartial.envelope.ok,
+    resumed: resumedPartial.envelope.data?.resumed ?? null,
+    failedRecoveredFrom: recoveredFrom(resumedPartial.envelope)[last],
+    otherRecoveredFrom: others.map((repo) => recoveredFrom(resumedPartial.envelope)[repo]),
+    phases: Object.values(phases(resumedPartial.envelope)),
+    onDisk: onDisk('feat/partial'),
+  },
+  crashed: { ok: crashed.envelope.ok, apiPhase: crashedPhaseApi },
+  resumedCrashed: { ok: resumedCrashed.envelope.ok, recoveredFrom: recoveredFrom(resumedCrashed.envelope), onDisk: onDisk('feat/crashed') },
+  resumedHalted: { ok: halted.envelope.ok === false && resumedHalted.envelope.ok, apiRecoveredFrom: recoveredFrom(resumedHalted.envelope)['api'], onDisk: onDisk('feat/halted') },
+  resumedLeftover: {
+    ok: leftover.envelope.ok === false && resumedLeftover.envelope.ok,
+    code: resumedLeftover.envelope.errors[0]?.code ?? null,
+    keptFile: existsSync(join(leftoverPath, 'keep.txt')),
+    othersStillThere: others.map((repo) => exists(repo, 'feat/leftover')),
+  },
+  superseded: { firstOk: nothing.envelope.ok, secondOk: superseding.envelope.ok, states: superStates, members: (superseding.envelope.data?.members ?? []).length },
+  guards: { setupOk: mismatchSetup.envelope.ok, mismatch: mismatch.envelope.errors[0]?.code ?? null, fromWithResume: fromWithResume.envelope.errors[0]?.code ?? null },
+  busy: { code: busy.envelope.errors[0]?.code ?? null, onDisk: busyOnDisk },
+  forgotten: {
+    doneOk: forgotDoneSetup.envelope.ok === false && forgotDone.envelope.ok,
+    doneLastOnDisk: exists(last, 'feat/forgot-done'),
+    leftOk: forgotLeft.envelope.ok,
+    leftCode: forgotLeft.envelope.errors[0]?.code ?? null,
+    leftNamesRepository: forgotLeft.envelope.errors[0]?.context?.repository === join(workspaceRoot, others[0]!),
+    leftLastOnDisk: exists(last, 'feat/forgot-left'),
+  },
+}));
