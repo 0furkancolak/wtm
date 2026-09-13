@@ -32,6 +32,7 @@ import type {
   ManagedProcessState,
   WorktreeAnalysis,
   WorktreeContext,
+  WorktreeCreationPlan,
   WorktreeRecord,
 } from '@wtm/core';
 import {
@@ -59,6 +60,7 @@ import {
 } from './diagnostics';
 import { renderEnvelope } from './output';
 import { runCreateCommand } from './commands/create';
+import { runFeatureCreateCommand } from './commands/create-feature';
 import { measureCleanupCandidates } from './commands/cleanup-estimates';
 import { runStartCommand } from './commands/start';
 import { runStopCommand } from './commands/stop';
@@ -160,6 +162,8 @@ export interface CliDependencies {
   completionDataRunner?: (input: { kind: CompletionDataKind; cwd: string }) => Promise<readonly string[]>;
   /** The state database `wtm __complete` reads registered worktrees and workspace names from. */
   completionDatabasePath?: string;
+  /** Test seam: the Git write of a multi-repository create, so a scenario can make one member fail. */
+  featureCreateApply?: (repoPath: string, plan: WorktreeCreationPlan) => Promise<GitWorktreeRecord>;
 }
 
 export interface RuntimeInvocation {
@@ -288,7 +292,26 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     .description('Create one linked worktree for a branch, beside its repository.');
   addJsonOption(create);
   create.option('--from <ref>', 'start a new branch here instead of at the main worktree HEAD');
-  create.action(async (branch: string, options: ScopeOptions & { from?: string }) => {
+  create.option('--repos <names>', 'create the branch in each named repository of the workspace, as one feature');
+  create.option('--resume', 'finish a multi-repository creation that did not complete');
+  create.action(async (branch: string, options: ScopeOptions & { from?: string; repos?: string; resume?: boolean }) => {
+    if (options.repos !== undefined || options.resume === true) {
+      renderRuntime(await runFeatureCreateCommand({
+        cwd,
+        branch,
+        ...(options.repos === undefined ? {} : { repos: options.repos.split(',') }),
+        ...(options.from === undefined ? {} : { from: options.from }),
+        resume: options.resume === true,
+        databasePath: dependencies.analysisDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+        globalConfigPath: dependencies.removalGlobalConfigPath ?? defaultProductionRuntimePaths().globalConfigPath,
+        ...(dependencies.runtimeClient === undefined ? {} : { client: dependencies.runtimeClient }),
+        // The CLI is the composition root that chooses the platform reader, as it does for remove.
+        readProcessStartTime: (pid) => hostPlatformRuntime().process.readStartTime(pid),
+        hostId: hostname(),
+        ...(dependencies.featureCreateApply === undefined ? {} : { applyWorktree: dependencies.featureCreateApply }),
+      }), runtimeJson(program, options));
+      return;
+    }
     renderRuntime(await runCreateCommand({
       cwd,
       branch,

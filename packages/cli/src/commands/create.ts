@@ -142,7 +142,7 @@ export async function runCreateCommand(input: CreateCommandInput): Promise<JsonE
 }
 
 /** True only when a daemon actually answered, since that answer is what says the hooks ran. */
-async function reconciledByDaemon(client: RuntimeDaemonClient | undefined): Promise<boolean> {
+export async function reconciledByDaemon(client: RuntimeDaemonClient | undefined): Promise<boolean> {
   if (client === undefined) return false;
   try {
     return (await client.request('reconcile')).ok === true;
@@ -151,7 +151,7 @@ async function reconciledByDaemon(client: RuntimeDaemonClient | undefined): Prom
   }
 }
 
-function notInitialized(): WtmError {
+export function notInitialized(): WtmError {
   return {
     code: 'WTM_NOT_INITIALIZED',
     message: 'This directory is not inside a workspace WTM has registered, and only the registry '
@@ -161,7 +161,7 @@ function notInitialized(): WtmError {
   };
 }
 
-function gitFailure(error: unknown): WtmError {
+export function gitFailure(error: unknown): WtmError {
   return {
     code: error instanceof GitCommandError ? 'GIT_COMMAND_FAILED' : 'GIT_REPOSITORY_DEGRADED',
     message: message(error),
@@ -170,7 +170,7 @@ function gitFailure(error: unknown): WtmError {
   };
 }
 
-function message(error: unknown): string {
+export function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
