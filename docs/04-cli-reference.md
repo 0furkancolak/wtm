@@ -518,8 +518,16 @@ feature with a persistent id.
 already on the branch at the path counts as done, a member with nothing written is created at its
 pinned commit, and anything else — a directory at the path, the branch checked out elsewhere or
 pointing at another commit, a stale Git worktree entry, a forgotten repository — is refused with
-what was found. `--from` cannot be combined with `--resume`, and a `--repos` given with it must
-match the creation. WTM never deletes anything to make a creation fit.
+what was found. A worktree whose HEAD has moved past its pinned start still counts as done; the
+envelope reports it, with `worktree.head` beside `branch.startPoint`. `--from` cannot be combined
+with `--resume`, and a `--repos` given with it must match the creation. WTM never deletes anything
+to make a creation fit.
+
+A `create` killed after taking its leases but before journalling leaves only a dead lease: a new
+`create` is refused with `WTM_OPERATION_CONFLICT` and the remediation
+`wtm create <branch> --repos … --resume`. With no unfinished creation to resume, that command clears
+the dead leases on the named repositories and still refuses with `WTM_CONFIG_INVALID`, saying which
+it cleared; the next `create` then runs.
 
 The envelope reports `feature` (`id`, `branch`), `members[]` (repository, worktree, branch with its
 pinned `startPoint`, journal `phase`, and `recoveredFrom` on resume), `registration` and `resumed`.
