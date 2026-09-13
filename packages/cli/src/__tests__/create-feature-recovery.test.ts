@@ -66,6 +66,46 @@ describe('wtm create --resume', () => {
     expect(scenario['busy']).toEqual({ code: 'WTM_OPERATION_CONFLICT', onDisk: [false, false, false] });
   });
 
+  test('a member whose registration failed stays APPLIED, and --resume registers it without re-running Git', () => {
+    expect(scenario['unregistered']).toMatchObject({
+      ok: false, code: 'GIT_REPOSITORY_DEGRADED', failedPhase: 'APPLIED', otherPhases: ['REGISTERED', 'REGISTERED'],
+    });
+    // The warning names only the worktrees this run registered, not the one whose registration failed.
+    expect(scenario['unregistered'].warningPaths).toHaveLength(2);
+    expect(scenario['resumedUnregistered']).toEqual({
+      ok: true, applies: 0, failedRecoveredFrom: 'APPLIED', otherRecoveredFrom: ['REGISTERED', 'REGISTERED'],
+      warningPaths: [scenario['resumedUnregistered'].warningPaths[0]],
+    });
+    expect(scenario['resumedUnregistered'].warningPaths[0]).toEndWith('-feat-unregistered');
+  });
+
+  test('a HEAD other than the pinned start fails the member in APPLYING, and --resume marks it applied', () => {
+    expect(scenario['wrongHead']).toEqual({ ok: false, code: 'GIT_REPOSITORY_DEGRADED', failedPhase: 'APPLYING', onDisk: true });
+    expect(scenario['resumedWrongHead']).toEqual({ ok: true, failedRecoveredFrom: 'APPLYING', phases: ['REGISTERED', 'REGISTERED', 'REGISTERED'] });
+  });
+
+  test('an abandoned create lease with no journal is cleared by the remediation the refusal names', () => {
+    expect(scenario['staleLease']).toEqual({
+      refusedCode: 'WTM_OPERATION_CONFLICT',
+      remediation: ['wtm', 'create', 'feat/stale', '--repos', 'web,api', '--resume'],
+      clearedCode: 'WTM_CONFIG_INVALID',
+      clearedLeases: [expect.stringMatching(/[\\/]web$/)],
+      leaseRowsAfterClear: 0,
+      createdOk: true,
+    });
+  });
+
+  test('a path filled between planning and the leases is refused by the second pre-flight, writing nothing', () => {
+    expect(scenario['raced']).toEqual({
+      ok: false, codes: ['WTM_WORKTREE_PATH_OCCUPIED'], data: null,
+      journalRows: 0, leaseRows: 0, branches: [false, false], worktrees: [false, false],
+    });
+  });
+
+  test('an open creation that changed while the leases were taken refuses the run, writing nothing', () => {
+    expect(scenario['changedUnder']).toEqual({ code: 'WTM_OPERATION_CONFLICT', data: null, worktrees: [false, false], creations: 1 });
+  });
+
   test('a finished member of a forgotten repository is skipped; one with work left is refused by name', () => {
     expect(scenario['forgotten']).toEqual({ doneOk: true, doneLastOnDisk: true, leftOk: false, leftCode: 'WTM_CONFIG_INVALID', leftNamesRepository: true, leftLastOnDisk: false });
   });

@@ -1,10 +1,10 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { createWorktree } from '@wtm/core';
+import { createWorktree, listGitWorktrees } from '@wtm/core';
 import type { CliDependencies } from '../main';
 
 /** Partial multi-repository creations and `--resume`, against real Git and a real state store. */
@@ -33,7 +33,7 @@ async function invoke(argv: readonly string[], dependencies: CliDependencies = {
     stdout: (value) => { out += value; },
     stderr: () => {},
   });
-  return { code, envelope: JSON.parse(out) as { ok: boolean; data: any; errors: Array<{ code: string; context?: any; remediation?: any }> } };
+  return { code, envelope: JSON.parse(out) as { ok: boolean; data: any; warnings: Array<{ code: string; context?: any }>; errors: Array<{ code: string; context?: any; remediation?: any }> } };
 }
 
 /** `CliDependencies['featureCreateApply']` without the `| undefined`, so these helpers can be
@@ -137,6 +137,62 @@ const busy = await create(['feat/busy', '--repos', 'web,api']);
 const busyOnDisk = onDisk('feat/busy');
 sql(`DELETE FROM repository_operation_leases WHERE token = 'held'`);
 
+// 9. Registration fails for one member after Git succeeded: it stays APPLIED, and --resume only
+// registers it, without a second `git worktree add`.
+const isRepo = (repoPath: string, name: string) => repoPath.endsWith(`/${name}`) || repoPath.endsWith(`\\${name}`);
+const unregistered = await create(['feat/unregistered', '--repos', 'web,api,worker'], {
+  featureCreateRegistrationTopology: async (repoPath) => {
+    if (isRepo(repoPath, last)) throw new Error('injected registration failure');
+    return await listGitWorktrees(repoPath);
+  },
+});
+let resumeApplies = 0;
+const resumedUnregistered = await create(['feat/unregistered', '--resume'], {
+  featureCreateApply: async (repoPath, plan) => { resumeApplies += 1; return await createWorktree(repoPath, plan); },
+});
+
+// 10. Git reports a HEAD other than the pinned start: the member stays APPLYING (its worktree
+// exists), and --resume recognises the worktree on the branch and marks it applied.
+const wrongHead = await create(['feat/wrong-head', '--repos', 'web,api,worker'], {
+  featureCreateApply: async (repoPath, plan) => {
+    const record = await createWorktree(repoPath, plan);
+    return isRepo(repoPath, last) ? { ...record, head: '0'.repeat(40) } : record;
+  },
+});
+const wrongHeadOnDisk = exists(last, 'feat/wrong-head');
+const resumedWrongHead = await create(['feat/wrong-head', '--resume']);
+
+// 11. A process died holding a `create` lease before it journalled anything: a fresh create is
+// refused with a runnable remediation, running it clears the dead lease, and create then works.
+// The PID of a child that has already exited: a real, valid PID with no process behind it, so the
+// holder reads as gone on every platform (macOS `ps` rejects a PID above its range as an error, not
+// as an absent process, and the lease rightly refuses to guess from that).
+const deadPid = spawnSync(process.execPath, ['-e', '']).pid;
+sql(`INSERT INTO repository_operation_leases (repository_id, operation, token, pid, process_start_time, subject_worktree_id,
+  stage, acquired_at, renewed_at, expires_at, host_id) VALUES (?, 'create', 'dead', ?, 'x', NULL, NULL,
+  '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '2026-01-01T00:02:00.000Z', ?)`, web, deadPid, hostname());
+const staleRefused = await create(['feat/stale', '--repos', 'web,api']);
+const staleArgv: string[] = staleRefused.envelope.errors[0]?.remediation?.[0]?.argv ?? [];
+const staleCleared = await invoke([...staleArgv.slice(1), '--json']);
+const staleLeaseRows = (query('SELECT COUNT(*) AS n FROM repository_operation_leases') as Array<{ n: number }>)[0]!.n;
+const staleCreated = await create(['feat/stale', '--repos', 'web,api']);
+
+// 12. The second pre-flight: a path filled between planning and holding the leases is refused, and
+// nothing is journalled or written.
+const raced = await create(['feat/raced', '--repos', 'web,api,worker'], {
+  featureCreateAfterLeases: async () => { await mkdir(join(workspaceRoot, 'worker-feat-raced'), { recursive: true }); },
+});
+const count = (statement: string, ...parameters: unknown[]) => (query(statement, ...parameters) as Array<{ n: number }>)[0]!.n;
+const branchIn = (repo: string, branch: string) => {
+  try { git(join(workspaceRoot, repo), 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`); return true; } catch { return false; }
+};
+
+// 13. The open creation changed under the leases (a creation over another member set, which takes
+// other leases, opened one): refused, nothing written by this run.
+const changedUnder = await create(['feat/changed', '--repos', 'web,api'], {
+  featureCreateAfterLeases: async () => { await create(['feat/changed', '--repos', 'worker'], { featureCreateApply: alwaysFail }); },
+});
+
 // 8. A resume treats a forgotten repository specially: a member with no work left (REGISTERED) is
 // skipped even though its repository is gone; a member with work left whose repository is gone is
 // refused by name. These delete a repository row, so nothing may run after them.
@@ -187,6 +243,54 @@ process.stdout.write(JSON.stringify({
   superseded: { firstOk: nothing.envelope.ok, secondOk: superseding.envelope.ok, states: superStates, members: (superseding.envelope.data?.members ?? []).length },
   guards: { setupOk: mismatchSetup.envelope.ok, mismatch: mismatch.envelope.errors[0]?.code ?? null, fromWithResume: fromWithResume.envelope.errors[0]?.code ?? null },
   busy: { code: busy.envelope.errors[0]?.code ?? null, onDisk: busyOnDisk },
+  unregistered: {
+    ok: unregistered.envelope.ok,
+    code: unregistered.envelope.errors[0]?.code ?? null,
+    failedPhase: phases(unregistered.envelope)[last],
+    otherPhases: others.map((repo) => phases(unregistered.envelope)[repo]),
+    warningPaths: (unregistered.envelope.warnings[0]?.context?.paths ?? []).map((path: string) => path.split(/[\\/]/).pop()).sort(),
+  },
+  resumedUnregistered: {
+    ok: resumedUnregistered.envelope.ok,
+    applies: resumeApplies,
+    failedRecoveredFrom: recoveredFrom(resumedUnregistered.envelope)[last],
+    otherRecoveredFrom: others.map((repo) => recoveredFrom(resumedUnregistered.envelope)[repo]),
+    warningPaths: (resumedUnregistered.envelope.warnings[0]?.context?.paths ?? []).map((path: string) => path.split(/[\\/]/).pop()),
+  },
+  wrongHead: {
+    ok: wrongHead.envelope.ok,
+    code: wrongHead.envelope.errors[0]?.code ?? null,
+    failedPhase: phases(wrongHead.envelope)[last],
+    onDisk: wrongHeadOnDisk,
+  },
+  resumedWrongHead: {
+    ok: resumedWrongHead.envelope.ok,
+    failedRecoveredFrom: recoveredFrom(resumedWrongHead.envelope)[last],
+    phases: Object.values(phases(resumedWrongHead.envelope)),
+  },
+  staleLease: {
+    refusedCode: staleRefused.envelope.errors[0]?.code ?? null,
+    remediation: staleArgv,
+    clearedCode: staleCleared.envelope.errors[0]?.code ?? null,
+    clearedLeases: staleCleared.envelope.errors[0]?.context?.clearedLeases ?? null,
+    leaseRowsAfterClear: staleLeaseRows,
+    createdOk: staleCreated.envelope.ok,
+  },
+  raced: {
+    ok: raced.envelope.ok,
+    codes: raced.envelope.errors.map(({ code }) => code),
+    data: raced.envelope.data,
+    journalRows: count(`SELECT COUNT(*) AS n FROM features WHERE branch = 'refs/heads/feat/raced'`),
+    leaseRows: count('SELECT COUNT(*) AS n FROM repository_operation_leases'),
+    branches: ['web', 'api'].map((repo) => branchIn(repo, 'feat/raced')),
+    worktrees: ['web', 'api'].map((repo) => exists(repo, 'feat/raced')),
+  },
+  changedUnder: {
+    code: changedUnder.envelope.errors[0]?.code ?? null,
+    data: changedUnder.envelope.data,
+    worktrees: ['web', 'api'].map((repo) => exists(repo, 'feat/changed')),
+    creations: count(`SELECT COUNT(*) AS n FROM feature_creations c JOIN features f ON f.id = c.feature_id WHERE f.branch = 'refs/heads/feat/changed'`),
+  },
   forgotten: {
     doneOk: forgotDoneSetup.envelope.ok === false && forgotDone.envelope.ok,
     doneLastOnDisk: exists(last, 'feat/forgot-done'),
