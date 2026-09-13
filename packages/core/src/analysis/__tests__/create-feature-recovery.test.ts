@@ -11,8 +11,10 @@ const member = (phase: FeatureCreationPhase, branchExisted = false): FeatureCrea
   creationId: 'c', repositoryId: 'r', repositoryMainRoot: '/ws/web', position: 0, worktreePath: path,
   branchExisted, startOid: start, phase, lastErrorCode: null, updatedAt: '2026-09-13T00:00:00.000Z',
 });
-const record = (at: string, branch: string | null, prunableReason: string | null = null): GitWorktreeRecord => ({
-  path: at, head: start, branch, detached: branch === null, bare: false, lockedReason: null, prunableReason,
+const record = (
+  at: string, branch: string | null, prunableReason: string | null = null, head: string = start,
+): GitWorktreeRecord => ({
+  path: at, head, branch, detached: branch === null, bare: false, lockedReason: null, prunableReason,
 });
 const main = record('/ws/web', 'refs/heads/main');
 const input = (overrides: Partial<MemberRecoveryInput>): MemberRecoveryInput => ({
@@ -25,9 +27,14 @@ describe('classifyMemberRecovery', () => {
     ['a forgotten repository is refused, by name', input({ repositoryRegistered: false }),
       { action: 'refuse', error: { code: 'WTM_CONFIG_INVALID', context: { repository: '/ws/web' } } }],
     ['a registered member is skipped', input({ member: member('REGISTERED') }), { action: 'skip' }],
+    ['a finished member is skipped even if its repository was since forgotten',
+      input({ member: member('REGISTERED'), repositoryRegistered: false }), { action: 'skip' }],
     ['a worktree already on the branch at the path was applied, whatever the journal says',
       input({ topology: [main, record(path, 'refs/heads/feat/auth')], pathExists: true }),
       { action: 'mark-applied', worktree: { path, branch: 'refs/heads/feat/auth' } }],
+    ['a worktree on the branch at the path counts as applied even if its HEAD moved past the start commit',
+      input({ topology: [main, record(path, 'refs/heads/feat/auth', null, moved)], pathExists: true }),
+      { action: 'mark-applied', worktree: { path, head: moved } }],
     ['a stale Git entry at the path is refused with git worktree prune',
       input({ topology: [main, record(path, 'refs/heads/feat/auth', 'gitdir file points to non-existent location')] }),
       { action: 'refuse', error: { code: 'WTM_WORKTREE_PATH_OCCUPIED', remediation: [{ kind: 'command-suggestion', argv: ['git', '-C', '/ws/web', 'worktree', 'prune'] }] } }],

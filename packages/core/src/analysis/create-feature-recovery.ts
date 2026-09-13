@@ -27,6 +27,11 @@ export interface MemberRecoveryInput {
  * finished, or on one it never started. Observed state decides. Anything that is neither the
  * requested state nor provably safe to reach is refused with what was found, and nothing is
  * deleted.
+ *
+ * A `REGISTERED` member is skipped before anything else is checked, including whether its
+ * repository is still registered: it has no work left, so a repository forgotten afterward must
+ * not block `--resume` for the rest of the feature. The "repository no longer registered" refusal
+ * only ever applies to a member that still has work to do.
  */
 export function classifyMemberRecovery(input: MemberRecoveryInput): MemberRecoveryAction {
   const { member } = input;
@@ -39,12 +44,12 @@ export function classifyMemberRecovery(input: MemberRecoveryInput): MemberRecove
     phase: member.phase,
   };
 
+  if (member.phase === 'REGISTERED') return { action: 'skip' };
   if (!input.repositoryRegistered) {
     return refuse('WTM_CONFIG_INVALID',
       `${member.repositoryMainRoot} is part of this creation but is no longer registered with WTM. `
       + 'Register it again with `wtm init`, then resume.', context);
   }
-  if (member.phase === 'REGISTERED') return { action: 'skip' };
 
   const atPath = input.topology.find((record) => resolve(record.path) === resolve(member.worktreePath));
   if (atPath !== undefined) {

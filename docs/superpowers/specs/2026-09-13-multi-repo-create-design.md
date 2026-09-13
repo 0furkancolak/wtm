@@ -199,10 +199,10 @@ wtm create <branch> --resume [--repos …] [--json]
   | Observed state | Action |
   | --- | --- |
   | Phase `REGISTERED` | Skip. |
+  | The member's repository is no longer registered, and the member is not `REGISTERED` | Refuse, naming the repository. A `REGISTERED` member is skipped whatever its repository's registration, because nothing is left to do for it. |
   | A worktree at the planned path on the planned branch | Treat as `APPLIED`, go to registration. Covers `APPLYING` rows that actually completed before a crash. A HEAD that moved past `start_oid` is accepted and reported. |
   | No worktree, path absent, and the branch either absent, or checked out nowhere and (with `branch_existed = 0`) at `start_oid` | Safe: apply. An absent branch is created at `start_oid`. A branch at exactly `start_oid` is taken to be the one this creation made before `worktree add` failed, and is checked out. |
   | No worktree, path absent, `branch_existed = 1`, branch checked out nowhere | Apply: check the existing branch out, wherever it now points. It was the user's branch before this creation, and it moving is not evidence of anything. |
-  | The member's repository is no longer registered | Refuse, naming the repository. |
   | Anything else: path exists but is not a worktree; a worktree at the path on another branch; the branch at a different OID or checked out elsewhere; a stale (prunable) Git worktree entry | Refuse with `WTM_WORKTREE_PATH_OCCUPIED` or `GIT_BRANCH_IN_USE`, naming what was found, with a concrete remediation such as `git worktree prune`. WTM deletes nothing. |
 
 - **End.** When every member is `APPLIED`, registration runs as in §3 and the creation becomes
