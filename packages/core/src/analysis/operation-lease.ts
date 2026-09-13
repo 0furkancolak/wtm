@@ -91,7 +91,11 @@ export interface RepositoryOperationSession {
   readonly adoptedStage: string | null;
   /** Records the last completed stage, so an interrupted operation can be resumed from it. */
   advance(stage: string): void;
-  /** Extends the lease; throws when it has already expired, because an expired lease is only re-acquirable. */
+  /**
+   * Extends the lease, even past its TTL, for as long as the row still carries this token. Throws
+   * only when it does not — the row was released, or adopted by another process after this one
+   * was judged gone — because then the lease is no longer this process's to extend.
+   */
   renew(): void;
 }
 
@@ -182,7 +186,7 @@ export async function withRepositoryOperationLease<T>(
       const ttlMs = input.ttlMs ?? defaultOperationLeaseTtlMs;
       if (!input.store.renewRepositoryOperationLease(key, token, now(), ttlMs)) {
         throw new Error(
-          `The "${input.operation}" lease on repository ${input.repositoryId} expired before it was renewed.`,
+          `The "${input.operation}" lease on repository ${input.repositoryId} is no longer held by this process, so it was not renewed.`,
         );
       }
     },
@@ -367,7 +371,7 @@ export interface RepositoryOperationLeasesInput
 export interface RepositoryOperationLeasesSession {
   /** The distinct repository ids, in acquisition order. */
   readonly repositoryIds: readonly string[];
-  /** Renews every held lease; throws if any has expired. */
+  /** Renews every held lease; throws if any is no longer held by this process's token. */
   renewAll(): void;
 }
 

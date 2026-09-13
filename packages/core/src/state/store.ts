@@ -297,7 +297,10 @@ export interface StateStore extends AdapterTrustStateStore {
     input: RepositoryOperationLeaseRequest,
     now: string,
   ): RepositoryOperationLeaseResult;
-  /** Extends a lease the caller still holds. An expired lease is re-acquired, never renewed. */
+  /**
+   * Extends a lease the caller's token still holds, even one whose TTL has lapsed. The token alone
+   * decides: a reclaimed lease carries its adopter's token, so a displaced owner is refused.
+   */
   renewRepositoryOperationLease(
     key: RepositoryOperationLeaseKey,
     token: string,

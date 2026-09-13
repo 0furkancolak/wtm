@@ -1403,11 +1403,13 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
   }
 
   /**
-   * Extends a lease its holder still owns.
+   * Extends a lease its holder still owns, whether or not its TTL has already lapsed.
    *
-   * An expired lease is not renewable, only re-acquirable: renewing one would let a process
-   * that stopped reporting for longer than its TTL reappear and carry on as though nothing
-   * had happened, past a liveness check it never had to pass.
+   * The token check alone decides. A lapsed TTL never took the lease away: reclaiming a row
+   * needs a `gone` liveness verdict for its owner, and adoption deletes the row and writes a new
+   * token, so a displaced owner's token no longer matches and its renewal is refused. A row that
+   * still carries this token was therefore never reclaimed, and refusing to renew it would only
+   * abort a holder that is still working — a checkout that took longer than the TTL, say.
    */
   renewRepositoryOperationLease(
     key: RepositoryOperationLeaseKey,
@@ -1419,8 +1421,8 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
     const expiresAt = repositoryOperationLeaseExpiry(now, ttlMs);
     return this.transaction(() => this.#database.prepare(`
       UPDATE repository_operation_leases SET renewed_at = ?, expires_at = ?
-      WHERE repository_id = ? AND operation = ? AND token = ? AND expires_at > ?
-    `).run(now, expiresAt, key.repositoryId, key.operation, token, now).changes === 1);
+      WHERE repository_id = ? AND operation = ? AND token = ?
+    `).run(now, expiresAt, key.repositoryId, key.operation, token).changes === 1);
   }
 
   /**

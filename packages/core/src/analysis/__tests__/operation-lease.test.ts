@@ -103,7 +103,8 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
     ttlMs: number,
   ): boolean {
     const row = this.#matching(leaseKey);
-    if (row === null || row.token !== token || row.expiresAt <= now) return false;
+    // The token alone decides, as in the real store: a lapsed TTL is not a lost lease.
+    if (row === null || row.token !== token) return false;
     this.rows.set(rowKey(row), { ...row, renewedAt: now, expiresAt: new Date(Date.parse(now) + ttlMs).toISOString() });
     return true;
   }
@@ -804,4 +805,26 @@ test('a refused repository releases the leases already held and never runs the b
   expect(ran).toBe(false);
   expect(store.events).toEqual(['acquire:repo-a', 'acquire:repo-b', 'release:repo-a']);
   expect([...store.rows.values()].map((row) => row.token)).toEqual(['held']);
+});
+
+test('renew extends a lease whose TTL has lapsed, for as long as the row still carries the token', async () => {
+  const store = new FakeLeaseStore();
+  let instant = '2026-08-31T10:00:00.000Z';
+  const reader = scriptedReader(new Map());
+
+  await withRepositoryOperationLease(
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'remove', ttlMs: 1_000, now: () => instant },
+    async (session) => {
+      // A slow step outran the TTL. Nobody reclaimed the row, so it is still this holder's.
+      instant = '2026-08-31T10:05:00.000Z';
+      expect(store.rowFor()!.expiresAt < instant).toBe(true);
+      session.renew();
+      expect(store.rowFor()!.expiresAt).toBe('2026-08-31T10:05:01.000Z');
+
+      // Another process adopted the row after judging this one gone: the token no longer matches.
+      store.seed({ ...store.rowFor()!, token: 'adopter-token', pid: holderPid, processStartTime: holderStartTime });
+      expect(() => session.renew()).toThrow('is no longer held by this process');
+    },
+  );
+  expect(store.rowFor()?.token).toBe('adopter-token');
 });
