@@ -16,7 +16,9 @@ describe('summarizeFailedJobLog', () => {
     expect(summary).toContain('…');
   });
 
-  test('takes the 20 lines before each ##[error] and merges overlapping windows', () => {
+  // The name avoids the literal error marker: GitHub Actions turns any log line containing it into a
+  // failure annotation, so CI would report this passing test as an error.
+  test('takes the 20 lines before each error marker and merges overlapping windows', () => {
     const lines = Array.from({ length: 60 }, (_, index) => line(`step ${index}`, index));
     lines[30] = line('##[error]first', 30);
     lines[35] = line('##[error]second', 35);
