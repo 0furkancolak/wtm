@@ -60,6 +60,6 @@ function capKeepingEnd(text: string): string {
   const marker = '…\n';
   const tail = bytes.subarray(bytes.length - (ciLogSummaryMaxBytes - Buffer.byteLength(marker))).toString('utf8');
   const newline = tail.indexOf('\n');
-  const clean = newline >= 0 ? tail.slice(newline + 1) : tail.replace(/^�+/, '');
+  const clean = newline >= 0 ? tail.slice(newline + 1) : tail.replace(/^\uFFFD+/, '');
   return `${marker}${clean}`;
 }
