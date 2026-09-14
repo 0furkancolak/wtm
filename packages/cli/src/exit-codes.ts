@@ -52,6 +52,9 @@ export function exitCodeForError(code: WtmErrorCode): number {
     // cleared by running the command again, which is the same class as a socket path that does
     // not fit. Reporting it as 1 would tell a script to retry a condition that only a person
     // can change.
+    || code === 'WTM_CI_UNAVAILABLE'
+    // CI infrastructure is unavailable: `gh` is missing, not authenticated, or does not support
+    // the remote. The user must fix the environment, not retry the command.
   ) return 2;
   if (
     code === 'GIT_MAIN_WORKTREE'

@@ -202,3 +202,22 @@ missing daemon is the existing daemon error. A watch that becomes unavailable la
   executable on `PATH` that serves a pending, then failed run with a failed-step log; `wtm ci watch`
   → polls → `wtm ci status` reports `failure` with a masked log summary. State paths in a temporary
   directory; no network.
+
+## Corrections while planning (2026-09-14)
+
+1. `wtm ci status` reads the state store in the CLI; the protocol has no `ci.status` command. §6's
+   `ci.status` request is dropped; `ciWatchSchema` still defines the returned watch.
+2. `ci.watch` and `ci.unwatch` carry `cwd` (the item 47 target); the daemon uses the innermost
+   registered worktree containing it.
+3. `ci_watches` has a `saw_runs` column so `no_runs` is decided correctly after a daemon restart.
+4. The `gh` runner's result is `{ outcome: 'success' | 'not-found' | 'failure' | 'timeout', exitCode,
+   stdout, stderr }`.
+5. Retention pruning runs when the watcher starts, accepts a watch and finishes one; no idle timer.
+6. `wtm remove` deletes the removed worktree's watches in the removal coordinator's post-removal
+   store step.
+7. Conclusions `success`, `skipped`, `neutral` succeed; `cancelled` cancels; any other conclusion of a
+   completed run fails; failure takes precedence over cancelled over success.
+8. `ci status --all` returns `data.watches: [{ worktreePath, watch }]` for the workspace's worktrees
+   that have a watch, sorted by path, and does not apply item 47's workspace-root refusal.
+9. A transient or throttled `gh auth status` answer at `ci watch` accepts the watch; only a missing
+   `gh`, an unauthenticated host or an unsupported remote refuses.

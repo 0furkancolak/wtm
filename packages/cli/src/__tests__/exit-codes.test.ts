@@ -37,6 +37,7 @@ const expectedExitCodes: Readonly<Record<WtmErrorCode, number>> = {
   WTM_PRIVATE_DIRECTORY_UNSAFE: 2,
   WTM_PLATFORM_UNSUPPORTED: 2,
   WTM_WATCH_UNAVAILABLE: 2,
+  WTM_CI_UNAVAILABLE: 2,
 
   // 3 — a safety refusal. Nothing was done, and the caller has somewhere to look.
   GIT_MAIN_WORKTREE: 3,
