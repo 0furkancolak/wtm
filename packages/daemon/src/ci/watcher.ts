@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import {
   aggregateCiRuns, ciDeadline, ciPollPolicy, ciRepositoryFromSlug, CiWatchError, containsPath, isFailingConclusion,
   nextPollIntervalMs, parseCiRemote, summarizeFailedJobLog, throttledDelayMs,
-  type CiProvider, type CiProviderFailure, type CiRepository, type CiWatchRecord, type CiWatchStore,
+  type CiProvider, type CiProviderFailure, type CiProviderResult, type CiRepository, type CiWatchRecord, type CiWatchStore,
   type StateRegistrationReader,
 } from '@wtm/core';
 import {
@@ -122,9 +122,17 @@ export class CiWatcher {
     // Corrections while planning (9): a transient or throttled answer here still accepts the
     // watch — only a missing `gh` or an unauthenticated host refuses. `unavailableRefusal`
     // returns null for every other reason, including `not-found`, so those fall through.
-    const available = await this.#options.provider.checkAvailable(repository);
-    this.#calls.push(now);
-    if (!available.ok && available.failure.kind === 'unavailable') {
+    //
+    // The probe itself spends from the same 30-calls-per-minute budget every poll draws from
+    // (spec §2: "at most 30 gh invocations per minute across all watches"). When the window is
+    // already full, skip the probe rather than push the total past the cap — the outcome is the
+    // same one a throttled answer would produce: the watch is accepted unexamined.
+    this.#pruneCalls(now);
+    const available: CiProviderResult<null> | null = this.#calls.length >= ciPollPolicy.callsPerMinute
+      ? null
+      : await this.#options.provider.checkAvailable(repository);
+    if (available !== null) this.#calls.push(now);
+    if (available !== null && !available.ok && available.failure.kind === 'unavailable') {
       const refusal = unavailableRefusal(available.failure, repository);
       if (refusal !== null) return failure(command, refusal);
     }
@@ -176,9 +184,15 @@ export class CiWatcher {
   }
 
   async #tick(): Promise<void> {
-    for (const watch of this.#options.store.pending()) {
+    for (const snapshot of this.#options.store.pending()) {
       if (this.#closed) return;
-      if (Date.parse(watch.nextPollAt) > this.#clock.now()) break;
+      if (Date.parse(snapshot.nextPollAt) > this.#clock.now()) break;
+      // Re-read rather than trust the snapshot: an earlier watch's `await` in this same tick
+      // gives a concurrent `ci.watch`/`ci.unwatch` a chance to cancel or supersede this one
+      // before its turn comes up, and polling it after that would spend budget on a watch that
+      // no longer exists to report the answer to.
+      const watch = this.#options.store.get(snapshot.watchId);
+      if (watch === null || watch.state !== 'pending' || Date.parse(watch.nextPollAt) > this.#clock.now()) continue;
       try {
         await this.#poll(watch);
       } catch (error) {
@@ -197,9 +211,13 @@ export class CiWatcher {
     }
   }
 
+  #pruneCalls(now: number): void {
+    this.#calls = this.#calls.filter((at) => at > now - 60_000);
+  }
+
   #spend(): void {
     const now = this.#clock.now();
-    this.#calls = this.#calls.filter((at) => at > now - 60_000);
+    this.#pruneCalls(now);
     if (this.#calls.length >= ciPollPolicy.callsPerMinute) throw new BudgetExhausted();
     this.#calls.push(now);
   }
@@ -257,6 +275,15 @@ export class CiWatcher {
           throw error;
         }
         const log = await this.#options.provider.failedJobLog(repository, current.runId, entry.jobId);
+        if (!log.ok && log.failure.kind !== 'unavailable') {
+          // Rate-limited or a transient answer: spec §2 says this delays the watch rather than
+          // losing data. Save the runs gathered so far — this job's summary stays unset — and
+          // let the existing failure-delay path retry it on the watch's next poll, instead of
+          // guessing at a placeholder the way an `unavailable` answer does below.
+          this.#options.store.update(watch.watchId, { now: iso, runs, sawRuns: true });
+          this.#failed(watch, log.failure);
+          return;
+        }
         current.jobs[index] = { ...entry, logSummary: log.ok ? summarizeFailedJobLog(log.value) : `(log unavailable: ${log.failure.detail})` };
       }
     }

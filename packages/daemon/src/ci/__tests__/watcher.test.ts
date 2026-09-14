@@ -85,4 +85,33 @@ describe('CiWatcher', () => {
     const r = result.budgetCapsCallsPerMinute;
     expect(r.callsLength).toBeLessThanOrEqual(30);
   });
+
+  // Fix round 1, finding 1: the checkAvailable probe must itself respect the 30-calls-per-minute
+  // budget, skipping the probe (and still accepting the watch) rather than pushing past it.
+  test('a full call budget skips the auth probe on re-watch and still accepts it', () => {
+    const r = result.budgetFullSkipsAuthProbeOnRewatch;
+    expect(r.callsAfterTick).toBe(30);
+    expect(r.rewatch).toMatchObject({ ok: true, data: { reused: true, watch: { state: 'pending' } } });
+    expect(r.callsAfterRewatch).toBe(r.callsAfterTick);
+  });
+
+  // Fix round 1, finding 2: a throttled/transient failedJobLog answer must delay the watch and
+  // retry the same job on the next poll rather than settling for a placeholder summary.
+  test('a throttled failedJobLog answer retries instead of settling for a placeholder', () => {
+    const r = result.failedJobLogRetriesAfterThrottleThenSucceeds;
+    expect(r.afterThrottle).toMatchObject({ state: 'pending' });
+    expect(r.afterThrottle.runs[0].jobs[0].logSummary).toBeUndefined();
+    expect(r.logCallsAfterThrottle).toBe(1);
+    expect(r.finished.state).toBe('failure');
+    expect(r.finished.runs[0].jobs[0].logSummary).toBe('##[error]boom');
+    expect(r.logCallsFinal).toBe(2);
+  });
+
+  // Fix round 1, finding 3: a tick must re-read each watch immediately before polling it, so one
+  // cancelled while an earlier watch's gh call for the same tick is still in flight is skipped.
+  test('a watch cancelled while another watch is being polled in the same tick is not polled', () => {
+    const r = result.tickSkipsWatchCancelledMidTick;
+    expect(r.calls).toEqual(['auth', 'runs', 'jobs:7']);
+    expect(r.wt2State).toBe('cancelled');
+  });
 });
