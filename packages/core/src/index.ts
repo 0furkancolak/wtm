@@ -284,4 +284,6 @@ export { resolvedHealthcheckSchema } from './config/healthcheck';
 export { measureWorktreeReclaimable } from './analysis/worktree-reclaimable';
 export type { WorktreeReclaimableInput, WorktreeReclaimableMeasurement } from './analysis/worktree-reclaimable';
 export { memoryEstimateError, memoryCapacity, type JobMemoryAdmission, type JobMemoryErrorCode } from './state/job-memory';
+export { CiWatchError } from './state/ci';
+export type { CiWatchRecord, CiWatchStartInput, CiWatchStore, CiWatchUpdate } from './state/ci';
 export * from './ci';

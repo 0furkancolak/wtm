@@ -19,6 +19,7 @@ export const migrationFileNames = [
   '012-heavy-jobs.sql',
   '013-heavy-job-memory.sql',
   '014-feature-creations.sql',
+  '015-ci-watches.sql',
 ] as const;
 
 export const filesystemMigrationAssets: MigrationAssetProvider = {
