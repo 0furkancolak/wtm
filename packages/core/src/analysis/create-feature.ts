@@ -11,6 +11,23 @@ export type FeatureMemberResolution =
   | { outcome: 'resolved'; repositories: RepositoryRecord[] }
   | { outcome: 'refused'; error: WtmError };
 
+/** The name `--repos` and `--repo` accept for each repository, by id. */
+export function nameRepositories(input: {
+  config: WtmConfig;
+  workspaceRoot: string;
+  repositories: readonly RepositoryRecord[];
+}): Map<string, string> {
+  return new Map(namedRepositories(input).map((entry) => [entry.repository.id, entry.scopeName ?? entry.directory]));
+}
+
+function namedRepositories(input: { config: WtmConfig; workspaceRoot: string; repositories: readonly RepositoryRecord[] }) {
+  return input.repositories.map((repository) => ({
+    repository,
+    scopeName: resolveRepoScope(input.config, { workspaceRoot: input.workspaceRoot, repoRoot: repository.mainRoot })?.name ?? null,
+    directory: basename(resolve(repository.mainRoot)),
+  }));
+}
+
 /**
  * The repositories `--repos` names, in ascending id order, which is also the lease order.
  *
@@ -23,13 +40,11 @@ export function resolveFeatureMembers(input: {
   workspaceRoot: string;
   repositories: readonly RepositoryRecord[];
   names: readonly string[];
+  option?: '--repos' | '--repo';
 }): FeatureMemberResolution {
+  const option = input.option ?? '--repos';
   const names = [...new Set(input.names.map((name) => name.trim()).filter((name) => name.length > 0))];
-  const named = input.repositories.map((repository) => ({
-    repository,
-    scopeName: resolveRepoScope(input.config, { workspaceRoot: input.workspaceRoot, repoRoot: repository.mainRoot })?.name ?? null,
-    directory: basename(resolve(repository.mainRoot)),
-  }));
+  const named = namedRepositories(input);
   const unknown: string[] = [];
   const ambiguous: string[] = [];
   const chosen = new Map<string, RepositoryRecord>();
@@ -44,9 +59,9 @@ export function resolveFeatureMembers(input: {
   }
   if (names.length === 0 || unknown.length > 0 || ambiguous.length > 0) {
     const reasons = [
-      ...(names.length === 0 ? ['--repos names no repository.'] : []),
-      ...(unknown.length > 0 ? [`--repos names no repository of this workspace: ${unknown.join(', ')}.`] : []),
-      ...(ambiguous.length > 0 ? [`--repos names more than one repository: ${ambiguous.join(', ')}.`] : []),
+      ...(names.length === 0 ? [`${option} names no repository.`] : []),
+      ...(unknown.length > 0 ? [`${option} names no repository of this workspace: ${unknown.join(', ')}.`] : []),
+      ...(ambiguous.length > 0 ? [`${option} names more than one repository: ${ambiguous.join(', ')}.`] : []),
     ];
     return {
       outcome: 'refused',
