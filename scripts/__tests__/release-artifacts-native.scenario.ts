@@ -24,7 +24,9 @@ async function digest(path: string): Promise<string> {
 
 /** Real Linux packaging evidence. The default fixture is a small ELF, not a WTM/SEA acceptance claim. */
 export async function runNativeArchiveScenario(executable = '/usr/bin/true') {
-  if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('This native archive scenario requires Linux x64');
+  if (process.platform !== 'linux' || !['x64', 'arm64'].includes(process.arch)) {
+    throw new Error('This native archive scenario requires Linux x64 or ARM64');
+  }
   const root = mkdtempSync(join(tmpdir(), 'wtm-native-archive-'));
   try {
     mkdirSync(join(root, 'dist/sea'), { recursive: true });
@@ -39,7 +41,7 @@ export async function runNativeArchiveScenario(executable = '/usr/bin/true') {
     host.run = command;
     const result = await buildReleaseArtifacts(host);
     const archiveName = basename(result.archive);
-    assert.equal(archiveName, 'wtm-linux-x64.tar.gz');
+    assert.equal(archiveName, `wtm-linux-${process.arch}.tar.gz`);
     const archiveDigest = await digest(result.archive);
     assert.equal(result.sha256, archiveDigest);
     assert.equal(readFileSync(result.checksums, 'utf8'), `${archiveDigest}  ${archiveName}\n`);

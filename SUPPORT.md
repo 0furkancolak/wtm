@@ -7,7 +7,8 @@ Use GitHub Issues for reproducible bugs and feature requests. Include the WTM ve
 | macOS arm64 / x64 | launchd, Unix sockets and process-group supervision; CI covers both architectures | `v0.1.0-rc.1` archives and checksums |
 | Linux x64, glibc | systemd user backend, Unix sockets and process-group supervision; native CLI/daemon evidence exists, full systemd lifecycle verification remains open | No Linux release archive |
 | Windows x64 | Experimental Scheduled Task, named-pipe and process-tree backend; CI is configured, native acceptance remains incomplete | No Windows release archive or published installer |
-| Linux arm64 / musl and other targets | No complete native acceptance evidence | No release archive |
+| Linux arm64, glibc | Native `ubuntu-24.04-arm` CI and local ELF archive construction are configured; passing native acceptance remains pending | No release archive |
+| Linux musl and other targets | No complete native acceptance evidence or configured native CI | No release archive |
 
 This table describes the repository's implementation and known release artifacts. The source manifest permits `darwin`, `linux` and `win32`; package eligibility does not establish a passing native gate or a published binary for that platform. Check the [CI run for your revision](https://github.com/0furkancolak/wtm/actions/workflows/ci.yml) and [release assets](https://github.com/0furkancolak/wtm/releases) when reporting a failure. Minimum operating-system versions have not been established across all targets.
 

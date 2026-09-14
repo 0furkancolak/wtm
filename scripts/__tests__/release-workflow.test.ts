@@ -6,12 +6,14 @@ const root = fileURLToPath(new URL('../..', import.meta.url));
 const tagGuard = "startsWith(github.ref, 'refs/tags/v')";
 
 interface WorkflowStep {
+  if?: string;
   run?: string;
   uses?: string;
   env?: Record<string, string>;
 }
 
 interface WorkflowJob {
+  strategy?: { matrix?: { include?: { platform: string; arch: string; runner: string }[] } };
   if?: string;
   permissions?: Record<string, string>;
   steps?: WorkflowStep[];
@@ -144,5 +146,20 @@ describe('release workflow', () => {
 
   test('proves the standalone executable in ordinary CI without releasing it', () => {
     expect(commands(workflow('ci.yml'))).toContain('bun run binary:verify');
+  });
+
+  test('Linux ARM64 runs the full native gate and both Linux architectures inspect the produced SEA archive', () => {
+    const job = workflow('ci.yml').jobs?.validate;
+    expect(job?.strategy?.matrix?.include).toContainEqual({ platform: 'linux', arch: 'arm64', runner: 'ubuntu-24.04-arm' });
+    const steps = job?.steps ?? [];
+    for (const command of ['bun run lint', 'bun run typecheck', 'bun run test --timeout', 'bun run test:e2e',
+      'bun run build', 'bun run package:verify', 'bun run binary:verify']) {
+      const step = steps.find((item) => item.run?.startsWith(command));
+      expect(step, command).toBeDefined();
+      expect(step?.if, command).toBeUndefined();
+    }
+    const archive = steps.findIndex((item) => item.run === 'bun scripts/__tests__/release-artifacts-native.scenario.ts dist/sea/wtm');
+    expect(archive).toBeGreaterThan(steps.findIndex((item) => item.run === 'bun run binary:verify'));
+    expect(steps[archive]?.if).toBe("matrix.platform == 'linux'");
   });
 });

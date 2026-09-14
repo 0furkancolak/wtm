@@ -6,9 +6,10 @@ Use Node.js 24 and Bun 1.3 or newer; CI pins Bun 1.3.14. Building or verifying a
 | --- | --- |
 | macOS arm64 / x64 | Git on PATH; launchd in a login session for service lifecycle checks. Both architectures have CI jobs and published prerelease archives. |
 | Linux x64 | Git on PATH; systemd 240+ and a reachable user manager for automatic daemon startup. CI exercises real Linux processes and IPC; the full systemd user-service lifecycle still needs a suitable session. |
+| Linux arm64, glibc | Same Linux prerequisites; `ubuntu-24.04-arm` runs the full native gate sequence. The configured job still needs a passing result before ARM64 support is established. |
 | Windows x64, experimental | Native Node, Bun and Git on PATH; Windows PowerShell and Task Scheduler for the backend. CI has a Windows job, but its presence is not proof that every native gate passes. Git Bash commands and PowerShell syntax are distinct; POSIX Makefile installation recipes are not Windows installers. |
 
-If the SQLite dependency has no prebuilt binding for your runtime, installation also needs Python and the platform's C++ build toolchain. Linux arm64 and musl builds are not covered by the current native CI matrix. See [SUPPORT.md](SUPPORT.md) for the support and distribution boundaries.
+If the SQLite dependency has no prebuilt binding for your runtime, installation also needs Python and the platform's C++ build toolchain. Musl builds are not covered by the current native CI matrix. Linux x64 and arm64 jobs also archive the freshly built SEA, extract it, verify bytes/mode/checksums and run its version smoke check. See [SUPPORT.md](SUPPORT.md) for the support and distribution boundaries.
 
 Before opening a pull request, run:
 

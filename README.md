@@ -776,7 +776,8 @@ WTM is pre-release and honest about its edges. Every command carries a real payl
 | --- | --- |
 | **macOS** (Apple silicon and Intel) | Native CLI, launchd and process supervision backends; both architectures have published prerelease archives and native CI legs. Current regressions and signing/notarization requirements remain release gates. |
 | **Linux x64** (glibc) | Native CLI, Unix IPC and POSIX process supervision have passing CI evidence. The systemd user-service lifecycle needs a real user session for full validation. No published Linux archive; build from source. |
-| **Linux arm64, musl/Alpine** | Unproven. No runner, no build, no claim. |
+| **Linux arm64** (glibc) | Native CI is configured on `ubuntu-24.04-arm`, with local ELF archive support; a passing ARM64 run is still required. No published Linux archive. |
+| **Linux musl/Alpine** | No native CI or supported standalone build. |
 | **Windows x64** | Experimental implementation: CLI, Named Pipe IPC, SID/ACL checks, Scheduled Task service backend and process-tree supervision. The native CI leg still has failures; no released binary or complete platform-support claim. |
 
 WTM's operating system is a parameter rather than an assumption: one `PlatformRuntime` answers
@@ -784,7 +785,7 @@ where files go, how long a socket address may be, how to recognise a process, an
 service. The core packages hold no macOS-specific import, literal or command, and a structural test
 fails if one re-enters them.
 
-What the Linux job proves, on a real kernel rather than against fixtures: `wtm start` launches and
+What the Linux x64 job has proved, on a real kernel rather than against fixtures: `wtm start` launches and
 supervises a managed task, with the process anchor and the platform's `/proc` reader agreeing on
 process identity; the daemon serves over its Unix socket end to end; a trusted external adapter
 runs through its guarded child; `sizeof(sun_path)` is 108 bytes, bound and refused at the boundary
@@ -822,8 +823,8 @@ you are evaluating; a past green run does not verify later changes.
 
 Foreground commands do not require a service manager. The registered background service uses
 the platform manager; the internal daemon can also run in the foreground for isolated testing.
-Linux arm64/musl and minimum supported Windows versions have not been established by the
-current validation matrix.
+Linux ARM64 native acceptance is pending its new CI leg. Musl builds and minimum supported
+Windows versions have not been established by the current validation matrix.
 
 ### Disk access (macOS)
 

@@ -115,11 +115,13 @@ The configured verification and publication scopes differ:
 
 | Workflow | Native runner targets | Effect |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | macOS arm64, macOS x64, Linux x64, Windows x64 | Schedules lint, typecheck, tests, e2e, bundle/package verification and standalone smoke checks; publishes nothing |
+| `.github/workflows/ci.yml` | macOS arm64, macOS x64, Linux x64, Linux arm64, Windows x64 | Schedules lint, typecheck, tests, e2e, bundle/package verification and standalone smoke checks; publishes nothing |
 | `.github/workflows/release.yml` | macOS arm64 and macOS x64 | Verifies the two Darwin artifacts and publishes them only for version tags |
 
 A configured CI leg is not a claim that its latest run passed. Windows remains experimental, with
-native failures tracked in the development notes. Linux arm64 has no native CI leg in this matrix.
+native failures tracked in the development notes. Linux arm64 now uses `ubuntu-24.04-arm`; its
+first passing native result is still pending. The five configured CI legs do not imply five
+release targets.
 
 The current tag workflow publishes `wtm-darwin-arm64.tar.gz`, `wtm-darwin-x64.tar.gz` and
 `SHA256SUMS`. The verified published prerelease `v0.1.0-rc.1` has those macOS assets. There is no
@@ -128,12 +130,16 @@ Windows contributor builds must be assessed against the experimental backend's r
 Expanding publication requires a platform-specific artifact and signing/notarization policy;
 the current combined release gate expects the two Darwin archives and matching signing evidence.
 
-Local archive construction also supports Linux x64: after `bun run build:binary`, run
-`bun run release:artifacts` to produce `dist/release/wtm-linux-x64.tar.gz` and `SHA256SUMS`.
+Local archive construction supports Linux x64 and arm64: after `bun run build:binary`, run
+`bun run release:artifacts` on that native host to produce `dist/release/wtm-linux-x64.tar.gz`
+or `dist/release/wtm-linux-arm64.tar.gz` and `SHA256SUMS`.
 The archive contains the executable, license, notice and third-party notices. Construction
-checks a bounded ELF header, sets numeric archive ownership and writes checksums; executable smoke is a
-separate check. Linux arm64 and Windows archive construction are not enabled. Local Linux
-support does not change the two required published Darwin targets or their signing policy.
+checks a bounded ELF header against the declared architecture (x86-64 or AArch64), sets numeric
+archive ownership and writes checksums. Both Linux CI legs separately archive and extract the
+freshly built SEA, verify exact bytes, ownership, executable mode and checksums, and execute
+`--version`. Fixture header tests alone are not native execution evidence. Windows archive
+construction is not enabled. Local Linux support does not change the two required published
+Darwin targets or their signing policy.
 
 The npm registry publication, dist-tags and provenance have not been verified. A successful
 `package:verify` is a build and dry-run tarball check, not proof that a registry installation works.

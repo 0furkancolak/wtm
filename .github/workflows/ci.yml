@@ -7,7 +7,7 @@ permissions:
 jobs:
   validate:
     name: Validate ${{ matrix.platform }} ${{ matrix.arch }}
-    # win32 gets more room than the other three legs: its file-trust checks shell out to a real
+    # win32 gets more room than the POSIX legs: its file-trust checks shell out to a real
     # powershell.exe per call (`@wtm/platform`'s windows-powershell.ts), and a cold PowerShell 5.1
     # process genuinely costs on the order of a second to start and import
     # Microsoft.PowerShell.Security -- there is no equivalent per-call cost on POSIX, where the
@@ -45,6 +45,9 @@ jobs:
           - platform: linux
             arch: x64
             runner: ubuntu-latest
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
           - platform: win32
             arch: x64
             runner: windows-latest
@@ -92,3 +95,6 @@ jobs:
       - run: bun run package:verify
       # Ordinary CI proves the current host can produce a working executable; it never publishes one.
       - run: bun run binary:verify
+      - name: Verify the Linux executable archive
+        if: matrix.platform == 'linux'
+        run: bun scripts/__tests__/release-artifacts-native.scenario.ts dist/sea/wtm
