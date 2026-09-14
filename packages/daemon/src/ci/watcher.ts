@@ -1,0 +1,326 @@
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
+import {
+  aggregateCiRuns, ciDeadline, ciPollPolicy, ciRepositoryFromSlug, CiWatchError, containsPath, isFailingConclusion,
+  nextPollIntervalMs, parseCiRemote, summarizeFailedJobLog, throttledDelayMs,
+  type CiProvider, type CiProviderFailure, type CiRepository, type CiWatchRecord, type CiWatchStore,
+  type StateRegistrationReader,
+} from '@wtm/core';
+import {
+  ciArgumentSchemas, ciCommandNames,
+  type CiJob, type CiRun, type CiWatch, type IpcRequest, type JsonEnvelope, type WtmError,
+} from '@wtm/protocol';
+import type { ReconcilerClock } from '../reconciler-queue';
+
+export interface CiWatcherOptions {
+  store: CiWatchStore;
+  registration: Pick<StateRegistrationReader, 'listRepositories' | 'listWorktrees'>;
+  provider: CiProvider;
+  clock?: ReconcilerClock;
+  onError?: (error: unknown) => void;
+}
+
+const systemClock: ReconcilerClock = {
+  now: () => Date.now(),
+  setTimeout: (callback, delayMs) => {
+    const handle = setTimeout(callback, delayMs);
+    handle.unref();
+    return handle;
+  },
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+class BudgetExhausted extends Error {}
+
+export function publicCiWatch(record: CiWatchRecord): CiWatch {
+  return {
+    watchId: record.watchId, repo: record.providerRepo, branch: record.branch, headSha: record.headSha,
+    ...(record.pr === null ? {} : { pr: record.pr }),
+    state: record.state, startedAt: record.startedAt, updatedAt: record.updatedAt,
+    ...(record.finishedAt === null ? {} : { finishedAt: record.finishedAt }),
+    runs: record.runs,
+    ...(record.detail === null ? {} : { detail: record.detail }),
+  };
+}
+
+/**
+ * Follows the CI of commits an agent asked about with `wtm ci watch`. One timer covers every
+ * pending watch and none exists while nothing is pending, so an idle daemon does no work.
+ */
+export class CiWatcher {
+  readonly #options: CiWatcherOptions;
+  readonly #clock: ReconcilerClock;
+  #timer: unknown = null;
+  #operation: Promise<void> = Promise.resolve();
+  #calls: number[] = [];
+  #closed = false;
+
+  constructor(options: CiWatcherOptions) {
+    this.#options = options;
+    this.#clock = options.clock ?? systemClock;
+  }
+
+  async start(): Promise<void> {
+    const now = this.#clock.now();
+    this.#options.store.prune(this.#iso(now), ciPollPolicy.retentionMs);
+    for (const watch of this.#options.store.pending()) {
+      // Only the 2-hour deadline is judged here: `no_runs` needs to know whether a run has ever
+      // appeared, and the next poll (which reads `sawRuns` itself) is the one placed to decide
+      // that correctly rather than guessing at restart.
+      const deadline = ciDeadline({ startedAtMs: Date.parse(watch.startedAt), nowMs: now, sawRuns: true });
+      if (deadline === 'timed_out') {
+        this.#options.store.update(watch.watchId, { now: this.#iso(now), state: 'timed_out', detail: 'CI did not finish within 2 hours.' });
+      } else {
+        this.#options.store.update(watch.watchId, { now: this.#iso(now), nextPollAt: this.#iso(now + ciPollPolicy.firstDelayMs) });
+      }
+    }
+    this.#arm();
+  }
+
+  async close(): Promise<void> {
+    this.#closed = true;
+    if (this.#timer !== null) this.#clock.clearTimeout(this.#timer);
+    this.#timer = null;
+    await this.#operation.catch(() => {});
+  }
+
+  /** Resolves once any in-flight tick has settled. For tests driving a fake clock. */
+  async idle(): Promise<void> {
+    await this.#operation.catch(() => {});
+  }
+
+  async handle(request: IpcRequest): Promise<JsonEnvelope<unknown>> {
+    const command = request.command;
+    if (!ciCommandNames.has(command)) {
+      return failure(command, { code: 'WTM_DAEMON_INVALID_REQUEST', message: 'Unknown CI command.', severity: 'error' });
+    }
+    const parsed = ciArgumentSchemas[command as keyof typeof ciArgumentSchemas].safeParse(request.arguments);
+    if (!parsed.success) {
+      return failure(command, { code: 'WTM_DAEMON_INVALID_REQUEST', message: 'CI arguments are invalid.', severity: 'error' });
+    }
+    const registration = this.#registration(parsed.data.cwd);
+    if (registration === null) {
+      return failure(command, {
+        code: 'WTM_WORKSPACE_NOT_FOUND', message: 'This directory is not inside a worktree registered with WTM.',
+        severity: 'error', context: { cwd: parsed.data.cwd },
+      });
+    }
+    const now = this.#clock.now();
+    if (command === 'ci.unwatch') {
+      const cancelled = this.#options.store.cancelPendingForWorktree(registration.worktree.id, this.#iso(now), 'Stopped by wtm ci unwatch.');
+      this.#arm();
+      return success(command, { stopped: cancelled !== null, watch: cancelled === null ? null : publicCiWatch(cancelled) });
+    }
+    const args = parsed.data as { cwd: string; branch: string | null; headSha: string; pr?: number };
+    const repository = parseCiRemote(registration.repository.remoteIdentity);
+    if (repository === null) {
+      return failure(command, {
+        code: 'WTM_CI_UNAVAILABLE', message: 'No CI provider for this remote.', severity: 'error',
+        context: { remote: registration.repository.remoteIdentity },
+      });
+    }
+    // Corrections while planning (9): a transient or throttled answer here still accepts the
+    // watch — only a missing `gh` or an unauthenticated host refuses. `unavailableRefusal`
+    // returns null for every other reason, including `not-found`, so those fall through.
+    const available = await this.#options.provider.checkAvailable(repository);
+    this.#calls.push(now);
+    if (!available.ok && available.failure.kind === 'unavailable') {
+      const refusal = unavailableRefusal(available.failure, repository);
+      if (refusal !== null) return failure(command, refusal);
+    }
+    try {
+      const { watch, reused } = this.#options.store.start({
+        repositoryId: registration.repository.id, worktreeId: registration.worktree.id, worktreePath: registration.worktree.path,
+        providerRepo: repository.slug, branch: args.branch, headSha: args.headSha, pr: args.pr ?? null,
+        now: this.#iso(now), nextPollAt: this.#iso(now + ciPollPolicy.firstDelayMs), pollIntervalMs: ciPollPolicy.firstDelayMs,
+        maxPending: ciPollPolicy.maxPending,
+      });
+      this.#options.store.prune(this.#iso(now), ciPollPolicy.retentionMs);
+      this.#arm();
+      return success(command, { watch: publicCiWatch(watch), reused });
+    } catch (error) {
+      if (error instanceof CiWatchError) {
+        return failure(command, {
+          code: error.code, message: error.message, severity: 'error', context: error.context,
+          remediation: [{ kind: 'command-suggestion', argv: ['wtm', 'ci', 'unwatch', '--worktree', '<selector>'] }],
+        });
+      }
+      throw error;
+    }
+  }
+
+  #registration(cwd: string) {
+    const current = canonical(resolve(cwd));
+    const worktree = this.#options.registration.listWorktrees()
+      .filter(({ path, state }) => state !== 'ORPHANED' && state !== 'REMOVED' && containsPath(canonical(path), current))
+      .sort((left, right) => right.path.length - left.path.length)[0];
+    if (worktree === undefined) return null;
+    const repository = this.#options.registration.listRepositories().find(({ id }) => id === worktree.repositoryId);
+    return repository === undefined ? null : { worktree, repository };
+  }
+
+  #arm(): void {
+    if (this.#closed) return;
+    if (this.#timer !== null) this.#clock.clearTimeout(this.#timer);
+    this.#timer = null;
+    const next = this.#options.store.pending()[0];
+    if (next === undefined) return;
+    const delay = Math.max(0, Date.parse(next.nextPollAt) - this.#clock.now());
+    this.#timer = this.#clock.setTimeout(() => {
+      this.#timer = null;
+      this.#operation = this.#operation
+        .then(async () => await this.#tick())
+        .catch((error: unknown) => this.#options.onError?.(error))
+        .finally(() => this.#arm());
+    }, delay);
+  }
+
+  async #tick(): Promise<void> {
+    for (const watch of this.#options.store.pending()) {
+      if (this.#closed) return;
+      if (Date.parse(watch.nextPollAt) > this.#clock.now()) break;
+      try {
+        await this.#poll(watch);
+      } catch (error) {
+        if (!(error instanceof BudgetExhausted)) throw error;
+        // The budget ran out mid-tick: every watch still due this tick (including the one that
+        // just failed to spend) waits for the next minute's slots rather than being starved
+        // forever behind watches earlier in `pending()`'s order.
+        const oldest = this.#calls[0] ?? this.#clock.now();
+        for (const waiting of this.#options.store.pending()) {
+          if (Date.parse(waiting.nextPollAt) <= this.#clock.now()) {
+            this.#options.store.update(waiting.watchId, { now: this.#iso(this.#clock.now()), nextPollAt: this.#iso(oldest + 60_000) });
+          }
+        }
+        return;
+      }
+    }
+  }
+
+  #spend(): void {
+    const now = this.#clock.now();
+    this.#calls = this.#calls.filter((at) => at > now - 60_000);
+    if (this.#calls.length >= ciPollPolicy.callsPerMinute) throw new BudgetExhausted();
+    this.#calls.push(now);
+  }
+
+  async #poll(watch: CiWatchRecord): Promise<void> {
+    const now = this.#clock.now();
+    const iso = this.#iso(now);
+    const finish = (state: CiWatchRecord['state'], detail: string | null, runs?: CiRun[]) => {
+      this.#options.store.update(watch.watchId, { now: iso, state, detail, ...(runs === undefined ? {} : { runs }) });
+      this.#options.store.prune(iso, ciPollPolicy.retentionMs);
+    };
+    const deadline = ciDeadline({ startedAtMs: Date.parse(watch.startedAt), nowMs: now, sawRuns: watch.sawRuns });
+    if (deadline === 'timed_out') { finish('timed_out', 'CI did not finish within 2 hours.'); return; }
+    const repository = ciRepositoryFromSlug(watch.providerRepo);
+    if (repository === null) { finish('unavailable', 'The stored repository name is invalid.'); return; }
+
+    this.#spend();
+    const listed = await this.#options.provider.listRuns(repository, watch.headSha);
+    if (!listed.ok) { this.#failed(watch, listed.failure); return; }
+    if (listed.value.length === 0) {
+      if (deadline === 'no_runs') { finish('no_runs', 'No CI run appeared for this commit within 3 minutes.'); return; }
+      this.#reschedule(watch, false, {});
+      return;
+    }
+
+    const previous = new Map(watch.runs.map((entry) => [entry.runId, entry]));
+    const runs: CiRun[] = [];
+    for (const current of listed.value) {
+      const stored = previous.get(current.runId);
+      let jobs: CiJob[] = stored?.jobs ?? [];
+      if (stored === undefined || stored.status !== current.status || stored.conclusion !== current.conclusion || current.status !== 'completed' || jobs.length === 0) {
+        this.#spend();
+        const answer = await this.#options.provider.listJobs(repository, current.runId);
+        if (!answer.ok) { this.#failed(watch, answer.failure); return; }
+        const summaries = new Map(jobs.map((entry) => [entry.jobId, entry.logSummary]));
+        jobs = answer.value.map((entry) => {
+          const summary = summaries.get(entry.jobId);
+          return summary === undefined ? entry : { ...entry, logSummary: summary };
+        });
+      }
+      runs.push({ ...current, jobs });
+    }
+    const changed = fingerprint(runs) !== fingerprint(watch.runs);
+    const verdict = aggregateCiRuns(runs);
+    if (verdict === 'pending') { this.#reschedule(watch, changed, { runs, sawRuns: true }); return; }
+
+    // Complete: fetch one log per failed job, saving progress so a budget stop loses nothing.
+    for (const current of runs) {
+      for (const [index, entry] of current.jobs.entries()) {
+        if (entry.logSummary !== undefined || entry.status !== 'completed' || !isFailingConclusion(entry.conclusion)) continue;
+        try {
+          this.#spend();
+        } catch (error) {
+          this.#options.store.update(watch.watchId, { now: iso, runs, sawRuns: true });
+          throw error;
+        }
+        const log = await this.#options.provider.failedJobLog(repository, current.runId, entry.jobId);
+        current.jobs[index] = { ...entry, logSummary: log.ok ? summarizeFailedJobLog(log.value) : `(log unavailable: ${log.failure.detail})` };
+      }
+    }
+    this.#options.store.update(watch.watchId, { now: iso, sawRuns: true, failureStreak: 0 });
+    finish(verdict === 'none' ? 'no_runs' : verdict, null, runs);
+  }
+
+  #reschedule(watch: CiWatchRecord, changed: boolean, extra: { runs?: CiRun[]; sawRuns?: boolean }): void {
+    const now = this.#clock.now();
+    const interval = nextPollIntervalMs(watch.sawRuns || extra.sawRuns === true ? watch.pollIntervalMs : null, changed);
+    this.#options.store.update(watch.watchId, {
+      now: this.#iso(now), nextPollAt: this.#iso(now + interval), pollIntervalMs: interval, failureStreak: 0,
+      ...(extra.runs === undefined ? {} : { runs: extra.runs }), ...(extra.sawRuns === undefined ? {} : { sawRuns: extra.sawRuns }),
+    });
+  }
+
+  #failed(watch: CiWatchRecord, failure: CiProviderFailure): void {
+    const now = this.#clock.now();
+    if (failure.kind !== 'unavailable') {
+      this.#options.store.update(watch.watchId, { now: this.#iso(now), nextPollAt: this.#iso(now + throttledDelayMs(watch.pollIntervalMs)) });
+      return;
+    }
+    const streak = watch.failureStreak + 1;
+    if (streak >= ciPollPolicy.unavailableAfterFailures) {
+      this.#options.store.update(watch.watchId, { now: this.#iso(now), state: 'unavailable', detail: failure.detail, failureStreak: streak });
+      return;
+    }
+    this.#options.store.update(watch.watchId, { now: this.#iso(now), failureStreak: streak, nextPollAt: this.#iso(now + watch.pollIntervalMs) });
+  }
+
+  #iso(ms: number): string {
+    return new Date(ms).toISOString();
+  }
+}
+
+function canonical(path: string): string {
+  try { return realpathSync(path); } catch { return path; }
+}
+
+function fingerprint(runs: readonly CiRun[]): string {
+  return JSON.stringify(runs.map((entry) => [entry.runId, entry.status, entry.conclusion, entry.jobs.map((job) => [job.jobId, job.status, job.conclusion])]));
+}
+
+function unavailableRefusal(failure: Extract<CiProviderFailure, { kind: 'unavailable' }>, repository: CiRepository): WtmError | null {
+  if (failure.reason === 'missing') {
+    return {
+      code: 'WTM_CI_UNAVAILABLE', message: 'The GitHub CLI (gh) was not found. Install it from https://cli.github.com.',
+      severity: 'error', context: { provider: 'github' },
+    };
+  }
+  if (failure.reason === 'unauthenticated') {
+    return {
+      code: 'WTM_CI_UNAVAILABLE', message: `The GitHub CLI is not logged in to ${repository.host}.`, severity: 'error',
+      context: { provider: 'github', host: repository.host },
+      remediation: [{ kind: 'command-suggestion', argv: ['gh', 'auth', 'login', '--hostname', repository.host] }],
+    };
+  }
+  return null;
+}
+
+function success(command: string, data: unknown): JsonEnvelope<unknown> {
+  return { schemaVersion: 1, command, ok: true, data, warnings: [], errors: [] };
+}
+
+function failure(command: string, error: WtmError): JsonEnvelope<unknown> {
+  return { schemaVersion: 1, command, ok: false, data: null, warnings: [], errors: [error] };
+}
