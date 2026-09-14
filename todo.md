@@ -1608,6 +1608,10 @@ wtm-windows-arm64.exe
       home izolasyonu düzeltildi. Gerçek native sonuç gelmeden bu madde kapanmaz.
       Önceki incelemeler tarihsel notlarında korunur; güncel kayıt
       `docs/development/2026-09-10-windows-follow-up.md`.
+      **2026-09-14:** win32 leg'i geçici olarak bilgi amaçlı yapıldı (`continue-on-error`, 25 dk).
+      `34873813789` koşusunda 80 native fail vardı ve birkaç test 300 sn'lik test sınırını bekliyordu.
+      Bu yüzden her koşu 60 dk'da kesilip kırmızı bitiyordu. Bu madde kapanınca `continue-on-error`
+      kaldırılmalı ve leg yeniden zorunlu olmalı.
 - [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
 - [ ] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
       `plistPath` macOS'a özel bir ek alan olarak bilerek duruyor (D11), kaldırılması daemon JSON

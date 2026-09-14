@@ -162,4 +162,16 @@ describe('release workflow', () => {
     expect(archive).toBeGreaterThan(steps.findIndex((item) => item.run === 'bun run binary:verify'));
     expect(steps[archive]?.if).toBe("matrix.platform == 'linux'");
   });
+
+  test('validates each commit once and keeps win32 from deciding the run until item 9', () => {
+    const ci = workflow('ci.yml') as Workflow & { concurrency?: { group?: string; 'cancel-in-progress'?: string } };
+    expect(ci.on).toEqual({ push: { branches: ['main'] }, pull_request: null, workflow_dispatch: null });
+    expect(ci.concurrency?.group).toContain('github.event.pull_request.number');
+    expect(ci.concurrency?.['cancel-in-progress']).toBe("${{ github.ref != 'refs/heads/main' }}");
+
+    const job = workflow('ci.yml').jobs?.validate as WorkflowJob & { 'continue-on-error'?: string; 'timeout-minutes'?: string };
+    expect(job['continue-on-error']).toBe("${{ matrix.platform == 'win32' }}");
+    expect(job['timeout-minutes']).toBe("${{ matrix.platform == 'win32' && 25 || 30 }}");
+    expect(job.strategy?.matrix?.include).toContainEqual({ platform: 'win32', arch: 'x64', runner: 'windows-latest' });
+  });
 });

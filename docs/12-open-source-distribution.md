@@ -119,7 +119,9 @@ The configured verification and publication scopes differ:
 | `.github/workflows/release.yml` | macOS arm64 and macOS x64 | Verifies the two Darwin artifacts and publishes them only for version tags |
 
 A configured CI leg is not a claim that its latest run passed. Windows remains experimental, with
-native failures tracked in the development notes. Linux arm64 now uses `ubuntu-24.04-arm`; its
+native failures tracked in the development notes. Until those failures are fixed (todo item 9), the
+Windows leg is informational: it runs the same steps with a 25 minute cap, and its failure does not
+fail the run. CI runs on pull requests and on pushes to `main`, once per commit. Linux arm64 now uses `ubuntu-24.04-arm`; its
 first passing native result is still pending. The five configured CI legs do not imply five
 release targets.
 
