@@ -63,7 +63,9 @@ export async function matchWorktreeSelector(input: {
   const canonical = await realpath(selectorPath).catch(() => null);
   const fullRef = input.selector.startsWith('refs/heads/') ? input.selector : `refs/heads/${input.selector}`;
   const number = /^\d+$/.test(input.selector) ? Number(input.selector) : null;
-  const matches = live.filter(({ record, numericId }) =>
+  // An empty or whitespace-only selector names nothing — treating it as a no-match refusal keeps
+  // it from resolving relative to `base` the way `resolve(base, '')` would (to `base` itself).
+  const matches = input.selector.trim() === '' ? [] : live.filter(({ record, numericId }) =>
     record.path === input.selector
     || record.path === selectorPath
     || (canonical !== null && record.path === canonical)
@@ -143,7 +145,7 @@ export async function collectSelectorCandidates(input: {
     const name = repository === null ? basename(mainRoot) : names.get(repository.id) ?? basename(mainRoot);
     return {
       outcome: 'collected',
-      candidates: withNumbers(input.store, repository, mainRoot, name, topology),
+      candidates: await withNumbers(input.store, repository, mainRoot, name, topology),
       repositories: [name],
     };
   }
@@ -156,21 +158,29 @@ async function fromRepositories(store: SQLiteStateStore, repositories: readonly 
   const candidates: SelectorCandidate[] = [];
   for (const repository of repositories) {
     const topology = await listGitWorktrees(repository.mainRoot).catch(() => []);
-    candidates.push(...withNumbers(store, repository, repository.mainRoot, names.get(repository.id) ?? basename(repository.mainRoot), topology));
+    candidates.push(...await withNumbers(store, repository, repository.mainRoot, names.get(repository.id) ?? basename(repository.mainRoot), topology));
   }
   const listed = [...new Set(repositories.map((repository) => names.get(repository.id) ?? basename(repository.mainRoot)))].sort(compare);
   return { outcome: 'collected', candidates, repositories: listed };
 }
 
-function withNumbers(
+/**
+ * Registered worktrees are keyed by number against Git topology after `realpath`, the way
+ * `remove` compared them at ba36763: a stored path can be a symlinked spelling of the same
+ * worktree Git itself reports canonically, and the two must still be recognized as one worktree.
+ * `realpath` failing (the path no longer exists) falls back to comparing the raw path.
+ */
+async function withNumbers(
   store: SQLiteStateStore | null, repository: RepositoryRecord | null, mainRoot: string, name: string, topology: readonly GitWorktreeRecord[],
-): SelectorCandidate[] {
-  const numbers = new Map((repository === null || store === null ? [] : store.listWorktrees(repository.id)).map(({ path, numericId }) => [path, numericId]));
-  return topology.map((record) => ({
+): Promise<SelectorCandidate[]> {
+  const registered = repository === null || store === null ? [] : store.listWorktrees(repository.id);
+  const numbers = new Map(await Promise.all(registered.map(async ({ path, numericId }) =>
+    [await realpath(path).catch(() => path), numericId] as const)));
+  return await Promise.all(topology.map(async (record) => ({
     repository: { id: repository?.id ?? null, root: mainRoot, name },
     record,
-    numericId: numbers.get(record.path) ?? null,
-  }));
+    numericId: numbers.get(await realpath(record.path).catch(() => record.path)) ?? null,
+  })));
 }
 
 /**
@@ -196,9 +206,9 @@ export async function resolveTaskTarget(input: {
       context: { repo: input.repo },
     } };
   }
-  const store = openReadonlyStore(input.databasePath);
-  try {
-    if (input.worktree !== undefined) {
+  if (input.worktree !== undefined) {
+    const store = openReadonlyStore(input.databasePath);
+    try {
       const collected = await collectSelectorCandidates({
         cwd: input.cwd, store, globalConfigPath: input.globalConfigPath,
         ...(input.repo === undefined ? {} : { repo: input.repo }),
@@ -213,47 +223,68 @@ export async function resolveTaskTarget(input: {
         withRepo: (repo) => [...input.argv, '--worktree', worktree, '--repo', repo],
       });
       return matched.outcome === 'refused' ? matched : { outcome: 'resolved', cwd: matched.candidate.record.path };
+    } finally {
+      store?.close();
     }
-    // Without --worktree, every command keeps sending exactly the request it sends today, unless
-    // cwd is a registered workspace root — no repository's worktree — which only the daemon-backed
-    // commands used to reach through a misleading message (design §4).
+  }
+  // Without --worktree, every command keeps sending exactly the request it sends today, unless
+  // cwd is a registered workspace root — no repository's worktree — which only the daemon-backed
+  // commands used to reach through a misleading message (design §4). This probe must never make a
+  // flag-less command worse off than it was before item 47: a store that cannot even run a query
+  // (a stale schema, SQLITE_BUSY, ...) falls back to sending `cwd` unchanged, the same as no state
+  // existing at all. Only a probe that *succeeds* may refuse with the §4 message.
+  try {
+    // A short busy timeout, not the store's usual one: this probe already has a safe fallback for
+    // a store failure, so waiting out a lock before taking it would only turn "unchanged today"
+    // into "stalls today" for no benefit. `SQLiteStateStore` otherwise waits up to 5s even for a
+    // readonly open (see `sqlite-store.ts`), which is fine for a resolution the caller actually
+    // needs to succeed, but not for a probe that is thrown away on any store error.
+    const store = openReadonlyStore(input.databasePath, { busyTimeoutMs: 0 });
     if (store === null) return { outcome: 'resolved', cwd: input.cwd };
-    const workspace = workspaceContaining(store, input.cwd);
-    const current = resolve(input.cwd);
-    if (workspace === undefined || store.listWorktrees().some(({ path }) => containsPath(path, current))) {
-      return { outcome: 'resolved', cwd: input.cwd };
+    try {
+      const workspace = workspaceContaining(store, input.cwd);
+      const current = resolve(input.cwd);
+      if (workspace === undefined || store.listWorktrees().some(({ path }) => containsPath(path, current))) {
+        return { outcome: 'resolved', cwd: input.cwd };
+      }
+      // Git failing here — most commonly a workspace root that is itself no repository, exactly
+      // the case §4 exists for — means "not inside a worktree", not "give up": that conclusion is
+      // what lets the refusal below fire for a multi-repository workspace root. Only the *store*
+      // queries above and below fall back to resolving `cwd` unchanged on failure.
+      const insideGitWorktree = await listGitWorktrees(input.cwd)
+        .then((topology) => topology.some(({ path }) => containsPath(path, current)), () => false);
+      if (insideGitWorktree) return { outcome: 'resolved', cwd: input.cwd };
+      const collected = await collectSelectorCandidates({ cwd: input.cwd, store, globalConfigPath: input.globalConfigPath });
+      const candidates: WorktreeMatch[] = collected.outcome === 'collected'
+        ? collected.candidates
+          .filter(({ record }) => !record.bare)
+          .map(({ repository, record, numericId }) => ({
+            repo: repository.name,
+            branch: record.branch === null ? null : record.branch.replace(/^refs\/heads\//, ''),
+            path: record.path,
+            numericId,
+          }))
+        : [];
+      return { outcome: 'refused', error: {
+        code: 'WTM_WORKSPACE_NOT_FOUND',
+        severity: 'error',
+        message: 'This is a workspace root, not a worktree. Name the target with `--worktree <selector>`.',
+        context: { cwd: input.cwd, workspace: workspace.name, candidates },
+        remediation: [{ kind: 'command-suggestion', argv: [...input.argv, '--worktree', '<selector>'] }],
+      } };
+    } finally {
+      store.close();
     }
-    const insideGitWorktree = await listGitWorktrees(input.cwd)
-      .then((topology) => topology.some(({ path }) => containsPath(path, current)), () => false);
-    if (insideGitWorktree) return { outcome: 'resolved', cwd: input.cwd };
-    const collected = await collectSelectorCandidates({ cwd: input.cwd, store, globalConfigPath: input.globalConfigPath });
-    const candidates: WorktreeMatch[] = collected.outcome === 'collected'
-      ? collected.candidates
-        .filter(({ record }) => !record.bare)
-        .map(({ repository, record, numericId }) => ({
-          repo: repository.name,
-          branch: record.branch === null ? null : record.branch.replace(/^refs\/heads\//, ''),
-          path: record.path,
-          numericId,
-        }))
-      : [];
-    return { outcome: 'refused', error: {
-      code: 'WTM_WORKSPACE_NOT_FOUND',
-      severity: 'error',
-      message: 'This is a workspace root, not a worktree. Name the target with `--worktree <selector>`.',
-      context: { cwd: input.cwd, workspace: workspace.name, candidates },
-      remediation: [{ kind: 'command-suggestion', argv: [...input.argv, '--worktree', '<selector>'] }],
-    } };
-  } finally {
-    store?.close();
+  } catch {
+    return { outcome: 'resolved', cwd: input.cwd };
   }
 }
 
 /** A readonly handle on the state database, or `null` when none exists yet or it cannot be opened. */
-function openReadonlyStore(databasePath: string): SQLiteStateStore | null {
+function openReadonlyStore(databasePath: string, options: { busyTimeoutMs?: number } = {}): SQLiteStateStore | null {
   if (!existsSync(databasePath)) return null;
   try {
-    return new SQLiteStateStore(databasePath, { readonly: true });
+    return new SQLiteStateStore(databasePath, { readonly: true, ...options });
   } catch {
     return null;
   }

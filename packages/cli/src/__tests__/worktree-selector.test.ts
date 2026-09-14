@@ -2,9 +2,13 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createGitSafetyFixture } from '../../../testkit/src/git-fixture';
+import { runScenario } from '../../../testkit/src/scenario-child';
 import { runCli } from '../main';
 import { collectSelectorCandidates, matchWorktreeSelector, resolveTaskTarget, type SelectorCandidate } from '../worktree-selector';
+
+const storeScenarioPath = fileURLToPath(new URL('./worktree-selector-store.scenario.ts', import.meta.url));
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -116,6 +120,18 @@ describe('matchWorktreeSelector', () => {
     });
   });
 
+  test('refuses an empty or whitespace-only selector as a no match, never the worktree containing cwd', async () => {
+    const { paths, candidate } = await layout();
+    for (const selector of ['', '   ']) {
+      const outcome = await matchWorktreeSelector({
+        selector, cwd: paths.webMain, candidates: [candidate('web', paths.webMain, 'main', 1)], repositories: ['web'],
+      });
+      expect(outcome, JSON.stringify(selector)).toMatchObject({
+        outcome: 'refused', error: { code: 'WTM_WORKSPACE_NOT_FOUND', context: { selector, matchCount: 0, matches: [] } },
+      });
+    }
+  });
+
   test('an ambiguity inside one repository asks for a path and suggests no command', async () => {
     const { paths, candidate } = await layout();
     const outcome = await matchWorktreeSelector({
@@ -159,6 +175,23 @@ describe('collectSelectorCandidates', () => {
   });
 });
 
+// A real `SQLiteStateStore` — writable to register a worktree, then reopened readonly — must run
+// in its own process: constructing one in-process here, alongside everything else this file and
+// `../main` pull in, reliably panics this Bun build's better-sqlite3 binding (a native crash, not
+// a catchable exception). Every other direct `SQLiteStateStore` use in `packages/cli`'s tests goes
+// through a `.scenario.ts` child for the same reason; `worktree-selector-store.scenario.ts` covers
+// the two cases here that need a real store: item 47 review findings 3 and 5.
+describe('worktree-selector-store scenario (a real SQLiteStateStore, out of process)', () => {
+  test('a registered number matches a symlinked stored path, and a query error in the flag-less probe still sends cwd unchanged', () => {
+    const result = runScenario('node', ['--import', 'tsx', storeScenarioPath]);
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(result.stderr).toBe('');
+    const scenario = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(scenario['symlinkedRegisteredNumber']).toMatchObject({ matched: true });
+    expect(scenario['unmigratedProbe']).toMatchObject({ outcome: 'resolved' });
+  });
+});
+
 describe('resolveTaskTarget', () => {
   test('without flags, returns cwd unchanged', async () => {
     const fixture = await createGitSafetyFixture();
@@ -199,6 +232,17 @@ describe('resolveTaskTarget', () => {
         databasePath: join(fixture.root, 'absent.db'), globalConfigPath: join(fixture.root, 'c.toml'),
       });
       expect(target).toMatchObject({ outcome: 'refused', error: { code: 'WTM_WORKSPACE_NOT_FOUND' } });
+    } finally { await fixture.cleanup(); }
+  });
+
+  test('--worktree "" is refused as a no match instead of resolving to the caller worktree', async () => {
+    const fixture = await createGitSafetyFixture();
+    try {
+      const target = await resolveTaskTarget({
+        cwd: fixture.linkedWorktreePath, argv: ['wtm', 'start', 'dev'], worktree: '',
+        databasePath: join(fixture.root, 'absent.db'), globalConfigPath: join(fixture.root, 'c.toml'),
+      });
+      expect(target).toMatchObject({ outcome: 'refused', error: { code: 'WTM_WORKSPACE_NOT_FOUND', context: { matchCount: 0 } } });
     } finally { await fixture.cleanup(); }
   });
 });

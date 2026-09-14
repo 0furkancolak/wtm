@@ -259,6 +259,8 @@ export interface SQLiteStateStoreOptions {
   readonly?: boolean;
   migrationAssets?: MigrationAssetProvider;
   databaseFactory?: SqliteDatabaseFactory;
+  /** Milliseconds SQLite waits on a lock before giving up (`PRAGMA busy_timeout`). Default 5000. */
+  busyTimeoutMs?: number;
 }
 
 export class SQLiteStateStore implements StateStore, FeatureCreationStore {
@@ -277,7 +279,7 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
       if (options.readonly !== true && path !== ':memory:' && !path.startsWith('file::memory:')) {
         this.#database.pragma('journal_mode = WAL');
       }
-      this.#database.pragma('busy_timeout = 5000');
+      this.#database.pragma(`busy_timeout = ${options.busyTimeoutMs ?? 5000}`);
       if (options.readonly !== true) this.#migrate(options.migrationAssets ?? runtime.migrationAssets);
     } catch (error) {
       try {

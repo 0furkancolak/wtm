@@ -199,6 +199,22 @@ describe('runRemoveCommand', () => {
     expect(await pathExists(twin)).toBe(true);
   });
 
+  test('an empty selector is refused instead of matching the worktree the caller is in', async () => {
+    const fixture = await createFixture();
+
+    const envelope = await runRemoveCommand({
+      repoPath: fixture.linkedWorktreePath,
+      selector: '',
+      baseRef: 'refs/heads/main',
+    });
+
+    expect(envelope).toMatchObject({
+      ok: false,
+      errors: [{ code: 'WTM_WORKSPACE_NOT_FOUND', context: { selector: '', matchCount: 0 } }],
+    });
+    await expectPreserved(fixture);
+  });
+
   test('a relative path selector still resolves against the worktree containing the repo path', async () => {
     const fixture = await createFixture();
 

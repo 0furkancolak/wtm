@@ -960,19 +960,22 @@ async function runProductionAnalyze(input: {
         for (const [index, record] of topology.entries()) {
           if (!input.cleanupCandidates || index > 0) selected.push({ repoPath: repositoryRoot, record });
         }
+      } else if (input.selector === undefined) {
+        // No selector, no aggregate mode: `repositoryRoot`'s own `topology` already has the one
+        // record plain `analyze` needs, so it must not also pay for the shared selector's
+        // workspace-wide collection — another `git worktree list`, and (were `cwd` a registered
+        // workspace member) the workspace-root config resolution that collection can be refused
+        // over on behalf of a `--repo` this command was never given.
+        const record = topology.find(({ path }) => containsPath(path, resolve(input.cwd)));
+        if (record !== undefined) selected.push({ repoPath: repositoryRoot, record });
       } else {
         const collected = await collectSelectorCandidates({ cwd: input.cwd, store, globalConfigPath: input.globalConfigPath });
         if (collected.outcome === 'refused') return operationFailure('analyze', false, collected.error);
-        if (input.selector === undefined) {
-          const record = topology.find(({ path }) => containsPath(path, resolve(input.cwd)));
-          if (record !== undefined) selected.push({ repoPath: repositoryRoot, record });
-        } else {
-          const matched = await matchWorktreeSelector({
-            selector: input.selector, cwd: input.cwd, candidates: collected.candidates, repositories: collected.repositories,
-          });
-          if (matched.outcome === 'refused') return operationFailure('analyze', false, matched.error);
-          selected.push({ repoPath: repositoryRoot, record: matched.candidate.record });
-        }
+        const matched = await matchWorktreeSelector({
+          selector: input.selector, cwd: input.cwd, candidates: collected.candidates, repositories: collected.repositories,
+        });
+        if (matched.outcome === 'refused') return operationFailure('analyze', false, matched.error);
+        selected.push({ repoPath: repositoryRoot, record: matched.candidate.record });
       }
     }
     if (input.cleanupCandidates && store !== null) {

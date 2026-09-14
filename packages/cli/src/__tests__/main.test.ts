@@ -3,14 +3,18 @@ import { join, resolve } from 'node:path';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
+import { fileURLToPath } from 'node:url';
 import { createAdapterTrustStore } from '@wtm/core';
 import { jsonEnvelopeSchema } from '@wtm/protocol';
 import { createFakeAdapter } from '../../../testkit/src/fake-adapter';
+import { runScenario } from '../../../testkit/src/scenario-child';
 import type { DiagnosticDataSource, RegisteredWorkspace } from '../diagnostics';
 import { createCli, DiagnosticSourceError, runCli } from '../index';
 // The assertion is that `--version` prints the shipped version alone, not that the shipped
 // version is any particular string; releasing a new one must not fail this test.
 import { version } from '../../../../package.json' with { type: 'json' };
+
+const analyzeSelectorlessScenarioPath = fileURLToPath(new URL('./analyze-selectorless.scenario.ts', import.meta.url));
 
 const workspace: RegisteredWorkspace = {
   id: 'workspace-1',
@@ -507,5 +511,18 @@ describe('Commander CLI', () => {
     });
 
     expect(exitCode).toBe(143);
+  });
+});
+
+describe('runProductionAnalyze without a selector', () => {
+  test('does not also run git worktree list for the shared selector it never uses', () => {
+    const result = runScenario('node', ['--import', 'tsx', analyzeSelectorlessScenarioPath]);
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(result.stderr).toBe('');
+    const outcome = JSON.parse(result.stdout) as { exitCode: number; ok: boolean; worktreeListInvocations: number };
+    // Two calls are inherent to a plain analysis (`runProductionAnalyze`'s own topology lookup,
+    // then one more inside the analysis itself); a third, from the shared selector's
+    // `collectSelectorCandidates`, is the bug this regression test is for.
+    expect(outcome).toEqual({ exitCode: 0, ok: true, worktreeListInvocations: 2 });
   });
 });
