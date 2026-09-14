@@ -53,6 +53,9 @@ failure, `2` usage or configuration, `3` safety refusal or conflict, `4` daemon 
 | `wtm ps --json` | List WTM-managed process groups. |
 | `wtm logs [task]` | Read managed task logs; `--follow` streams raw output. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm exec -- <argv>` | Run raw argv in this worktree with its resolved environment. `--worktree <selector>` (`--repo <name>`), before `--`, targets another worktree. |
+| `wtm ci watch --json` | Start following HEAD's CI runs in the background; returns at once. `--pr <number>` labels the pull request. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
+| `wtm ci status --json` | Read the latest CI watch result from local state, with failed-job log summaries; never touches the network. `--all` lists every worktree in the workspace. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
+| `wtm ci unwatch --json` | Stop a worktree's pending CI watch. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm jobs list --json` | List recent queued jobs (`--limit <count>`). |
 | `wtm jobs status <job-id> --json` | Read a job's state and cleanup status. |
 | `wtm jobs result <job-id> --json` | Read a finished job's result and verify its source evidence. |
@@ -119,16 +122,19 @@ multi-repository create is finished with the `--resume` command its error return
 
 When a push, pull request, deploy or review starts a check that takes minutes:
 
-1. Note what you wait on (pull request number or run id).
+1. After a push or opening a pull request, run `wtm ci watch --json` once (`--worktree <branch>`
+   for another worktree, `--pr <number>` when there is one). It returns at once.
 2. Make your next tool call the next independent piece of work: the next item in its own
    `wtm create` worktree, a failing test, documentation, a review of your own diff.
-3. At each boundary between pieces of work, look once: `gh pr checks <number>` or
-   `gh run view <run-id> --json status,conclusion`. One call, then back to work.
-4. When the host delivers CI or task notifications, that notification is the signal; do not
-   check by hand.
+3. At each boundary between pieces of work, look once: `wtm ci status --json`. It reads local state
+   and replaces `gh pr checks`, `gh run view` and `gh run view --log-failed`.
+4. `pending`: keep working. `failure`: read `runs[].jobs[].logSummary`, fix on the same branch,
+   push, and `wtm ci watch` again. `unavailable` or `WTM_CI_UNAVAILABLE`: follow `remediation`; when
+   `gh` is missing, tell the user. `no_runs`: the commit started no workflow; say so.
 5. When the check is the only thing left (for example "merge once green") and no other work
    exists, report the pending check and what you will do when it finishes, then end your turn.
-6. A failed check is new work: read the failing job's log and fix it on the same branch.
+6. For checks WTM does not watch (deploys, reviews, non-GitHub CI), note what you wait on and look
+   once per boundary with that tool.
 
 Waiting on a check inside a tool call (`sleep`, `--watch`, `gh run watch`, a polling loop) blocks
 the whole session; step 5 is the replacement for it.

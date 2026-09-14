@@ -169,6 +169,9 @@ Before file deletion/materialization:
 ## Network behavior
 
 Core commands do not silently fetch/push. Network-affecting Git commands must be explicit.
+`wtm ci watch` is likewise explicit: it is the only command that runs `gh`, and only when a user or
+agent invokes it; `wtm ci status` and every other command stay local. CI tests substitute a fake
+`gh` and never need network access. No CI polling timer runs while no watch is pending.
 
 ## Rust escalation gate
 

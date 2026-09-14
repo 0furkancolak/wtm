@@ -19,13 +19,14 @@ const worktreeSelectorCommands = ['analyze', 'remove'] as const;
 const repoSelectorCommands = ['forget'] as const;
 
 /**
- * The seven task commands that accept `--worktree`/`--repo` (item 47) — a superset of
- * `taskArgumentCommands` because `exec` takes raw argv, not a task name, but still resolves its
- * target through the same two flags. Declared separately so flag-value completion (this array)
- * and task-name completion (`taskArgumentCommands`) can differ without one silently drifting to
- * match the other.
+ * Every top-level command that accepts `--worktree`/`--repo`: the seven task commands (item 47)
+ * plus `ci` (item 54), whose three subcommands resolve their target the same way. A superset of
+ * `taskArgumentCommands` because `exec` takes raw argv and `ci` takes no task name at all, yet
+ * both still resolve through the same two flags. Declared separately so flag-value completion
+ * (this array) and task-name completion (`taskArgumentCommands`) can differ without one silently
+ * drifting to match the other.
  */
-const targetFlagCommands = ['resolve', 'run', 'start', 'restart', 'stop', 'logs', 'exec'] as const;
+const targetFlagCommands = ['resolve', 'run', 'start', 'restart', 'stop', 'logs', 'exec', 'ci'] as const;
 
 export interface CompletionScriptRequest {
   shell: string;

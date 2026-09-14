@@ -127,6 +127,28 @@ describe('production daemon composition', () => {
     }
   }, 20_000);
 
+  /**
+   * `ci.unwatch` is routed to `CiWatcher` before it ever reaches the generic "unknown command"
+   * fallback, the same way `jobs.*` is routed to `HeavyJobQueue`. Nothing is registered under the
+   * fixture root, so `CiWatcher` itself refuses the request with `WTM_WORKSPACE_NOT_FOUND` — proof
+   * the request reached the watcher rather than being swallowed by the daemon's own dispatch. No
+   * real `gh` runs: this refusal happens before the watcher would ever call the provider.
+   */
+  test('a ci.unwatch request for an unregistered cwd reaches the watcher rather than the unknown-command fallback', () => {
+    const isolated = isolatedHome();
+    try {
+      const result = runScenario('node', ['--import', 'tsx', scenarioPath, 'ci-unwatch'], {
+        timeoutMs: 20_000,
+        env: isolated.env,
+      });
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(JSON.parse(result.stdout)).toEqual({ ok: false, code: 'WTM_WORKSPACE_NOT_FOUND' });
+    } finally {
+      isolated.cleanup();
+    }
+  }, 20_000);
+
   test('uses the private custom database parent rather than only the data root', () => {
     const isolated = isolatedHome();
     try {

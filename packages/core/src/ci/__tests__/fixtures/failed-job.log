@@ -1,0 +1,150 @@
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:00.0000000Z Preparing step output 0
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:01.0000000Z Preparing step output 1
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:02.0000000Z Preparing step output 2
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:03.0000000Z Preparing step output 3
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:04.0000000Z Preparing step output 4
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:05.0000000Z Preparing step output 5
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:06.0000000Z Preparing step output 6
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:07.0000000Z Preparing step output 7
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:08.0000000Z Preparing step output 8
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:09.0000000Z Preparing step output 9
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:10.0000000Z Preparing step output 10
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:11.0000000Z Preparing step output 11
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:12.0000000Z Preparing step output 12
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:13.0000000Z Preparing step output 13
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:14.0000000Z Preparing step output 14
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:15.0000000Z Preparing step output 15
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:16.0000000Z Preparing step output 16
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:17.0000000Z Preparing step output 17
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:18.0000000Z Preparing step output 18
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:19.0000000Z Preparing step output 19
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:20.0000000Z Preparing step output 20
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:21.0000000Z Preparing step output 21
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:22.0000000Z Preparing step output 22
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:23.0000000Z Preparing step output 23
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:24.0000000Z Preparing step output 24
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:25.0000000Z Preparing step output 25
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:26.0000000Z Preparing step output 26
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:27.0000000Z Preparing step output 27
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:28.0000000Z Preparing step output 28
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:29.0000000Z Preparing step output 29
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:30.0000000Z (fail) runtime factory > starts [12.00ms]
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:31.0000000Z Preparing step output 31
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:32.0000000Z Preparing step output 32
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:33.0000000Z Preparing step output 33
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:34.0000000Z Preparing step output 34
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:35.0000000Z Preparing step output 35
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:36.0000000Z Preparing step output 36
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:37.0000000Z Preparing step output 37
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:38.0000000Z Preparing step output 38
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:39.0000000Z Preparing step output 39
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:40.0000000Z 
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:41.0000000Z expect(received).toBe(expected)
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:42.0000000Z 
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:43.0000000Z Expected: true
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:44.0000000Z Received: false
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:45.0000000Z 
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:46.0000000Z       36 |   test('starts', () => {
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:47.0000000Z       37 |     expect(factory.start()).toBe(true);
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:48.0000000Z          |                             ^
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:49.0000000Z       38 |   });
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:50.0000000Z       39 |   test('stops', () => {
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:51.0000000Z 
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:52.0000000Z       at <anonymous> (/Users/runner/work/wtm/wtm/packages/daemon/src/__tests__/runtime-factory.test.ts:37:61)
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:53.0000000Z       at asyncFn (/Users/runner/work/wtm/wtm/node_modules/bun-test/dist/index.js:512:9)
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:54.0000000Z       at run (/Users/runner/work/wtm/wtm/node_modules/bun-test/dist/index.js:640:22)
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:55.0000000Z 
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:56.0000000Z (fail) runtime factory > stops [3.00ms]
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:57.0000000Z 
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:58.0000000Z expect(received).toBe(expected)
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:59.0000000Z 
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:00.0000000Z ##[error]            ^
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:01.0000000Z Preparing step output 61
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:02.0000000Z Preparing step output 62
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:03.0000000Z Preparing step output 63
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:04.0000000Z Preparing step output 64
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:05.0000000Z Preparing step output 65
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:06.0000000Z Preparing step output 66
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:07.0000000Z Preparing step output 67
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:08.0000000Z Preparing step output 68
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:09.0000000Z Preparing step output 69
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:10.0000000Z Fetching token ghp_abcdefghijklmnopqrstuvwxyz0123456789 from cache
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:11.0000000Z Preparing step output 71
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:12.0000000Z Preparing step output 72
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:13.0000000Z Preparing step output 73
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:14.0000000Z Preparing step output 74
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:15.0000000Z Preparing step output 75
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:16.0000000Z Preparing step output 76
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:17.0000000Z Preparing step output 77
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:18.0000000Z Preparing step output 78
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:19.0000000Z Preparing step output 79
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:20.0000000Z Preparing step output 80
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:21.0000000Z Preparing step output 81
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:22.0000000Z Preparing step output 82
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:23.0000000Z Preparing step output 83
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:24.0000000Z Preparing step output 84
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:25.0000000Z Preparing step output 85
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:26.0000000Z Preparing step output 86
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:27.0000000Z Preparing step output 87
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:28.0000000Z Preparing step output 88
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:29.0000000Z Preparing step output 89
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:30.0000000Z Preparing step output 90
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:31.0000000Z Preparing step output 91
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:32.0000000Z Preparing step output 92
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:33.0000000Z Preparing step output 93
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:34.0000000Z Preparing step output 94
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:35.0000000Z Preparing step output 95
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:36.0000000Z Preparing step output 96
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:37.0000000Z Preparing step output 97
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:38.0000000Z 
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:39.0000000Z  1869 pass
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:40.0000000Z  12 fail
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:41.0000000Z  0 skip
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:42.0000000Z  0 todo
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:43.0000000Z 
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:44.0000000Z Fail Tests:
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:45.0000000Z   runtime factory > starts
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:46.0000000Z   runtime factory > stops
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:47.0000000Z 
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:48.0000000Z Ran 1881 tests across 217 files. [41.23s]
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:49.0000000Z 
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:50.0000000Z ##[endgroup]
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:51.0000000Z ##[group]Run bun run test
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:52.0000000Z $ bun run test --max-concurrency=1 --parallel=1 --timeout 30000
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:53.0000000Z 
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:54.0000000Z error: script "test" exited with code 1
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:55.0000000Z ##[endgroup]
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:56.0000000Z ##[group]Post job cleanup.
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:57.0000000Z [command]/usr/bin/git version
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:58.0000000Z ##[error]Process completed with exit code 1.
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:59.0000000Z Cleaning up orphan processes
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:00.0000000Z [command]/usr/local/bin/git config --local --name-only --get-regexp core.sshCommand
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:01.0000000Z [command]/usr/local/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:02.0000000Z [command]/usr/local/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:03.0000000Z [command]/usr/local/bin/git config --local --unset-all http.https://github.com/.extraheader
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:04.0000000Z [command]/usr/local/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:05.0000000Z Post-job cleanup step 125
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:06.0000000Z Post-job cleanup step 126
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:07.0000000Z Post-job cleanup step 127
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:08.0000000Z Post-job cleanup step 128
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:09.0000000Z Post-job cleanup step 129
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:10.0000000Z Post-job cleanup step 130
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:11.0000000Z Post-job cleanup step 131
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:12.0000000Z Post-job cleanup step 132
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:13.0000000Z Post-job cleanup step 133
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:14.0000000Z Post-job cleanup step 134
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:15.0000000Z Post-job cleanup step 135
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:16.0000000Z Post-job cleanup step 136
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:17.0000000Z Post-job cleanup step 137
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:18.0000000Z Post-job cleanup step 138
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:19.0000000Z Post-job cleanup step 139
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:20.0000000Z Post-job cleanup step 140
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:21.0000000Z Post-job cleanup step 141
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:22.0000000Z Post-job cleanup step 142
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:23.0000000Z Post-job cleanup step 143
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:24.0000000Z Post-job cleanup step 144
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:25.0000000Z Post-job cleanup step 145
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:26.0000000Z Post-job cleanup step 146
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:27.0000000Z Post-job cleanup step 147
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:28.0000000Z Post-job cleanup step 148
+Validate darwin x64	UNKNOWN STEP	2026-09-14T11:07:29.0000000Z Post-job cleanup step 149

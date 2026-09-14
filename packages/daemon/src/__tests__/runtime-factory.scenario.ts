@@ -17,6 +17,7 @@ const fixture = await createWorkspaceFixture();
 const socketDirectory = await mkdtemp(join(shortTmpRoot(), 'wtm-socket-'));
 const useDefaultClient = process.argv[2] === 'default-client';
 const closeWithLiveTask = process.argv[2] === 'close-live';
+const ciUnwatch = process.argv[2] === 'ci-unwatch';
 const runtimeInvocation = developmentRuntimeInvocation();
 // Failure-only evidence from the actual observations used by the supervisor. A second ps
 // after a failure cannot explain an earlier identity mismatch. Keep argv and environment out.
@@ -87,73 +88,86 @@ const runtime = await createProductionDaemon(useDefaultClient ? {
 });
 const client = new DaemonClient({ socketPath: runtime.paths.socketPath });
 try {
-  await writeFile(join(fixture.root, 'wtm.toml'), [
-    'version = 1',
-    '[tasks.hold]',
-    closeWithLiveTask
-      ? 'run = ["/bin/sleep", "30"]'
-      : 'run = ["node", "-e", "setInterval(() => {}, 1000)"]',
-    'background = true',
-    'singleton = true',
-  ].join('\n'));
-  const workspace = runtime.stateStore.upsertWorkspace({
-    name: 'fixture', root: fixture.root, scope: 'local', configPath: join(fixture.root, 'wtm.toml'),
-  });
-  const identity = await readGitRepositoryIdentity(fixture.firstRepoPath);
-  const repository = runtime.stateStore.upsertRepository({
-    workspaceId: workspace.id,
-    commonGitDir: identity.commonGitDir,
-    mainRoot: fixture.firstRepoPath,
-    remoteIdentity: null,
-  });
-  runtime.stateStore.reconcileWorktrees(repository.id, await listGitWorktrees(fixture.firstRepoPath));
-  await runtime.start();
-  if (!useDefaultClient) await client.start();
-
-  const start = await invoke(['start', 'hold', '--json']);
-  if (!start.envelope.ok) throw new Error(JSON.stringify({ stage: 'start', ...start, trace }));
-  const processRecord = start.envelope.data.process;
-  expected = { pid: processRecord.pid, pgid: processRecord.pgid,
-    processStartTime: processRecord.processStartTime, commandFingerprint: processRecord.commandFingerprint };
-  if (closeWithLiveTask) {
-    await runtime.close();
-    const processRecord = start.envelope.data.process;
+  if (ciUnwatch) {
+    // Nothing is registered under `fixture.root` here on purpose: the point of this mode is that
+    // `ci.unwatch` reaches `CiWatcher` (rather than the generic unknown-command envelope) and comes
+    // back `WTM_WORKSPACE_NOT_FOUND` for a cwd no worktree owns. Never starts real `gh`.
+    await runtime.start();
+    await client.start();
+    const response = await client.request('ci.unwatch', { cwd: fixture.root });
     console.log(JSON.stringify({
-      startExit: start.exitCode,
-      startState: processRecord.state,
-      identity: {
-        pid: processRecord.pid,
-        pgid: processRecord.pgid,
-        processStartTime: processRecord.processStartTime,
-        commandFingerprint: processRecord.commandFingerprint,
-      },
+      ok: response.ok,
+      code: response.ok ? null : response.errors[0]?.code,
     }));
   } else {
-    const ps = await invoke(['ps', '--json']);
-    if (ps.exitCode !== 0 || ps.envelope.ok !== true) {
-      throw new Error(JSON.stringify({ stage: 'ps', ...ps }));
+    await writeFile(join(fixture.root, 'wtm.toml'), [
+      'version = 1',
+      '[tasks.hold]',
+      closeWithLiveTask
+        ? 'run = ["/bin/sleep", "30"]'
+        : 'run = ["node", "-e", "setInterval(() => {}, 1000)"]',
+      'background = true',
+      'singleton = true',
+    ].join('\n'));
+    const workspace = runtime.stateStore.upsertWorkspace({
+      name: 'fixture', root: fixture.root, scope: 'local', configPath: join(fixture.root, 'wtm.toml'),
+    });
+    const identity = await readGitRepositoryIdentity(fixture.firstRepoPath);
+    const repository = runtime.stateStore.upsertRepository({
+      workspaceId: workspace.id,
+      commonGitDir: identity.commonGitDir,
+      mainRoot: fixture.firstRepoPath,
+      remoteIdentity: null,
+    });
+    runtime.stateStore.reconcileWorktrees(repository.id, await listGitWorktrees(fixture.firstRepoPath));
+    await runtime.start();
+    if (!useDefaultClient) await client.start();
+
+    const start = await invoke(['start', 'hold', '--json']);
+    if (!start.envelope.ok) throw new Error(JSON.stringify({ stage: 'start', ...start, trace }));
+    const processRecord = start.envelope.data.process;
+    expected = { pid: processRecord.pid, pgid: processRecord.pgid,
+      processStartTime: processRecord.processStartTime, commandFingerprint: processRecord.commandFingerprint };
+    if (closeWithLiveTask) {
+      await runtime.close();
+      const processRecord = start.envelope.data.process;
+      console.log(JSON.stringify({
+        startExit: start.exitCode,
+        startState: processRecord.state,
+        identity: {
+          pid: processRecord.pid,
+          pgid: processRecord.pgid,
+          processStartTime: processRecord.processStartTime,
+          commandFingerprint: processRecord.commandFingerprint,
+        },
+      }));
+    } else {
+      const ps = await invoke(['ps', '--json']);
+      if (ps.exitCode !== 0 || ps.envelope.ok !== true) {
+        throw new Error(JSON.stringify({ stage: 'ps', ...ps }));
+      }
+      const stop = await invoke(['stop', 'hold', '--json']);
+      if (stop.exitCode !== 0 || stop.envelope.ok !== true) {
+        const terminal = runtime.stateStore.getManagedProcess(processRecord.id);
+        const completion = await runtime.logs.readCompletion(processRecord.stdoutPath, processRecord.pid)
+          .catch((error: unknown) => ({ inspectionFailed: errorCode(error) }));
+        throw new Error(JSON.stringify({ stage: 'stop', ...stop, expected, firstMismatch, trace,
+          terminal: terminal === null ? null : { state: terminal.state, stoppedAt: terminal.stoppedAt }, completion }));
+      }
+      console.log(JSON.stringify({
+        startExit: start.exitCode,
+        startState: start.envelope.data.process.state,
+        psRunning: ps.envelope.data.processes.some((process: { taskName: string; state: string }) =>
+          process.taskName === 'hold' && process.state === 'RUNNING'),
+        stopExit: stop.exitCode,
+        stopState: stop.envelope.data.processes[0].state,
+        // Reported only by the default-client run, because that is the only one whose socket is
+        // derived rather than handed in — the others would be reading back their own argument. The
+        // parent checks every disk root is confined and the IPC address matches the isolated
+        // production derivation. Windows pipes are names, not entries beneath a home directory.
+        ...(useDefaultClient ? { socketPath: runtime.paths.socketPath, paths: runtime.paths } : {}),
+      }));
     }
-    const stop = await invoke(['stop', 'hold', '--json']);
-    if (stop.exitCode !== 0 || stop.envelope.ok !== true) {
-      const terminal = runtime.stateStore.getManagedProcess(processRecord.id);
-      const completion = await runtime.logs.readCompletion(processRecord.stdoutPath, processRecord.pid)
-        .catch((error: unknown) => ({ inspectionFailed: errorCode(error) }));
-      throw new Error(JSON.stringify({ stage: 'stop', ...stop, expected, firstMismatch, trace,
-        terminal: terminal === null ? null : { state: terminal.state, stoppedAt: terminal.stoppedAt }, completion }));
-    }
-    console.log(JSON.stringify({
-      startExit: start.exitCode,
-      startState: start.envelope.data.process.state,
-      psRunning: ps.envelope.data.processes.some((process: { taskName: string; state: string }) =>
-        process.taskName === 'hold' && process.state === 'RUNNING'),
-      stopExit: stop.exitCode,
-      stopState: stop.envelope.data.processes[0].state,
-      // Reported only by the default-client run, because that is the only one whose socket is
-      // derived rather than handed in — the others would be reading back their own argument. The
-      // parent checks every disk root is confined and the IPC address matches the isolated
-      // production derivation. Windows pipes are names, not entries beneath a home directory.
-      ...(useDefaultClient ? { socketPath: runtime.paths.socketPath, paths: runtime.paths } : {}),
-    }));
   }
 } finally {
   await client.close();

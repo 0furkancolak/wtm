@@ -1,4 +1,5 @@
 export * from './adapter';
+export * from './ci';
 export * from './errors';
 export * from './ipc';
 export * from './ipc-framing';

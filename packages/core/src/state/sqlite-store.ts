@@ -4,8 +4,10 @@ import type { MigrationAssetProvider } from './assets';
 import type { SqliteDatabase, SqliteDatabaseFactory } from './database';
 import { stateStoreRuntime } from './runtime';
 import { assertNoHeavyJobs, createHeavyJobStore } from './jobs-store';
+import { createCiWatchStore } from './ci-store';
 import { maxEndpointBatchCandidates, validEndpointBatchResults } from '../runtime/endpoint-batch';
 import type { HeavyJobStore } from './jobs';
+import type { CiWatchStore } from './ci';
 import type {
   LifecycleEventSubject,
   AdapterTrustInput,
@@ -266,6 +268,7 @@ export interface SQLiteStateStoreOptions {
 export class SQLiteStateStore implements StateStore, FeatureCreationStore {
   readonly #database: SqliteDatabase;
   readonly jobs: HeavyJobStore;
+  readonly ci: CiWatchStore;
   #closed = false;
 
   constructor(path: string, options: SQLiteStateStoreOptions = {}) {
@@ -274,6 +277,7 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
       readonly: options.readonly === true,
     });
     this.jobs = createHeavyJobStore(this.#database);
+    this.ci = createCiWatchStore(this.#database);
     try {
       this.#database.pragma('foreign_keys = ON');
       if (options.readonly !== true && path !== ':memory:' && !path.startsWith('file::memory:')) {

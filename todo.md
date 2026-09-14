@@ -1979,18 +1979,27 @@ kural yine de tarif olarak eklendi.
 
 ---
 
-### [ ] 54. CI takibi: WTM push/PR sonrası CI'ı izlesin ve AI konuşmasına bildirsin
+### [x] 54. CI takibi: WTM push/PR sonrası CI'ı izlesin ve AI konuşmasına bildirsin
 
-Ajanlar CI sonucunu beklemek için geliştirmeyi durduruyor. WTM bir push ya da PR'ın CI koşularını
-kendisi izlemeli ve sonuç (başarılı, başarısız job'lar ve log özeti) çıktığında mevcut AI
-konuşmasına bildirmeli; ajan beklemeden çalışmaya devam etmeli.
+Ajanlar CI sonucunu beklemek için geliştirmeyi durduruyordu. WTM artık bir push ya da PR'ın CI
+koşularını kendisi izliyor; sonuç (başarılı, başarısız job'lar ve log özeti) `wtm ci status`'un
+yerel okumasında hazır duruyor ve ajan beklemeden çalışmaya devam ediyor.
 
 #### Yapılacaklar
 
-- [ ] Tasarım: CI kaynağı (`gh` CLI / GitHub API), izleme sahibi (daemon), ve bildirimin konuşmaya
-      ulaşma yolu (ajan host'unun hook'ları, örneğin Claude Code/Codex hook'ları; bir `wtm` komutu).
-- [ ] Hook kurulumu `wtm skill install` gibi güvenli ve açık rızalı olsun.
-- [ ] Skill'deki "CI ve uzun beklemeler" bölümüne hook'un kullanımı eklensin.
+- [x] Tasarım: CI kaynağı `gh` CLI (yalnızca GitHub), izleme sahibi daemon, bildirimin konuşmaya
+      ulaşma yolu bir `wtm` komutu (`wtm ci status`) — bkz. not.
+- [ ] ~~Hook kurulumu `wtm skill install` gibi güvenli ve açık rızalı olsun.~~ Ajan-host hook'u
+      tasarımdan çıkarıldı: bkz. not.
+- [x] `wtm ci watch`, `wtm ci status`, `wtm ci unwatch` komutları ve daemon'ın CI izleyicisi eklendi.
+- [x] Skill'deki "CI ve uzun beklemeler" bölümü yeni akışla güncellendi: push sonrası `wtm ci
+      watch`, iş sınırında `wtm ci status`, asla bekleme.
+
+**Not (2026-09-14):** Teslimat bir ajan-host hook'u değil, `wtm ci status` komutu: hook'lar
+kendiliğinden bir konuşmaya bildirim gönderemez, başka bir aracın ayarlarına yazmak kendi rıza ve
+sahiplik tasarımını gerektirir, ve skill zaten ajanlara iş sınırlarında bakmayı öğretiyor (madde
+53). Planlama sırasındaki düzeltmeler tasarım belgesinin "Corrections while planning" bölümünde
+listeli: `docs/superpowers/specs/2026-09-14-ci-watch-design.md`.
 
 ---
 

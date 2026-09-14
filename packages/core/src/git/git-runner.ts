@@ -161,6 +161,29 @@ export async function readGitRemoteOrigin(repoPath: string): Promise<string | nu
 }
 
 /**
+ * The commit a worktree has checked out and the branch it is on (null when detached), or null when
+ * Git cannot name a commit: a repository with no commits yet, or a directory that is not a
+ * repository. It runs exactly `rev-parse --verify HEAD^{commit}` and `symbolic-ref --quiet --short
+ * HEAD`, so `wtm ci watch` can read HEAD without the core root exposing arbitrary Git execution.
+ */
+export async function readWorktreeHead(cwd: string): Promise<{ headSha: string; branch: string | null } | null> {
+  let headSha: string;
+  try {
+    headSha = (await runGit(cwd, ['rev-parse', '--verify', 'HEAD^{commit}'])).stdout.toString('utf8').trim();
+  } catch (error) {
+    if (error instanceof GitCommandError) return null;
+    throw error;
+  }
+  let branch: string | null = null;
+  try {
+    branch = (await runGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).stdout.toString('utf8').trim() || null;
+  } catch (error) {
+    if (!(error instanceof GitCommandError)) throw error;
+  }
+  return { headSha, branch };
+}
+
+/**
  * When the commit at `revision` was last committed, or null when Git cannot answer.
  *
  * Cleanup ranking reads this as the age of a worktree's own work. A repository with no commits,

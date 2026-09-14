@@ -26,6 +26,10 @@ binaries are Developer ID signed and notarized.
 
 ### Added
 
+- `wtm ci watch`, `wtm ci status` and `wtm ci unwatch`: the daemon follows a commit's GitHub Actions
+  runs through `gh` on a bounded budget, and `ci status` returns the result with a short,
+  secret-masked summary of each failed job's log from local state, so an agent keeps working
+  instead of waiting on CI.
 - `wtm create <branch> --repos web,api,worker` creates the branch in several repositories of a
   workspace as one feature, with a start commit pinned per repository, every refusal decided
   before Git writes, and a `create` lease on each member. A partial creation is journalled, and
