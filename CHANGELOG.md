@@ -182,6 +182,15 @@ binaries are Developer ID signed and notarized.
   so a caller can tell a `LOCAL_ONLY` remote-persistence verdict from a `REFRESHED` one. Analysis
   itself still has no path that can reach the network.
 
+### Changed
+
+- The WTM Agent Skill is now an agent's complete WTM reference, so a conversation no longer spends
+  tokens rediscovering WTM from the README, `docs/` or `--help`. It opens with what WTM is, the
+  JSON envelope and exit classes, and a map of every visible command, and it teaches task discovery
+  through `wtm resolve`'s `context.knownTasks` and worktree creation through `wtm create`. A new
+  section tells an agent to keep working instead of waiting on CI inside a tool call. A test fails
+  when a CLI command is missing from the map or the skill grows past 24 KiB.
+
 ### Fixed
 
 - `wtm doctor` on a machine with no registered workspace, such as one that has never run

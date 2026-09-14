@@ -1919,6 +1919,44 @@ wtm task unset <name>
 
 ---
 
+### [x] 53. Skill ajanın tek WTM başvurusu olsun; CI beklemesin
+
+WTM kullanan ajanlar her konuşmada WTM'in ne olduğunu ve nasıl kullanıldığını README'den, `docs/`'tan
+ya da `--help`'ten yeniden araştırıyor ve bunun için token harcıyor. Push ya da PR sonrası da CI'ı
+bekleyerek geliştirmeyi durduruyorlar.
+
+2026-09-14 başlangıç ölçümü (mevcut skill ile, sonnet, senaryo başına 3 tekrar): ajanlar README'ye
+gitmedi ama task adını bulmak için `wtm.toml`/`Makefile`/`package.json` okudu (3/3), `doctor` ve
+`status`'u başta ve sonda tekrarladı, worktree'yi `wtm create` yerine `git worktree add` ile açtı
+(6 koşunun 5'inde; skill `create`'i hiç anmıyordu). CI senaryolarında bekleme yeniden üretilemedi;
+kural yine de tarif olarak eklendi.
+
+- [x] Skill'in başına "WTM nedir", JSON envelope ve exit sınıfları.
+- [x] Görünür her komut için bir satırlık komut haritası.
+- [x] Yalnızca skill'de olmayan bir komut ya da bayrak hata olarak dönerse README/`docs`/`--help`.
+- [x] Task adları için `wtm resolve` → `context.knownTasks`; worktree için `wtm create`.
+- [x] "CI ve uzun beklemeler" bölümü: bir sonraki bağımsız işe geç, iş sınırında bir kez bak, host
+      bildirimine güven, yalnızca CI kaldıysa raporla ve turu bitir.
+- [x] `skill-reference.test.ts`: komut haritası CLI'daki görünür komutlarla eşleşiyor; skill ≤ 24 KiB.
+- [x] `docs/11-ai-first-skill-integration.md` güncellendi.
+
+---
+
+### [ ] 54. CI takibi: WTM push/PR sonrası CI'ı izlesin ve AI konuşmasına bildirsin
+
+Ajanlar CI sonucunu beklemek için geliştirmeyi durduruyor. WTM bir push ya da PR'ın CI koşularını
+kendisi izlemeli ve sonuç (başarılı, başarısız job'lar ve log özeti) çıktığında mevcut AI
+konuşmasına bildirmeli; ajan beklemeden çalışmaya devam etmeli.
+
+#### Yapılacaklar
+
+- [ ] Tasarım: CI kaynağı (`gh` CLI / GitHub API), izleme sahibi (daemon), ve bildirimin konuşmaya
+      ulaşma yolu (ajan host'unun hook'ları, örneğin Claude Code/Codex hook'ları; bir `wtm` komutu).
+- [ ] Hook kurulumu `wtm skill install` gibi güvenli ve açık rızalı olsun.
+- [ ] Skill'deki "CI ve uzun beklemeler" bölümüne hook'un kullanımı eklensin.
+
+---
+
 ## P2 — Ürünü belirgin biçimde farklılaştıracak işler
 
 ### [ ] 12. Local reverse proxy / stable feature domains
