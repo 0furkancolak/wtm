@@ -18,6 +18,12 @@ import { createQueueTaskFixture } from './jobs-task-fixture';
 const fixture = await createWorkspaceFixture();
 const socketRoot = await mkdtemp(join(shortTmpRoot(), 'wtm-jobs-'));
 const releasePath = join(socketRoot, 'release');
+// Never the real default state path (item 47 review): each submission's `run --enqueue` resolves
+// a flag-less task target too, and these point at paths nothing creates, so that probe finds
+// nothing and falls straight through to sending `cwd` unchanged — the daemon routes the request
+// by `cwd` regardless of what, if anything, WTM's own state says about it.
+const taskTargetDatabasePath = join(fixture.userDataDir, 'task-target-state.db');
+const taskTargetGlobalConfigPath = join(fixture.userDataDir, 'task-target-global.toml');
 const memoryPolicy = process.argv[2] === 'memory';
 if (memoryPolicy) await writeFile(join(socketRoot, 'global.toml'), stringify({
   version: 1, jobs: { max_concurrent_heavy: 2, memory: { budget_mib: 64, reserve_mib: 0 } },
@@ -166,7 +172,9 @@ function jobEvidence(states: JobStatus[]): string {
 async function submit(cwd: string, key: string) {
   const childPath = fileURLToPath(new URL('./jobs-submit.scenario.ts', import.meta.url));
   const envelope = await new Promise<JsonEnvelope<unknown>>((resolve, reject) => {
-    const child = spawn('node', ['--import', 'tsx', childPath, runtime.paths.socketPath, cwd, key], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('node', [
+      '--import', 'tsx', childPath, runtime.paths.socketPath, cwd, key, taskTargetDatabasePath, taskTargetGlobalConfigPath,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = '';
     const timer = setTimeout(() => { child.kill('SIGKILL'); }, 15_000);
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });

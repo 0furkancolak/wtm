@@ -2,12 +2,22 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
 import { syncBuiltinESMExports } from 'node:module';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ManagedProcessRecord, ResolvedTask } from '@wtm/core';
 import type { IpcServerPublisher, PublishedIpcServer } from '@wtm/platform';
 import { runCli } from '../../../cli/src/main';
 import { DaemonClient } from '../../../cli/src/client';
 import { UnixIpcServer } from '../server';
 import { DaemonRuntimeController } from '../runtime-controller';
+
+// Never the real default state path (item 47 review): `cwd` here is a fixture, not a real
+// worktree, so the flag-less task-target probe must find nothing at these paths and fall straight
+// through to sending `cwd` unchanged, the same as it does with no state at all.
+const taskTargetRoot = await mkdtemp(join(tmpdir(), 'wtm-readiness-http-'));
+const taskTargetDatabasePath = join(taskTargetRoot, 'state.db');
+const taskTargetGlobalConfigPath = join(taskTargetRoot, 'global.toml');
 
 let mode: 'delayed' | 'failed' | 'hung' = 'delayed';
 let readyAt: number | null = null;
@@ -70,7 +80,8 @@ const until = async (predicate: () => boolean) => {
 async function invoke(flags: string[], signal?: AbortSignal) {
   let output = '';
   const code = await runCli(['start', 'dev', '--wait', ...flags, '--json'], {
-    cwd: '/fixture', runtimeClient: client, ...(signal === undefined ? {} : { signal }),
+    cwd: '/fixture', runtimeClient: client, taskTargetDatabasePath, taskTargetGlobalConfigPath,
+    ...(signal === undefined ? {} : { signal }),
     stdout: (value) => { output += value; }, stderr: () => {},
   });
   return { code, envelope: JSON.parse(output) };
@@ -102,4 +113,5 @@ try {
   endpoint.closeAllConnections();
   await new Promise<void>((resolve) => endpoint.close(() => resolve()));
   net.createConnection = originalConnect; syncBuiltinESMExports();
+  await rm(taskTargetRoot, { recursive: true, force: true });
 }
