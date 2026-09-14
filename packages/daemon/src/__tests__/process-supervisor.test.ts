@@ -404,6 +404,45 @@ describe('ManagedProcessSupervisor', () => {
     await supervisor.stop({ worktreeId: worktree.id, taskName: 'dev' });
   });
 
+  test('a second concurrent stop of the same task reports it is not running', async () => {
+    const { root, worktree, supervisor } = await setup();
+    const pidFile = join(root, 'stop-conflict.json');
+    const started = await supervisor.start({
+      worktreeId: worktree.id,
+      taskName: 'dev',
+      argv: ['node', '--import', tsxLoader, fixturePath, 'parent', pidFile, 'normal'],
+      cwd: root,
+      env: process.env,
+    });
+    const pids = await waitForJson(pidFile) as { parentPid: number; childPid: number };
+
+    // Both calls are issued before either awaits: the supervisor serializes stop/start per
+    // worktree+task key, so the first to register its lock wins the real stop and the second
+    // finds nothing left active once its turn comes -- the documented `RUNTIME_TASK_NOT_RUNNING`
+    // safety refusal, not a second attempt at the same shutdown.
+    const first = supervisor.stop({ worktreeId: worktree.id, taskName: 'dev' });
+    const second = supervisor.stop({ worktreeId: worktree.id, taskName: 'dev' });
+
+    const stopped = await first;
+    expect(stopped.id).toBe(started.record.id);
+    expect(stopped.state).toBe('STOPPED');
+    await expect(second).rejects.toMatchObject({
+      code: 'RUNTIME_TASK_NOT_RUNNING',
+      context: { worktreeId: worktree.id, taskName: 'dev' },
+    });
+    await waitFor(() => !pidExists(pids.parentPid) && !pidExists(pids.childPid));
+  });
+
+  test('stopping a task with no active record reports it is not running', async () => {
+    const { worktree, supervisor } = await setup();
+
+    await expect(supervisor.stop({ worktreeId: worktree.id, taskName: 'never-started' }))
+      .rejects.toMatchObject({
+        code: 'RUNTIME_TASK_NOT_RUNNING',
+        context: { worktreeId: worktree.id, taskName: 'never-started' },
+      });
+  });
+
   test('create failure synchronously removes the exact newly spawned task and group', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wtm-supervisor-create-fault-'));
     const store = new FaultProcessStore();

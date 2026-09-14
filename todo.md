@@ -2839,15 +2839,91 @@ dokümanda anlatıldığı gibi çalışıyor mu test edilmeli.
 Doğrulama (2026-09-09): `packages/cli/src/__tests__/create.test.ts` 11/11 başarılı.
 Daemon açıkken hook ve multi-repo kabul kriterleri bu sonuçla kapatılmadı.
 
-### [ ] Runtime
+### [x] Runtime
 
-- [ ] daemon restart
-- [ ] PID reuse
-- [ ] process group child spawning
-- [ ] start conflict
-- [ ] stop conflict
-- [ ] healthcheck timeout
-- [ ] log rotation
+- [x] daemon restart — added `packages/daemon/src/__tests__/daemon-restart-recovery.scenario.ts`
+      (run through `runScenario` from `daemon-restart-recovery.test.ts`), because the existing
+      recovery tests in `process-supervisor.test.ts` recover through `new MemoryProcessStore()`, an
+      in-memory test double with no foreign-key or persistence semantics — not evidence of a durable
+      store surviving a real daemon generation change. The new scenario runs two full
+      `createProductionDaemon` lifetimes against the *same* `databasePath` (a real `SQLiteStateStore`
+      file on disk — `managed_process_start_reservations.worktree_id` has a real `REFERENCES
+      worktrees(id)` foreign key, migration `003-managed-process-reservations.sql`, so this only
+      works at all with a real registered Git worktree, unlike the memory double). Lifetime one
+      starts two real spawned tasks through the production supervisor/store adapter, then closes
+      (control handles only, per `runtime-factory.test.ts`'s "closing the daemon releases control
+      handles while a detached task remains live" — both real processes keep running); one task is
+      then killed directly (bypassing the supervisor) while no daemon is running at all, simulating
+      a crash during the outage. Lifetime two opens a *new* `SQLiteStateStore` and a *new*
+      `ManagedProcessSupervisor` on that same file with zero in-memory carryover, and `runtime.start()`
+      runs the real startup recovery hook. Asserts the documented outcomes
+      (docs/07-process-port-runtime.md): the still-live, identity-matching task is verified and kept
+      `RUNNING` (same pid/pgid/start-time, never adopted as a new record or re-spawned), the task
+      that exited during the outage is recovered `STOPPED`, and the *same* new supervisor instance
+      can still stop the verified-live real process. The narrower `process-supervisor.test.ts` tests
+      ("daemon recovery verifies stored identities without adopting them", "reclaims only an expired
+      restart lease tied to the exact verified old process", etc.) remain useful unit-level evidence
+      for individual recovery branches (crash-mid-start ownership races, expired-lease reclaim) but
+      are cited here only for that narrower claim, not for durable-store persistence. Verified with
+      `bun test --timeout 60000 packages/daemon/src/__tests__/daemon-restart-recovery.test.ts` (1
+      pass). Platform: exercised on macOS (darwin) only in this session; main's win32 CI job
+      currently times out at 60 minutes, so Windows behavior for this path is unverified in
+      practice, and there is no Linux CI run to point to either — no cross-platform CI evidence is
+      implied.
+- [x] PID reuse — `packages/daemon/src/__tests__/process-supervisor.test.ts`: "an identity race
+      before escalation marks stale and does not send KILL" changes `processStartTime` between the
+      TERM and KILL identity checks and asserts no KILL is ever sent; "a stale stored identity
+      never signals an unrelated process group" spawns a real unrelated process and stores its
+      exact pid/pgid/start-time with a mismatched fingerprint, asserting `stop` reports
+      `STALE_IDENTITY` and the unrelated process is left running. Platform: exercised on macOS
+      (darwin) only in this session. The code path itself goes through `@wtm/platform`'s
+      darwin/linux/windows process backends, but main's win32 CI job currently times out at 60
+      minutes, so Windows behavior is unverified in practice; no Linux CI run to point to either —
+      no cross-platform CI evidence is implied.
+- [x] process group child spawning — `packages/daemon/src/__tests__/process-supervisor.test.ts`:
+      "stopping a task terminates its entire owned process group" and "task leader exit leaves the
+      anchor and record running until its descendant exits", both against
+      `process-group-fixture.scenario.ts`'s real parent-spawns-child fixture (`wtmd -> task group ->
+      parent -> child`). Platform: exercised on macOS (darwin) only in this session.
+      `hostSignalProcessGroup` delegates to the platform seam (negative-pid signal on POSIX,
+      `taskkill /T` on Windows) and a comment in the test file references a prior real
+      `windows-latest` CI run, but main's win32 CI job currently times out at 60 minutes, so that
+      coverage cannot be confirmed current; no Linux CI run to point to either — no cross-platform
+      CI evidence is implied for this change.
+- [x] start conflict — `packages/daemon/src/__tests__/process-supervisor.test.ts`: "concurrent
+      singleton starts serialize and return one live record" (second call reports `existing: true`,
+      no duplicate process) and "restart holds ownership across stop and start against a competing
+      supervisor" (a start racing an in-flight restart is refused `RUNTIME_START_FAILED` /
+      `reason: START_CONFLICT`); `packages/cli/src/__tests__/readiness-workflow.scenario.ts`
+      reproduces the existing-report case end to end through a real CLI, daemon and HTTP
+      healthcheck (`wtm start dev --wait` twice; second reports `existing: true`, same process id).
+      Platform: exercised on macOS (darwin) only in this session; main's win32 CI job currently
+      times out at 60 minutes, so Windows behavior is unverified in practice, and there is no Linux
+      CI run to point to either — no cross-platform CI evidence is implied.
+- [x] stop conflict — no existing test exercised `RUNTIME_TASK_NOT_RUNNING`, so two tests were
+      added to `packages/daemon/src/__tests__/process-supervisor.test.ts`: "a second concurrent stop
+      of the same task reports it is not running" (two `stop()` calls issued before either awaits;
+      the supervisor's per-task lock serializes them, the first really stops the real spawned
+      process and the second is refused `RUNTIME_TASK_NOT_RUNNING`) and "stopping a task with no
+      active record reports it is not running" (same code with no prior start at all). Verified
+      with `bun test --timeout 60000 packages/daemon/src/__tests__/process-supervisor.test.ts` (45
+      pass). Platform: exercised on macOS (darwin) only in this session; main's win32 CI job
+      currently times out at 60 minutes, so Windows behavior is unverified in practice, and there
+      is no Linux CI run to point to either — no cross-platform CI evidence is implied.
+- [x] healthcheck timeout — `packages/daemon/src/__tests__/runtime-readiness.test.ts`: "wait timeout
+      returns process evidence and leaves the managed service running" asserts
+      `RUNTIME_READINESS_TIMEOUT` / `state: TIMED_OUT` and that the managed process stays `RUNNING`;
+      `packages/cli/src/__tests__/readiness-workflow.scenario.ts` reproduces it end to end with a
+      real HTTP server that never turns healthy, a real CLI `start --wait --timeout 200ms`, and
+      confirms both the daemon's stored state and the OS process stay `RUNNING`/present afterward.
+      Platform-neutral (HTTP over loopback; no OS-specific code path).
+- [x] log rotation — `packages/daemon/src/__tests__/process-supervisor.test.ts`: "anchor-owned
+      writers rotate a fast stream without gaps or duplicate bytes" writes past the configured
+      `rotationBytes` bound through a real spawned process and reconstructs the exact byte stream
+      from the rotated generations with no gaps or duplicates; the `replacement anchor finishes
+      partial retained-generation shift $name idempotently` matrix covers resuming an
+      interrupted rotation shift across a supervisor restart. Platform-neutral (file rotation only,
+      no OS-specific code path).
 
 ### [ ] Platform
 
