@@ -15,11 +15,14 @@ Two worktree selectors exist today and disagree:
 
 | | `remove` (`commands/remove.ts`, `resolveExplicitSelector`) | `analyze` (`main.ts`, `resolveAnalysisSelector`) |
 | --- | --- | --- |
-| Path | absolute, or relative to `cwd`, compared after `realpath` | relative to the repository root, no `realpath` |
+| Path | absolute, or relative to the worktree containing `cwd`, compared after `realpath` | relative to the worktree containing `cwd`, no `realpath` |
 | Directory name | yes | no |
 | Branch (`feat/x`, `refs/heads/feat/x`) | yes | yes |
-| Registered number | no | yes, in the repository containing `cwd` |
+| Registered number | yes (`runProductionRemove`, `numericSelectorPath`), in the repository containing `cwd` | yes, in the repository containing `cwd` |
 | Several matches | `WorktreeSelectorError` | silently the first |
+
+(Both call the worktree containing `cwd` the "repository"; `docs/04` documents a relative path as
+"relative to the current repository".)
 
 From a multi-repository workspace root, without a selector, the commands fail with misleading
 messages: foreground `run` says "cd into one of its repositories", the daemon-backed commands say
@@ -60,7 +63,8 @@ as today (except the workspace-root message in §4).
 
 Accepted forms, all tried at once against every candidate worktree:
 
-- a path, absolute or relative to `cwd`, compared after `realpath`;
+- a path, absolute, or relative to the worktree containing `cwd` (as documented today), or relative
+  to `cwd` itself when `cwd` is inside no worktree (a workspace root); compared after `realpath`;
 - the worktree directory's name (`basename`);
 - a branch, short (`feat/auth`) or full (`refs/heads/feat/auth`);
 - a registered numeric id (`13`).
@@ -137,11 +141,19 @@ snapshots change.
 ### 7. Deliberate behaviour changes
 
 1. `analyze <selector>` refuses an ambiguous selector instead of taking the first match.
-2. `analyze` resolves a relative path against `cwd`, not the repository root.
-3. `analyze` accepts a directory name.
-4. `remove` accepts a registered numeric id.
+2. `analyze` accepts a directory name.
+3. `analyze` compares paths after `realpath`, as `remove` does, so a symlinked spelling matches.
+4. A number and a directory name that name different worktrees are an ambiguity for both commands.
+   Today `remove` treats an all-digit selector only as a number.
 
-Every selector that resolves to exactly one worktree today resolves to the same worktree after.
+Every selector that resolves to exactly one worktree today resolves to the same worktree after,
+except the collision in 4.
+
+(Correction, 2026-09-14, while planning: the approved section listed "`remove` starts accepting a
+number" and "`analyze` resolves relative paths against `cwd`". Reading `runProductionRemove`
+showed `remove` already accepts numbers, and both commands already resolve relative paths against
+the worktree containing `cwd`, which `docs/04` documents. The design keeps the documented base and
+drops both changes.)
 
 ## Documentation
 
@@ -161,9 +173,16 @@ Every selector that resolves to exactly one worktree today resolves to the same 
   the same worktree; one test per deliberate change.
 - `packages/cli/src/__tests__/main.test.ts`: on each of the six commands the selector is resolved
   and forwarded as `cwd`; `--repo` alone is refused.
-- A real Git and daemon scenario under `runScenario`, driving the built `dist/cli/bin.js` (a daemon
-  started from source cannot launch queued jobs): a two-repository workspace with the same branch
-  in both; from the workspace root `run`, `start`, `logs`, `restart`, `exec`, `stop` act on the
-  intended worktree; ambiguity without `--repo` fails; no `--worktree` gives the §4 error.
+- A real Git scenario under `runScenario`, in the style of `create-feature.scenario.ts`: a
+  two-repository workspace registered by `wtm init`, the same branch created in both with
+  `wtm create --repos`. From the workspace root, `start`, `stop`, `restart`, `logs`, `exec` and
+  `run --enqueue` send the intended worktree root as `cwd` to a recording runtime client, and
+  foreground `wtm resolve` (the same resolution `run` uses) reports that worktree; ambiguity without
+  `--repo` fails; no `--worktree` gives the §4 error.
+
+  (Correction, 2026-09-14, while planning: the approved section named a real daemon driven through
+  `dist/cli/bin.js`. No CLI scenario starts a real daemon, and this design changes nothing on the
+  daemon side of the request, whose `cwd` handling existing daemon tests cover. The recording client
+  proves the one thing that changes.)
 - Completion: script snapshots and the new `__complete` behaviour
   (`completion.test.ts`, `completion-production.scenario.ts`).
