@@ -37,7 +37,6 @@ const expectedExitCodes: Readonly<Record<WtmErrorCode, number>> = {
   WTM_PRIVATE_DIRECTORY_UNSAFE: 2,
   WTM_PLATFORM_UNSUPPORTED: 2,
   WTM_WATCH_UNAVAILABLE: 2,
-  WTM_CI_UNAVAILABLE: 2,
 
   // 3 — a safety refusal. Nothing was done, and the caller has somewhere to look.
   GIT_MAIN_WORKTREE: 3,
@@ -68,6 +67,7 @@ const expectedExitCodes: Readonly<Record<WtmErrorCode, number>> = {
   WTM_DAEMON_INVALID_REQUEST: 1,
   WTM_DAEMON_PROTOCOL_INCOMPATIBLE: 1,
   WTM_DAEMON_REQUEST_FAILED: 1,
+  WTM_CI_UNAVAILABLE: 1,
   GIT_COMMAND_FAILED: 1,
   GIT_REPOSITORY_DEGRADED: 1,
   GIT_UPSTREAM_MISSING: 1,
