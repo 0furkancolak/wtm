@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { createGitSafetyFixture } from '../../../testkit/src/git-fixture';
+import { runCli } from '../main';
 import { collectSelectorCandidates, matchWorktreeSelector, type SelectorCandidate } from '../worktree-selector';
 
 const roots: string[] = [];
@@ -155,5 +156,27 @@ describe('collectSelectorCandidates', () => {
     roots.push(root);
     const collected = await collectSelectorCandidates({ cwd: root, store: null, globalConfigPath: join(root, 'config.toml') });
     expect(collected).toMatchObject({ outcome: 'refused', error: { code: 'WTM_WORKSPACE_NOT_FOUND' } });
+  });
+});
+
+describe('analyze through the shared selector', () => {
+  test('analyze accepts a directory name and refuses an ambiguous selector', async () => {
+    const fixture = await createGitSafetyFixture();
+    try {
+      const run = async (selector: string) => {
+        let out = '';
+        await runCli(['analyze', selector, '--json'], {
+          cwd: fixture.repoPath, analysisDatabasePath: join(fixture.root, 'absent.db'),
+          removalGlobalConfigPath: join(fixture.root, 'absent-global.toml'),
+          stdout: (value) => { out += value; }, stderr: () => {},
+        });
+        return JSON.parse(out);
+      };
+      expect((await run(basename(fixture.linkedWorktreePath))).ok).toBe(true);
+      await fixture.git(fixture.repoPath, ['worktree', 'add', '-b', 'twin', join(fixture.root, 'twin', basename(fixture.linkedWorktreePath))]);
+      expect(await run(basename(fixture.linkedWorktreePath))).toMatchObject({ ok: false, errors: [{ code: 'WTM_WORKSPACE_NOT_FOUND', context: { matchCount: 2 } }] });
+    } finally {
+      await fixture.cleanup();
+    }
   });
 });

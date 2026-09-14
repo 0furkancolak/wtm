@@ -91,6 +91,7 @@ import { runForgetCommand, type ForgetCommandEnvelope } from './commands/forget'
 import { runAdapterCommand } from './commands/adapter';
 import { runAnalyzeCommand } from './commands/analyze';
 import { runRemoveCommand, type RemovalRuntimeBinding } from './commands/remove';
+import { collectSelectorCandidates, matchWorktreeSelector } from './worktree-selector';
 import { createProductionRemovalCoordinator } from './removal-coordinator';
 import { toGitSafetyError } from './commands/git-error';
 import { runResolveCommand, toRuntimeCommandError } from './commands/resolve';
@@ -874,13 +875,18 @@ async function runProductionAnalyze(input: {
           if (!input.cleanupCandidates || index > 0) selected.push({ repoPath: repositoryRoot, record });
         }
       } else {
-        let record: GitWorktreeRecord | undefined;
-        try {
-          record = resolveAnalysisSelector(repositoryRoot, input.cwd, input.selector, topology, store);
-        } catch {
-          return stateFailure('analyze', false);
+        const collected = await collectSelectorCandidates({ cwd: input.cwd, store, globalConfigPath: input.globalConfigPath });
+        if (collected.outcome === 'refused') return operationFailure('analyze', false, collected.error);
+        if (input.selector === undefined) {
+          const record = topology.find(({ path }) => containsPath(path, resolve(input.cwd)));
+          if (record !== undefined) selected.push({ repoPath: repositoryRoot, record });
+        } else {
+          const matched = await matchWorktreeSelector({
+            selector: input.selector, cwd: input.cwd, candidates: collected.candidates, repositories: collected.repositories,
+          });
+          if (matched.outcome === 'refused') return operationFailure('analyze', false, matched.error);
+          selected.push({ repoPath: repositoryRoot, record: matched.candidate.record });
         }
-        if (record !== undefined) selected.push({ repoPath: repositoryRoot, record });
       }
     }
     if (input.cleanupCandidates && store !== null) {
@@ -941,30 +947,6 @@ async function runProductionAnalyze(input: {
     : { ...common, ok: false, errors: [errors[0]!, ...errors.slice(1)] };
 }
 
-function resolveAnalysisSelector(
-  repositoryRoot: string,
-  cwd: string,
-  selector: string | undefined,
-  topology: readonly GitWorktreeRecord[],
-  store: SQLiteStateStore | null,
-): GitWorktreeRecord | undefined {
-  if (selector === undefined) {
-    const current = resolve(cwd);
-    return topology.find(({ path }) => containsPath(path, current));
-  }
-  if (/^\d+$/.test(selector)) {
-    const repository = store?.listRepositories().find(({ id }) =>
-      store.listWorktrees(id).some(({ path }) => containsPath(path, cwd)));
-    const registered = repository === undefined ? undefined : store?.listWorktrees(repository.id)
-      .find(({ numericId }) => numericId === Number(selector));
-    return topology.find(({ path }) => path === registered?.path);
-  }
-  const candidatePath = resolve(repositoryRoot, selector);
-  const branchRef = selector.startsWith('refs/heads/') ? selector : `refs/heads/${selector}`;
-  return topology.find(({ path, branch }) =>
-    path === candidatePath || branch === selector || branch === branchRef);
-}
-
 async function runProductionRemove(input: {
   cwd: string;
   selector: string;
@@ -1009,30 +991,17 @@ async function runProductionRemove(input: {
         return stateFailure('remove', false);
       }
     }
-    let selector = input.selector;
-    if (/^\d+$/.test(selector)) {
-      // A number is a WTM identifier and nothing else, so with no state there is no question to
-      // answer — "state is unavailable" is the honest reply, not "that worktree does not exist".
-      if (store === null) return stateFailure('remove', false);
-      let resolved: string | undefined;
-      try {
-        resolved = numericSelectorPath(store, input.cwd, selector);
-      } catch {
-        return stateFailure('remove', false);
-      }
-      if (resolved === undefined) {
-        return operationFailure('remove', false, {
-          code: 'WTM_WORKSPACE_NOT_FOUND',
-          message: 'The worktree selector did not resolve to one worktree.',
-          severity: 'error',
-        });
-      }
-      selector = resolved;
-    }
+    // A number is a WTM identifier and nothing else, so with no state there is no question to
+    // answer — "state is unavailable" is the honest reply, not "that worktree does not exist".
+    if (/^\d+$/.test(input.selector) && store === null) return stateFailure('remove', false);
+    const collected = await collectSelectorCandidates({ cwd: input.cwd, store, globalConfigPath: input.globalConfigPath });
+    if (collected.outcome === 'refused') return operationFailure('remove', false, collected.error);
     const runtimeWarnings: WtmError[] = [];
     const envelope = await runRemoveCommand({
       repoPath: repositoryRoot,
-      selector,
+      selector: input.selector,
+      candidates: collected.candidates,
+      repositories: collected.repositories,
       ...remoteRefresh,
       resolveSafety: async (worktreePath) => resolveConfiguredGitSafety(worktreePath, input.globalConfigPath),
       bindRuntime: (worktreePath) => bindRemovalRuntime({
@@ -1051,17 +1020,6 @@ async function runProductionRemove(input: {
   } finally {
     store?.close();
   }
-}
-
-function numericSelectorPath(
-  store: SQLiteStateStore,
-  cwd: string,
-  selector: string,
-): string | undefined {
-  const repository = store.listRepositories().find(({ id }) =>
-    store.listWorktrees(id).some(({ path }) => containsPath(path, cwd)));
-  if (repository === undefined) return undefined;
-  return store.listWorktrees(repository.id).find(({ numericId }) => numericId === Number(selector))?.path;
 }
 
 /**

@@ -1,5 +1,4 @@
-import { basename, isAbsolute, resolve } from 'node:path';
-import { realpath } from 'node:fs/promises';
+import { basename } from 'node:path';
 import {
   analyzeWorktree,
   GitCommandError,
@@ -18,6 +17,7 @@ import {
 } from '@wtm/core';
 import type { JsonEnvelope, WtmError } from '@wtm/protocol';
 import { toGitSafetyError } from './git-error';
+import { matchWorktreeSelector, type SelectorCandidate } from '../worktree-selector';
 
 /**
  * The runtime half of one removal, resolved only once the selector has named a worktree.
@@ -47,6 +47,10 @@ export interface RemovalRuntimeBinding {
 export interface RemoveCommandInput {
   repoPath: string;
   selector: string;
+  /** Pre-collected candidates, from the shared selector's workspace-wide collection. */
+  candidates?: readonly SelectorCandidate[];
+  /** The repository names an ambiguous selector's `--repo` remediation may name. */
+  repositories?: readonly string[];
   baseRef?: string;
   allowedRemoteRefs?: readonly string[];
   untrackedSymlinks?: WorktreeContext['untrackedSymlinks'];
@@ -74,27 +78,22 @@ export interface RemoveCommandResult {
 
 export type RemoveCommandEnvelope = JsonEnvelope<RemoveCommandResult | null>;
 
-class WorktreeSelectorError extends Error {
-  readonly code = 'WTM_WORKSPACE_NOT_FOUND' as const;
-  readonly context: Record<string, unknown>;
-
-  constructor(input: RemoveCommandInput, matches = 0) {
-    super(matches > 1
-      ? `More than one worktree matches ${input.selector}. Name it by branch or by path.`
-      // Saying only that the selector did not resolve leaves the reader guessing at the
-      // spellings, and a relative path is read from the repository root rather than from here.
-      : `No worktree matches ${input.selector}. Name one by branch, by directory name, by number, or by path relative to ${input.repoPath}.`);
-    this.name = 'WorktreeSelectorError';
-    this.context = { repoPath: input.repoPath, selector: input.selector, matches };
-  }
-}
-
 export async function runRemoveCommand(
   input: RemoveCommandInput,
 ): Promise<RemoveCommandEnvelope> {
   let warnings: WtmError[] = [];
   try {
-    const selected = await resolveExplicitSelector(input);
+    const candidates = input.candidates ?? (await listGitWorktrees(input.repoPath)).map((record, _, topology) => ({
+      repository: { id: null, root: topology[0]?.path ?? input.repoPath, name: basename(topology[0]?.path ?? input.repoPath) },
+      record,
+      numericId: null,
+    }));
+    const matched = await matchWorktreeSelector({
+      selector: input.selector, cwd: input.repoPath, candidates,
+      repositories: input.repositories ?? [basename(candidates[0]?.repository.root ?? input.repoPath)],
+    });
+    if (matched.outcome === 'refused') return removalFailure(input, matched.error);
+    const selected = matched.candidate.record;
     const safety = await input.resolveSafety?.(selected.path);
     const binding = input.bindRuntime?.(selected.path) ?? null;
     const context = analysisContext({ ...input, ...safety }, selected, binding);
@@ -206,35 +205,17 @@ function analysisContext(
   };
 }
 
-async function resolveExplicitSelector(input: RemoveCommandInput): Promise<GitWorktreeRecord> {
-  if (input.selector.trim().length === 0) throw new WorktreeSelectorError(input);
-  const topology = await listGitWorktrees(input.repoPath);
-  const canonicalPath = await canonicalSelectorPath(input.repoPath, input.selector);
-  const fullBranchRef = input.selector.startsWith('refs/heads/')
-    ? input.selector
-    : `refs/heads/${input.selector}`;
-  const matches = topology.filter((record) =>
-    !record.bare
-    && (
-      record.path === input.selector
-      || record.path === canonicalPath
-      // The name of the directory, which is how a worktree is referred to out loud and the
-      // only spelling that means the same thing from every directory in the workspace.
-      || basename(record.path) === input.selector
-      || record.branch === input.selector
-      || record.branch === fullBranchRef
-    )
-  );
-  if (matches.length !== 1 || matches[0] === undefined) throw new WorktreeSelectorError(input, matches.length);
-  return matches[0];
-}
-
-async function canonicalSelectorPath(repoPath: string, selector: string): Promise<string | null> {
-  try {
-    return await realpath(isAbsolute(selector) ? selector : resolve(repoPath, selector));
-  } catch {
-    return null;
-  }
+/** The failure envelope for a selector the shared selector refused to resolve. */
+function removalFailure(input: RemoveCommandInput, error: WtmError): RemoveCommandEnvelope {
+  return {
+    schemaVersion: 1,
+    ok: false,
+    command: 'remove',
+    scope: commandScope(input),
+    data: null,
+    warnings: [],
+    errors: [error],
+  };
 }
 
 function commandScope(input: RemoveCommandInput): { mode: 'local'; workspaceId?: string } {
