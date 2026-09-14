@@ -224,7 +224,11 @@ describe('persistent job CLI', () => {
         ['jobs', 'list', '--json'],
       ]) {
         const output = capture();
-        expect(await runCli(argv, { daemonSocketPath: socketPath, cwd: directory, ...output })).toBe(0);
+        expect(await runCli(argv, {
+          daemonSocketPath: socketPath, cwd: directory,
+          taskTargetDatabasePath: join(directory, 'absent.db'), taskTargetGlobalConfigPath: join(directory, 'absent-global.toml'),
+          ...output,
+        })).toBe(0);
         expect(JSON.parse(output.out()).ok).toBe(true);
       }
       expect(calls).toEqual(['jobs.enqueue', 'jobs.list']);
