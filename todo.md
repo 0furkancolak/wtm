@@ -2791,7 +2791,7 @@ dokümanda anlatıldığı gibi çalışıyor mu test edilmeli.
 
 # Testing checklist
 
-### [ ] Removal
+### [x] Removal
 
 - [x] running managed process
 - [x] cleanup failure
@@ -2802,7 +2802,15 @@ dokümanda anlatıldığı gibi çalışıyor mu test edilmeli.
       vs `remove`) hem de farklı operasyon (`remove` vs `gc`) için.
 - [x] crash during cleanup
 - [x] HEAD changes between checks
-- [ ] branch changes between checks
+- [x] branch changes between checks — `guarded-remove.integration.test.ts`: "rechecks after the
+      initial analysis and blocks a worktree switched to another branch". Sibling'inden farkı:
+      `HEAD changes` testleri aynı dalda yeni bir commit'in `GIT_HEAD_NOT_REMOTE_PERSISTED`
+      blocker'ına takılmasını kanıtlıyor — ikinci Git safety analizi zaten reddediyor, kimlik
+      karşılaştırmasına (`assertIdentityUnchanged`, `remove-worktree.ts`) hiç sıra gelmiyor. Bu
+      test TOCTOU penceresinde temiz ve kendisi de remote-persisted başka bir dala (`feature/other`)
+      geçiyor: ikinci analiz tek başına bunu reddetmezdi (blocker yok), removal'ı durduran yalnızca
+      kimlik karşılaştırması — önceden hiçbir testin egzersiz etmediği kod yolu. Beklenen hata:
+      `WorktreeAnalysisError`, `context.initial.branchRef` / `context.current.branchRef` farklı.
 
 ### [ ] Remote safety
 
@@ -2815,19 +2823,42 @@ dokümanda anlatıldığı gibi çalışıyor mu test edilmeli.
 - [x] no upstream
 - [x] commit persisted in another remote branch
 
-### [ ] Create
+### [x] Create
 
 - [x] existing branch
 - [x] new branch
 - [x] conflicting worktree
-- [ ] partial multi-repo failure
-- [ ] daemon running
+- [x] partial multi-repo failure — `create-feature-recovery.test.ts`: "a failed member leaves the
+      others in place and points at --resume" (`create-feature-recovery.scenario.ts`'in
+      `partial` senaryosu). docs/04-cli-reference.md'in tarif ettiği tam davranış: enjekte edilen
+      hata `GIT_REPOSITORY_DEGRADED` olarak yüzeyleşiyor, zaten oluşturulmuş iki üye diskte kalıyor
+      (`othersOnDisk: [true, true]`, fazlar `APPLIED`), başarısız üye hiçbir şey yazmadan
+      (`failedOnDisk: false`, faz `PLANNED`) `wtm create feat/partial --resume` remediation'ıyla
+      reddediliyor; aynı dosyadaki sonraki testler bunun `--resume` ile bitirilebildiğini de
+      kanıtlıyor. Item 6'nın (`--repos` + recovery) merge'ü bu satırı zaten kapatmıştı, madde
+      sadece işaretlenmemişti.
+- [x] daemon running — yeni `create-daemon-running.scenario.ts` + `.test.ts`: sahte bir
+      `runtimeClient` yerine gerçek `createProductionDaemon`, gerçek soket ve gerçek `DaemonClient`
+      ile `wtm create`. `events."worktree.created".tasks` altına bağlı bir görev gerçekten
+      çalışıyor (worktree köküne `created.marker` yazıyor) ve `registration: 'daemon'`,
+      `warnings: []` dönüyor — daha önce hiçbir testte gerçek bir daemon `[events]`'i uçtan uca
+      tetiklemiyordu (`create-feature.test.ts`'teki "a daemon that answers the reconcile registers
+      the members" yalnızca `registration` alanını, sahte bir `{ok:true}` cevaplayan
+      `runtimeClient` üzerinden kontrol ediyordu — kanca hiç çalışmıyordu).
 - [x] daemon stopped
-- [ ] eager prepare
-- [ ] lazy prepare
+- [x] eager prepare — aynı senaryo: `[prepare] mode = "eager"` + `resources.data` altında, hiçbir
+      görev çalıştırılmadan `create` döner dönmez kaynak dizini diskte (`eagerPrepared: true`).
+      `create.ts`'in kendi yorumu ("daemon flushes its reconcile queue before it answers") burada
+      gerçek bir daemon'a karşı doğrulandı; önceden yalnızca `events.test.ts`'in sahte harness'ı
+      (`LifecycleEventDispatcher` birim testi, gerçek CLI/daemon/socket yok) bunu kanıtlıyordu.
+- [x] lazy prepare — aynı senaryo: default `lazy` modda aynı kaynak `create` sonrasında (ve 200ms'lik
+      bir grace penceresinden sonra) diskte değil (`lazyPrepared: false`) — eager'ın tam zıttı,
+      tek bir çalıştırmada karşılaştırmalı olarak kanıtlanıyor.
 
 Doğrulama (2026-09-09): `packages/cli/src/__tests__/create.test.ts` 11/11 başarılı.
-Daemon açıkken hook ve multi-repo kabul kriterleri bu sonuçla kapatılmadı.
+Doğrulama (2026-09-14): yukarıdaki dört satır kapatıldı; `create.test.ts`,
+`create-feature.test.ts`, `create-feature-recovery.test.ts` ve yeni `create-daemon-running.test.ts`
+birlikte 62/62 (bkz. Removal/Create parity turu). `bun run typecheck && bun run lint` temiz.
 
 ### [ ] Runtime
 

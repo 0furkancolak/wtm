@@ -38,6 +38,30 @@ describe('removeWorktreeSafely', () => {
     expect(await pathExists(fixture.linkedWorktreePath)).toBe(true);
   });
 
+  test('rechecks after the initial analysis and blocks a worktree switched to another branch', async () => {
+    const fixture = await createFixture();
+    // A second branch, clean and itself remote-persisted, so the second Git safety analysis
+    // alone would wave the switch through — it is only the identity comparison that catches
+    // this is not the worktree the caller was told was safe to remove.
+    await fixture.git(fixture.repoPath, ['branch', 'feature/other', 'main']);
+    await fixture.git(fixture.repoPath, ['push', 'origin', 'feature/other']);
+
+    const removal = removeWorktreeSafelyWithHooks(context(fixture), {
+      async afterInitialAnalysis() {
+        await fixture.git(fixture.linkedWorktreePath, ['checkout', 'feature/other']);
+      },
+    });
+
+    await expect(removal).rejects.toMatchObject({
+      name: 'WorktreeAnalysisError',
+      context: {
+        initial: { branchRef: 'refs/heads/feature/safe' },
+        current: { branchRef: 'refs/heads/feature/other' },
+      },
+    });
+    expect(await pathExists(fixture.linkedWorktreePath)).toBe(true);
+  });
+
   test('still blocks that commit when runtime cleanup runs between the two analyses', async () => {
     const fixture = await createFixture();
     const stages: string[] = [];
