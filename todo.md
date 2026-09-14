@@ -2713,17 +2713,27 @@ Ayrıca:
 
 ---
 
-### [ ] 32. Examples üç platformda portable olmalı
+### [x] 32. Examples üç platformda portable olmalı
 
 Mevcut örnekler Unix shell'e veya macOS path'lerine gereksiz bağımlı olmamalı.
 
+**2026-09-14 tamamlandı:** Beş örneğin de `run`/`main`/`worktree` zaten argv array kullanıyordu, hiçbirinde
+shell script veya `/tmp`, `/Users/...`, `/home/...`, `$HOME`, `~/`, `C:\` hard-code yoktu (git geçmişinde
+de hiç var olmamış — bkz. `git log --follow -p -- examples/`). Eksik olan tek şey Windows path testleriydi;
+`scripts/__tests__/examples-portability.test.ts` gerçek `@wtm/core` şemasını ve `resolveTemplate`'i her
+örneğe karşı çalıştırıyor: hard-code path taraması, argv-vs-shell tutarlılığı, referans verilen script
+dosyalarının varlığı, ve her task `cwd`'sinin hem `node:path/posix` hem `node:path/win32` ile kendi
+kök template'inin (`{workspace.root}`/`{worktree.root}`/vb.) içinde kaldığının doğrulanması. Şemada
+platforma özel task alanı yok, ve hiçbir örnek shell gerektirmiyor, o yüzden README'lere yeni bir
+platform-specific örnek eklenmedi.
+
 Kontrol:
 
-- [ ] `examples/minimal`
-- [ ] `examples/multi-repo`
-- [ ] `examples/bun-monorepo`
-- [ ] `examples/docker-compose`
-- [ ] `examples/polyglot`
+- [x] `examples/minimal`
+- [x] `examples/multi-repo`
+- [x] `examples/bun-monorepo`
+- [x] `examples/docker-compose`
+- [x] `examples/polyglot`
 
 Kurallar:
 
