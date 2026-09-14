@@ -257,6 +257,48 @@ match the creation being resumed, `--from` with `--resume`, `--resume` with noth
 cleared), and a member repository that is no longer registered. The `WTM_DAEMON_UNAVAILABLE` warning
 lists only the worktrees the run registered locally, and is absent when it registered none.
 
+### Worktree selector errors
+
+`analyze`, `remove` and the seven task commands (`resolve`, `run`, `start`, `stop`, `restart`,
+`logs`, `exec`) resolve a `<selector>` or `--worktree <selector>` through one shared function.
+Every refusal it produces is `WTM_WORKSPACE_NOT_FOUND`.
+
+No worktree matches the selector: `context` is `{ selector, repoPath, repositories, matches: [],
+matchCount: 0 }`. `repoPath` is the base a relative selector is resolved against — the worktree
+containing `cwd`, or `cwd` itself from a workspace root. The message lists the four accepted forms
+(branch, directory name, registered number, path).
+
+More than one worktree matches: `context.matches` is `[{ repo, branch, path, numericId }]` (`branch`
+and `numericId` are `null` when the worktree has none), and `context.matchCount` is its length.
+- Matches in more than one repository: the message names `--repo`, and `remediation` carries one
+  `command-suggestion` per repository — the invoked command with `--worktree <selector> --repo
+  <name>` added.
+- Matches in one repository: the message asks for the selector as a path; there is no remediation.
+
+`--repo <name>` without `--worktree` is `WTM_CONFIG_INVALID`, with `context.repo`; it never reaches
+selector resolution.
+
+`--repo <name>` naming an unknown or ambiguous repository is `WTM_CONFIG_INVALID`, the same
+resolution `wtm create --repos` uses; `context` is `{ unknown, ambiguous, known }`.
+
+`--repo <name>` given where no WTM state database exists yet is `WTM_NOT_INITIALIZED` — a repository
+name can only be resolved against a registered workspace, and none can have been registered without
+a database. `--repo <name>` given where a state database exists but `cwd` is inside no registered
+workspace is `WTM_WORKSPACE_NOT_FOUND`, with `context.cwd`.
+
+A workspace root (registered, but `cwd` is inside none of its worktrees) named with neither flag is
+also `WTM_WORKSPACE_NOT_FOUND`, only for the seven task commands (`analyze` and `remove` are
+unaffected): message "This is a workspace root, not a worktree. Name the target with `--worktree
+<selector>`."; `context` is `{ cwd, workspace, candidates }`, `candidates` being every worktree of
+that workspace as `{ repo, branch, path, numericId }`; `remediation` is one `command-suggestion`,
+the invoked command with `--worktree <selector>` appended (a literal placeholder, for a person or
+agent to fill in).
+
+`remove`'s selector error predates this shared function and kept its two existing `context` fields,
+`repoPath` and `selector`, alongside the ones above. Before item 47, `matches` was a bare count;
+it is now the array described above, and the count moved to `matchCount`. This is the one
+documented schema change to `remove`'s error `context`.
+
 ### Git
 
 ```text

@@ -181,6 +181,9 @@ binaries are Developer ID signed and notarized.
 - `remoteKnowledge` on every worktree analysis — `source`, `refreshed`, `refreshedAt`, `confidence` —
   so a caller can tell a `LOCAL_ONLY` remote-persistence verdict from a `REFRESHED` one. Analysis
   itself still has no path that can reach the network.
+- `--worktree <selector>` and `--repo <name>` on `resolve`, `run`, `start`, `stop`, `restart`, `logs`
+  and `exec` target another worktree without `cd`, through the selector `analyze` and `remove` use.
+  From a workspace root, the commands refuse without `--worktree` and list the candidates.
 
 ### Changed
 
@@ -190,6 +193,10 @@ binaries are Developer ID signed and notarized.
   through `wtm resolve`'s `context.knownTasks` and worktree creation through `wtm create`. A new
   section tells an agent to keep working instead of waiting on CI inside a tool call. A test fails
   when a CLI command is missing from the map or the skill grows past 24 KiB.
+- `analyze` and `remove` share one worktree selector: `analyze` accepts a directory name and refuses
+  an ambiguous selector instead of taking the first match; a number and a directory name naming
+  different worktrees are ambiguous for both; `remove`'s selector error reports `matches` as a list
+  and `matchCount`.
 
 ### Fixed
 

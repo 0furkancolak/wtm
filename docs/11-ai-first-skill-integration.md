@@ -45,6 +45,8 @@ wtm start <task>
 wtm exec -- <argv>
 ```
 
+Target another worktree with `--worktree <selector>` instead of changing directory.
+
 To understand decisions:
 
 ```bash

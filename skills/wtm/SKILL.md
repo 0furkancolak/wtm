@@ -45,14 +45,14 @@ failure, `2` usage or configuration, `3` safety refusal or conflict, `4` daemon 
 | `wtm plan [selector] --json` | See the declarative changes WTM would make, without applying them. |
 | `wtm env [selector] --json` | Read the resolved environment delta. |
 | `wtm ports [selector] --json` | Read endpoint leases (the ports). |
-| `wtm resolve <task> --json` | Read a task's exact argv, working directory and environment without running it. |
-| `wtm run <task>` | Run a task in the foreground. `--enqueue --idempotency-key <key> --json` queues a heavy one. |
-| `wtm start <task>` | Start a long-running task under supervision. `--wait --timeout <duration> --json` waits for its healthcheck. |
-| `wtm stop [task]` | Stop one managed task, or all of this worktree's. |
-| `wtm restart <task>` | Stop and start a managed task; accepts `--wait --timeout`. |
+| `wtm resolve <task> --json` | Read a task's exact argv, working directory and environment without running it. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
+| `wtm run <task>` | Run a task in the foreground. `--enqueue --idempotency-key <key> --json` queues a heavy one. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
+| `wtm start <task>` | Start a long-running task under supervision. `--wait --timeout <duration> --json` waits for its healthcheck. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
+| `wtm stop [task]` | Stop one managed task, or all of this worktree's. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
+| `wtm restart <task>` | Stop and start a managed task; accepts `--wait --timeout`. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm ps --json` | List WTM-managed process groups. |
-| `wtm logs [task]` | Read managed task logs; `--follow` streams raw output. |
-| `wtm exec -- <argv>` | Run raw argv in this worktree with its resolved environment. |
+| `wtm logs [task]` | Read managed task logs; `--follow` streams raw output. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
+| `wtm exec -- <argv>` | Run raw argv in this worktree with its resolved environment. `--worktree <selector>` (`--repo <name>`), before `--`, targets another worktree. |
 | `wtm jobs list --json` | List recent queued jobs (`--limit <count>`). |
 | `wtm jobs status <job-id> --json` | Read a job's state and cleanup status. |
 | `wtm jobs result <job-id> --json` | Read a finished job's result and verify its source evidence. |
@@ -82,11 +82,11 @@ Selectors differ by command:
   without one they use the workspace containing the current directory. A branch is not a selector here.
 - `analyze`, `remove`: one worktree, by registered number, branch, absolute path, or path relative
   to the current repository.
-- `resolve`, `run`, `start`, `stop`, `restart`, `logs`, `exec`, `ps`: no worktree selector. They act
-  on the worktree containing the current directory, so run them from that worktree's path.
-
-To find an existing worktree's path for a branch, run `git worktree list --porcelain` in its
-repository; for a worktree you just created, use `data.worktree.path` from `wtm create`.
+- `resolve`, `run`, `start`, `stop`, `restart`, `logs`, `exec`: `--worktree <selector>` takes the
+  same forms as `analyze`, and `--repo <name>` names the repository when the branch exists in
+  several. Without it they act on the worktree containing the current directory. From a workspace
+  root they require `--worktree`.
+- `ps`: no worktree selector; it lists the whole workspace.
 
 ## Start of a conversation
 
@@ -111,9 +111,9 @@ a `Makefile` or `package.json` to find task names.
 ## New worktrees
 
 Create worktrees with `wtm create <branch> --json`, not `git worktree add`. The new worktree is
-registered and gets its ports; it needs no `wtm init`. `data.worktree.path` (per member in
-`data.members[]` for `--repos`) is where its commands run. A failed multi-repository create is
-finished with the `--resume` command its error returns.
+registered and gets its ports; it needs no `wtm init`. Pass `--worktree <branch>` (with `--repo
+<name>` for a multi-repository feature) to run commands there; do not `cd`. A failed
+multi-repository create is finished with the `--resume` command its error returns.
 
 ## Waiting on CI and other slow external checks
 
