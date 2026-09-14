@@ -24,13 +24,14 @@ keep it that way: every visible command registered by the CLI must appear in the
 the file must stay within 24 KiB.
 
 The skill also tells an agent not to wait on CI, reviews or deploys inside a tool call. It moves on
-to the next independent piece of work, looks at the check once between pieces of work, relies on
-host notifications when the host delivers them, and, when the check is the only work left, reports
-it and ends its turn. For CI specifically: `wtm ci watch --json` once after a push or opening a
-pull request starts the daemon following the commit, and `wtm ci status --json` at each work
-boundary reads the result — `pending`, `failure` with each failed job's log summary, or
-`unavailable` with `remediation` — in place of `gh pr checks`, `gh run view` and `gh run view
---log-failed`. The agent never waits on either call.
+to the next independent piece of work, and, when the check is the only work left, reports it and
+ends its turn. For CI specifically: `wtm ci watch --json` once after a push or opening a pull
+request starts the daemon following the commit, and `wtm ci status --json` at each work boundary
+reads the result — `pending`, `failure` with each failed job's log summary, or `unavailable` with
+`remediation` — in place of `gh pr checks`, `gh run view` and `gh run view --log-failed`. The agent
+never waits on either call. WTM installs no host hook, so for checks it does not watch (deploys,
+reviews, non-GitHub CI) the agent notes what it is waiting on and looks once per boundary with that
+check's own tool instead.
 
 ## Agent command contract
 

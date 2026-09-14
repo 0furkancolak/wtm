@@ -325,7 +325,8 @@ wtm ci unwatch --json
 | `wtm ci unwatch` | `{ stopped, watch }`; cancels the target worktree's pending watch. With no pending watch it succeeds with `stopped: false`. |
 
 All three take `--worktree <selector>` and `--repo <name>`, resolved the same way as the task
-commands above.
+commands above — except `wtm ci status --all`, which ignores them: it lists every watched worktree
+in the workspace regardless of which one `--worktree`/`--repo` would otherwise select.
 
 `data.watch`: `{ watchId, repo, branch, headSha, pr?, state, startedAt, updatedAt, finishedAt?,
 runs: [{ runId, workflow, event, status, conclusion, url, jobs: [{ jobId, name, status, conclusion,
@@ -355,9 +356,10 @@ days after it finished; `wtm remove` deletes the removed worktree's watches imme
 
 Only GitHub is supported, through an installed and logged-in `gh`. `WTM_CI_UNAVAILABLE` refuses
 `wtm ci watch` before any watch starts: `gh` is not installed; `gh` is not authenticated for the
-repository's host; the repository's remote has no supported CI provider, or none at all; or 20
-watches are already pending. A watch that becomes unavailable after it started is reported by
-`ci status` as `state: 'unavailable'` with `detail`, not as a command error.
+repository's host; the repository's remote has no supported CI provider, or none at all; 20 watches
+are already pending; or the target worktree has no commit yet (a freshly created worktree with
+nothing checked out). A watch that becomes unavailable after it started is reported by `ci status`
+as `state: 'unavailable'` with `detail`, not as a command error.
 
 ### `wtm exec <argv...>`
 

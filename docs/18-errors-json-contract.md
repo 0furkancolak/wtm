@@ -386,6 +386,7 @@ WTM_CI_UNAVAILABLE
 | `gh` not authenticated for the host | `{ provider: "github", host }` | `gh auth login --hostname <host>` |
 | Remote not supported, or no remote | `{ remote }` | none |
 | 20 watches pending | `{ pending: 20 }` | `wtm ci unwatch --worktree <selector>` |
+| The worktree has no commit yet | `{ cwd }` | none |
 
 A transient or throttled `gh auth status` answer still accepts the watch; only a missing `gh`, an
 unauthenticated host or an unsupported remote refuses. Worktree selection failures on `wtm ci
