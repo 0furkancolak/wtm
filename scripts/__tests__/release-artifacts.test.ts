@@ -26,11 +26,11 @@ type FixtureReleaseHost = ReleaseHost & {
   readPrefix(path: string, maxBytes: number): Uint8Array;
 };
 
-function elfHeader(type = 3): Buffer {
+function elfHeader(type = 3, machine = 62): Buffer {
   const bytes = Buffer.alloc(64);
   bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]);
   bytes.writeUInt16LE(type, 16);
-  bytes.writeUInt16LE(62, 18);
+  bytes.writeUInt16LE(machine, 18);
   bytes.writeUInt32LE(1, 20);
   bytes.writeUInt16LE(64, 52);
   return bytes;
@@ -209,8 +209,57 @@ describe('local Linux x64 archive assembly', () => {
   });
 });
 
+describe('local Linux ARM64 archive assembly', () => {
+  for (const type of [2, 3]) {
+    test(`accepts an ELF64 ARM64 ${type === 2 ? 'executable' : 'PIE'} with exact archive metadata`, async () => {
+      const { host, recording } = createHost({ platform: 'linux', arch: 'arm64' });
+      host.readPrefix = (path, maxBytes) => {
+        recording.reads.push({ path, maxBytes }); return elfHeader(type, 183);
+      };
+
+      const result = await buildReleaseArtifacts(host);
+
+      expect(recording.reads).toEqual([{ path: join(root, 'dist/sea/wtm'), maxBytes: 64 }]);
+      expect(result.archive).toBe(join(root, 'dist/release/wtm-linux-arm64.tar.gz'));
+      expect(recording.commands).toEqual([{
+        command: '/usr/bin/tar',
+        args: ['--numeric-owner', '--owner', '0', '--group', '0', '-czf', result.archive,
+          '-C', join(root, 'dist/release/.stage'), ...releaseArchiveFiles],
+      }]);
+      expect(recording.copies.map(({ destination }) => basename(destination))).toEqual([...releaseArchiveFiles]);
+      expect(recording.modes).toEqual([{ path: join(root, 'dist/release/.stage/wtm'), mode: 0o755 }]);
+      expect(recording.digests).toEqual([result.archive]);
+      expect(recording.writes.get(result.checksums)).toBe(`${'a'.repeat(64)}  wtm-linux-arm64.tar.gz\n`);
+    });
+  }
+
+  for (const [name, corrupt] of [
+    ['x86-64 machine', (bytes: Buffer) => { bytes.writeUInt16LE(62, 18); }],
+    ['ARM32 machine', (bytes: Buffer) => { bytes.writeUInt16LE(40, 18); }],
+    ['32-bit class', (bytes: Buffer) => { bytes[4] = 1; }],
+    ['big-endian encoding', (bytes: Buffer) => { bytes[5] = 2; }],
+    ['relocatable object', (bytes: Buffer) => { bytes.writeUInt16LE(1, 16); }],
+    ['bad magic', (bytes: Buffer) => { bytes[0] = 0; }],
+    ['invalid header size', (bytes: Buffer) => { bytes.writeUInt16LE(63, 52); }],
+  ] as const) {
+    test(`rejects ARM64 payload with ${name} before staging any output`, async () => {
+      const bytes = elfHeader(3, 183); corrupt(bytes);
+      const { host, recording } = createHost({ platform: 'linux', arch: 'arm64', readPrefix: () => bytes });
+
+      await expect(buildReleaseArtifacts(host)).rejects.toThrow('ELF');
+
+      expect(recording.commands).toEqual([]);
+      expect(recording.copies).toEqual([]);
+      expect(recording.directories).toEqual([]);
+      expect(recording.removed).toEqual([]);
+      expect(recording.writes.size).toBe(0);
+      expect(recording.digests).toEqual([]);
+    });
+  }
+});
+
 describe('unsupported local archive targets', () => {
-  for (const [platform, arch] of [['linux', 'arm64'], ['win32', 'x64'], ['freebsd', 'x64'],
+  for (const [platform, arch] of [['linux', 'ia32'], ['win32', 'x64'], ['freebsd', 'x64'],
     ['darwin', 'ia32'], ['linux', 'x86_64'], ['', 'x64']] as const) {
     test(`refuses ${platform || 'missing platform'}/${arch} before any filesystem or process operation`, async () => {
       const { host, recording } = createHost({ platform, arch });

@@ -76,12 +76,14 @@ function assertArchitecture(host: ReleaseHost, executable: string, target: Artif
     const bytes = host.readPrefix(executable, 64);
     if (bytes.byteLength !== 64) throw new Error(`${executable} has an invalid ELF header length`);
     const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    // ELF64 little-endian x86-64, either ET_EXEC or ET_DYN (the pinned Node runtime is PIE).
+    const machine = target.arch === 'arm64' ? 183 : 62;
+    const architecture = target.arch === 'arm64' ? 'ARM64' : 'x86-64';
+    // ELF64 little-endian, either ET_EXEC or ET_DYN (the pinned Node runtime is PIE).
     // Classifying only the header is an architecture check; executable smoke remains a separate gate.
     if (header.getUint32(0, false) !== 0x7f454c46 || bytes[4] !== 2 || bytes[5] !== 1 || bytes[6] !== 1
-      || ![2, 3].includes(header.getUint16(16, true)) || header.getUint16(18, true) !== 62
+      || ![2, 3].includes(header.getUint16(16, true)) || header.getUint16(18, true) !== machine
       || header.getUint32(20, true) !== 1 || header.getUint16(52, true) !== 64) {
-      throw new Error(`${executable} is not an ELF64 little-endian x86-64 executable`);
+      throw new Error(`${executable} is not an ELF64 little-endian ${architecture} executable`);
     }
     return;
   }
