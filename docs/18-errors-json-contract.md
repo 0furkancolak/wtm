@@ -383,8 +383,8 @@ WTM_CI_UNAVAILABLE
 | Situation | `context` | Remediation |
 | --- | --- | --- |
 | `gh` not found | `{ provider: "github" }` | none; the message names the GitHub CLI install page |
-| `gh` not authenticated for the host | `{ provider: "github", host }` | `gh auth login --hostname <host>` |
-| Remote not supported, or no remote | `{ remote }` | none |
+| `gh` not authenticated for `github.com` | `{ provider: "github", host }` | `gh auth login --hostname <host>` |
+| Remote not supported, no remote, or a host other than `github.com` that `gh` is not logged in to | `{ remote }` | none; the message is "No CI provider for this remote." |
 | 20 watches pending | `{ pending: 20 }` | `wtm ci unwatch --worktree <selector>` |
 | The worktree has no commit yet | `{ cwd }` | none |
 

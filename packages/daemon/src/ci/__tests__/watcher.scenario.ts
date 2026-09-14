@@ -51,14 +51,21 @@ type Script = {
    * succeeding with `log` — for cases where an early throttled/transient answer is retried. */
   logAnswers?: Array<CiProviderResult<string>>;
   available?: CiProviderResult<null>;
+  /** How many of the first `listRuns` calls throw instead of answering. */
+  listRunsThrows?: number;
 };
 
 function fakeProvider(script: Script) {
   const calls: string[] = [];
+  let throwsLeft = script.listRunsThrows ?? 0;
   const provider: CiProvider = {
     name: 'github',
     checkAvailable: async () => { calls.push('auth'); return script.available ?? { ok: true, value: null }; },
-    listRuns: async () => { calls.push('runs'); return script.runs.length > 1 ? script.runs.shift()! : script.runs[0]!; },
+    listRuns: async () => {
+      calls.push('runs');
+      if (throwsLeft > 0) { throwsLeft -= 1; throw new Error('unexpected provider failure'); }
+      return script.runs.length > 1 ? script.runs.shift()! : script.runs[0]!;
+    },
     listJobs: async (_repository, runId) => { calls.push(`jobs:${runId}`); return { ok: true, value: script.jobs?.[runId] ?? [] }; },
     failedJobLog: async (_repository, runId, jobId) => {
       calls.push(`log:${runId}:${jobId}`);
@@ -80,11 +87,104 @@ function setup(script: Script, remote: string | null = 'git@github.com:acme/widg
   };
   const clock = fakeClock();
   const { calls, provider } = fakeProvider(script);
-  const watcher = new CiWatcher({ store: store.ci, registration, provider, clock });
+  const errors: string[] = [];
+  const watcher = new CiWatcher({ store: store.ci, registration, provider, clock, onError: (error) => errors.push(String(error)) });
   const request = (command: string, args: unknown): IpcRequest => ({ protocol: { major: 1, minor: 0 }, id: 'r', command, arguments: args });
-  const watch = async () => await watcher.handle(request('ci.watch', { cwd: '/w/feat/src', branch: 'feat', headSha: sha }));
+  const watch = async (headSha: string = sha) => await watcher.handle(request('ci.watch', { cwd: '/w/feat/src', branch: 'feat', headSha }));
   const settle = async () => await watcher.idle();
-  return { store, clock, calls, watcher, request, watch, settle };
+  return { store, clock, calls, errors, watcher, request, watch, settle };
+}
+
+/** Starts a pending watch of another commit on `wt-1` directly in the store, for `watch()` to supersede. */
+function startOlderWatch(t: ReturnType<typeof setup>) {
+  return t.store.ci.start({
+    repositoryId: 'repo-1', worktreeId: 'wt-1', worktreePath: '/w/feat', providerRepo: 'github.com/acme/widgets',
+    branch: 'feat', headSha: 'd'.repeat(40), pr: null, now: new Date(base).toISOString(), nextPollAt: new Date(base + 15_000).toISOString(),
+    pollIntervalMs: 15_000, maxPending: 20,
+  }).watch;
+}
+
+/** Final fix F3: a two-segment host other than github.com that gh is not logged in to has no CI provider. */
+async function nonGithubHostUnauthenticated() {
+  const gitlab = setup({ runs: [], available: { ok: false, failure: { kind: 'unavailable', reason: 'unauthenticated', detail: 'not logged in' } } }, 'git@gitlab.com:acme/widgets.git');
+  try {
+    const refused = await gitlab.watch();
+    return { refused, pending: gitlab.store.ci.pending().length, calls: gitlab.calls };
+  } finally {
+    gitlab.store.close();
+  }
+}
+
+/** Final fix F5: an unexpected poll error pushes that watch out by its interval instead of re-arming at 0 ms. */
+async function unexpectedErrorDoesNotRetryImmediately() {
+  const t = setup({ runs: [{ ok: true, value: [run('in_progress', null)] }], jobs: { 7: [job(null)] }, listRunsThrows: 1 });
+  try {
+    await t.watch();
+    await t.clock.advance(15_000, t.settle);
+    const runsAfterError = t.calls.filter((call) => call === 'runs').length;
+    const errorsAfterError = t.errors.length;
+    const nextPollAtAfterError = t.store.ci.latestForWorktree('wt-1')?.nextPollAt ?? null;
+    await t.clock.advance(15_000, t.settle);
+    const runsLater = t.calls.filter((call) => call === 'runs').length;
+    return { runsAfterError, errorsAfterError, nextPollAtAfterError, runsLater };
+  } finally {
+    t.store.close();
+  }
+}
+
+/** Final fix F6: with no runs yet, the interval still grows ×1.5; `no_runs` still lands 3 minutes from start. */
+async function noRunsPollingGrows() {
+  const t = setup({ runs: [{ ok: true, value: [] }] });
+  try {
+    await t.watch();
+    await t.clock.advance(15_000, t.settle);
+    const afterFirst = t.store.ci.latestForWorktree('wt-1')?.pollIntervalMs ?? null;
+    await t.clock.advance(22_500, t.settle);
+    const afterSecond = t.store.ci.latestForWorktree('wt-1')?.pollIntervalMs ?? null;
+    await t.clock.advance(180_000 - 37_500, t.settle);
+    const finished = t.store.ci.latestForWorktree('wt-1');
+    return {
+      afterFirst, afterSecond, state: finished?.state ?? null, finishedAt: finished?.finishedAt ?? null,
+      listRunsCalls: t.calls.filter((call) => call === 'runs').length,
+    };
+  } finally {
+    t.store.close();
+  }
+}
+
+/** Final fix F9: a watch ending `unavailable` or cancelled prunes the superseded watch it replaced. */
+async function finishingPrunesSuperseded() {
+  const gone = setup({ runs: [{ ok: false, failure: { kind: 'unavailable', reason: 'not-found', detail: 'HTTP 404' } }] });
+  const stopped = setup({ runs: [{ ok: true, value: [run('in_progress', null)] }] });
+  try {
+    const goneOld = startOlderWatch(gone);
+    await gone.watch();
+    await gone.clock.advance(15_000 * 3, gone.settle);
+    const unavailableState = gone.store.ci.latestForWorktree('wt-1')?.state ?? null;
+    const supersededGoneAfterUnavailable = gone.store.ci.get(goneOld.watchId) === null;
+
+    const stoppedOld = startOlderWatch(stopped);
+    await stopped.watch();
+    await stopped.watcher.handle(stopped.request('ci.unwatch', { cwd: '/w/feat' }));
+    const supersededGoneAfterCancel = stopped.store.ci.get(stoppedOld.watchId) === null;
+    return { unavailableState, supersededGoneAfterUnavailable, supersededGoneAfterCancel };
+  } finally {
+    gone.store.close();
+    stopped.store.close();
+  }
+}
+
+/** Final fix F10: watching the same head again reuses the pending watch without spending an auth probe. */
+async function rewatchSameHeadSkipsAuthProbe() {
+  const t = setup({ runs: [{ ok: true, value: [run('in_progress', null)] }] });
+  try {
+    const first = await t.watch();
+    const callsAfterFirst = [...t.calls];
+    const second = await t.watch();
+    return { first, second, callsAfterFirst, callsAfterSecond: [...t.calls] };
+  } finally {
+    t.store.close();
+  }
 }
 
 async function acceptPollAndFinish() {
@@ -284,7 +384,8 @@ async function budgetFullSkipsAuthProbeOnRewatch() {
     }
     await t.clock.advance(15_000, t.settle);
     const callsAfterTick = t.calls.length;
-    const rewatch = await t.watch();
+    // Another commit, so the probe is not skipped merely because a pending watch is reused (F10).
+    const rewatch = await t.watch('e'.repeat(40));
     const callsAfterRewatch = t.calls.length;
     return { callsAfterTick, rewatch, callsAfterRewatch };
   } finally {
@@ -381,6 +482,11 @@ const result = {
   budgetFullSkipsAuthProbeOnRewatch: await budgetFullSkipsAuthProbeOnRewatch(),
   failedJobLogRetriesAfterThrottleThenSucceeds: await failedJobLogRetriesAfterThrottleThenSucceeds(),
   tickSkipsWatchCancelledMidTick: await tickSkipsWatchCancelledMidTick(),
+  nonGithubHostUnauthenticated: await nonGithubHostUnauthenticated(),
+  unexpectedErrorDoesNotRetryImmediately: await unexpectedErrorDoesNotRetryImmediately(),
+  noRunsPollingGrows: await noRunsPollingGrows(),
+  finishingPrunesSuperseded: await finishingPrunesSuperseded(),
+  rewatchSameHeadSkipsAuthProbe: await rewatchSameHeadSkipsAuthProbe(),
 };
 
 console.log(JSON.stringify(result));

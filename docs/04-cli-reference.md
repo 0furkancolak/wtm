@@ -350,7 +350,7 @@ does not refuse at a workspace root.
 The daemon polls `gh run list`/`gh run view` for the watched commit, first 15 s after the watch
 starts; the interval grows ×1.5 up to a 2 min cap and resets to 15 s whenever a run or job changes
 state. A `gh` rate limit or server error delays that watch (up to a 10 min cap) without failing it.
-At most 20 watches may be pending at once across the workspace (`wtm ci unwatch` frees a slot), and
+At most 20 watches may be pending at once across all workspaces (`wtm ci unwatch` frees a slot), and
 at most 30 `gh` invocations run per minute across every pending watch. A finished watch is deleted 7
 days after it finished; `wtm remove` deletes the removed worktree's watches immediately.
 

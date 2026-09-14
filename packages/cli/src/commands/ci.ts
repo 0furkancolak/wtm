@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { containsPath, GitCommandError, runGit, type CiWatchRecord } from '@wtm/core';
+import { containsPath, readWorktreeHead, type CiWatchRecord } from '@wtm/core';
 import {
   ciArgumentSchemas, ciUnwatchResultSchema, ciWatchAcceptanceSchema,
   type CiWatch, type JsonEnvelope, type WtmError,
@@ -21,28 +21,12 @@ export function publicWatch(record: CiWatchRecord): CiWatch {
   };
 }
 
-async function readHead(cwd: string): Promise<{ branch: string | null; headSha: string } | null> {
-  try {
-    const headSha = (await runGit(cwd, ['rev-parse', '--verify', 'HEAD^{commit}'])).stdout.toString('utf8').trim();
-    let branch: string | null = null;
-    try {
-      branch = (await runGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).stdout.toString('utf8').trim() || null;
-    } catch (error) {
-      if (!(error instanceof GitCommandError)) throw error;
-    }
-    return { branch, headSha };
-  } catch (error) {
-    if (error instanceof GitCommandError) return null;
-    throw error;
-  }
-}
-
 /** Reads HEAD locally, then hands the watch to the daemon; it never waits for CI. */
 export async function runCiWatchCommand(
   input: { cwd: string; pr?: number },
   client?: RuntimeDaemonClient,
 ): Promise<JsonEnvelope<unknown>> {
-  const head = await readHead(input.cwd);
+  const head = await readWorktreeHead(input.cwd);
   if (head === null) {
     return failure('ci watch', {
       code: 'WTM_CI_UNAVAILABLE', message: 'This worktree has no commit to watch.', severity: 'error',

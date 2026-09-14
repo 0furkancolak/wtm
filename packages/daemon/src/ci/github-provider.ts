@@ -24,11 +24,12 @@ const jobListSchema = z.object({
 
 const firstLine = (text: string) => text.trim().split('\n')[0]?.slice(0, 300) ?? '';
 
-function classify(result: GhCommandResult): CiProviderFailure {
-  const detail = firstLine(result.stderr) || `gh exited with ${result.exitCode ?? result.outcome}`;
+/** `output` is what gets classified: stderr by default; `checkAvailable` passes stdout too. */
+function classify(result: GhCommandResult, output: string = result.stderr): CiProviderFailure {
+  const stderr = output;
+  const detail = firstLine(stderr) || `gh exited with ${result.exitCode ?? result.outcome}`;
   if (result.outcome === 'not-found') return { kind: 'unavailable', reason: 'missing', detail: 'The GitHub CLI (gh) was not found.' };
   if (result.outcome === 'timeout') return { kind: 'transient', detail: 'gh did not answer within 30 seconds.' };
-  const stderr = result.stderr;
   if (/rate limit|HTTP 429/i.test(stderr)) return { kind: 'throttled', detail };
   if (/HTTP 5\d\d|timeout|timed out|connection|EOF|TLS|network/i.test(stderr)) return { kind: 'transient', detail };
   if (/HTTP 401|not logged in|auth login|authentication|Bad credentials|token .*invalid|invalid token|not logged into/i.test(stderr)) return { kind: 'unavailable', reason: 'unauthenticated', detail };
@@ -54,7 +55,9 @@ export function createGitHubProvider(run: GhCommandRunner): CiProvider {
     async checkAvailable(repository: CiRepository) {
       const result = await run(['auth', 'status', '--hostname', repository.host]);
       if (result.outcome === 'success') return { ok: true, value: null };
-      return { ok: false, failure: classify(result) };
+      // gh >= 2.40 prints its per-account report, including "The token in keyring is invalid.",
+      // on stdout with exit 1 and nothing on stderr, so both streams are classified here.
+      return { ok: false, failure: classify(result, `${result.stderr}\n${result.stdout}`) };
     },
 
     async listRuns(repository, headSha) {

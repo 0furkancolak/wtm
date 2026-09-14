@@ -1,5 +1,7 @@
 import type { CiRun } from '@wtm/protocol';
 import { CiWatchError, type CiWatchStartInput } from '../ci';
+import type { SqliteDatabase } from '../database';
+import { stateStoreRuntime } from '../runtime';
 import { SQLiteStateStore } from '../sqlite-store';
 
 const shaA = 'a'.repeat(40);
@@ -154,7 +156,25 @@ function prunesSupersededAfterNewerFinishes() {
   }
 }
 
+/** A stored run whose JSON no longer parses is dropped, not thrown, as the store's comment says. */
+function dropsRunWithInvalidJson() {
+  let database: SqliteDatabase | undefined;
+  const store = new SQLiteStateStore(':memory:', {
+    databaseFactory: (path, options) => (database = stateStoreRuntime().databaseFactory(path, options)),
+  });
+  try {
+    const { ci } = store;
+    const { watchId } = ci.start(input()).watch;
+    ci.update(watchId, { now: '2026-09-14T12:00:15.000Z', runs: [run] });
+    database!.prepare('INSERT INTO ci_runs (watch_id, position, run_json) VALUES (?, ?, ?)').run(watchId, 1, '{not json');
+    return { getRuns: ci.get(watchId)?.runs ?? null, latestRuns: ci.latestForWorktree('wt-1')?.runs ?? null };
+  } finally {
+    store.close();
+  }
+}
+
 const scenarios: Record<string, () => unknown> = {
+  'drops-run-with-invalid-json': dropsRunWithInvalidJson,
   'reuse-same-commit': reuseSameCommit,
   'supersede-on-new-commit': supersedeOnNewCommit,
   'refuses-beyond-pending-limit': refusesBeyondPendingLimit,

@@ -62,7 +62,6 @@ export class CiWatcher {
 
   async start(): Promise<void> {
     const now = this.#clock.now();
-    this.#options.store.prune(this.#iso(now), ciPollPolicy.retentionMs);
     for (const watch of this.#options.store.pending()) {
       // Only the 2-hour deadline is judged here: `no_runs` needs to know whether a run has ever
       // appeared, and the next poll (which reads `sawRuns` itself) is the one placed to decide
@@ -74,6 +73,8 @@ export class CiWatcher {
         this.#options.store.update(watch.watchId, { now: this.#iso(now), nextPollAt: this.#iso(now + ciPollPolicy.firstDelayMs) });
       }
     }
+    // After the loop, so a watch that just timed out above is pruned like any other finished one.
+    this.#options.store.prune(this.#iso(now), ciPollPolicy.retentionMs);
     this.#arm();
   }
 
@@ -108,16 +109,18 @@ export class CiWatcher {
     const now = this.#clock.now();
     if (command === 'ci.unwatch') {
       const cancelled = this.#options.store.cancelPendingForWorktree(registration.worktree.id, this.#iso(now), 'Stopped by wtm ci unwatch.');
+      if (cancelled !== null) this.#options.store.prune(this.#iso(now), ciPollPolicy.retentionMs);
       this.#arm();
       return success(command, { stopped: cancelled !== null, watch: cancelled === null ? null : publicCiWatch(cancelled) });
     }
     const args = parsed.data as { cwd: string; branch: string | null; headSha: string; pr?: number };
     const repository = parseCiRemote(registration.repository.remoteIdentity);
-    if (repository === null) {
-      return failure(command, {
-        code: 'WTM_CI_UNAVAILABLE', message: 'No CI provider for this remote.', severity: 'error',
-        context: { remote: registration.repository.remoteIdentity },
-      });
+    if (repository === null) return failure(command, noProviderRefusal(registration.repository.remoteIdentity));
+    // Watching the commit a pending watch already follows answers with that watch, before the auth
+    // probe: nothing new is started, so there is nothing for `gh` to vouch for.
+    const reusable = this.#options.store.latestForWorktree(registration.worktree.id);
+    if (reusable !== null && reusable.state === 'pending' && reusable.headSha === args.headSha) {
+      return success(command, { watch: publicCiWatch(reusable), reused: true });
     }
     // Corrections while planning (9): a transient or throttled answer here still accepts the
     // watch — only a missing `gh` or an unauthenticated host refuses. `unavailableRefusal`
@@ -133,6 +136,12 @@ export class CiWatcher {
       : await this.#options.provider.checkAvailable(repository);
     if (available !== null) this.#calls.push(now);
     if (available !== null && !available.ok && available.failure.kind === 'unavailable') {
+      // Spec §3: a host other than github.com counts as GitHub only when `gh auth status` succeeds
+      // for it. Unauthenticated there means no CI provider, not a `gh auth login` suggestion for a
+      // host that may not be GitHub at all.
+      if (repository.host !== 'github.com' && available.failure.reason === 'unauthenticated') {
+        return failure(command, noProviderRefusal(registration.repository.remoteIdentity));
+      }
       const refusal = unavailableRefusal(available.failure, repository);
       if (refusal !== null) return failure(command, refusal);
     }
@@ -196,7 +205,17 @@ export class CiWatcher {
       try {
         await this.#poll(watch);
       } catch (error) {
-        if (!(error instanceof BudgetExhausted)) throw error;
+        if (!(error instanceof BudgetExhausted)) {
+          // Left due, this watch would be re-armed at 0 ms and fail again in a tight loop. Wait
+          // one interval first; the error is still reported through `onError` by `#arm`.
+          const now = this.#clock.now();
+          try {
+            this.#options.store.update(watch.watchId, { now: this.#iso(now), nextPollAt: this.#iso(now + watch.pollIntervalMs) });
+          } catch {
+            // The original error is the one worth reporting.
+          }
+          throw error;
+        }
         // The budget ran out mid-tick: every watch still due this tick (including the one that
         // just failed to spend) waits for the next minute's slots rather than being starved
         // forever behind watches earlier in `pending()`'s order.
@@ -293,9 +312,15 @@ export class CiWatcher {
 
   #reschedule(watch: CiWatchRecord, changed: boolean, extra: { runs?: CiRun[]; sawRuns?: boolean }): void {
     const now = this.#clock.now();
-    const interval = nextPollIntervalMs(watch.sawRuns || extra.sawRuns === true ? watch.pollIntervalMs : null, changed);
+    // Spec §2: the interval grows ×1.5 from the first poll whether or not a run has appeared yet.
+    const interval = nextPollIntervalMs(watch.pollIntervalMs, changed);
+    let nextPollAt = now + interval;
+    // Before any run appears, never sleep past the 3-minute `no_runs` deadline.
+    if (!watch.sawRuns && extra.sawRuns !== true) {
+      nextPollAt = Math.min(nextPollAt, Date.parse(watch.startedAt) + ciPollPolicy.noRunsAfterMs);
+    }
     this.#options.store.update(watch.watchId, {
-      now: this.#iso(now), nextPollAt: this.#iso(now + interval), pollIntervalMs: interval, failureStreak: 0,
+      now: this.#iso(now), nextPollAt: this.#iso(nextPollAt), pollIntervalMs: interval, failureStreak: 0,
       ...(extra.runs === undefined ? {} : { runs: extra.runs }), ...(extra.sawRuns === undefined ? {} : { sawRuns: extra.sawRuns }),
     });
   }
@@ -309,6 +334,7 @@ export class CiWatcher {
     const streak = watch.failureStreak + 1;
     if (streak >= ciPollPolicy.unavailableAfterFailures) {
       this.#options.store.update(watch.watchId, { now: this.#iso(now), state: 'unavailable', detail: failure.detail, failureStreak: streak });
+      this.#options.store.prune(this.#iso(now), ciPollPolicy.retentionMs);
       return;
     }
     this.#options.store.update(watch.watchId, { now: this.#iso(now), failureStreak: streak, nextPollAt: this.#iso(now + watch.pollIntervalMs) });
@@ -325,6 +351,10 @@ function canonical(path: string): string {
 
 function fingerprint(runs: readonly CiRun[]): string {
   return JSON.stringify(runs.map((entry) => [entry.runId, entry.status, entry.conclusion, entry.jobs.map((job) => [job.jobId, job.status, job.conclusion])]));
+}
+
+function noProviderRefusal(remote: string | null): WtmError {
+  return { code: 'WTM_CI_UNAVAILABLE', message: 'No CI provider for this remote.', severity: 'error', context: { remote } };
 }
 
 function unavailableRefusal(failure: Extract<CiProviderFailure, { kind: 'unavailable' }>, repository: CiRepository): WtmError | null {

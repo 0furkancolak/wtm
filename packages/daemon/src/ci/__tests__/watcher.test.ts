@@ -91,7 +91,7 @@ describe('CiWatcher', () => {
   test('a full call budget skips the auth probe on re-watch and still accepts it', () => {
     const r = result.budgetFullSkipsAuthProbeOnRewatch;
     expect(r.callsAfterTick).toBe(30);
-    expect(r.rewatch).toMatchObject({ ok: true, data: { reused: true, watch: { state: 'pending' } } });
+    expect(r.rewatch).toMatchObject({ ok: true, data: { reused: false, watch: { state: 'pending', headSha: 'e'.repeat(40) } } });
     expect(r.callsAfterRewatch).toBe(r.callsAfterTick);
   });
 
@@ -113,5 +113,48 @@ describe('CiWatcher', () => {
     const r = result.tickSkipsWatchCancelledMidTick;
     expect(r.calls).toEqual(['auth', 'runs', 'jobs:7']);
     expect(r.wt2State).toBe('cancelled');
+  });
+
+  test('a host other than github.com that gh is not logged in to has no CI provider', () => {
+    const r = result.nonGithubHostUnauthenticated;
+    expect(r.refused).toMatchObject({
+      ok: false,
+      errors: [{ code: 'WTM_CI_UNAVAILABLE', message: 'No CI provider for this remote.', context: { remote: 'git@gitlab.com:acme/widgets.git' } }],
+    });
+    expect(r.refused.errors[0].remediation).toBeUndefined();
+    expect(r.pending).toBe(0);
+    expect(r.calls).toEqual(['auth']);
+  });
+
+  test('an unexpected poll error waits one interval instead of retrying immediately', () => {
+    const r = result.unexpectedErrorDoesNotRetryImmediately;
+    expect(r.runsAfterError).toBe(1);
+    expect(r.errorsAfterError).toBe(1);
+    expect(r.nextPollAtAfterError).toBe(new Date(base + 30_000).toISOString());
+    expect(r.runsLater).toBe(2);
+  });
+
+  test('without runs the poll interval still grows, and no_runs lands 3 minutes from start', () => {
+    const r = result.noRunsPollingGrows;
+    expect(r.afterFirst).toBe(22_500);
+    expect(r.afterSecond).toBe(33_750);
+    expect(r.state).toBe('no_runs');
+    expect(r.finishedAt).toBe(new Date(base + 180_000).toISOString());
+    // Polls at 15 s, 37.5 s, 71.25 s, 121.875 s and at the 3 minute deadline.
+    expect(r.listRunsCalls).toBe(5);
+  });
+
+  test('a watch ending unavailable or cancelled prunes the watch it superseded', () => {
+    const r = result.finishingPrunesSuperseded;
+    expect(r.unavailableState).toBe('unavailable');
+    expect(r.supersededGoneAfterUnavailable).toBe(true);
+    expect(r.supersededGoneAfterCancel).toBe(true);
+  });
+
+  test('watching the same head again reuses the pending watch without calling gh', () => {
+    const r = result.rewatchSameHeadSkipsAuthProbe;
+    expect(r.callsAfterFirst).toEqual(['auth']);
+    expect(r.second).toMatchObject({ ok: true, data: { reused: true, watch: { watchId: r.first.data.watch.watchId } } });
+    expect(r.callsAfterSecond).toEqual(['auth']);
   });
 });

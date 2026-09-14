@@ -44,6 +44,16 @@ describe('GitHub CI provider', () => {
     if (!answer.ok) expect(answer.failure).toMatchObject(expected);
   });
 
+  // gh >= 2.40 prints the per-account report on stdout (exit 1) and leaves stderr empty.
+  test('checkAvailable classifies an invalid token reported on stdout as unauthenticated', async () => {
+    const { provider } = recording([{
+      outcome: 'failure', exitCode: 1, stderr: '',
+      stdout: 'github.com\n  X Failed to log in to github.com account octocat (keyring)\n  - Active account: true\n  - The token in keyring is invalid.\n',
+    }]);
+    const answer = await provider.checkAvailable(repository);
+    expect(answer).toMatchObject({ ok: false, failure: { kind: 'unavailable', reason: 'unauthenticated' } });
+  });
+
   test('lists every run of a commit', async () => {
     const { calls, provider } = recording([ok(JSON.stringify([
       { databaseId: 11, workflowName: 'CI', event: 'push', status: 'completed', conclusion: 'failure', url: 'https://github.com/acme/widgets/actions/runs/11' },

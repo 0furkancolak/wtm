@@ -4,7 +4,26 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { createGitWorktreeFixture } from '../../../../testkit/src/git-fixture';
 import { writeExecutableFixture } from '../../../../testkit/src/executable-fixture';
-import { GitCommandError, createGitEnvironment, listGitWorktrees, runGit } from '../git-runner';
+import { GitCommandError, createGitEnvironment, listGitWorktrees, readWorktreeHead, runGit } from '../git-runner';
+
+describe('readWorktreeHead', () => {
+  it('reads the commit and branch, a detached HEAD as a null branch, and null without a commit', async () => {
+    const fixture = await createGitWorktreeFixture();
+    const empty = await mkdtemp(join(tmpdir(), 'wtm-head-empty-'));
+    const plain = await mkdtemp(join(tmpdir(), 'wtm-head-plain-'));
+    try {
+      await runGit(empty, ['init', '--initial-branch=main']);
+      await expect(readWorktreeHead(fixture.repoPath)).resolves.toEqual({ headSha: fixture.head, branch: 'main' });
+      await expect(readWorktreeHead(fixture.detachedWorktreePath)).resolves.toEqual({ headSha: fixture.head, branch: null });
+      await expect(readWorktreeHead(empty)).resolves.toBeNull();
+      await expect(readWorktreeHead(plain)).resolves.toBeNull();
+    } finally {
+      await fixture.cleanup();
+      await rm(empty, { recursive: true, force: true });
+      await rm(plain, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('listGitWorktrees', () => {
   it('reads normal, linked locked, and detached worktrees from Git porcelain', async () => {

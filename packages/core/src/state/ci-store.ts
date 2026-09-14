@@ -10,8 +10,15 @@ export function createCiWatchStore(database: SqliteDatabase): CiWatchStore {
   const runsOf = (watchId: string): CiRun[] => (
     database.prepare('SELECT run_json FROM ci_runs WHERE watch_id = ? ORDER BY position').all(watchId) as Row[]
   ).flatMap((row) => {
-    // A row that no longer parses is dropped rather than failing every status read.
-    const parsed = ciRunSchema.safeParse(JSON.parse(String(row.run_json)));
+    // A row that no longer parses — invalid JSON or the wrong shape — is dropped rather than
+    // failing every status read.
+    let value: unknown;
+    try {
+      value = JSON.parse(String(row.run_json));
+    } catch {
+      return [];
+    }
+    const parsed = ciRunSchema.safeParse(value);
     return parsed.success ? [parsed.data] : [];
   });
   const record = (row: Row): CiWatchRecord => ({

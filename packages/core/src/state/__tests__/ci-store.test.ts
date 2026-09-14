@@ -73,6 +73,10 @@ describe('CI watch store', () => {
     });
   });
 
+  test('drops a stored run whose JSON no longer parses instead of throwing', () => {
+    expect(runScenario('drops-run-with-invalid-json')).toEqual({ getRuns: [run], latestRuns: [run] });
+  });
+
   test('prunes a superseded watch once a newer watch of its worktree finished', () => {
     expect(runScenario('prunes-superseded-after-newer-finishes')).toEqual({
       pruneBeforeFinish: 0,
