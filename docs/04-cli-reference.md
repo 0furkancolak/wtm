@@ -452,13 +452,17 @@ discovery finds the new worktree with no extra configuration.
 wtm create feat/auth
 wtm create feat/auth --from main
 wtm create feat/auth --json
+wtm create feat/auth --repos web,api,worker
+wtm create feat/auth --resume
 ```
 
 Options:
 
 ```text
---from <ref>   start a new branch here instead of at the main worktree HEAD
---json         emit the stable JSON envelope
+--from <ref>     start a new branch here instead of at the main worktree HEAD
+--repos <names>  create the branch in each named repository of the workspace, as one feature
+--resume         finish a multi-repository creation that did not complete
+--json           emit the stable JSON envelope
 ```
 
 A **new** branch starts at the main worktree's HEAD, not at the HEAD of the worktree you are
@@ -486,12 +490,48 @@ registered and usable but **its `worktree.created` tasks did not run and `eager`
 not happen**, and a `WTM_DAEMON_UNAVAILABLE` warning says so. The first task run there prepares
 its resources as `lazy` always would.
 
-`create` takes no repository operation lease. Leases serialize the operations that destroy
-(`remove`, `gc`, `repair`) and exclude the whole repository while held; creating a worktree
-destroys nothing, so it neither takes one nor waits for one.
+Without `--repos`, `create` takes no repository operation lease. Leases serialize the operations
+that destroy (`remove`, `gc`, `repair`) and exclude the whole repository while held; creating one
+worktree destroys nothing, so it neither takes one nor waits for one.
 
-Multi-repository creation (`--repos`) is not implemented. See
-`docs/superpowers/specs/2026-09-07-create-worktree.md` for why it is deferred rather than pending.
+#### Several repositories: `--repos`
+
+`wtm create feat/auth --repos web,api,worker` creates `feat/auth` in each named repository, as one
+feature, and can run from the workspace root. A name is a `[repos.<name>]` entry, or the
+repository directory's name when no entry names it. The worktrees share the feature the runtime
+already groups by branch — ports and CORS work across them as before — and WTM records that
+feature with a persistent id.
+
+- Every member is checked before Git writes anything, and all refusals are reported together. An
+  unknown or ambiguous name is `WTM_CONFIG_INVALID`.
+- Each new branch starts at a commit pinned per repository: `--from`, or that repository's main
+  worktree HEAD. The same branch name in two repositories is not the same commit.
+- The command takes a `create` lease on every member, in a fixed order, and refuses rather than
+  waits if any is held (`WTM_OPERATION_CONFLICT`). A queued or running `wtm run --enqueue` job does
+  not block it.
+- Each member is journalled. If a member fails, the ones already created stay, the command fails
+  with a `wtm create <branch> --resume` remediation, and a new `create` of the same branch is
+  refused until it is resumed. The one exception: if nothing was written to Git yet, a new
+  `create` replaces the unfinished one.
+
+`--resume` looks at each member's real Git state rather than trusting the journal: a worktree
+already on the branch at the path counts as done, a member with nothing written is created at its
+pinned commit, and anything else — a directory at the path, the branch checked out elsewhere or
+pointing at another commit, a stale Git worktree entry, a forgotten repository — is refused with
+what was found. A worktree whose HEAD has moved past its pinned start still counts as done; the
+envelope reports it, with `worktree.head` beside `branch.startPoint`. `--from` cannot be combined
+with `--resume`, and a `--repos` given with it must match the creation. WTM never deletes anything
+to make a creation fit.
+
+A `create` killed after taking its leases but before journalling leaves only a dead lease: a new
+`create` is refused with `WTM_OPERATION_CONFLICT` and the remediation
+`wtm create <branch> --repos … --resume`. With no unfinished creation to resume, that command clears
+the dead leases on the named repositories and still refuses with `WTM_CONFIG_INVALID`, saying which
+it cleared; the next `create` then runs.
+
+The envelope reports `feature` (`id`, `branch`), `members[]` (repository, worktree, branch with its
+pinned `startPoint`, journal `phase`, and `recoveredFrom` on resume), `registration` and `resumed`.
+See `docs/superpowers/specs/2026-09-13-multi-repo-create-design.md`.
 
 ## Safe removal
 

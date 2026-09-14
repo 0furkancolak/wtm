@@ -49,6 +49,15 @@ export type {
   WorktreeCreationInput,
   WorktreeCreationPlan,
 } from './analysis/create-worktree';
+export { planFeatureCreation, resolveCommit, resolveFeatureMembers } from './analysis/create-feature';
+export type {
+  FeatureCreationDecision,
+  FeatureMemberMeasurement,
+  FeatureMemberPlan,
+  FeatureMemberResolution,
+} from './analysis/create-feature';
+export { classifyMemberRecovery } from './analysis/create-feature-recovery';
+export type { MemberRecoveryAction, MemberRecoveryInput } from './analysis/create-feature-recovery';
 export { rankCleanupCandidates } from './analysis/cleanup-ranking';
 export type {
   CleanupCandidateInput,
@@ -76,12 +85,15 @@ export {
   defaultOperationLeaseTtlMs,
   RepositoryOperationConflictError,
   withRepositoryOperationLease,
+  withRepositoryOperationLeases,
 } from './analysis/operation-lease';
 export type {
   ProcessStartIdentity,
   ProcessStartTimeReader,
   RepositoryOperationConflictDetail,
   RepositoryOperationLeaseInput,
+  RepositoryOperationLeasesInput,
+  RepositoryOperationLeasesSession,
   RepositoryOperationLeaseStore,
   RepositoryOperationSession,
 } from './analysis/operation-lease';
@@ -141,6 +153,7 @@ export { queueTaskTimeoutMs } from './config/task-timeout';
 export { ensurePrivateDirectory, PrivateDirectoryError, verifyPrivateDirectory } from './state/private-directory';
 export type { PrivateDirectory, PrivateDirectoryIdentity } from './state/private-directory';
 export type {
+  BeginFeatureCreationInput,
   EndpointLease,
   EndpointLeaseQuery,
   EndpointLeaseState,
@@ -148,6 +161,13 @@ export type {
   EndpointCandidate,
   EndpointProtocol,
   EndpointRequest,
+  FeatureCreationMemberInput,
+  FeatureCreationMemberRecord,
+  FeatureCreationPhase,
+  FeatureCreationRecord,
+  FeatureCreationState,
+  FeatureCreationStore,
+  FeatureRecord,
   ManagedProcessInput,
   ManagedProcessCreateOptions,
   ManagedProcessQuery,

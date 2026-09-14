@@ -179,8 +179,11 @@ export interface ManagedProcessQuery {
   states?: readonly ManagedProcessState[];
 }
 
-/** The destructive operations that take a repository-wide lease before they start. */
-export type RepositoryOperation = 'remove' | 'gc' | 'repair';
+/**
+ * The operations that take a repository-wide lease before they start: the three that destroy,
+ * and a multi-repository `create`, which holds its members still while it journals and writes.
+ */
+export type RepositoryOperation = 'remove' | 'gc' | 'repair' | 'create';
 
 export interface RepositoryOperationLeaseKey {
   repositoryId: string;
@@ -294,7 +297,10 @@ export interface StateStore extends AdapterTrustStateStore {
     input: RepositoryOperationLeaseRequest,
     now: string,
   ): RepositoryOperationLeaseResult;
-  /** Extends a lease the caller still holds. An expired lease is re-acquired, never renewed. */
+  /**
+   * Extends a lease the caller's token still holds, even one whose TTL has lapsed. The token alone
+   * decides: a reclaimed lease carries its adopter's token, so a displaced owner is refused.
+   */
   renewRepositoryOperationLease(
     key: RepositoryOperationLeaseKey,
     token: string,
@@ -458,4 +464,40 @@ export interface ResourceLifecycleStore {
   finalizeResourceCleanupJournal(input: ResourceGcJournalInput, token: string): boolean;
   recordResourceGcJournal(input: ResourceGcJournalInput): void;
   listResourceGcJournal(): ResourceGcJournalInput[];
+}
+
+export type FeatureCreationState = 'IN_PROGRESS' | 'COMPLETED' | 'SUPERSEDED';
+export type FeatureCreationPhase = 'PLANNED' | 'APPLYING' | 'APPLIED' | 'REGISTERED';
+export interface FeatureRecord { id: string; workspaceId: string; branch: string; createdAt: string }
+export interface FeatureCreationMemberInput {
+  repositoryId: string; repositoryMainRoot: string; position: number;
+  worktreePath: string; branchExisted: boolean; startOid: string;
+}
+export interface FeatureCreationMemberRecord extends FeatureCreationMemberInput {
+  creationId: string; phase: FeatureCreationPhase; lastErrorCode: string | null; updatedAt: string;
+}
+export interface FeatureCreationRecord {
+  id: string; feature: FeatureRecord; state: FeatureCreationState; fromRef: string | null;
+  createdAt: string; updatedAt: string; completedAt: string | null;
+  members: FeatureCreationMemberRecord[]; // ordered by position
+}
+export interface BeginFeatureCreationInput {
+  workspaceId: string; branch: string; fromRef: string | null;
+  members: readonly FeatureCreationMemberInput[];
+  supersedeCreationId?: string | undefined;
+}
+/**
+ * The multi-repository creation journal (spec 2026-09-13-multi-repo-create-design.md).
+ *
+ * Kept apart from `StateStore` on purpose: that interface's key set is pinned by a type-level
+ * test and implemented by test doubles, none of which have anything to say about features.
+ */
+export interface FeatureCreationStore {
+  upsertFeature(workspaceId: string, branch: string): FeatureRecord;
+  beginFeatureCreation(input: BeginFeatureCreationInput): FeatureCreationRecord;
+  advanceCreationMember(creationId: string, repositoryId: string, phase: FeatureCreationPhase, lastErrorCode: string | null): void;
+  completeFeatureCreation(creationId: string): void;
+  supersedeFeatureCreation(creationId: string): void;
+  readOpenFeatureCreation(workspaceId: string, branch: string): FeatureCreationRecord | null;
+  readFeatureCreation(creationId: string): FeatureCreationRecord | null;
 }

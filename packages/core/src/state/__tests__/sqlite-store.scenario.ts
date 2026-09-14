@@ -1327,12 +1327,18 @@ function repositoryOperationLeaseRecovery() {
         '2026-08-31T10:00:02.000Z',
       );
       const notTakenOver = store.readRepositoryOperationLease(key);
+      // Expired but never reclaimed: the row still carries token-1, so its holder may renew it.
       const renewExpired = store.renewRepositoryOperationLease(
         key, 'token-1', '2026-08-31T10:00:02.000Z', 1000,
       );
+      const afterRenewExpired = store.readRepositoryOperationLease(key);
       const adoptedResult = store.acquireRepositoryOperationLease(
         { ...challenger, adopt: true, ownerLiveness: () => 'gone' },
-        '2026-08-31T10:00:02.000Z',
+        '2026-08-31T10:00:04.000Z',
+      );
+      // Adoption wrote a new token, so the displaced owner can neither renew nor release.
+      const displacedTokenCannotRenew = store.renewRepositoryOperationLease(
+        key, 'token-1', '2026-08-31T10:00:04.000Z', 1000,
       );
       const displacedTokenCannotRelease = store.releaseRepositoryOperationLease(key, 'token-1');
       const adoptOnLiveHolder = store.acquireRepositoryOperationLease(
@@ -1379,11 +1385,13 @@ function repositoryOperationLeaseRecovery() {
         abandonedStage: abandoned.outcome === 'acquired' ? null : abandoned.holder.stage,
         notTakenOverPid: notTakenOver?.pid ?? null,
         renewExpired,
+        expiresAtAfterRenewExpired: afterRenewExpired?.expiresAt ?? null,
         adoptedOutcome: adoptedResult.outcome,
         adoptedStage: adoptedResult.outcome === 'acquired' ? adoptedResult.adoptedStage : null,
         adoptedLeaseStage: adoptedResult.outcome === 'acquired' ? adoptedResult.lease.stage : null,
         adoptedLeasePid: adoptedResult.outcome === 'acquired' ? adoptedResult.lease.pid : null,
         adoptedAcquiredAt: adoptedResult.outcome === 'acquired' ? adoptedResult.lease.acquiredAt : null,
+        displacedTokenCannotRenew,
         displacedTokenCannotRelease,
         adoptOnLiveHolderOutcome: adoptOnLiveHolder.outcome,
         unknownVerdictOutcome,

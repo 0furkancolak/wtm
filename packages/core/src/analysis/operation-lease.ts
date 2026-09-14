@@ -91,6 +91,12 @@ export interface RepositoryOperationSession {
   readonly adoptedStage: string | null;
   /** Records the last completed stage, so an interrupted operation can be resumed from it. */
   advance(stage: string): void;
+  /**
+   * Extends the lease, even past its TTL, for as long as the row still carries this token. Throws
+   * only when it does not — the row was released, or adopted by another process after this one
+   * was judged gone — because then the lease is no longer this process's to extend.
+   */
+  renew(): void;
 }
 
 export interface RepositoryOperationLeaseInput {
@@ -173,6 +179,14 @@ export async function withRepositoryOperationLease<T>(
       if (!input.store.advanceRepositoryOperationLease(key, token, stage, now())) {
         throw new Error(
           `The "${input.operation}" lease on repository ${input.repositoryId} is no longer held, so the stage "${stage}" was not recorded.`,
+        );
+      }
+    },
+    renew(): void {
+      const ttlMs = input.ttlMs ?? defaultOperationLeaseTtlMs;
+      if (!input.store.renewRepositoryOperationLease(key, token, now(), ttlMs)) {
+        throw new Error(
+          `The "${input.operation}" lease on repository ${input.repositoryId} is no longer held by this process, so it was not renewed.`,
         );
       }
     },
@@ -347,4 +361,47 @@ function conflictFrom(
         : [],
     },
   );
+}
+
+export interface RepositoryOperationLeasesInput
+  extends Omit<RepositoryOperationLeaseInput, 'repositoryId' | 'subjectWorktreeId'> {
+  repositoryIds: readonly string[];
+}
+
+export interface RepositoryOperationLeasesSession {
+  /** The distinct repository ids, in acquisition order. */
+  readonly repositoryIds: readonly string[];
+  /** Renews every held lease; throws if any is no longer held by this process's token. */
+  renewAll(): void;
+}
+
+/**
+ * Holds one lease per repository while `body` runs.
+ *
+ * Acquisition is in ascending repository id order and never waits, so two callers holding
+ * overlapping sets cannot deadlock: whichever reaches a held repository second is refused. The
+ * leases nest, so a refusal part-way releases the ones already held, in reverse order, before the
+ * refusal reaches the caller.
+ */
+export async function withRepositoryOperationLeases<T>(
+  input: RepositoryOperationLeasesInput,
+  body: (session: RepositoryOperationLeasesSession) => Promise<T>,
+): Promise<T> {
+  const { repositoryIds, ...single } = input;
+  const ordered = [...new Set(repositoryIds)].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+  if (ordered.length === 0) throw new TypeError('At least one repository must be leased');
+  const sessions: RepositoryOperationSession[] = [];
+  const acquire = async (index: number): Promise<T> => {
+    if (index === ordered.length) {
+      return await body({
+        repositoryIds: ordered,
+        renewAll: () => { for (const session of sessions) session.renew(); },
+      });
+    }
+    return await withRepositoryOperationLease({ ...single, repositoryId: ordered[index]! }, async (session) => {
+      sessions.push(session);
+      return await acquire(index + 1);
+    });
+  };
+  return await acquire(0);
 }

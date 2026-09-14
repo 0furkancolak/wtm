@@ -162,7 +162,7 @@ class FakeLeaseStore implements RepositoryOperationLeaseStore {
     ttlMs: number,
   ): boolean {
     const row = this.#matching(key);
-    if (row === null || row.token !== token || row.expiresAt <= now) return false;
+    if (row === null || row.token !== token) return false;
     this.rows.set(rowKey(row), { ...row, renewedAt: now, expiresAt: new Date(Date.parse(now) + ttlMs).toISOString() });
     return true;
   }

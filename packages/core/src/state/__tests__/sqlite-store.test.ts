@@ -142,7 +142,7 @@ describe('SQLiteStateStore', () => {
       activeAfterStop: null,
       orderedStates: ['STOPPED', 'FAILED'],
       rejectedSecondActiveSingleton: true,
-      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
     });
   });
 
@@ -189,7 +189,7 @@ describe('SQLiteStateStore', () => {
       tieWinner: 'tie-z',
       tieLoserCleanupRequired: false,
       leaseSurvivedExpiry: true,
-      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
     });
   });
 
@@ -295,12 +295,14 @@ describe('SQLiteStateStore', () => {
       abandonedOutcome: 'abandoned',
       abandonedStage: 'release-endpoints',
       notTakenOverPid: 900,
-      renewExpired: false,
+      renewExpired: true,
+      expiresAtAfterRenewExpired: '2026-08-31T10:00:03.000Z',
       adoptedOutcome: 'acquired',
       adoptedStage: 'release-endpoints',
       adoptedLeaseStage: 'release-endpoints',
       adoptedLeasePid: 901,
-      adoptedAcquiredAt: '2026-08-31T10:00:02.000Z',
+      adoptedAcquiredAt: '2026-08-31T10:00:04.000Z',
+      displacedTokenCannotRenew: false,
       displacedTokenCannotRelease: false,
       adoptOnLiveHolderOutcome: 'conflict',
       unknownVerdictOutcome: 'conflict',
