@@ -14,6 +14,20 @@ skills/wtm/SKILL.md
 
 Agent Skills use a portable `SKILL.md` playbook. WTM's skill teaches an agent how to inspect context, run development tasks, avoid manual env/port changes and safely handle worktree cleanup.
 
+The skill is the agent's complete WTM reference, because every conversation that has to rediscover
+WTM spends tokens on it. It opens with what WTM is, the JSON envelope and exit classes, and a
+command map with one row per visible command. It tells the agent to open the README, `docs/` or
+`--help` only when an error names a command or flag the skill does not contain, to find task
+names from `wtm resolve`'s `context.knownTasks` instead of reading configuration files, and to
+create worktrees with `wtm create`. Two tests in `packages/cli/src/__tests__/skill-reference.test.ts`
+keep it that way: every visible command registered by the CLI must appear in the command map, and
+the file must stay within 24 KiB.
+
+The skill also tells an agent not to wait on CI, reviews or deploys inside a tool call. It moves on
+to the next independent piece of work, looks at the check once between pieces of work, relies on
+host notifications when the host delivers them, and, when the check is the only work left, reports
+it and ends its turn. WTM does not yet follow CI itself (`todo.md` item 54).
+
 ## Agent command contract
 
 Preferred agent flow after entering a repository/worktree:

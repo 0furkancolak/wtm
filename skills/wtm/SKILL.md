@@ -1,297 +1,297 @@
 ---
 name: wtm-worktree-runtime
-description: Use when developing, testing, diagnosing, creating, analyzing, or cleaning up Git worktrees in a workspace managed by WTM. Prefer WTM for ports, environment, workspace tasks, runtime processes, and safe worktree removal instead of manual per-worktree setup.
+description: Use when the working directory contains or sits under a wtm.toml, when the user mentions WTM or the wtm command, or when developing, testing, starting dev servers, creating, analyzing or removing Git worktrees in a WTM-managed workspace, including while a push, pull request or CI run is pending.
 ---
 
 # WTM Worktree Runtime
 
-## Goal
+## What WTM is
 
-Operate a WTM-managed Git worktree without manually selecting ports, copying environment files, rediscovering parent workspace commands, or bypassing worktree safety.
+WTM (Worktree Runtime Manager) runs many Git worktrees of a workspace side by side on one machine.
 
-## Start every WTM workflow
+- **Workspace**: a directory with `wtm.toml`, holding one or more repositories. A **worktree** is one
+  checkout of a repository; a **feature** is a branch, across every repository that has it.
+- A per-user **daemon** (launchd, systemd user service, or experimental Windows Scheduled Task)
+  supervises managed processes and owns the SQLite state store.
+- Each feature gets its own **ports** and resolved **environment**; tasks come from `wtm.toml`,
+  from each worktree's `Makefile` (`make:<target>`) and the workspace root's (`workspace:<target>`).
+- Heavy finite tasks go through a machine-wide **job queue** with concurrency and memory admission.
+- **Removal** refuses whenever work would be lost.
 
-Run:
+## This file is the complete reference
 
-```bash
-wtm doctor --json
-wtm status --json
-```
+Use this file to run WTM; do not research WTM elsewhere. For every WTM action:
 
-Use the platform check in `wtm doctor --json` to identify the active backend and its paths.
-macOS uses a per-user LaunchAgent, Linux a systemd user service, and the experimental Windows
-backend a per-user Scheduled Task and named pipe. Windows implementation and test coverage
-do not imply that its native validation is complete; report capability failures as returned.
-Do not translate another platform's paths or service commands by hand.
+1. Find the command in the command map below.
+2. Run it with `--json`.
+3. If `ok` is `false`, act on `errors[].code` and `errors[].remediation` (its `argv` is the exact
+   command to run next).
 
-Use the same WTM subcommands from PowerShell and Git Bash; their quoting, environment
-assignment and path syntax differ. Prefer configured argv-array tasks and WTM's own `status`,
-`ports`, `ps`, `stop`, and `doctor` commands. Avoid shell-specific `kill`, `pkill`, or `lsof`
-workarounds. Use `wtm daemon status --json` to inspect the service, `wtm daemon install` when
-installation is authorized, and `wtm skill install` for the documented skill installer.
+Open the README, `docs/` or `--help` only when an error names a command or flag this file does
+not contain.
 
-If WTM says the current directory is not initialized, do not invent WTM configuration. Report it or, when initialization is part of the user's request, run:
+Envelope: `{ schemaVersion: 1, ok, command, scope, data, warnings[], errors[] }`, each error
+`{ code, message, severity, context, remediation? }`. Exit classes: `0` success, `1` operational
+failure, `2` usage or configuration, `3` safety refusal or conflict, `4` daemon unavailable,
+`5` protocol or adapter incompatibility. Decide on `errors[].code`, not on the exit number.
 
-```bash
-wtm init --yes --json
-```
+## Command map
+
+| Command | Use it to |
+| --- | --- |
+| `wtm doctor [selector] --json` | Diagnose the workspace, daemon and platform backend. |
+| `wtm status [selector] --json` | Read identity, state, endpoints, processes and resources. `--global` aggregates registered workspaces. |
+| `wtm explain [selector] --json` | See why WTM resolved a value, and from where. |
+| `wtm plan [selector] --json` | See the declarative changes WTM would make, without applying them. |
+| `wtm env [selector] --json` | Read the resolved environment delta. |
+| `wtm ports [selector] --json` | Read endpoint leases (the ports). |
+| `wtm resolve <task> --json` | Read a task's exact argv, working directory and environment without running it. |
+| `wtm run <task>` | Run a task in the foreground. `--enqueue --idempotency-key <key> --json` queues a heavy one. |
+| `wtm start <task>` | Start a long-running task under supervision. `--wait --timeout <duration> --json` waits for its healthcheck. |
+| `wtm stop [task]` | Stop one managed task, or all of this worktree's. |
+| `wtm restart <task>` | Stop and start a managed task; accepts `--wait --timeout`. |
+| `wtm ps --json` | List WTM-managed process groups. |
+| `wtm logs [task]` | Read managed task logs; `--follow` streams raw output. |
+| `wtm exec -- <argv>` | Run raw argv in this worktree with its resolved environment. |
+| `wtm jobs list --json` | List recent queued jobs (`--limit <count>`). |
+| `wtm jobs status <job-id> --json` | Read a job's state and cleanup status. |
+| `wtm jobs result <job-id> --json` | Read a finished job's result and verify its source evidence. |
+| `wtm jobs logs <job-id> --tail <lines> --json` | Read a bounded tail of a job's output. |
+| `wtm jobs cancel <job-id> --json` | Cancel a queued job or stop its process tree. |
+| `wtm create <branch> --json` | Create a registered worktree for a branch. `--from <ref>`, `--repos <a,b>` (from the workspace root), `--resume`. |
+| `wtm analyze [selector] --json` | Report removal safety; `--all`, `--cleanup-candidates`, `--refresh-remotes`. |
+| `wtm remove <selector> --json` | Remove a worktree safely; `--refresh-remotes`, `--resume` (only when an error asks for it). |
+| `wtm gc --json` | Plan resource garbage collection; `--apply` performs the guarded plan. |
+| `wtm disk --json` | Report logical and allocated resource usage. |
+| `wtm forget [selector] --json` | Retire a registration whose directory is gone; `--force` if it still exists. |
+| `wtm init [path] --yes --json` | Initialize and register a workspace; `--no-detect`, `--max-depth <n>`, `--ai-skill`. |
+| `wtm detect [path] --json` | Read what repositories declare; `--write` appends missing tables to `wtm.toml`. |
+| `wtm daemon install --json` | Install and start the per-user daemon service. |
+| `wtm daemon uninstall --json` | Remove the daemon service. |
+| `wtm daemon status --json` | Inspect the daemon service. |
+| `wtm daemon serve` | Run the daemon in the foreground (isolated testing only). |
+| `wtm adapter list --json` | List trusted external adapters. |
+| `wtm adapter trust <adapter-id> <executable>` | Trust an adapter executable by SHA-256. |
+| `wtm skill print` | Print this skill. |
+| `wtm skill install` | Install this skill into the workspace; `--global` for `~/.agents/skills`. |
+| `wtm completion <shell>` | Print a bash, zsh or fish completion script. |
+
+Selectors differ by command:
+
+- `doctor`, `status`, `explain`, `plan`, `env`, `ports`: a registered workspace name or a path;
+  without one they use the workspace containing the current directory. A branch is not a selector here.
+- `analyze`, `remove`: one worktree, by registered number, branch, absolute path, or path relative
+  to the current repository.
+- `resolve`, `run`, `start`, `stop`, `restart`, `logs`, `exec`, `ps`: no worktree selector. They act
+  on the worktree containing the current directory, so run them from that worktree's path.
+
+To find an existing worktree's path for a branch, run `git worktree list --porcelain` in its
+repository; for a worktree you just created, use `data.worktree.path` from `wtm create`.
+
+## Start of a conversation
+
+Run `wtm doctor --json` once. Run `wtm status --json` when you need identity, ports or
+processes. Repeat them only after a WTM error, or as the completion check at the end.
+
+Doctor's platform check names the backend and its paths; do not translate another platform's
+paths or service commands by hand. The same subcommands work from PowerShell and Git Bash, whose
+quoting and path syntax differ. Windows support is experimental; report capability failures as
+returned.
+
+If WTM says the directory is not initialized, do not invent configuration. Report it, or, when
+initialization is part of the request, run `wtm init --yes --json`.
+
+## Finding a task
+
+Run `wtm resolve <name> --json` with the most likely name. An unknown name fails with
+`errors[0].context.knownTasks`, which lists every task of this worktree; pick from it. This covers
+`wtm.toml`, `make:<target>` and `workspace:<target>` tasks, so you do not need to read `wtm.toml`,
+a `Makefile` or `package.json` to find task names.
+
+## New worktrees
+
+Create worktrees with `wtm create <branch> --json`, not `git worktree add`. The new worktree is
+registered and gets its ports; it needs no `wtm init`. `data.worktree.path` (per member in
+`data.members[]` for `--repos`) is where its commands run. A failed multi-repository create is
+finished with the `--resume` command its error returns.
+
+## Waiting on CI and other slow external checks
+
+When a push, pull request, deploy or review starts a check that takes minutes:
+
+1. Note what you wait on (pull request number or run id).
+2. Make your next tool call the next independent piece of work: the next item in its own
+   `wtm create` worktree, a failing test, documentation, a review of your own diff.
+3. At each boundary between pieces of work, look once: `gh pr checks <number>` or
+   `gh run view <run-id> --json status,conclusion`. One call, then back to work.
+4. When the host delivers CI or task notifications, that notification is the signal; do not
+   check by hand.
+5. When the check is the only thing left (for example "merge once green") and no other work
+   exists, report the pending check and what you will do when it finishes, then end your turn.
+6. A failed check is new work: read the failing job's log and fix it on the same branch.
+
+Waiting on a check inside a tool call (`sleep`, `--watch`, `gh run watch`, a polling loop) blocks
+the whole session; step 5 is the replacement for it.
 
 ## Development and tests
 
-Prefer WTM task execution over invoking a project command directly:
+Prefer WTM task execution (`wtm run <task>`) over invoking a project command directly. For raw argv,
+use `wtm exec -- <argv>`.
 
-```bash
-wtm run <task>
-```
+### Heavy builds, tests and typechecks
 
-### Heavy builds, tests, and typechecks
-
-Use the shared job queue when the task is explicitly configured with `queue = true` and a
-finite `timeout` (for example `timeout = "10m"`). Queue support applies to configured tasks;
-do not guess that an inherited adapter task is queueable. A long-running development server
-belongs under `wtm start <task>` and must not be marked queueable.
+Queue a task only when it is configured with `queue = true` and a finite `timeout`. Do not assume
+an inherited adapter task is queueable. A development server belongs under `wtm start` and is never
+queueable.
 
 ```bash
 wtm run typecheck --enqueue --idempotency-key <unique-request-key> --json
 ```
 
-1. Choose and save a unique request key **before** sending. Store `data.jobId` after acceptance.
-   Reuse that request key only when retrying this same submission after an ambiguous response;
-   use a new key for a genuinely new run. If WTM generated a key, an ambiguous failure returns
-   it in the error context. A successful enqueue response means the job was accepted, not that
-   the task passed. The daemon continues after the submitting CLI exits.
-   Deduplication lasts only while the job record is retained; an old key can run again after
-   pruning. Never retry an expired key as though it guarantees exactly-once execution.
-2. Continue with code reading, planning, or independent work in another worktree. While a job
-   is queued or running, do not edit its input files, shared configuration, dependency files,
-   or another worktree's files if the task reads them. Coordinate with other agents that can
-   write those inputs; the submission's HEAD alone does not identify the source being tested.
-3. Check status when useful, with at least 10 seconds between checks and longer intervals for
-   long jobs. Inspect a bounded log tail when diagnosing progress. Do not create a tight polling
-   loop or occupy a tool call waiting while independent work remains.
-
-   ```bash
-   wtm jobs status <job-id> --json
-   wtm jobs logs <job-id> --tail 100 --json
-   ```
-
-   For a queued job, read `data.job.waitingReason` as the current scheduling observation:
+1. Choose the request key **before** sending and store `data.jobId` after acceptance. Reuse the key
+   only to retry this same submission after an ambiguous response; a new run gets a new key. An
+   ambiguous failure returns a WTM-generated key in its error context. Acceptance is not success.
+   The job continues after the CLI exits. Deduplication lasts only while the job record is
+   retained, so an old key can run again after pruning.
+2. Continue independent work (as for CI above). While the job is queued or running, do not edit its
+   input files, shared configuration, dependency files, or another worktree's files the task
+   reads; coordinate with other agents that write them.
+3. Check at intervals of at least 10 seconds, longer for long jobs; never in a tight loop.
+   `wtm jobs status <job-id> --json` and `wtm jobs logs <job-id> --tail 100 --json`. A queued job's
+   `data.job.waitingReason`:
 
    | Value | Meaning |
    | --- | --- |
    | `concurrency` | Global slots are occupied, including slots held until process cleanup is verified. |
    | `worktree_busy` | The FIFO head shares a worktree with a job that still holds a slot. |
    | `fifo` | An earlier queued job must be considered first. |
-   | `dispatch_pending` | Awaiting scheduler dispatch and preflight checks; launch is not guaranteed. |
-   | `memory_budget` | The configured estimate cannot fit current memory/headroom evidence; continue independent work without bypassing the queue. |
+   | `dispatch_pending` | Awaiting dispatch and preflight checks; launch is not guaranteed. |
+   | `memory_budget` | The memory estimate does not fit current memory and headroom; do not run the command directly instead. |
 
-   The value is `null` outside `QUEUED`. Older daemons may omit the field; an omitted reason
-   is unknown. Continue independent work at the same polling interval; these observations do
-   not establish available RAM or a successful task result.
+   It is `null` outside `QUEUED`; an omitted value (older daemon) is unknown. None of these values
+   establish available RAM or a result.
+4. Before a dependent step, or before claiming a test or build passed, run
+   `wtm jobs result <job-id> --json` and require all of: `ok: true`, `data.terminal: true`,
+   `data.successful: true`, `data.job.state: "SUCCEEDED"`, `data.job.exitCode: 0`,
+   `data.job.slotHeld: false`, `data.sourceValidity: "UNCHANGED"`. Anything else — pending,
+   failed, cancelled, timed out, interrupted, changed or unknown source — is not a pass; keep its
+   exit code and diagnostics. Edits after submission need a new job.
+5. Cancel an obsolete job with `wtm jobs cancel <job-id> --json`. Cancellation can stay pending
+   while process-tree termination is verified; check `slotHeld`. Never kill managed processes to
+   free a slot.
 
-4. Before any dependent step or claim that a test/build passed, read the result:
+Limits: 128 pending or slot-owning jobs, 384 records in total; finished history is pruned toward
+256 jobs and seven days. Job streams rotate at 1 MiB with one archive; log queries return at most
+32 KiB per stream. Inspect failures while their logs remain.
 
-   ```bash
-   wtm jobs result <job-id> --json
-   ```
+`UNCHANGED` is scoped evidence: Git tracked and untracked bytes, index, HEAD and file metadata,
+bounded to 10,000 files, 64 MiB and 4 seconds per snapshot, refusing symlinks and submodules. It
+does not cover ignored dependencies or external inputs, and ignored output created inside a
+tracked directory can invalidate it. Do not dismiss a changed result because tracked bytes match.
 
-   Require `ok: true`, `data.terminal: true`, `data.successful: true`,
-   `data.job.state: "SUCCEEDED"`, `data.job.exitCode: 0`, and
-   `data.job.slotHeld: false`, `data.sourceValidity: "UNCHANGED"`. Pending, failed, cancelled, timed-out, interrupted,
-   changed-source and unknown-source results are not successful validation. Preserve their
-   exit code and diagnostics. After editing inputs again, the old result cannot validate those
-   edits; submit a new job when validation is needed.
-5. Cancel an obsolete queued/running job explicitly:
+The queue is shared by every submission of one host, OS user and state store; the state store
+has one machine and user owner, and foreign state is refused. Use host-local state when HOME is
+shared, and never delete the ownership record to bypass a refusal. Optional `jobs.memory` uses
+each task's `memory_estimate_mib` (estimate the whole worker tree) and `queue_env` for
+queue-only worker settings; missing or permanently unfit estimates are explicit errors. Neither
+concurrency nor memory admission is a hard RAM limit, and commands launched directly bypass the
+queue.
 
-   ```bash
-   wtm jobs cancel <job-id> --json
-   ```
+### Long-running services
 
-   Cancellation can remain pending while WTM verifies process-tree termination; inspect its
-   state and `slotHeld`. Do not kill managed processes yourself to release a slot.
+Start with `wtm start <task>`. When a later step needs the HTTP service ready, configure the task's
+healthcheck and run `wtm start <task> --wait --timeout 30s --json` (or `wtm restart <task> --wait
+--json`); require `ok: true` and `data.readiness.state: "READY"`. A plain start reports
+`NOT_CHECKED`, and a live PID is not readiness. Timeout, failed evidence and cancellation leave the
+service running. Inspect `wtm logs <task>` and stop explicitly when needed.
 
-The queue accepts at most 128 pending/slot-owning jobs and at most 384 total records. Enqueue
-opportunistically prunes finished history toward 256 jobs and a seven-day retention period;
-unverified cleanup prevents deletion. Each job stream rotates at 1 MiB with one archive, and
-log queries return at most 32 KiB per stream before applying the requested line count.
-Inspect failures while their records/logs remain available; older full output is not retained.
-
-Source evidence covers Git tracked/untracked file bytes, index and HEAD, and file identity /
-modification metadata. Existing-file change-and-revert operations change that metadata too.
-It does not measure ignored dependencies or external inputs. Snapshot scans are bounded
-(10,000 files, 64 MiB, 4 seconds per snapshot) and reject symlinks/submodules rather than
-pretending to validate their contents. A scan is not an atomic snapshot; transient files
-created and deleted between observations may escape it. `UNCHANGED` is scoped evidence, not
-an immutable worktree guarantee. Keep input writers coordinated and do not claim it covers
-unmeasured dependencies.
-Ancestor metadata is conservative: creating ignored output inside a tracked source directory
-can invalidate the result. Do not dismiss a changed result merely because tracked bytes match.
-
-The queue coordinates WTM submissions across repositories for the same host, OS user and
-state store. The database has one machine/user owner, claimed before process recovery;
-foreign-host/user state is refused. Use host-local state when HOME is shared, and do not
-remove its ownership record to bypass a refusal. Separately configured state stores have
-independent limits. Optional global `jobs.memory` uses each queued task's `memory_estimate_mib`,
-available memory and headroom. Estimate the whole worker tree, and use the task's `queue_env`
-for its actual tool-specific worker settings. This overrides ordinary task environment only
-in the queue; `wtm resolve` still describes the ordinary task. `memory_budget` means wait for
-memory/evidence; do not bypass it by running the same heavy command directly. Missing or
-permanently unfit estimates are explicit errors; inspect configuration before retrying.
-Neither concurrency nor estimated memory admission is a hard RAM limit. Directly launched
-commands bypass the queue. This skill neither intercepts
-all terminal commands nor automatically wakes an agent when a job completes. Agent-specific
-notifications/hooks require a separate verified integration.
-
-The first upgrade adopts older unscoped state under the existing host-local-state assumption.
-Its old records cannot prove their originating host. Upgrade only state already local to
-this host; do not treat legacy shared-host adoption as verified or supported.
-
-For a long-running task WTM should supervise, and for raw argv that is not a configured task:
-
-```bash
-wtm start <task>
-wtm exec -- <argv>
-```
-
-When a dependent step needs an HTTP service to be ready, configure its task healthcheck
-and use `wtm start <task> --wait --timeout 30s --json` (or `wtm restart <task> --wait --json`).
-Require `ok:true` and `data.readiness.state: READY` before proceeding. An ordinary start
-reports `NOT_CHECKED`; a live PID alone does not prove application readiness. Timeout,
-failed evidence and client cancellation are unsuccessful observations and leave the service
-running. Readiness is an observation of that endpoint and managed process at that time,
-not a guarantee of future health. Inspect `wtm logs <task>` and stop explicitly when needed.
-
-When a task behaves unexpectedly, inspect its resolved context before changing project files:
-
-```bash
-wtm resolve <task> --json
-wtm env --json
-wtm ports --json
-```
-
-## Tasks WTM already knows
-
-A workspace's tasks come from `wtm.toml` and from what the repository already describes:
-
-- `make:<target>` runs a target of this worktree's own `Makefile`.
-- `workspace:<target>` runs a target of the workspace root's `Makefile`, at that root, across every repository under it.
-
-Resolve a task rather than guessing a command; `wtm resolve <task> --json` reports the exact argv, working directory, and environment.
+When a task misbehaves, read `wtm resolve <task> --json`, `wtm env --json` and `wtm ports --json`
+before changing project files.
 
 ## Ports and CORS
 
-WTM allocates an endpoint per configured name, per feature — a branch, across every repository that has it checked out. Two worktrees of one feature therefore agree on every port, which is how a web application addresses the API of its own branch.
+WTM allocates an endpoint per configured name, per feature, so two worktrees of one feature agree on
+every port; that is how a web application reaches the API of its own branch.
 
 - Read a port with `{port.<name>}` in `wtm.toml`.
-- Publish it per repository with `[repos.<name>.environment]`, not `[environment]`, when more than one repository reads the same variable name (`PORT` usually is).
-- Read the browser origins of the feature with `{cors.origins}`.
+- Publish it per repository with `[repos.<name>.environment]`, not `[environment]`, when several
+  repositories read the same variable name (`PORT` usually is).
+- Read the feature's browser origins with `{cors.origins}`.
 - `preferred` must fall inside `[ports].range`; widen the range rather than removing the preference.
 
 ## Configuration WTM writes for itself
 
-`wtm init` reads each repository — `.env.example`, `package.json`, compose files, `Makefile` — and writes what it finds into `wtm.toml`: the port each repository wants, the variable it wants it under, its CORS allowlist variable, and any address that points at another repository in the workspace.
+`wtm init` reads each repository (`.env.example`, `package.json`, compose files, `Makefile`) and
+writes the port each repository wants, its variable, its CORS allowlist variable and any address
+pointing at another repository into `wtm.toml`.
 
-```bash
-wtm detect --json          # what the repositories declare now, and the TOML that says it
-wtm detect --write --json  # append the tables wtm.toml does not have yet
-```
-
-- Run `wtm detect` after adding a repository to the workspace, or after a repository starts reading a new address or port.
-- Read `data.additions` for the exact TOML, and the envelope's `warnings` for what was left alone and why.
-- Neither command edits a line already in the file. If detection is wrong, correct `wtm.toml` — it is the source of truth, and detection defers to it.
-- Values are read only from `.env` example files, and only when they are a port or a bare `http(s)` address. Do not expect WTM to carry any other value, and do not put a secret where it would have to.
+- Run `wtm detect --json` after adding a repository, or after one starts reading a new address or
+  port; `wtm detect --write --json` appends the tables `wtm.toml` lacks.
+- Read `data.additions` for the exact TOML, and `warnings` for what was left alone and why.
+- Neither edits an existing line. If detection is wrong, correct `wtm.toml`: it is the source of truth.
+- Values come only from `.env` example files, and only ports or bare `http(s)` addresses. Never put a
+  secret where WTM would have to carry it.
 
 ## Rules
 
-- Do not manually choose a port managed by WTM, and do not read one out of a running process; ask `wtm resolve`/`wtm ports`.
-- Do not copy `.env` files between worktrees unless WTM's resolved resource plan explicitly requires it.
-- Do not symlink/shared-write `node_modules`, `.venv`, `.next`, `target`, `build`, or similar directories as a workaround.
-- Do not bypass a workspace-level Makefile/task convention by guessing a relative path; use WTM task resolution.
-- Prefer `wtm run`/`wtm start`/`wtm exec -- ...` when environment/runtime ownership matters.
-- Use `--json` for reasoning and automation; human text is not a stable machine contract.
+- Do not choose a port WTM manages, and do not read one out of a running process; use `wtm resolve`
+  or `wtm ports`.
+- Do not copy `.env` files between worktrees unless WTM's resolved resource plan requires it.
+- Do not symlink or share `node_modules`, `.venv`, `.next`, `target`, `build` or similar directories.
+- Do not bypass a workspace Makefile or task convention by guessing a relative path.
+- Use `wtm run`, `wtm start` and `wtm exec -- ...` when environment or runtime ownership matters.
+- Avoid `kill`, `pkill` and `lsof` workarounds; use `wtm ps`, `wtm stop` and `wtm doctor`.
+- Use `--json` for reasoning; human text is not a stable contract.
+- Do not hard-code ports or environment unless the user asks to bypass WTM.
 
 ## Worktree analysis
 
-Before proposing cleanup or deletion, run:
-
-```bash
-wtm analyze --json
-```
-
-Treat every `safety.blockers` item as authoritative for the WTM deletion path.
+Before proposing cleanup or deletion, run `wtm analyze --json` and treat every `safety.blockers`
+item as authoritative.
 
 Every analysis carries `remoteKnowledge`. `confidence: "LOCAL_ONLY"` means the remote-persistence
-verdict came from local refs that may be days old — a branch deleted on the remote still looks
-persisted. Before deleting on that evidence, re-check with a fetch:
-
-```bash
-wtm analyze <selector> --refresh-remotes --json
-```
-
-That uses the network. Do not run it on every analysis; run it before a removal whose safety turns
-on `remotePersistence`.
+verdict came from local refs that may be days old; a branch deleted on the remote still looks
+persisted. Before a removal whose safety turns on `remotePersistence`, re-check with
+`wtm analyze <selector> --refresh-remotes --json` (network; not on every analysis).
 
 ## Removal safety
-
-Use:
 
 ```bash
 wtm remove <selector>
 wtm remove <selector> --refresh-remotes   # fetch --prune first, then decide
-wtm remove <selector> --resume            # only after WTM asks for it, see below
+wtm remove <selector> --resume            # only after WTM asks for it
 ```
 
-`remove` stops this worktree's managed tasks, deletes the resources WTM materialized in it, and
+`remove` stops the worktree's managed tasks, deletes the resources WTM materialized in it and
 releases its ports before Git deletes anything. Do not stop tasks or delete resource directories by
 hand first.
 
-Queued jobs and occupied job slots are a separate precondition: any such job in the repository
-blocks removal, cleanup and registration retirement. Let it finish or explicitly cancel it
-through `wtm jobs cancel <job-id> --json`, then confirm the terminal state and `slotHeld: false`
-before retrying. Removal does not silently cancel jobs.
+A queued job or occupied job slot in the repository blocks removal, cleanup and registration
+retirement. Let it finish, or cancel it with `wtm jobs cancel <job-id> --json` and confirm the
+terminal state and `slotHeld: false` before retrying. Removal never cancels jobs silently.
 
-Never replace a blocked WTM removal with:
-
-```bash
-git worktree remove -f ...
-```
-
-Read `errors[].code` and handle the refusal, do not work around it:
+Never replace a blocked WTM removal with `git worktree remove -f`. Handle the refusal:
 
 | `errors[].code` | Exit | What it means, and what to do |
 | --- | --- | --- |
 | `GIT_DIRTY_*`, `GIT_UNTRACKED`, `GIT_IGNORED_CONTENT`, `GIT_UNMERGED`, `GIT_HEAD_NOT_REMOTE_PERSISTED`, `GIT_WORKTREE_LOCKED`, `GIT_MAIN_WORKTREE` | 3 | Real work would be lost. Report the blocker and its remediation. Ignored content is separate from untracked content; inspect both `workingTree.paths.ignored` and `workingTree.paths.untracked`. |
-| `GIT_UNTRACKED_SYMLINKS` | 3 | Configured `safety.untracked_symlinks = "block"` protects these links, including resource-owned ones. Report the listed paths; do not unlink them or weaken the policy to make removal pass. Under `review`, the same code is advisory in `warnings`, not a failed command. |
-| `WTM_OPERATION_CONFLICT` with `context.jobId` | 3 | A queued job or held slot protects this repository. Inspect the job; let it finish or cancel it explicitly and verify slot release before retrying. `--resume` does not bypass this conflict. |
+| `GIT_UNTRACKED_SYMLINKS` | 3 | `safety.untracked_symlinks = "block"` protects these links, including resource-owned ones. Report the paths; do not unlink them or weaken the policy. Under `review` the same code is an advisory warning. |
+| `WTM_OPERATION_CONFLICT` with `context.jobId` | 3 | A queued job or held slot protects this repository. Let it finish or cancel it and verify slot release. `--resume` does not bypass this. |
 | `WTM_OPERATION_CONFLICT` with `context.holderPid` | 3 | Another process holds a repository operation lease. Inspect `holderPid` and `acquiredAt`; do not retry in a loop. |
-| `WTM_OPERATION_CONFLICT` with `context.abandoned: true` | 3 | The previous removal's process died at `context.stage`. This is the only case for `--resume`; the error's remediation carries the exact command. |
-| `WTM_DAEMON_UNAVAILABLE` | 4 | The daemon owns running processes here and cannot be reached. Start it with `wtm daemon install` — never `kill`/`pkill` them yourself. |
+| `WTM_OPERATION_CONFLICT` with `context.abandoned: true` | 3 | The previous operation's process died at `context.stage`. The only case for `--resume`; the remediation carries the exact command. |
+| `WTM_DAEMON_UNAVAILABLE` | 4 | The daemon owns running processes and cannot be reached. Run `wtm daemon install`; never `kill`/`pkill` them. |
 | `RUNTIME_STOP_FAILED` | 1 | Managed process records outlived their stop. The worktree is intact. Check `wtm ps --json` and `wtm doctor --json`. |
 
-A success reports what the runtime gave back in `data.cleanup`: `stoppedProcesses`,
-`releasedEndpoints`, `collectedResources`, and `retainedResources` with the reason each survived.
-A `shared` resource surviving one worktree is correct, not a failure.
+A success reports `data.cleanup`: `stoppedProcesses`, `releasedEndpoints`, `collectedResources` and
+`retainedResources` with the reason each survived. A `shared` resource surviving one worktree is
+correct.
 
-If WTM reports uncommitted/untracked work or local-only commits, report the blocker and the suggested remediation. Do not automatically commit, push, reset, clean, or discard changes unless the user explicitly requested that separate Git action.
-
-## Diagnostics
-
-If daemon/runtime state appears stale:
-
-```bash
-wtm daemon status --json
-wtm doctor --json
-```
-
-Do not work around WTM by hard-coding ports/env unless the user specifically asks to bypass WTM.
+For uncommitted or untracked work or local-only commits, report the blocker and its remediation. Do
+not commit, push, reset, clean or discard changes unless the user explicitly asked for that Git
+action.
 
 ## Completion check
 
-Before claiming the development environment is ready:
-
-```bash
-wtm doctor --json
-wtm status --json
-```
-
-If you started a managed task, verify its state through WTM rather than assuming the child command survived.
+Before claiming the environment is ready, run `wtm status --json` (and `wtm doctor --json` if a WTM
+error occurred). If you started a managed task, verify its state through WTM rather than assuming
+the child survived.
