@@ -31,7 +31,7 @@ function classify(result: GhCommandResult): CiProviderFailure {
   const stderr = result.stderr;
   if (/rate limit|HTTP 429/i.test(stderr)) return { kind: 'throttled', detail };
   if (/HTTP 5\d\d|timeout|timed out|connection|EOF|TLS|network/i.test(stderr)) return { kind: 'transient', detail };
-  if (/HTTP 401|not logged in|auth login|authentication|Bad credentials/i.test(stderr)) return { kind: 'unavailable', reason: 'unauthenticated', detail };
+  if (/HTTP 401|not logged in|auth login|authentication|Bad credentials|token .*invalid|invalid token|not logged into/i.test(stderr)) return { kind: 'unavailable', reason: 'unauthenticated', detail };
   if (/HTTP 404|Could not resolve to a Repository|not found/i.test(stderr)) return { kind: 'unavailable', reason: 'not-found', detail };
   return { kind: 'transient', detail };
 }
@@ -54,11 +54,6 @@ export function createGitHubProvider(run: GhCommandRunner): CiProvider {
     async checkAvailable(repository: CiRepository) {
       const result = await run(['auth', 'status', '--hostname', repository.host]);
       if (result.outcome === 'success') return { ok: true, value: null };
-      if (result.outcome === 'failure') {
-        const failure = classify(result);
-        // `gh auth status` exits 1 for any host it has no valid login for.
-        return { ok: false, failure: failure.kind === 'transient' ? { kind: 'unavailable', reason: 'unauthenticated', detail: failure.detail } : failure };
-      }
       return { ok: false, failure: classify(result) };
     },
 

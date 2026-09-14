@@ -31,6 +31,19 @@ describe('GitHub CI provider', () => {
     if (!answer.ok) expect(answer.failure).toMatchObject(expected);
   });
 
+  test.each([
+    ['HTTP 503: Service Unavailable', { kind: 'transient' }],
+    ['dial tcp: lookup api.github.com: i/o timeout', { kind: 'transient' }],
+    ['The token in keyring for account octocat on github.com is invalid.', { kind: 'unavailable', reason: 'unauthenticated' }],
+    ['You are not logged into any accounts on example.invalid', { kind: 'unavailable', reason: 'unauthenticated' }],
+    ['some new gh message this classifier has never seen before', { kind: 'transient' }],
+  ])('checkAvailable keeps a transient auth answer transient: %s', async (stderr, expected) => {
+    const { provider } = recording([fail(stderr)]);
+    const answer = await provider.checkAvailable(repository);
+    expect(answer.ok).toBe(false);
+    if (!answer.ok) expect(answer.failure).toMatchObject(expected);
+  });
+
   test('lists every run of a commit', async () => {
     const { calls, provider } = recording([ok(JSON.stringify([
       { databaseId: 11, workflowName: 'CI', event: 'push', status: 'completed', conclusion: 'failure', url: 'https://github.com/acme/widgets/actions/runs/11' },
