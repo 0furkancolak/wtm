@@ -34,7 +34,7 @@ describe('summarizeFailedJobLog', () => {
   });
 
   test('removes ANSI sequences and keeps lines that have no gh prefix', () => {
-    expect(summarizeFailedJobLog('[31merror:[0m boom')).toBe('error: boom');
+    expect(summarizeFailedJobLog('\u001b[31merror:\u001b[0m boom')).toBe('error: boom');
   });
 
   test('caps at 8 KiB keeping the end', () => {

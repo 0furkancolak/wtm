@@ -4,7 +4,7 @@ const errorWindow = 20;
 const fallbackLines = 40;
 /** `gh run view --log-failed` prints `<job>\t<step>\t<timestamp> <text>` per line. */
 const ghPrefix = /^[^\t]*\t[^\t]*\t(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z ?)?/;
-const ansi = /\[[0-?]*[ -/]*[@-~]|\][^]*(?:|\\)/g;
+const ansi = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
 const testFailure = /\(fail\)|FAIL |✗|error:/;
 
 const secretPatterns: ReadonlyArray<readonly [RegExp, string]> = [
