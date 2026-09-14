@@ -6,11 +6,15 @@ import { join } from 'node:path';
 import type { WtmConfig } from '../../config/schema';
 import type { GitWorktreeRecord } from '../../git/worktree-parser';
 import type { RepositoryRecord } from '../../state/store';
-import { planFeatureCreation, resolveCommit, resolveFeatureMembers } from '../create-feature';
+import { nameRepositories, planFeatureCreation, resolveCommit, resolveFeatureMembers } from '../create-feature';
 
 const repository = (id: string, mainRoot: string): RepositoryRecord => ({
   id, workspaceId: 'ws', commonGitDir: `${mainRoot}/.git`, mainRoot, remoteIdentity: null,
   createdAt: '2026-09-13T00:00:00.000Z', lastReconciledAt: null,
+});
+const repositoryRecord = (id: string, mainRoot: string): RepositoryRecord => ({
+  id, workspaceId: 'w1', commonGitDir: `${mainRoot}/.git`, mainRoot, remoteIdentity: null,
+  createdAt: '2026-09-14T00:00:00.000Z', lastReconciledAt: null,
 });
 const worktree = (path: string, branch: string | null, head: string): GitWorktreeRecord => ({
   path, branch, head, detached: branch === null, bare: false, lockedReason: null, prunableReason: null,
@@ -117,5 +121,29 @@ describe('resolveCommit', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('nameRepositories', () => {
+  test('names a repository by its [repos] entry, otherwise by its directory', () => {
+    const repositories = [repositoryRecord('r1', '/ws/web'), repositoryRecord('r2', '/ws/services/api')];
+    const config = { repos: { backend: { path: 'services/api' } } } as unknown as WtmConfig;
+
+    const names = nameRepositories({ config, workspaceRoot: '/ws', repositories });
+
+    expect([...names.entries()]).toEqual([['r1', 'web'], ['r2', 'backend']]);
+  });
+});
+
+describe('resolveFeatureMembers with option parameter', () => {
+  test('resolveFeatureMembers names --repo in its refusal when asked to', () => {
+    const repositories = [repositoryRecord('r1', '/ws/web')];
+
+    const resolution = resolveFeatureMembers({
+      config: {} as WtmConfig, workspaceRoot: '/ws', repositories, names: ['nope'], option: '--repo',
+    });
+
+    expect(resolution).toMatchObject({ outcome: 'refused', error: { code: 'WTM_CONFIG_INVALID' } });
+    expect(resolution.outcome === 'refused' && resolution.error.message).toBe('--repo names no repository of this workspace: nope.');
   });
 });

@@ -82,6 +82,31 @@ describe('renderCompletionScript', () => {
     expect(result.script).not.toContain('__complete repos');
   });
 
+  test('completes --worktree and --repo values on the task commands in every shell', () => {
+    const taskCommands = ['resolve', 'run', 'start', 'stop', 'restart', 'logs', 'exec', 'analyze', 'remove', 'forget'];
+    for (const shell of ['bash', 'zsh', 'fish']) {
+      const result = renderCompletionScript({ shell, binaryName: 'wtm', commands: taskCommands });
+      expect(result.ok).toBe(true);
+      if (!result.ok) continue;
+      expect(result.script, shell).toContain('--worktree');
+      expect(result.script, shell).toContain('wtm __complete repo-names');
+    }
+  });
+
+  test('passes --worktree and --repo already on the line to task-name completion', () => {
+    const bash = renderCompletionScript({ shell: 'bash', binaryName: 'wtm', commands: ['start'] });
+    const zsh = renderCompletionScript({ shell: 'zsh', binaryName: 'wtm', commands: ['start'] });
+    const fish = renderCompletionScript({ shell: 'fish', binaryName: 'wtm', commands: ['start'] });
+    expect(bash.ok && bash.script).toContain('__complete tasks "${target[@]}"');
+    expect(zsh.ok && zsh.script).toContain('__complete tasks ${target[@]}');
+    expect(fish.ok && fish.script).toContain('__complete tasks $target');
+  });
+
+  test('omits flag-value completion when no task command is registered', () => {
+    const result = renderCompletionScript({ shell: 'bash', binaryName: 'wtm', commands: ['forget'] });
+    expect(result.ok && result.script).not.toContain('--worktree');
+  });
+
   test('rejects an unsupported shell with the WTM_CONFIG_INVALID coded error', () => {
     const result = renderCompletionScript({ shell: 'powershell', binaryName: 'wtm', commands: sampleCommands });
 

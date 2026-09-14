@@ -65,7 +65,9 @@ async function foregroundRun() {
   ].join('\n'));
   git(root, 'add', '-A');
   git(root, 'commit', '-qm', 'configure');
-  const { exitCode, envelope } = await capture(['run', 'greet', '--json'], { cwd: root });
+  const { exitCode, envelope } = await capture(['run', 'greet', '--json'], {
+    cwd: root, taskTargetDatabasePath: join(root, 'task-target-state.db'), taskTargetGlobalConfigPath: join(root, 'task-target-global.toml'),
+  });
   return [exitCode, envelope.ok, envelope.data?.['task']?.argv, envelope.data?.['exitCode']];
 }
 
@@ -81,7 +83,9 @@ async function multiRepoRootResolve() {
   const root = await temporaryRoot();
   git(root, 'init', '-q', '-b', 'main', 'api');
   git(root, 'init', '-q', '-b', 'main', 'web');
-  const { exitCode, envelope } = await capture(['resolve', 'dev', '--json'], { cwd: root });
+  const { exitCode, envelope } = await capture(['resolve', 'dev', '--json'], {
+    cwd: root, taskTargetDatabasePath: join(root, 'task-target-state.db'), taskTargetGlobalConfigPath: join(root, 'task-target-global.toml'),
+  });
   const error = envelope.errors[0];
   const message = error?.message ?? '';
   return [
@@ -101,7 +105,9 @@ async function multiRepoRootResolve() {
 /** The same condition reached through `run`, with nothing underneath to suggest cd'ing into. */
 async function multiRepoRootRunWithoutRepositories() {
   const root = await temporaryRoot();
-  const { exitCode, envelope } = await capture(['run', 'dev', '--json'], { cwd: root });
+  const { exitCode, envelope } = await capture(['run', 'dev', '--json'], {
+    cwd: root, taskTargetDatabasePath: join(root, 'task-target-state.db'), taskTargetGlobalConfigPath: join(root, 'task-target-global.toml'),
+  });
   const error = envelope.errors[0];
   return [
     exitCode,

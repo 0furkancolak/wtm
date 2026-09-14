@@ -1758,7 +1758,7 @@ Completion kaynakları:
 
 ---
 
-### [ ] 47. Task komutlarına worktree selector'ü ekle (`--worktree <selector>`)
+### [x] 47. Task komutlarına worktree selector'ü ekle (`--worktree <selector>`)
 
 `wtm run/start/stop/restart/logs/exec` yalnızca bulunulan dizinin worktree'sinde çalışıyor. Başka
 bir feature'ı ayağa kaldırmak için `cd` şart. Bir ajan ya da çok feature'lı bir oturum için bu
@@ -1790,26 +1790,59 @@ ikisinin ürettiği isim ve selector grameri aynı olmalı, `create` sonrası d�
 
 #### Yapılacaklar
 
-- [ ] Selector resolver'ı `remove.ts`'ten ortak bir modüle çıkar; `status`/`analyze`/`remove`
+- [x] Selector resolver'ı `remove.ts`'ten ortak bir modüle çıkar; `status`/`analyze`/`remove`
       davranışı bit düzeyinde değişmesin.
-- [ ] `--worktree <selector>` bayrağını `run`, `start`, `stop`, `restart`, `logs`, `exec`
+- [x] `--worktree <selector>` bayrağını `run`, `start`, `stop`, `restart`, `logs`, `exec`
       komutlarına ekle.
-- [ ] Repo ayrıştırma kararını uygula ve tek biçim olarak sabitle.
-- [ ] Bayrak verilmediğinde davranış bugünkü gibi kalsın: bulunulan dizinin worktree'si.
-- [ ] Workspace kökünden (worktree dışından) çağrıldığında `--worktree` zorunlu olsun ve eksikse
+- [x] Repo ayrıştırma kararını uygula ve tek biçim olarak sabitle.
+- [x] Bayrak verilmediğinde davranış bugünkü gibi kalsın: bulunulan dizinin worktree'si.
+- [x] Workspace kökünden (worktree dışından) çağrıldığında `--worktree` zorunlu olsun ve eksikse
       eyleme dönük hata versin, ham stack trace değil.
-- [ ] Belirsiz eşleşmede `WorktreeSelectorError` aynı stable JSON error code ile dönsün.
-- [ ] Shell completion (`wtm __complete worktrees`) bu bayrağı da beslesin.
-- [ ] `docs/04-cli-reference.md`'de altı komutun tamamında bayrağı belgele.
-- [ ] `docs/11-ai-first-skill-integration.md` ve `skills/wtm/SKILL.md`'de `cd` gerektirmeyen akışı
+- [x] Belirsiz eşleşmede `WorktreeSelectorError` aynı stable JSON error code ile dönsün.
+- [x] Shell completion (`wtm __complete worktrees`) bu bayrağı da beslesin.
+- [x] `docs/04-cli-reference.md`'de altı komutun tamamında bayrağı belgele.
+- [x] `docs/11-ai-first-skill-integration.md` ve `skills/wtm/SKILL.md`'de `cd` gerektirmeyen akışı
       örnekle; ajanın önerilen yolu bu olsun.
 
 #### Kabul kriterleri
 
-- [ ] Altı komut da worktree dışından, `cd` olmadan hedef worktree'de çalışıyor.
-- [ ] Aynı branch birden fazla repoda varken repo ayrıştırması deterministic.
-- [ ] Belirsiz selector hiçbir komutta yanlış worktree'yi seçmiyor; hata veriyor.
-- [ ] `--worktree` olmadan çağrılan komutların davranışı değişmemiş.
+- [x] Altı komut da worktree dışından, `cd` olmadan hedef worktree'de çalışıyor.
+- [x] Aynı branch birden fazla repoda varken repo ayrıştırması deterministic.
+- [x] Belirsiz selector hiçbir komutta yanlış worktree'yi seçmiyor; hata veriyor.
+- [x] `--worktree` olmadan çağrılan komutların davranışı değişmemiş.
+
+#### Not (2026-09-14)
+
+Kapandı, branch `claude/item-47-worktree-selector`. Tasarım:
+`docs/superpowers/specs/2026-09-14-worktree-selector-design.md`. Repo ayrıştırması `--repo <name>`
+olarak sabitlendi (`<repo>:<selector>` değil); `--worktree` olmadan reddediliyor. Yedi komut
+`--worktree`/`--repo` alıyor: altı task komutu artı `resolve` (madde metni "altı" diyordu, `resolve`
+de aynı seçiciyi kullanıyor). `ps` bayrakları almıyor; işleneceği belirlenmiş bir tek worktree yok.
+
+Planlama sırasında tasarım belgesine düşülen düzeltmeler, madde metninin ve önceki varsayımların
+yerini alıyor:
+
+- **`remove` sayıyı zaten kabul ediyordu.** Madde metni ve ilk onaylanan tasarım "`remove` sayı kabul
+  etmeye başlıyor" diyordu; `runProductionRemove`/`numericSelectorPath` okununca bunun zaten mevcut
+  olduğu görüldü. Değişen tek şey, bir sayı ile farklı bir worktree'yi adlandıran bir dizin adının artık
+  her iki komutta da belirsizlik sayılması.
+- **Relatif path'ler belgelenen tabanı koruyor.** "`analyze` relatif path'leri `cwd`'ye göre çözüyor"
+  denilmişti; `analyze` da `remove` de bugün zaten bulunulan dizinin worktree'sine göre çözüyor
+  (`docs/04`'ün belgelediği taban), workspace kökünden çağrıldığında ise `cwd`'nin kendisine göre.
+  Tasarım bu tabanı koruyor, değiştirmiyor.
+- **Senaryo gerçek bir daemon değil, kaydedici bir runtime client kullanıyor.** Onaylanan tasarım
+  `dist/cli/bin.js` üzerinden gerçek bir daemon'ı adlandırmıştı; bu maddenin değiştirdiği tek şey
+  CLI'nin `cwd`'yi nasıl seçtiği, daemon tarafında hiçbir şey değişmiyor, dolayısıyla test gerçek bir
+  daemon yerine hangi `cwd`'nin gönderildiğini kaydeden bir client kullanıyor.
+- **`ps` bayrakları almıyor.** Yedi komutun listesi `resolve`, `run`, `start`, `stop`, `restart`,
+  `logs`, `exec`'ten oluşuyor; `ps` zaten tüm workspace'i listeliyor ve tek bir hedef worktree'ye
+  bağlı değil.
+
+`docs/18`'de `--repo` durumları arasındaki ayrım netleştirildi: hiç state veritabanı yokken
+`--repo` `WTM_NOT_INITIALIZED`, veritabanı var ama `cwd` kayıtlı hiçbir workspace'in içinde değilken
+`WTM_WORKSPACE_NOT_FOUND` (`context.cwd`). Tasarım belgesi (`worktree-selector-design.md` §3) ikisini
+"`WTM_WORKSPACE_NOT_FOUND` (mevcut not-initialized hatası)" diye tek cümlede birleştiriyor; kod bu
+ikisini ayırıyor ve belgeleme kodu esas aldı.
 
 ---
 

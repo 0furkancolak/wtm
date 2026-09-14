@@ -144,11 +144,19 @@ V1 ships `plan` only; there is no separate apply command. `wtm detect --write` a
 Runs a configured task in the foreground with resolved environment/context.
 
 ```text
+--worktree <selector>      run against another worktree instead of the one containing cwd
+--repo <name>              the repository of --worktree, when its branch exists in several
 --enqueue                 enqueue a finite configured task; return after durable acceptance
 --idempotency-key <key>    retry the same submission safely; requires --enqueue
 --json                    emit the stable JSON envelope
 -h, --help                display help for command
 ```
+
+`--worktree <selector>` runs the command against another worktree instead of the one containing the
+current directory: a branch, a worktree directory name, a registered number, or a path. `--repo
+<name>` names the repository when the selector matches worktrees in several; it is refused without
+`--worktree`. From a workspace root, a selector searches every repository of the workspace; inside a
+repository, only that repository. An ambiguous selector is refused, never guessed.
 
 Enqueue requires the daemon and an explicitly configured task with `queue = true`,
 `background` unset or false, and a positive finite `timeout` using `ms`, `s`, `m` or `h`
@@ -307,13 +315,29 @@ directory can conservatively invalidate the result even when tracked bytes did n
 Executes raw argv in the foreground with the same resolved environment/context. The argument is a command line, not a configured task name; use `wtm run <task>` for tasks.
 
 ```text
+--worktree <selector>  run against another worktree instead of the one containing cwd
+--repo <name>          the repository of --worktree, when its branch exists in several
 --json      emit the stable JSON envelope
 -h, --help  display help for command
 ```
 
+`--worktree <selector>` runs the command against another worktree instead of the one containing the
+current directory: a branch, a worktree directory name, a registered number, or a path. `--repo
+<name>` names the repository when the selector matches worktrees in several; it is refused without
+`--worktree`. From a workspace root, a selector searches every repository of the workspace; inside a
+repository, only that repository. An ambiguous selector is refused, never guessed. Both flags go
+before `--`; everything after it is the raw command.
+
 ### `wtm start <task>`
 
-Starts a managed background task owned by the current worktree.
+Starts a managed background task on the target worktree — the one containing the current directory
+unless `--worktree <selector>` names another.
+
+`--worktree <selector>` runs the command against another worktree instead of the one containing the
+current directory: a branch, a worktree directory name, a registered number, or a path. `--repo
+<name>` names the repository when the selector matches worktrees in several; it is refused without
+`--worktree`. From a workspace root, a selector searches every repository of the workspace; inside a
+repository, only that repository. An ambiguous selector is refused, never guessed.
 
 With a configured HTTP healthcheck, `wtm start dev --wait --timeout 30s --json` waits for
 an observation of readiness. `--timeout` requires `--wait`; it overrides the healthcheck's
@@ -333,11 +357,23 @@ another process could not answer the configured endpoint.
 
 ### `wtm stop [task]`
 
-Stops one task or all WTM-managed tasks for the selected worktree.
+Stops one task or all WTM-managed tasks for the target worktree.
+
+`--worktree <selector>` runs the command against another worktree instead of the one containing the
+current directory: a branch, a worktree directory name, a registered number, or a path. `--repo
+<name>` names the repository when the selector matches worktrees in several; it is refused without
+`--worktree`. From a workspace root, a selector searches every repository of the workspace; inside a
+repository, only that repository. An ambiguous selector is refused, never guessed.
 
 ### `wtm restart <task>`
 
 Equivalent to safe stop + start.
+
+`--worktree <selector>` runs the command against another worktree instead of the one containing the
+current directory: a branch, a worktree directory name, a registered number, or a path. `--repo
+<name>` names the repository when the selector matches worktrees in several; it is refused without
+`--worktree`. From a workspace root, a selector searches every repository of the workspace; inside a
+repository, only that repository. An ambiguous selector is refused, never guessed.
 
 Accepts the same `--wait` and `--timeout` options as start. A missing or invalid healthcheck
 is rejected before stopping an existing service. An observation never holds the lifecycle
@@ -347,6 +383,12 @@ lock, so another session can stop or replace the task while a client waits.
 
 Prints the final command, cwd and environment delta without running it.
 Use `--json` for the stable V1 envelope. The argument is always a configured task name; it is not a worktree selector.
+
+`--worktree <selector>` runs the command against another worktree instead of the one containing the
+current directory: a branch, a worktree directory name, a registered number, or a path. `--repo
+<name>` names the repository when the selector matches worktrees in several; it is refused without
+`--worktree`. From a workspace root, a selector searches every repository of the workspace; inside a
+repository, only that repository. An ambiguous selector is refused, never guessed.
 
 Example:
 
@@ -376,6 +418,12 @@ Prints the resolved environment delta. Options are `--json` and `--global`.
 
 Reads managed task logs.
 
+`--worktree <selector>` runs the command against another worktree instead of the one containing the
+current directory: a branch, a worktree directory name, a registered number, or a path. `--repo
+<name>` names the repository when the selector matches worktrees in several; it is refused without
+`--worktree`. From a workspace root, a selector searches every repository of the workspace; inside a
+repository, only that repository. An ambiguous selector is refused, never guessed.
+
 ```bash
 wtm logs dev --follow
 ```
@@ -385,7 +433,13 @@ wtm logs dev --follow
 ### `wtm analyze [selector]`
 
 Produces the advanced worktree analysis defined in `10-git-safety-worktree-analysis.md`.
-The optional selector accepts a registered numeric worktree ID, branch name, absolute path, or path relative to the current repository. `--all`, `--cleanup-candidates`, and `--global` are mutually exclusive aggregate modes and cannot be combined with a selector.
+The selector accepts a branch name, a worktree directory name, a registered numeric worktree ID, an
+absolute path, or a path relative to the worktree containing the current directory. A selector
+matching more than one worktree is refused with `WTM_WORKSPACE_NOT_FOUND`. `--all`,
+`--cleanup-candidates`, and `--global` are mutually exclusive aggregate modes and cannot be combined
+with a selector.
+
+Before item 47, `analyze` took the first of several matches and did not accept a directory name.
 
 Useful modes:
 
@@ -540,7 +594,10 @@ See `docs/superpowers/specs/2026-09-13-multi-repo-create-design.md`.
 Runs the removal lifecycle of [Safe remove flow](10-git-safety-worktree-analysis.md#safe-remove-flow):
 analysis, then the runtime work — stopping this worktree's managed tasks, deleting the resources
 WTM materialized in it, releasing its ports — then a second analysis, and only then Git.
-The required selector accepts a registered numeric worktree ID, branch name, absolute path, or path relative to the current repository. Use `--json` for the stable V1 envelope.
+The selector accepts a branch name, a worktree directory name, a registered numeric worktree ID, an
+absolute path, or a path relative to the worktree containing the current directory. A selector
+matching more than one worktree is refused with `WTM_WORKSPACE_NOT_FOUND`. Use `--json` for the
+stable V1 envelope.
 
 Options:
 

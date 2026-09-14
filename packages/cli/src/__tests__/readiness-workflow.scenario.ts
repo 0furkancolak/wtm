@@ -27,10 +27,20 @@ const config = {
     healthcheck: { type: 'http', url: 'http://127.0.0.1:{port.web}/health', timeout: '8s', interval: '100ms' },
   } },
 };
+// Never the real default state path (item 47 review): `controls` already exists for this
+// scenario's own fixtures, and nothing creates a database or config beneath it, so the flag-less
+// task-target probe every `invoke` below triggers finds nothing and falls straight through to
+// sending `cwd` unchanged.
+const taskTargetDatabasePath = join(controls, 'task-target-state.db');
+const taskTargetGlobalConfigPath = join(controls, 'task-target-global.toml');
+
 async function invoke(argv: string[]) {
   assert.ok(client);
   let output = '';
-  const exitCode = await runCli([...argv, '--json'], { cwd: fixture.firstRepoPath, runtimeClient: client, stdout: (value) => { output += value; }, stderr: () => {} });
+  const exitCode = await runCli([...argv, '--json'], {
+    cwd: fixture.firstRepoPath, runtimeClient: client, taskTargetDatabasePath, taskTargetGlobalConfigPath,
+    stdout: (value) => { output += value; }, stderr: () => {},
+  });
   return { exitCode, envelope: JSON.parse(output) };
 }
 try {

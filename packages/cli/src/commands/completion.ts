@@ -3,7 +3,7 @@ import type { WtmError } from '@wtm/protocol';
 export const SUPPORTED_SHELLS = ['bash', 'zsh', 'fish'] as const;
 export type SupportedShell = (typeof SUPPORTED_SHELLS)[number];
 
-export const SUPPORTED_COMPLETION_KINDS = ['tasks', 'worktrees', 'repos'] as const;
+export const SUPPORTED_COMPLETION_KINDS = ['tasks', 'worktrees', 'repos', 'repo-names'] as const;
 export type CompletionDataKind = (typeof SUPPORTED_COMPLETION_KINDS)[number];
 
 /**
@@ -17,6 +17,15 @@ export type CompletionDataKind = (typeof SUPPORTED_COMPLETION_KINDS)[number];
 const taskArgumentCommands = ['resolve', 'run', 'start', 'restart', 'stop', 'logs'] as const;
 const worktreeSelectorCommands = ['analyze', 'remove'] as const;
 const repoSelectorCommands = ['forget'] as const;
+
+/**
+ * The seven task commands that accept `--worktree`/`--repo` (item 47) — a superset of
+ * `taskArgumentCommands` because `exec` takes raw argv, not a task name, but still resolves its
+ * target through the same two flags. Declared separately so flag-value completion (this array)
+ * and task-name completion (`taskArgumentCommands`) can differ without one silently drifting to
+ * match the other.
+ */
+const targetFlagCommands = ['resolve', 'run', 'start', 'restart', 'stop', 'logs', 'exec'] as const;
 
 export interface CompletionScriptRequest {
   shell: string;
@@ -86,6 +95,22 @@ function bashScript(bin: string, commands: readonly string[]): string {
   const taskCommands = present(commands, taskArgumentCommands);
   const worktreeCommands = present(commands, worktreeSelectorCommands);
   const repoCommands = present(commands, repoSelectorCommands);
+  const targetCommands = present(commands, targetFlagCommands);
+  const flagValueCompletion = targetCommands.length === 0 ? '' : `  local prev="\${COMP_WORDS[COMP_CWORD-1]}"
+  case "$prev" in
+    --worktree) COMPREPLY=( $(compgen -W "$(${bin} __complete worktrees 2>/dev/null)" -- "$cur") ); return 0 ;;
+    --repo) COMPREPLY=( $(compgen -W "$(${bin} __complete repo-names 2>/dev/null)" -- "$cur") ); return 0 ;;
+  esac
+  local target=() i
+  for (( i=2; i<cword; i++ )); do
+    case "\${words[i]}" in
+      --worktree|--repo) target+=("\${words[i]}" "\${words[i+1]}") ;;
+    esac
+  done
+`;
+  const taskArmBody = targetCommands.length === 0
+    ? `COMPREPLY=( $(compgen -W "$(${bin} __complete tasks 2>/dev/null)" -- "$cur") )`
+    : `COMPREPLY=( $(compgen -W "$(${bin} __complete tasks "\${target[@]}" 2>/dev/null)" -- "$cur") )`;
   return `# ${bin} bash completion
 # Install with: ${bin} completion bash > /path/to/completions && source /path/to/completions
 # or: source <(${bin} completion bash)
@@ -94,7 +119,7 @@ _${bin}_completion() {
   cur="\${COMP_WORDS[COMP_CWORD]}"
   words=("\${COMP_WORDS[@]}")
   cword=$COMP_CWORD
-  COMPREPLY=()
+${flagValueCompletion}  COMPREPLY=()
 
   if [[ $cword -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "${commands.join(' ')}" -- "$cur") )
@@ -102,7 +127,7 @@ _${bin}_completion() {
   fi
 
   case "\${words[1]}" in
-    ${caseArm(taskCommands, `COMPREPLY=( $(compgen -W "$(${bin} __complete tasks 2>/dev/null)" -- "$cur") )`)}
+    ${caseArm(taskCommands, taskArmBody)}
     ${caseArm(worktreeCommands, `COMPREPLY=( $(compgen -W "$(${bin} __complete worktrees 2>/dev/null)" -- "$cur") )`)}
     ${caseArm(repoCommands, `COMPREPLY=( $(compgen -W "$(${bin} __complete repos 2>/dev/null)" -- "$cur") )`)}
     *)
@@ -127,6 +152,28 @@ function zshScript(bin: string, commands: readonly string[]): string {
   const taskCommands = present(commands, taskArgumentCommands);
   const worktreeCommands = present(commands, worktreeSelectorCommands);
   const repoCommands = present(commands, repoSelectorCommands);
+  const targetCommands = present(commands, targetFlagCommands);
+  const flagValueCompletion = targetCommands.length === 0 ? '' : `  case "\${words[CURRENT-1]}" in
+    --worktree) dynamic=(\${(f)"$(${bin} __complete worktrees 2>/dev/null)"}); _describe 'worktree' dynamic; return ;;
+    --repo) dynamic=(\${(f)"$(${bin} __complete repo-names 2>/dev/null)"}); _describe 'repository' dynamic; return ;;
+  esac
+  local -a target
+  local i
+  for (( i=3; i<CURRENT; i++ )); do
+    case "\${words[i]}" in
+      --worktree|--repo) target+=("\${words[i]}" "\${words[i+1]}") ;;
+    esac
+  done
+`;
+  const taskArm = targetCommands.length === 0
+    ? `dynamic=(\${(f)"$(${bin} __complete tasks 2>/dev/null)"})
+      _describe 'task' dynamic
+      ;;
+`
+    : `dynamic=(\${(f)"$(${bin} __complete tasks \${target[@]} 2>/dev/null)"})
+      _describe 'task' dynamic
+      ;;
+`;
   return `#compdef ${bin}
 # ${bin} zsh completion
 # Install with: ${bin} completion zsh > /path/to/_${bin} (on your $fpath)
@@ -141,8 +188,8 @@ _${bin}() {
   fi
 
   local -a dynamic
-  case "\${words[2]}" in
-    ${zshCaseArm(taskCommands, 'tasks', 'task')}
+${flagValueCompletion}  case "\${words[2]}" in
+    ${taskCaseArm(taskCommands, taskArm)}
     ${zshCaseArm(worktreeCommands, 'worktrees', 'worktree')}
     ${zshCaseArm(repoCommands, 'repos', 'repository')}
     *)
@@ -152,6 +199,12 @@ _${bin}() {
 }
 compdef _${bin} ${bin}
 `;
+
+  function taskCaseArm(names: readonly string[], body: string): string {
+    if (names.length === 0) return '';
+    return `${names.join('|')})
+      ${body}`;
+  }
 
   function zshCaseArm(names: readonly string[], kind: string, label: string): string {
     if (names.length === 0) return '';
@@ -167,6 +220,7 @@ function fishScript(bin: string, commands: readonly string[]): string {
   const taskCommands = present(commands, taskArgumentCommands);
   const worktreeCommands = present(commands, worktreeSelectorCommands);
   const repoCommands = present(commands, repoSelectorCommands);
+  const targetCommands = present(commands, targetFlagCommands);
   const lines = [
     `# ${bin} fish completion`,
     `# Install with: ${bin} completion fish > ~/.config/fish/completions/${bin}.fish`,
@@ -175,9 +229,19 @@ function fishScript(bin: string, commands: readonly string[]): string {
     `complete -c ${bin} -f`,
     `complete -c ${bin} -n "not __fish_seen_subcommand_from $__${bin}_commands" -a "$__${bin}_commands"`,
     '',
-    `function __${bin}_complete_tasks; ${bin} __complete tasks 2>/dev/null; end`,
+    `function __${bin}_complete_tasks
+    set -l tokens (commandline -opc)
+    set -l target
+    for i in (seq (count $tokens))
+        if contains -- $tokens[$i] --worktree --repo; and test $i -lt (count $tokens)
+            set -a target $tokens[$i] $tokens[(math $i + 1)]
+        end
+    end
+    ${bin} __complete tasks $target 2>/dev/null
+end`,
     `function __${bin}_complete_worktrees; ${bin} __complete worktrees 2>/dev/null; end`,
     `function __${bin}_complete_repos; ${bin} __complete repos 2>/dev/null; end`,
+    `function __${bin}_complete_repo_names; ${bin} __complete repo-names 2>/dev/null; end`,
     '',
   ];
   if (taskCommands.length > 0) {
@@ -191,6 +255,12 @@ function fishScript(bin: string, commands: readonly string[]): string {
   if (repoCommands.length > 0) {
     lines.push(`complete -c ${bin} -n "__fish_seen_subcommand_from ${repoCommands.join(' ')}" `
       + `-a "(__${bin}_complete_repos)"`);
+  }
+  if (targetCommands.length > 0) {
+    lines.push(`complete -c ${bin} -n "__fish_seen_subcommand_from ${targetCommands.join(' ')}" `
+      + `-l worktree -r -a "(__${bin}_complete_worktrees)"`);
+    lines.push(`complete -c ${bin} -n "__fish_seen_subcommand_from ${targetCommands.join(' ')}" `
+      + `-l repo -r -a "(__${bin}_complete_repo_names)"`);
   }
   return `${lines.join('\n')}\n`;
 }

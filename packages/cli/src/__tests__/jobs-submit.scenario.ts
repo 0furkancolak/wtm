@@ -1,7 +1,9 @@
 import { runCli } from '../main';
 
-const [socketPath, cwd, key] = process.argv.slice(2);
-if (!socketPath || !cwd || !key) throw new Error('Missing queue submission fixture arguments');
+const [socketPath, cwd, key, taskTargetDatabasePath, taskTargetGlobalConfigPath] = process.argv.slice(2);
+if (!socketPath || !cwd || !key || !taskTargetDatabasePath || !taskTargetGlobalConfigPath) {
+  throw new Error('Missing queue submission fixture arguments');
+}
 process.exitCode = await runCli(['run', 'check', '--enqueue', '--idempotency-key', key, '--json'], {
-  cwd, daemonSocketPath: socketPath,
+  cwd, daemonSocketPath: socketPath, taskTargetDatabasePath, taskTargetGlobalConfigPath,
 });

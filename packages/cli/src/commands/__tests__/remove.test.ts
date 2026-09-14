@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { access, rm } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { jsonEnvelopeSchema } from '@wtm/protocol';
 import { listGitWorktrees } from '@wtm/core';
@@ -179,6 +180,47 @@ describe('runRemoveCommand', () => {
     });
     expect((await listGitWorktrees(fixture.repoPath)).map((record) => record.path))
       .toContain(fixture.linkedWorktreePath);
+  });
+
+  test('a directory name two worktrees share is refused with both listed, and removes nothing', async () => {
+    const fixture = await createFixture();
+    // `createGitSafetyFixture` puts the linked worktree at `<root>/linked feature`; a second worktree
+    // in a subdirectory gets the same directory name.
+    const twin = join(fixture.root, 'twin', basename(fixture.linkedWorktreePath));
+    await fixture.git(fixture.repoPath, ['worktree', 'add', '-b', 'twin', twin]);
+
+    const envelope = await runRemoveCommand({ ...input(fixture), selector: basename(fixture.linkedWorktreePath) });
+
+    expect(envelope).toMatchObject({
+      ok: false,
+      errors: [{ code: 'WTM_WORKSPACE_NOT_FOUND', context: { selector: basename(fixture.linkedWorktreePath), matchCount: 2 } }],
+    });
+    await expectPreserved(fixture);
+    expect(await pathExists(twin)).toBe(true);
+  });
+
+  test('an empty selector is refused instead of matching the worktree the caller is in', async () => {
+    const fixture = await createFixture();
+
+    const envelope = await runRemoveCommand({
+      repoPath: fixture.linkedWorktreePath,
+      selector: '',
+      baseRef: 'refs/heads/main',
+    });
+
+    expect(envelope).toMatchObject({
+      ok: false,
+      errors: [{ code: 'WTM_WORKSPACE_NOT_FOUND', context: { selector: '', matchCount: 0 } }],
+    });
+    await expectPreserved(fixture);
+  });
+
+  test('a relative path selector still resolves against the worktree containing the repo path', async () => {
+    const fixture = await createFixture();
+
+    const envelope = await runRemoveCommand({ ...input(fixture), selector: `../${basename(fixture.linkedWorktreePath)}` });
+
+    expect(envelope.ok).toBe(true);
   });
 
   test('maps malformed porcelain to degraded JSON and preserves the worktree', () => {

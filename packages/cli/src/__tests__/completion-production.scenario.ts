@@ -84,11 +84,23 @@ async function repoSelectorsFromStateStore() {
   return [exitCode, lines];
 }
 
+/** Outside any registered workspace, `--repo` has nothing to complete. */
+async function repoNamesOutsideWorkspace() {
+  const root = await temporaryRoot();
+  const missingDatabasePath = join(root, 'no-such-state.db');
+  const { exitCode, lines } = await capture(
+    ['__complete', 'repo-names'],
+    { cwd: root, completionDatabasePath: missingDatabasePath },
+  );
+  return [exitCode, lines];
+}
+
 try {
   await writeFile(process.argv[2] as string, JSON.stringify({
     taskNamesFromWtmToml: await taskNamesFromWtmToml(),
     worktreeSelectorsFromGitTopology: await worktreeSelectorsFromGitTopology(),
     repoSelectorsFromStateStore: await repoSelectorsFromStateStore(),
+    repoNamesOutsideWorkspace: await repoNamesOutsideWorkspace(),
   }));
 } finally {
   for (const root of roots) await rm(root, { recursive: true, force: true });

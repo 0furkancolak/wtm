@@ -3,7 +3,6 @@ import { resolve } from 'node:path';
 import type { JsonEnvelope, Remediation, WtmError } from '@wtm/protocol';
 import {
   classifyMemberRecovery,
-  containsPath,
   createWorktree,
   listGitWorktrees,
   planFeatureCreation,
@@ -26,6 +25,7 @@ import type {
   WorkspaceRecord,
   WorktreeCreationPlan,
 } from '@wtm/core';
+import { workspaceContaining } from '../worktree-selector';
 import { gitFailure, message, notInitialized, reconciledByDaemon, type CreateRegistration } from './create';
 import type { RuntimeDaemonClient } from './runtime-client';
 
@@ -488,27 +488,6 @@ function sameOpenCreation(before: FeatureCreationRecord | null, now: FeatureCrea
 function isConstraintViolation(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
   return typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT');
-}
-
-/**
- * The workspace a multi-repository create is about: the one owning the registered worktree the
- * command runs in, or else the registered workspace whose root contains it, so the command also
- * works from the workspace root, which is no repository's worktree.
- */
-function workspaceContaining(store: SQLiteStateStore, cwd: string): WorkspaceRecord | undefined {
-  const absolute = resolve(cwd);
-  const workspaces = store.listWorkspaces();
-  const worktree = store.listWorktrees()
-    .filter((candidate) => containsPath(candidate.path, absolute))
-    .sort((left, right) => right.path.length - left.path.length)[0];
-  if (worktree !== undefined) {
-    const repository = store.listRepositories().find(({ id }) => id === worktree.repositoryId);
-    const owner = workspaces.find(({ id }) => id === repository?.workspaceId);
-    if (owner !== undefined) return owner;
-  }
-  return workspaces
-    .filter((candidate) => containsPath(candidate.root, absolute))
-    .sort((left, right) => right.root.length - left.root.length)[0];
 }
 
 function envelopeData(

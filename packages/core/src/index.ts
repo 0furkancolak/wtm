@@ -49,7 +49,7 @@ export type {
   WorktreeCreationInput,
   WorktreeCreationPlan,
 } from './analysis/create-worktree';
-export { planFeatureCreation, resolveCommit, resolveFeatureMembers } from './analysis/create-feature';
+export { nameRepositories, planFeatureCreation, resolveCommit, resolveFeatureMembers } from './analysis/create-feature';
 export type {
   FeatureCreationDecision,
   FeatureMemberMeasurement,
