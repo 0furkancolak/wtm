@@ -266,7 +266,8 @@ Every refusal it produces is `WTM_WORKSPACE_NOT_FOUND`.
 No worktree matches the selector: `context` is `{ selector, repoPath, repositories, matches: [],
 matchCount: 0 }`. `repoPath` is the base a relative selector is resolved against — the worktree
 containing `cwd`, or `cwd` itself from a workspace root. The message lists the four accepted forms
-(branch, directory name, registered number, path).
+(branch, directory name, registered number, path). An empty or whitespace-only selector is refused
+the same way — as no match, never as the worktree containing `cwd`.
 
 More than one worktree matches: `context.matches` is `[{ repo, branch, path, numericId }]` (`branch`
 and `numericId` are `null` when the worktree has none), and `context.matchCount` is its length.

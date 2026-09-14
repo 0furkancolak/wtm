@@ -124,6 +124,12 @@ Code `WTM_WORKSPACE_NOT_FOUND`, as `WorktreeSelectorError` uses today.
 - `remove`'s existing fields stay: `repoPath` and `selector`. `matches` becomes the array above; the
   count moves to `matchCount`. This is a documented `docs/18` schema change.
 
+(Correction, 2026-09-14, final review: "Matches in one repository: the remediation asks for the
+selector as a path" does not hold. There is no remediation for this case — the *message* asks for
+the selector as a path, the same plain-English place the no-match case's four accepted forms live.
+`docs/18` documents the message and the absence of remediation; this section is corrected to match
+it rather than the other way around.)
+
 ### 6. Shell completion
 
 In `packages/cli/src/commands/completion.ts`, for bash, zsh and fish:
