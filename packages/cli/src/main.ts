@@ -65,6 +65,7 @@ import { runFeatureCreateCommand } from './commands/create-feature';
 import { measureCleanupCandidates } from './commands/cleanup-estimates';
 import { runStartCommand } from './commands/start';
 import { runStopCommand } from './commands/stop';
+import { readCiStatus, runCiUnwatchCommand, runCiWatchCommand } from './commands/ci';
 import { runRestartCommand } from './commands/restart';
 import { runPsCommand } from './commands/ps';
 import { followLogs, runLogsCommand } from './commands/logs';
@@ -294,6 +295,56 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   registerJobCommands(program, {
     ...(dependencies.runtimeClient === undefined ? {} : { client: dependencies.runtimeClient }),
     render: (envelope, json) => renderRuntime(envelope, json),
+  });
+
+  const ci = program.command('ci').description('Follow the CI of a pushed commit in the background instead of waiting on it.');
+  const ciWatch = ci.command('watch').description('Start following the CI runs of HEAD; returns at once.');
+  addTargetOptions(ciWatch);
+  addJsonOption(ciWatch);
+  ciWatch.option('--pr <number>', 'the pull request of this commit, for display', (value: string) => {
+    if (!/^[1-9]\d{0,9}$/.test(value)) throw new InvalidArgumentError('--pr must be a pull request number');
+    return Number(value);
+  });
+  ciWatch.action(async (options: ScopeOptions & TargetOptions & { pr?: number }) => {
+    const target = await taskTarget(['wtm', 'ci', 'watch'], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('ci watch', target.error), runtimeJson(program, options));
+      return;
+    }
+    renderRuntime(
+      await runCiWatchCommand({ cwd: target.cwd, ...(options.pr === undefined ? {} : { pr: options.pr }) }, dependencies.runtimeClient),
+      runtimeJson(program, options),
+    );
+  });
+
+  const ciStatus = ci.command('status').description('Read the latest CI watch result from local state; never uses the network.');
+  addTargetOptions(ciStatus);
+  addJsonOption(ciStatus);
+  ciStatus.option('--all', 'the latest watch of every worktree in this workspace');
+  ciStatus.action(async (options: ScopeOptions & TargetOptions & { all?: boolean }) => {
+    const databasePath = dependencies.taskTargetDatabasePath ?? defaultProductionRuntimePaths().databasePath;
+    if (options.all === true) {
+      renderRuntime(readCiStatus({ cwd, all: true, databasePath }), runtimeJson(program, options));
+      return;
+    }
+    const target = await taskTarget(['wtm', 'ci', 'status'], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('ci status', target.error), runtimeJson(program, options));
+      return;
+    }
+    renderRuntime(readCiStatus({ cwd: target.cwd, all: false, databasePath }), runtimeJson(program, options));
+  });
+
+  const ciUnwatch = ci.command('unwatch').description('Stop following the pending CI watch of a worktree.');
+  addTargetOptions(ciUnwatch);
+  addJsonOption(ciUnwatch);
+  ciUnwatch.action(async (options: ScopeOptions & TargetOptions) => {
+    const target = await taskTarget(['wtm', 'ci', 'unwatch'], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('ci unwatch', target.error), runtimeJson(program, options));
+      return;
+    }
+    renderRuntime(await runCiUnwatchCommand({ cwd: target.cwd }, dependencies.runtimeClient), runtimeJson(program, options));
   });
 
   const analyze = program.command('analyze [selector]').description('Analyze worktree removal safety.');

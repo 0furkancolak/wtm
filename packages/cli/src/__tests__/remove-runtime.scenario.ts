@@ -297,6 +297,41 @@ const cases: Record<string, () => Promise<unknown>> = {
   },
 
   /**
+   * The post-removal store step (item 54, `removal-coordinator.ts`'s `releaseEndpointLeases`)
+   * deletes a removed worktree's CI watches (`wtm ci watch`) alongside its endpoint leases, since
+   * worktree rows are never deleted and a stale watch would otherwise outlive the worktree it
+   * named.
+   */
+  'ci-watch-cleanup': async () => {
+    const prepared = await prepare();
+    const now = new Date().toISOString();
+    prepared.store.ci.start({
+      repositoryId: prepared.repositoryId,
+      worktreeId: prepared.worktreeId,
+      worktreePath: prepared.fixture.linkedWorktreePath,
+      providerRepo: 'github.com/acme/widgets',
+      branch: 'refs/heads/feature/safe',
+      headSha: 'a'.repeat(40),
+      pr: null,
+      now,
+      nextPollAt: now,
+      pollIntervalMs: 15_000,
+      maxPending: 20,
+    });
+    const before = prepared.store.ci.latestForWorktree(prepared.worktreeId);
+
+    const { exitCode, envelope } = await removeLinked(prepared, unreachableDaemon([]));
+
+    return {
+      exitCode,
+      ok: envelope.ok,
+      hadWatchBeforeRemoval: before !== null,
+      watchAfterRemoval: prepared.store.ci.latestForWorktree(prepared.worktreeId),
+      worktreeExists: await pathExists(prepared.fixture.linkedWorktreePath),
+    };
+  },
+
+  /**
    * With no daemon to emit `worktree.removed`, the CLI reconciles the repository itself and says
    * so, rather than leaving the registration pointing at a directory that is gone.
    */

@@ -7,6 +7,7 @@ export {
   readGitRepositoryIdentity,
   remoteFetchTimeoutMs,
   retriedWorktreeListTimeoutMs,
+  runGit,
   worktreeListTimeoutMs,
 } from './git/git-runner';
 export type { GitCommandOptions, GitCommandResult, GitRepositoryIdentity } from './git/git-runner';

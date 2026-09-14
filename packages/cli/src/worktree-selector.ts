@@ -281,7 +281,7 @@ export async function resolveTaskTarget(input: {
 }
 
 /** A readonly handle on the state database, or `null` when none exists yet or it cannot be opened. */
-function openReadonlyStore(databasePath: string, options: { busyTimeoutMs?: number } = {}): SQLiteStateStore | null {
+export function openReadonlyStore(databasePath: string, options: { busyTimeoutMs?: number } = {}): SQLiteStateStore | null {
   if (!existsSync(databasePath)) return null;
   try {
     return new SQLiteStateStore(databasePath, { readonly: true, ...options });

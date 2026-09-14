@@ -53,6 +53,9 @@ failure, `2` usage or configuration, `3` safety refusal or conflict, `4` daemon 
 | `wtm ps --json` | List WTM-managed process groups. |
 | `wtm logs [task]` | Read managed task logs; `--follow` streams raw output. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm exec -- <argv>` | Run raw argv in this worktree with its resolved environment. `--worktree <selector>` (`--repo <name>`), before `--`, targets another worktree. |
+| `wtm ci watch --json` | Start following HEAD's CI runs in the background; returns at once. `--pr <number>` labels the pull request. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
+| `wtm ci status --json` | Read the latest CI watch result from local state, with failed-job log summaries; never touches the network. `--all` lists every worktree in the workspace. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
+| `wtm ci unwatch --json` | Stop a worktree's pending CI watch. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm jobs list --json` | List recent queued jobs (`--limit <count>`). |
 | `wtm jobs status <job-id> --json` | Read a job's state and cleanup status. |
 | `wtm jobs result <job-id> --json` | Read a finished job's result and verify its source evidence. |
