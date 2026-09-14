@@ -83,8 +83,18 @@ The three commands take `--worktree` and `--repo` with item 47's rules and compl
   watch started; `timed_out` 2 h after the watch started; `unavailable` when `gh` stops being
   authenticated or the repository is no longer reachable (three consecutive such failures).
 - **Failed job logs:** once per failed job, when its run completes:
-  `gh run view <runId> --repo … --job <jobId> --log-failed`. The summary is the last 40 lines,
-  ANSI sequences removed, secrets masked (§4), capped at 8 KiB, stored with the job.
+  `gh run view <runId> --repo … --job <jobId> --log-failed`. Each output line has the form
+  `<job name>\t<step name>\t<ISO timestamp> <text>`; the summary keeps only `<text>`. It is built as:
+  every line containing `##[error]` together with the 20 lines before it, plus every line matching a
+  test-runner failure marker (`(fail)`, `FAIL `, `✗`, `error:`), in log order, overlapping windows
+  merged and gaps shown as `…`; when the log has no such line, the last 40 lines. ANSI sequences
+  removed, secrets masked (§4), capped at 8 KiB keeping the end, stored with the job.
+
+  (Correction, 2026-09-14, while planning: the approved section said "the last 40 lines". A real
+  `--log-failed` output of this repository's CI (3000 lines, the step name `UNKNOWN STEP`) ends with
+  40 lines of post-job cleanup, while the actual failure sits at line 1559 behind `##[error]`. The
+  error-anchored summary keeps the intent — a short, useful failure excerpt — and the last 40 lines
+  stay as the fallback.)
 - **Restart:** pending watches are stored; a starting daemon resumes them with the first poll after
   15 s. A watch whose deadline passed while the daemon was down ends `timed_out`.
 - **Idle cost:** no timer exists while no watch is pending (goal G5, `docs/01`).
@@ -176,8 +186,10 @@ missing daemon is the existing daemon error. A watch that becomes unavailable la
 ## Testing
 
 - **Core, pure:** remote URL table (HTTPS, SSH, `ssh://`, Enterprise, `.git` suffix, GitLab, none);
-  run and job aggregation into each state; log summary (40 lines, ANSI, 8 KiB cap, every mask
-  pattern); polling schedule (15 s, ×1.5, 2 min cap, reset on change, rate-limit delay).
+  run and job aggregation into each state; log summary (prefix stripping, `##[error]` windows of 20
+  lines merged when overlapping, test-runner failure markers, the 40-line fallback without any
+  marker, ANSI removal, the 8 KiB cap keeping the end, every mask pattern), with a trimmed fixture
+  taken from a real `--log-failed` output whose failure is far from the end; polling schedule (15 s, ×1.5, 2 min cap, reset on change, rate-limit delay).
 - **Provider:** a fake `gh` executor returning recorded JSON and logs; argv shapes; timeouts;
   rate-limit and 5xx classification; unauthenticated and missing `gh`. No network.
 - **Daemon watcher, fake clock:** push and pull-request runs of one commit aggregated; `no_runs` at
