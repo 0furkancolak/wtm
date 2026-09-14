@@ -372,6 +372,34 @@ RESOURCE_CLONE_UNAVAILABLE
 GC_ACTIVE_WORKTREE_PROTECTED
 ```
 
+### CI
+
+```text
+WTM_CI_UNAVAILABLE
+```
+
+`wtm ci watch` refuses with this code, exit class 1 (operational failure), before it starts a watch:
+
+| Situation | `context` | Remediation |
+| --- | --- | --- |
+| `gh` not found | `{ provider: "github" }` | none; the message names the GitHub CLI install page |
+| `gh` not authenticated for the host | `{ provider: "github", host }` | `gh auth login --hostname <host>` |
+| Remote not supported, or no remote | `{ remote }` | none |
+| 20 watches pending | `{ pending: 20 }` | `wtm ci unwatch --worktree <selector>` |
+
+A transient or throttled `gh auth status` answer still accepts the watch; only a missing `gh`, an
+unauthenticated host or an unsupported remote refuses. Worktree selection failures on `wtm ci
+watch`/`status`/`unwatch` are item 47's codes (`WTM_WORKSPACE_NOT_FOUND`, `WTM_CONFIG_INVALID`), and
+a missing daemon is the existing daemon error, not this code. A watch that becomes unavailable after
+it started — `gh` stops authenticating, or the repository stops being reachable, three polls in a
+row — is reported by `ci status` as `state: "unavailable"` with `detail`, not as a command error.
+
+`wtm ci status` reads local state only and never returns this code: `data.watch` is `{ watchId,
+repo, branch, headSha, pr?, state, startedAt, updatedAt, finishedAt?, runs: [{ runId, workflow,
+event, status, conclusion, url, jobs: [{ jobId, name, status, conclusion, url, logSummary? }] }],
+detail? }`, or `null` when the worktree has no watch. `--all` returns `data.watches: [{
+worktreePath, watch }]` instead.
+
 ## Exit code classes
 
 Recommended:

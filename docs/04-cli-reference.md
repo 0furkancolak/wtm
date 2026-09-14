@@ -310,6 +310,55 @@ this bounded evidence, not immutable execution or every possible task dependency
 directory metadata is also checked; creating ignored output inside a tracked source
 directory can conservatively invalidate the result even when tracked bytes did not change.
 
+## CI
+
+```bash
+wtm ci watch [--pr <number>] --json
+wtm ci status [--all] --json
+wtm ci unwatch --json
+```
+
+| Command | Data and behavior |
+| --- | --- |
+| `wtm ci watch` | `{ watch, reused }`; hands HEAD's commit to the daemon to follow and returns at once — it never waits for CI. `--pr <number>` records the pull request for display. Watching the same `headSha` again returns the existing watch (`reused: true`); a different `headSha` supersedes the worktree's older pending watch. |
+| `wtm ci status` | `{ watch }` (`{ watches }` with `--all`); reads the local state store only. It works with the daemon stopped and never runs `gh`. A worktree with no watch returns `data.watch: null`, not an error. |
+| `wtm ci unwatch` | `{ stopped, watch }`; cancels the target worktree's pending watch. With no pending watch it succeeds with `stopped: false`. |
+
+All three take `--worktree <selector>` and `--repo <name>`, resolved the same way as the task
+commands above.
+
+`data.watch`: `{ watchId, repo, branch, headSha, pr?, state, startedAt, updatedAt, finishedAt?,
+runs: [{ runId, workflow, event, status, conclusion, url, jobs: [{ jobId, name, status, conclusion,
+url, logSummary? }] }], detail? }`. `state` is one of:
+
+| State | Meaning |
+| --- | --- |
+| `pending` | The daemon is still polling; at least one run has not concluded. |
+| `success` | Every run concluded successfully (`success`, `skipped` and `neutral` all count). |
+| `failure` | At least one run's conclusion was neither a success nor a cancellation. |
+| `cancelled` | No run failed, but at least one run was cancelled. |
+| `timed_out` | CI had not finished 2 hours after the watch started. |
+| `no_runs` | No workflow run appeared for the commit within 3 minutes of the watch starting. |
+| `superseded` | A later `wtm ci watch` on the same worktree replaced this watch. |
+| `unavailable` | `gh` stopped authenticating, or the repository stopped being reachable, after the watch had already started; `detail` says why. |
+
+`wtm ci status --all` returns `data.watches: [{ worktreePath, watch }]`, one entry per worktree of
+the workspace containing `cwd` that has a watch, sorted by path; unlike the other task commands, it
+does not refuse at a workspace root.
+
+The daemon polls `gh run list`/`gh run view` for the watched commit, first 15 s after the watch
+starts; the interval grows ×1.5 up to a 2 min cap and resets to 15 s whenever a run or job changes
+state. A `gh` rate limit or server error delays that watch (up to a 10 min cap) without failing it.
+At most 20 watches may be pending at once across the workspace (`wtm ci unwatch` frees a slot), and
+at most 30 `gh` invocations run per minute across every pending watch. A finished watch is deleted 7
+days after it finished; `wtm remove` deletes the removed worktree's watches immediately.
+
+Only GitHub is supported, through an installed and logged-in `gh`. `WTM_CI_UNAVAILABLE` refuses
+`wtm ci watch` before any watch starts: `gh` is not installed; `gh` is not authenticated for the
+repository's host; the repository's remote has no supported CI provider, or none at all; or 20
+watches are already pending. A watch that becomes unavailable after it started is reported by
+`ci status` as `state: 'unavailable'` with `detail`, not as a command error.
+
 ### `wtm exec <argv...>`
 
 Executes raw argv in the foreground with the same resolved environment/context. The argument is a command line, not a configured task name; use `wtm run <task>` for tasks.
