@@ -19,6 +19,7 @@ import {
   containsPath,
   GitCommandError,
   listGitWorktrees,
+  nameRepositories,
   rankCleanupCandidates,
   readGitCommitTimestamp,
   refreshRemoteTrackingRefs,
@@ -91,7 +92,9 @@ import { runForgetCommand, type ForgetCommandEnvelope } from './commands/forget'
 import { runAdapterCommand } from './commands/adapter';
 import { runAnalyzeCommand } from './commands/analyze';
 import { runRemoveCommand, type RemovalRuntimeBinding } from './commands/remove';
-import { collectSelectorCandidates, matchWorktreeSelector, resolveTaskTarget } from './worktree-selector';
+import {
+  collectSelectorCandidates, matchWorktreeSelector, resolveTaskTarget, workspaceContaining,
+} from './worktree-selector';
 import { createProductionRemovalCoordinator } from './removal-coordinator';
 import { toGitSafetyError } from './commands/git-error';
 import { runResolveCommand, toRuntimeCommandError } from './commands/resolve';
@@ -160,7 +163,9 @@ export interface CliDependencies {
   removeRunner?: (input: { repoPath: string; selector: string; refreshRemotes?: boolean; resume?: boolean }) => Promise<JsonEnvelope<unknown>>;
   forgetRunner?: (input: { cwd: string; selector?: string; force: boolean }) => Promise<JsonEnvelope<unknown>>;
   /** What `wtm __complete <kind>` prints, one candidate per line — injectable so tests never need a real Git checkout or state database. */
-  completionDataRunner?: (input: { kind: CompletionDataKind; cwd: string }) => Promise<readonly string[]>;
+  completionDataRunner?: (
+    input: { kind: CompletionDataKind; cwd: string; worktree?: string; repo?: string },
+  ) => Promise<readonly string[]>;
   /** The state database `wtm __complete` reads registered worktrees and workspace names from. */
   completionDatabasePath?: string;
   /** Test seam: the Git write of a multi-repository create, so a scenario can make one member fail. */
@@ -763,21 +768,29 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   });
 
   const completionData = program.command(`${hiddenCompletionDataCommand} <kind>`, { hidden: true })
-    .description('Internal: print dynamic shell-completion candidates for `wtm completion`, one per line.');
-  completionData.action(async (kind: string) => {
+    .description('Internal: print dynamic shell-completion candidates for `wtm completion`, one per line.')
+    .option('--worktree <selector>', 'complete task names for this worktree instead of cwd')
+    .option('--repo <name>', 'the repository of --worktree, when its branch exists in several');
+  completionData.action(async (kind: string, options: TargetOptions) => {
     const validated = validateCompletionKind(kind);
     if (!validated.ok) {
       stderr(`[${validated.error.code}] ${validated.error.message}\n`);
       hooks.setExitCode?.(exitCodeForError(validated.error.code));
       return;
     }
+    const target = {
+      ...(options.worktree === undefined ? {} : { worktree: options.worktree }),
+      ...(options.repo === undefined ? {} : { repo: options.repo }),
+    };
     const values = dependencies.completionDataRunner === undefined
       ? await productionCompletionData(
         validated.kind,
         cwd,
         dependencies.completionDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+        dependencies.taskTargetGlobalConfigPath ?? defaultProductionRuntimePaths().globalConfigPath,
+        target,
       )
-      : await dependencies.completionDataRunner({ kind: validated.kind, cwd });
+      : await dependencies.completionDataRunner({ kind: validated.kind, cwd, ...target });
     for (const value of values) stdout(`${value}\n`);
   });
 
@@ -1478,9 +1491,19 @@ async function productionCompletionData(
   kind: CompletionDataKind,
   cwd: string,
   databasePath: string,
+  globalConfigPath: string,
+  target: { worktree?: string; repo?: string },
 ): Promise<readonly string[]> {
-  if (kind === 'tasks') return await productionTaskNames(cwd, databasePath);
-  if (kind === 'worktrees') return await productionWorktreeSelectors(cwd, databasePath);
+  if (kind === 'tasks') {
+    if (target.worktree !== undefined) {
+      const resolved = await resolveTaskTarget({ cwd, argv: ['wtm'], ...target, databasePath, globalConfigPath });
+      if (resolved.outcome === 'refused') return [];
+      return await productionTaskNames(resolved.cwd, databasePath);
+    }
+    return await productionTaskNames(cwd, databasePath);
+  }
+  if (kind === 'worktrees') return await productionWorktreeSelectors(cwd, databasePath, globalConfigPath);
+  if (kind === 'repo-names') return await productionRepoNames(cwd, databasePath, globalConfigPath);
   return await productionRepoSelectors(databasePath);
 }
 
@@ -1529,35 +1552,29 @@ async function productionTaskNames(cwd: string, databasePath: string): Promise<s
 }
 
 /**
- * Every worktree selector `analyze`/`remove` would accept for the repository containing `cwd`:
- * each linked worktree's branch name, plus its WTM numeric id where one is registered.
+ * Every worktree selector `resolve`/`run`/`start`/.../`analyze`/`remove` would accept for `cwd`
+ * right now: each non-bare candidate's short branch name, plus its WTM numeric id where one is
+ * registered, collected the same way `resolveTaskTarget` collects them for `--worktree` itself
+ * (`collectSelectorCandidates`, design §2/§3) — so from inside a repository this is the same set
+ * `analyze`/`remove` completion always offered, and from a registered workspace root it is every
+ * repository's, which nothing completed before.
  */
-async function productionWorktreeSelectors(cwd: string, databasePath: string): Promise<string[]> {
-  let topology: GitWorktreeRecord[];
-  try {
-    topology = await listGitWorktrees(cwd);
-  } catch {
-    return [];
-  }
-  const repositoryRoot = containingWorktreeRoot(topology, cwd);
-  if (repositoryRoot === undefined) return [];
-  const selectors = new Set<string>();
-  for (const record of topology) {
-    const branch = branchName(record.branch);
-    if (branch.length > 0) selectors.add(branch);
-  }
+async function productionWorktreeSelectors(cwd: string, databasePath: string, globalConfigPath: string): Promise<string[]> {
   const store = openStateStore(databasePath);
-  if (store !== null) {
-    try {
-      const repository = store.listRepositories().find(({ mainRoot }) => mainRoot === repositoryRoot);
-      if (repository !== undefined) {
-        for (const worktree of store.listWorktrees(repository.id)) selectors.add(String(worktree.numericId));
-      }
-    } finally {
-      store.close();
+  try {
+    const collected = await collectSelectorCandidates({ cwd, store, globalConfigPath });
+    if (collected.outcome === 'refused') return [];
+    const selectors = new Set<string>();
+    for (const candidate of collected.candidates) {
+      if (candidate.record.bare) continue;
+      const branch = branchName(candidate.record.branch);
+      if (branch.length > 0) selectors.add(branch);
+      if (candidate.numericId !== null) selectors.add(String(candidate.numericId));
     }
+    return [...selectors].sort(compareNames);
+  } finally {
+    store?.close();
   }
-  return [...selectors].sort(compareNames);
 }
 
 /** Every registered workspace name `forget` would accept as a selector. */
@@ -1566,6 +1583,28 @@ async function productionRepoSelectors(databasePath: string): Promise<string[]> 
   if (store === null) return [];
   try {
     return [...new Set(store.listWorkspaces().map(({ name }) => name))].sort(compareNames);
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * Every repository name `--repo` would accept for the registered workspace containing `cwd`:
+ * each of its repositories' `[repos.<name>]` scope name, or its directory name where no scope
+ * names it (`nameRepositories`, the same naming `--repo` itself resolves against).
+ */
+async function productionRepoNames(cwd: string, databasePath: string, globalConfigPath: string): Promise<string[]> {
+  const store = openStateStore(databasePath);
+  if (store === null) return [];
+  try {
+    const workspace = workspaceContaining(store, cwd);
+    if (workspace === undefined) return [];
+    const registered = store.listRepositories(workspace.id);
+    const config = await resolveWorkspaceConfig({ workspaceRoot: workspace.root, globalConfigPath });
+    const names = nameRepositories({ config: config.value, workspaceRoot: workspace.root, repositories: registered });
+    return [...new Set(names.values())].sort(compareNames);
+  } catch {
+    return [];
   } finally {
     store.close();
   }

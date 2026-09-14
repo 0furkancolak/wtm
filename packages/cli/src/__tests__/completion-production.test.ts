@@ -31,6 +31,10 @@ test('wtm __complete reads real task names, worktree branches, and workspace nam
     const [repoExitCode, repoLines] = report['repoSelectorsFromStateStore'] as [number, string[]];
     expect(repoExitCode).toBe(0);
     expect(repoLines).toEqual(['production']);
+
+    const [repoNamesExitCode, repoNamesLines] = report['repoNamesOutsideWorkspace'] as [number, string[]];
+    expect(repoNamesExitCode).toBe(0);
+    expect(repoNamesLines).toEqual([]);
   } finally {
     rmSync(reportRoot, { recursive: true, force: true });
   }
