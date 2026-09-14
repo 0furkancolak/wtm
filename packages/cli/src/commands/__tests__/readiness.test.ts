@@ -26,7 +26,9 @@ describe('start and restart readiness CLI', () => {
       calls.push({ command, args, options });
       return { schemaVersion: 1, ok: true, command, data: {}, warnings: [], errors: [] };
     } };
-    const dependencies = { cwd: '/repo', runtimeClient: client, stdout: () => {}, stderr: () => {} };
+    const dependencies = {
+      cwd: '/repo', runtimeClient: client, taskTargetDatabasePath: '/nonexistent/wtm/state.db', stdout: () => {}, stderr: () => {},
+    };
     expect(await runCli(['start', 'dev', '--wait', '--timeout', '6s', '--json'], dependencies)).toBe(0);
     expect(await runCli(['restart', 'dev', '--wait', '--json'], dependencies)).toBe(0);
     expect(await runCli(['start', 'dev', '--json'], dependencies)).toBe(0);
@@ -44,7 +46,8 @@ describe('start and restart readiness CLI', () => {
       for (const flags of [['--timeout', '3s'], ['--wait', '--timeout', '0s'], ['--wait', '--timeout', '6m'], ['--wait', '--timeout', 'garbage']]) {
         let output = '';
         const code = await runCli([command, 'dev', ...flags, '--json'], {
-          cwd: '/repo', runtimeClient: client, stdout: (value) => { output += value; }, stderr: () => {},
+          cwd: '/repo', runtimeClient: client, taskTargetDatabasePath: '/nonexistent/wtm/state.db',
+          stdout: (value) => { output += value; }, stderr: () => {},
         });
         expect(code).not.toBe(0);
         expect(JSON.parse(output).ok).toBe(false);

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { createGitSafetyFixture } from '../../../testkit/src/git-fixture';
 import { runCli } from '../main';
-import { collectSelectorCandidates, matchWorktreeSelector, type SelectorCandidate } from '../worktree-selector';
+import { collectSelectorCandidates, matchWorktreeSelector, resolveTaskTarget, type SelectorCandidate } from '../worktree-selector';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -156,6 +156,50 @@ describe('collectSelectorCandidates', () => {
     roots.push(root);
     const collected = await collectSelectorCandidates({ cwd: root, store: null, globalConfigPath: join(root, 'config.toml') });
     expect(collected).toMatchObject({ outcome: 'refused', error: { code: 'WTM_WORKSPACE_NOT_FOUND' } });
+  });
+});
+
+describe('resolveTaskTarget', () => {
+  test('without flags, returns cwd unchanged', async () => {
+    const fixture = await createGitSafetyFixture();
+    try {
+      expect(await resolveTaskTarget({
+        cwd: fixture.repoPath, argv: ['wtm', 'start', 'dev'],
+        databasePath: join(fixture.root, 'absent.db'), globalConfigPath: join(fixture.root, 'c.toml'),
+      })).toEqual({ outcome: 'resolved', cwd: fixture.repoPath });
+    } finally { await fixture.cleanup(); }
+  });
+
+  test('--worktree resolves to the selected worktree root', async () => {
+    const fixture = await createGitSafetyFixture();
+    try {
+      expect(await resolveTaskTarget({
+        cwd: fixture.repoPath, argv: ['wtm', 'start', 'dev'], worktree: 'feature/safe',
+        databasePath: join(fixture.root, 'absent.db'), globalConfigPath: join(fixture.root, 'c.toml'),
+      })).toEqual({ outcome: 'resolved', cwd: fixture.linkedWorktreePath });
+    } finally { await fixture.cleanup(); }
+  });
+
+  test('--repo without --worktree is refused', async () => {
+    const fixture = await createGitSafetyFixture();
+    try {
+      const target = await resolveTaskTarget({
+        cwd: fixture.repoPath, argv: ['wtm', 'start', 'dev'], repo: 'api',
+        databasePath: join(fixture.root, 'absent.db'), globalConfigPath: join(fixture.root, 'c.toml'),
+      });
+      expect(target).toMatchObject({ outcome: 'refused', error: { code: 'WTM_CONFIG_INVALID', context: { repo: 'api' } } });
+    } finally { await fixture.cleanup(); }
+  });
+
+  test('an unresolved --worktree selector is refused as WTM_WORKSPACE_NOT_FOUND', async () => {
+    const fixture = await createGitSafetyFixture();
+    try {
+      const target = await resolveTaskTarget({
+        cwd: fixture.repoPath, argv: ['wtm', 'start', 'dev'], worktree: 'no-such-branch',
+        databasePath: join(fixture.root, 'absent.db'), globalConfigPath: join(fixture.root, 'c.toml'),
+      });
+      expect(target).toMatchObject({ outcome: 'refused', error: { code: 'WTM_WORKSPACE_NOT_FOUND' } });
+    } finally { await fixture.cleanup(); }
   });
 });
 

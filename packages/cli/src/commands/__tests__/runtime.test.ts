@@ -38,11 +38,27 @@ describe('runtime CLI commands', () => {
 
     for (const testCase of cases) {
       const output = capture();
-      expect(await runCli(testCase.argv, { cwd: '/repo/wt', runtimeClient: client, ...output })).toBe(0);
+      expect(await runCli(testCase.argv, {
+        cwd: '/repo/wt', runtimeClient: client, taskTargetDatabasePath: '/nonexistent/wtm/state.db', ...output,
+      })).toBe(0);
       expect(output.err()).toBe('');
       expect(jsonEnvelopeSchema.parse(JSON.parse(output.out())).ok).toBe(true);
     }
     expect(calls).toEqual(cases.map(({ call }) => call));
+  });
+
+  test('--repo without --worktree is refused before any daemon request', async () => {
+    const calls: unknown[] = [];
+    const client: RuntimeDaemonClient = { request: async (command, args) => { calls.push(args); return success(command); } };
+    const output = capture();
+
+    const code = await runCli(['start', 'dev', '--repo', 'api', '--json'], {
+      cwd: '/repo/wt', runtimeClient: client, taskTargetDatabasePath: '/nonexistent/wtm/state.db', ...output,
+    });
+
+    expect(code).toBe(2);
+    expect(JSON.parse(output.out())).toMatchObject({ ok: false, command: 'start', errors: [{ code: 'WTM_CONFIG_INVALID' }] });
+    expect(calls).toEqual([]);
   });
 
   test('exec sends raw argv for daemon context resolution and never enables a shell', async () => {
@@ -66,7 +82,7 @@ describe('runtime CLI commands', () => {
 
     const exitCode = await runCli(
       ['--json', 'exec', '--', 'printf', '%s', '$HOME; touch /tmp/not-created'],
-      { cwd: '/repo/wt', runtimeClient: client, execForeground: execute, ...output },
+      { cwd: '/repo/wt', runtimeClient: client, execForeground: execute, taskTargetDatabasePath: '/nonexistent/wtm/state.db', ...output },
     );
 
     expect(exitCode).toBe(0);
@@ -100,6 +116,7 @@ describe('runtime CLI commands', () => {
     expect(await runCli(['logs', 'dev', '--follow'], {
       cwd: '/repo/wt',
       runtimeClient: client,
+      taskTargetDatabasePath: '/nonexistent/wtm/state.db',
       ...output,
     })).toBe(0);
     expect(output.out()).toBe('one\ntwo\n');
@@ -113,7 +130,9 @@ describe('runtime CLI commands', () => {
       request: async () => { throw new Error('connect /Users/private/secret.sock stack'); },
     };
 
-    expect(await runCli(['ps', '--json'], { cwd: '/repo/wt', runtimeClient: client, ...output })).toBe(4);
+    expect(await runCli(['ps', '--json'], {
+      cwd: '/repo/wt', runtimeClient: client, taskTargetDatabasePath: '/nonexistent/wtm/state.db', ...output,
+    })).toBe(4);
     const envelope = JSON.parse(output.out());
     expect(jsonEnvelopeSchema.parse(envelope)).toEqual(envelope);
     expect(envelope.errors).toEqual([{

@@ -91,7 +91,7 @@ import { runForgetCommand, type ForgetCommandEnvelope } from './commands/forget'
 import { runAdapterCommand } from './commands/adapter';
 import { runAnalyzeCommand } from './commands/analyze';
 import { runRemoveCommand, type RemovalRuntimeBinding } from './commands/remove';
-import { collectSelectorCandidates, matchWorktreeSelector } from './worktree-selector';
+import { collectSelectorCandidates, matchWorktreeSelector, resolveTaskTarget } from './worktree-selector';
 import { createProductionRemovalCoordinator } from './removal-coordinator';
 import { toGitSafetyError } from './commands/git-error';
 import { runResolveCommand, toRuntimeCommandError } from './commands/resolve';
@@ -169,6 +169,9 @@ export interface CliDependencies {
   featureCreateAfterLeases?: () => Promise<void>;
   /** Test seam: the topology a multi-repository create's local registration reconciles. */
   featureCreateRegistrationTopology?: (repoPath: string) => Promise<GitWorktreeRecord[]>;
+  /** State and global config the task commands' `--worktree`/`--repo` resolve against. */
+  taskTargetDatabasePath?: string;
+  taskTargetGlobalConfigPath?: string;
 }
 
 export interface RuntimeInvocation {
@@ -206,6 +209,18 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   const source = dependencies.dataSource ?? emptyDiagnosticDataSource;
   const cwd = dependencies.cwd ?? process.cwd();
   const daemonServicePaths = dependencies.daemonServicePaths ?? servicePathsForHost;
+  // Resolves `--worktree`/`--repo` for the seven task commands into the `cwd` each already sends;
+  // without either flag it returns `cwd` unchanged except for the workspace-root refusal (design §4).
+  const taskTarget = async (argv: readonly string[], options: TargetOptions) => await resolveTaskTarget({
+    cwd,
+    argv,
+    ...(options.worktree === undefined ? {} : { worktree: options.worktree }),
+    ...(options.repo === undefined ? {} : { repo: options.repo }),
+    databasePath: dependencies.taskTargetDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+    globalConfigPath: dependencies.taskTargetGlobalConfigPath ?? defaultProductionRuntimePaths().globalConfigPath,
+  });
+  const refusedTarget = (command: string, error: WtmError): JsonEnvelope<null> =>
+    ({ schemaVersion: 1, ok: false, command, data: null, warnings: [], errors: [error] });
   const program = new Command()
     .name('wtm')
     .description('Worktree Runtime Manager')
@@ -236,25 +251,38 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   }
 
   const resolveTaskCommand = program.command('resolve <task>').description('Resolve a task without running it.');
+  addTargetOptions(resolveTaskCommand);
   addJsonOption(resolveTaskCommand);
-  resolveTaskCommand.action(async (taskName: string, options: ScopeOptions) => {
+  resolveTaskCommand.action(async (taskName: string, options: ScopeOptions & TargetOptions) => {
+    const target = await taskTarget(['wtm', 'resolve', taskName], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('resolve', target.error), runtimeJson(program, options));
+      return;
+    }
     const envelope = dependencies.resolveRunner === undefined
-      ? await runProductionResolve({ cwd, taskName })
-      : await dependencies.resolveRunner({ cwd, taskName });
+      ? await runProductionResolve({ cwd: target.cwd, taskName })
+      : await dependencies.resolveRunner({ cwd: target.cwd, taskName });
     renderRuntime(envelope, runtimeJson(program, options));
   });
 
   const runTaskCommand = program.command('run <task>').description('Run a configured task in the foreground or enqueue a finite heavy task.');
+  addTargetOptions(runTaskCommand);
   addJsonOption(runTaskCommand);
   runTaskCommand.option('--enqueue', 'durably enqueue a configured finite task and return its job ID');
   runTaskCommand.option('--idempotency-key <key>', 'reuse a request key after ambiguous acceptance; requires --enqueue');
-  runTaskCommand.action(async (taskName: string, options: ScopeOptions & { enqueue?: boolean; idempotencyKey?: string }) => {
+  runTaskCommand.action(async (taskName: string, options: ScopeOptions & TargetOptions & { enqueue?: boolean; idempotencyKey?: string }) => {
     if (options.idempotencyKey !== undefined && options.enqueue !== true) {
       throw new InvalidArgumentError('--idempotency-key requires --enqueue');
     }
+    const runArgv = ['wtm', 'run', taskName, ...(options.enqueue === true ? ['--enqueue'] : [])];
+    const target = await taskTarget(runArgv, options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('run', target.error), runtimeJson(program, options));
+      return;
+    }
     const envelope = options.enqueue === true
-      ? await runEnqueueCommand({ cwd, taskName, ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }) }, dependencies.runtimeClient)
-      : await runProductionRun({ cwd, taskName });
+      ? await runEnqueueCommand({ cwd: target.cwd, taskName, ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }) }, dependencies.runtimeClient)
+      : await runProductionRun({ cwd: target.cwd, taskName });
     renderRuntime(envelope, runtimeJson(program, options));
   });
 
@@ -373,23 +401,41 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   const humanNotice: CommandNotifier = (message) => stdout(`${message}\n`);
 
   const start = program.command('start <task>').description('Start a managed background task.');
+  addTargetOptions(start);
   addReadinessOptions(start);
   addJsonOption(start);
-  start.action(async (taskName: string, options: ScopeOptions & ReadinessOptions) => {
-    renderRuntime(await runStartCommand({ cwd, taskName, ...readinessArguments(options) }, dependencies.runtimeClient, dependencies.signal), runtimeJson(program, options));
+  start.action(async (taskName: string, options: ScopeOptions & TargetOptions & ReadinessOptions) => {
+    const target = await taskTarget(['wtm', 'start', taskName], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('start', target.error), runtimeJson(program, options));
+      return;
+    }
+    renderRuntime(await runStartCommand({ cwd: target.cwd, taskName, ...readinessArguments(options) }, dependencies.runtimeClient, dependencies.signal), runtimeJson(program, options));
   });
 
   const stop = program.command('stop [task]').description('Stop one or all managed tasks.');
+  addTargetOptions(stop);
   addJsonOption(stop);
-  stop.action(async (taskName: string | undefined, options: ScopeOptions) => {
-    renderRuntime(await runStopCommand({ cwd, ...(taskName === undefined ? {} : { taskName }) }, dependencies.runtimeClient), runtimeJson(program, options));
+  stop.action(async (taskName: string | undefined, options: ScopeOptions & TargetOptions) => {
+    const target = await taskTarget(['wtm', 'stop', ...(taskName === undefined ? [] : [taskName])], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('stop', target.error), runtimeJson(program, options));
+      return;
+    }
+    renderRuntime(await runStopCommand({ cwd: target.cwd, ...(taskName === undefined ? {} : { taskName }) }, dependencies.runtimeClient), runtimeJson(program, options));
   });
 
   const restart = program.command('restart <task>').description('Safely stop and restart a managed task.');
+  addTargetOptions(restart);
   addReadinessOptions(restart);
   addJsonOption(restart);
-  restart.action(async (taskName: string, options: ScopeOptions & ReadinessOptions) => {
-    renderRuntime(await runRestartCommand({ cwd, taskName, ...readinessArguments(options) }, dependencies.runtimeClient, dependencies.signal), runtimeJson(program, options));
+  restart.action(async (taskName: string, options: ScopeOptions & TargetOptions & ReadinessOptions) => {
+    const target = await taskTarget(['wtm', 'restart', taskName], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('restart', target.error), runtimeJson(program, options));
+      return;
+    }
+    renderRuntime(await runRestartCommand({ cwd: target.cwd, taskName, ...readinessArguments(options) }, dependencies.runtimeClient, dependencies.signal), runtimeJson(program, options));
   });
 
   const ps = program.command('ps').description('List WTM-managed process groups.');
@@ -399,10 +445,16 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   });
 
   const logs = program.command('logs [task]').description('Read managed task logs.');
+  addTargetOptions(logs);
   addJsonOption(logs);
   logs.option('--follow', 'follow logs as a raw stream');
-  logs.action(async (taskName: string | undefined, options: ScopeOptions & { follow?: boolean }) => {
-    const input = { cwd, ...(taskName === undefined ? {} : { taskName }) };
+  logs.action(async (taskName: string | undefined, options: ScopeOptions & TargetOptions & { follow?: boolean }) => {
+    const target = await taskTarget(['wtm', 'logs', ...(taskName === undefined ? [] : [taskName])], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('logs', target.error), runtimeJson(program, options));
+      return;
+    }
+    const input = { cwd: target.cwd, ...(taskName === undefined ? {} : { taskName }) };
     if (options.follow === true) {
       const result = await followLogs(input, followStdout, dependencies.runtimeClient, dependencies.signal);
       if (result.failure !== undefined) renderRuntime(result.failure, runtimeJson(program, options));
@@ -413,13 +465,22 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   });
 
   const exec = program.command('exec <argv...>').description('Execute raw argv in the foreground.');
+  addTargetOptions(exec);
   // Everything after the command word belongs to the command being run. Without this,
   // `wtm exec sh -c 'echo hi'` is refused for an unknown option `-c` that was never ours.
   exec.enablePositionalOptions().passThroughOptions().allowUnknownOption();
   addJsonOption(exec);
-  exec.action(async (argv: string[], options: ScopeOptions) => {
+  exec.action(async (argv: string[], options: ScopeOptions & TargetOptions) => {
+    // The remediation argv omits the raw command that follows `--`: flags must precede it, and
+    // `resolveTaskTarget` only ever appends to what it is given, so there is no way to splice
+    // `--worktree <selector>` back in before a `--` that has already gone by.
+    const target = await taskTarget(['wtm', 'exec'], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('exec', target.error), runtimeJson(program, options));
+      return;
+    }
     renderRuntime(
-      await runExecCommand({ cwd, argv }, dependencies.runtimeClient, dependencies.execForeground),
+      await runExecCommand({ cwd: target.cwd, argv }, dependencies.runtimeClient, dependencies.execForeground),
       runtimeJson(program, options),
     );
   });
@@ -729,6 +790,18 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
  * not something a person would type on purpose.
  */
 const hiddenCompletionDataCommand = '__complete';
+
+interface TargetOptions { worktree?: string; repo?: string }
+
+/**
+ * `--worktree`/`--repo` on the seven task commands (`resolve`, `run`, `start`, `stop`, `restart`,
+ * `logs`, `exec`): resolved by `resolveTaskTarget` into the `cwd` the command already sends, so an
+ * agent or a multi-feature session can act on another worktree without `cd`ing there.
+ */
+function addTargetOptions(command: Command): void {
+  command.option('--worktree <selector>', 'act on this worktree: branch, directory name, number or path');
+  command.option('--repo <name>', 'the repository of --worktree, when its branch exists in several');
+}
 
 interface ReadinessOptions { wait?: boolean; timeout?: number }
 

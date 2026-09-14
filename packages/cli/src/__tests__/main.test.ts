@@ -123,6 +123,7 @@ describe('Commander CLI', () => {
         // What the test is actually about is that three argv shapes reach three parsers with the
         // right input, which is settled entirely by the runners below.
         runtimeClient: { request: async () => ok(testCase.command) },
+        taskTargetDatabasePath: '/nonexistent/wtm/state.db',
         resolveRunner: async (input) => { calls.push({ command: 'resolve', input }); return ok('resolve'); },
         analyzeRunner: async (input) => { calls.push({ command: 'analyze', input }); return ok('analyze'); },
         removeRunner: async (input) => { calls.push({ command: 'remove', input }); return ok('remove'); },
@@ -471,6 +472,7 @@ describe('Commander CLI', () => {
     const exitCode = await runCli(['exec', '--json', '--', 'node', '-e', 'process.exit(7)'], {
       cwd: '/registered/demo',
       runtimeClient,
+      taskTargetDatabasePath: '/nonexistent/wtm/state.db',
       execForeground: async (input) => { executions.push(input); return { exitCode: 7, signal: null }; },
       ...output.io,
     });
@@ -499,6 +501,7 @@ describe('Commander CLI', () => {
     const exitCode = await runCli(['exec', '--json', '--', 'node'], {
       cwd: '/registered/demo',
       runtimeClient,
+      taskTargetDatabasePath: '/nonexistent/wtm/state.db',
       execForeground: async () => ({ exitCode: 1, signal: 'SIGTERM' }),
       ...output.io,
     });

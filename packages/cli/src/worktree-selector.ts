@@ -1,9 +1,10 @@
+import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { basename, isAbsolute, resolve } from 'node:path';
 import {
   containsPath, listGitWorktrees, nameRepositories, resolveFeatureMembers, resolveWorkspaceConfig,
-  WtmConfigError,
-  type GitWorktreeRecord, type RepositoryRecord, type SQLiteStateStore, type WorkspaceRecord,
+  SQLiteStateStore, WtmConfigError,
+  type GitWorktreeRecord, type RepositoryRecord, type WorkspaceRecord,
 } from '@wtm/core';
 import type { WtmError } from '@wtm/protocol';
 
@@ -21,6 +22,10 @@ export type SelectorOutcome =
 
 export type CandidateCollection =
   | { outcome: 'collected'; candidates: SelectorCandidate[]; repositories: string[] }
+  | { outcome: 'refused'; error: WtmError };
+
+export type TaskTarget =
+  | { outcome: 'resolved'; cwd: string }
   | { outcome: 'refused'; error: WtmError };
 
 /**
@@ -166,4 +171,90 @@ function withNumbers(
     record,
     numericId: numbers.get(record.path) ?? null,
   }));
+}
+
+/**
+ * Where the seven task commands (`resolve`, `run`, `start`, `stop`, `restart`, `logs`, `exec`)
+ * send their request: `input.cwd` unchanged without `--worktree`, or the selected worktree's
+ * root, or a refusal — `--repo` without `--worktree` (design §1), an unresolved or ambiguous
+ * selector (`matchWorktreeSelector`), or a workspace root named with neither flag (design §4).
+ */
+export async function resolveTaskTarget(input: {
+  cwd: string;
+  /** The invoked command as typed, without the target flags: `['wtm', 'start', 'dev']`. */
+  argv: readonly string[];
+  worktree?: string;
+  repo?: string;
+  databasePath: string;
+  globalConfigPath: string;
+}): Promise<TaskTarget> {
+  if (input.repo !== undefined && input.worktree === undefined) {
+    return { outcome: 'refused', error: {
+      code: 'WTM_CONFIG_INVALID',
+      severity: 'error',
+      message: '--repo names the repository of --worktree; give --worktree as well.',
+      context: { repo: input.repo },
+    } };
+  }
+  const store = openReadonlyStore(input.databasePath);
+  try {
+    if (input.worktree !== undefined) {
+      const collected = await collectSelectorCandidates({
+        cwd: input.cwd, store, globalConfigPath: input.globalConfigPath,
+        ...(input.repo === undefined ? {} : { repo: input.repo }),
+      });
+      if (collected.outcome === 'refused') return collected;
+      const worktree = input.worktree;
+      const matched = await matchWorktreeSelector({
+        selector: worktree,
+        cwd: input.cwd,
+        candidates: collected.candidates,
+        repositories: collected.repositories,
+        withRepo: (repo) => [...input.argv, '--worktree', worktree, '--repo', repo],
+      });
+      return matched.outcome === 'refused' ? matched : { outcome: 'resolved', cwd: matched.candidate.record.path };
+    }
+    // Without --worktree, every command keeps sending exactly the request it sends today, unless
+    // cwd is a registered workspace root — no repository's worktree — which only the daemon-backed
+    // commands used to reach through a misleading message (design §4).
+    if (store === null) return { outcome: 'resolved', cwd: input.cwd };
+    const workspace = workspaceContaining(store, input.cwd);
+    const current = resolve(input.cwd);
+    if (workspace === undefined || store.listWorktrees().some(({ path }) => containsPath(path, current))) {
+      return { outcome: 'resolved', cwd: input.cwd };
+    }
+    const insideGitWorktree = await listGitWorktrees(input.cwd)
+      .then((topology) => topology.some(({ path }) => containsPath(path, current)), () => false);
+    if (insideGitWorktree) return { outcome: 'resolved', cwd: input.cwd };
+    const collected = await collectSelectorCandidates({ cwd: input.cwd, store, globalConfigPath: input.globalConfigPath });
+    const candidates: WorktreeMatch[] = collected.outcome === 'collected'
+      ? collected.candidates
+        .filter(({ record }) => !record.bare)
+        .map(({ repository, record, numericId }) => ({
+          repo: repository.name,
+          branch: record.branch === null ? null : record.branch.replace(/^refs\/heads\//, ''),
+          path: record.path,
+          numericId,
+        }))
+      : [];
+    return { outcome: 'refused', error: {
+      code: 'WTM_WORKSPACE_NOT_FOUND',
+      severity: 'error',
+      message: 'This is a workspace root, not a worktree. Name the target with `--worktree <selector>`.',
+      context: { cwd: input.cwd, workspace: workspace.name, candidates },
+      remediation: [{ kind: 'command-suggestion', argv: [...input.argv, '--worktree', '<selector>'] }],
+    } };
+  } finally {
+    store?.close();
+  }
+}
+
+/** A readonly handle on the state database, or `null` when none exists yet or it cannot be opened. */
+function openReadonlyStore(databasePath: string): SQLiteStateStore | null {
+  if (!existsSync(databasePath)) return null;
+  try {
+    return new SQLiteStateStore(databasePath, { readonly: true });
+  } catch {
+    return null;
+  }
 }

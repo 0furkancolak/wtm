@@ -74,7 +74,7 @@ describe('persistent job CLI', () => {
     };
     const output = capture();
     expect(await runCli(['run', 'typecheck', '--enqueue', '--idempotency-key', 'check-1', '--json'], {
-      cwd: '/repo/feature', runtimeClient: client, ...output,
+      cwd: '/repo/feature', runtimeClient: client, taskTargetDatabasePath: '/nonexistent/wtm/state.db', ...output,
     })).toBe(0);
     expect(calls).toEqual([{
       command: 'jobs.enqueue', args: { cwd: '/repo/feature', taskName: 'typecheck', idempotencyKey: 'check-1' },
@@ -88,6 +88,7 @@ describe('persistent job CLI', () => {
     const output = capture();
     expect(await runCli(['--json', 'run', 'typecheck', '--enqueue'], {
       cwd: '/repo/feature',
+      taskTargetDatabasePath: '/nonexistent/wtm/state.db',
       runtimeClient: { request: async (_command, args) => {
         key = (args as { idempotencyKey: string }).idempotencyKey;
         throw new Error('private daemon socket details');
@@ -104,6 +105,7 @@ describe('persistent job CLI', () => {
   test('enqueue refuses an acceptance for a different idempotency key and preserves the retry key', async () => {
     const output = capture();
     expect(await runCli(['run', 'check', '--enqueue', '--idempotency-key', 'requested-key', '--json'], {
+      taskTargetDatabasePath: '/nonexistent/wtm/state.db',
       runtimeClient: { request: async () => success('jobs.enqueue', {
         jobId: 'job-other', state: 'QUEUED', accepted: true, idempotencyKey: 'other-key', reused: false,
       }) }, ...output,
