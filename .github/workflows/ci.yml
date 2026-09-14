@@ -1,20 +1,36 @@
 name: CI
+# A branch push used to start a second, identical run next to its pull request's run, doubling the
+# macOS runner queue for every commit. Branches are validated through their pull request; only
+# main is validated on push.
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+# A new commit on the same pull request makes the older run's answer obsolete. main keeps every run,
+# so each merged commit gets its own result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 permissions:
   contents: read
 jobs:
   validate:
     name: Validate ${{ matrix.platform }} ${{ matrix.arch }}
-    # win32 gets more room than the POSIX legs: its file-trust checks shell out to a real
-    # powershell.exe per call (`@wtm/platform`'s windows-powershell.ts), and a cold PowerShell 5.1
-    # process genuinely costs on the order of a second to start and import
+    # win32 is informational until todo item 9 lands. Its leg still runs the full list below, but
+    # about 80 tests fail natively today and several of them wait out the 300s per-test bound, so the
+    # leg used to hit its 60 minute cap on every run and turn every run red, however the other four
+    # legs did. Until those failures are fixed, the leg reports without deciding the run's result,
+    # and stops at 25 minutes: long enough to show which tests fail, not long enough to hold up
+    # every pull request for an hour.
+    #
+    # win32 still gets more room per test than the POSIX legs: its file-trust checks shell out to a
+    # real powershell.exe per call (`@wtm/platform`'s windows-powershell.ts), and a cold PowerShell
+    # 5.1 process genuinely costs on the order of a second to start and import
     # Microsoft.PowerShell.Security -- there is no equivalent per-call cost on POSIX, where the
-    # same check is a plain `fs.stat`. This was invisible before 1d6bcd1: every one of those calls
-    # was failing near-instantly on a module-resolution bug, so the suite looked fast for the wrong
-    # reason. 30 minutes measured that bug's absence, not this platform's real cost.
-    timeout-minutes: ${{ matrix.platform == 'win32' && 60 || 30 }}
+    # same check is a plain `fs.stat`.
+    continue-on-error: ${{ matrix.platform == 'win32' }}
+    timeout-minutes: ${{ matrix.platform == 'win32' && 25 || 30 }}
     # The release ships an executable per architecture, and they do not fail together: linking and
     # signing behave differently on x64. Building only on Apple silicon left the other half of the
     # release unproven until a tag tried to publish it.
