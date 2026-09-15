@@ -108,6 +108,13 @@ Kararsız testler ve Windows geri bildirim döngüsü, diğer bütün dalgaları
 | W1-3 | 50c: `node --import tsx` ile başlatılan daemon kuyruktaki işi başlatamıyor (`RUNTIME_START_FAILED`). | — | daemon runner, testkit `developmentRuntimeInvocation` | sonnet |
 | W1-4 | CI: `workflow_dispatch` girdisi `win32_test_filter` ekle. Böylece win32 leg'i yalnızca hedef test dosyalarını 25 dakika sınırı içinde koşar. Windows birimlerinin kanıt yolu budur; `release-workflow.test.ts` kapsar. | — | `.github/workflows/ci.yml` | sonnet |
 
+**W1'in ilk işi, W1-1'e ek:** macOS job'ları ara sıra 30 dakikalık sınıra kadar sessizce takılıyor.
+- Görülen koşular: main `34897205539` darwin x64, PR #11 `34940697455` darwin arm64 ve x64.
+- Aynı ağaç başka koşuda 5–10 dakikada geçiyor.
+- x64'te iki koşu da tam aynı noktada sustu: `scripts/__tests__/render-homebrew-formula.test.ts` sonrası 16. dosya.
+- Bun CI çıktısı dosya bitince yazıldığı için takılan dosya logdan okunamıyor.
+- Birim şu adımları izler: dosya sırasını ve dosya başına süreyi görünür yap, takılan dosyayı bul, takılmayı düzelt. Bu düzelmeden W1'in diğer kanıtları güvenilir sayılmaz.
+
 Controller aynı dalgada ayrıca şu todo işlerini yapar (subagent gerekmez):
 - 35b: "Remote safety" başlığını işaretle;
 - 4x: seçilmeyen alternatifleri üstü çizili yap;
