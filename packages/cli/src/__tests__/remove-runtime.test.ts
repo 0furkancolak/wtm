@@ -97,6 +97,16 @@ describe('runtime-aware wtm remove', () => {
     });
   }, scenarioTestTimeoutMs);
 
+  test('deletes the worktree\'s CI watches alongside its endpoint leases', () => {
+    expect(runLifecycleCase('ci-watch-cleanup')).toEqual({
+      exitCode: 0,
+      ok: true,
+      hadWatchBeforeRemoval: true,
+      watchAfterRemoval: null,
+      worktreeExists: false,
+    });
+  }, scenarioTestTimeoutMs);
+
   test('reconciles locally and says the daemon will emit worktree.removed when it next runs', () => {
     const report = runLifecycleCase('local-reconcile');
 

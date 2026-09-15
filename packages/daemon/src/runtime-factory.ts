@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { readFile, realpath } from 'node:fs/promises';
 import { parse } from 'smol-toml';
-import { jobCommandNames } from '@wtm/protocol';
+import { ciCommandNames, jobCommandNames } from '@wtm/protocol';
 import { basename as posixBasename, dirname as posixDirname, join as posixJoin, resolve as posixResolve } from 'node:path/posix';
 import { basename as win32Basename, dirname as win32Dirname, join as win32Join, resolve as win32Resolve } from 'node:path/win32';
 import { readHeavyJobScope, selectPlatformRuntime, windowsNamedPipeRootFor } from '@wtm/platform';
@@ -23,6 +23,9 @@ import {
   type LifecycleEventStore,
   type WtmConfig,
 } from '@wtm/core';
+import { CiWatcher } from './ci/watcher';
+import { createGhRunner } from './ci/gh-runner';
+import { createGitHubProvider } from './ci/github-provider';
 import { LifecycleEventDispatcher } from './events';
 import { WtmDaemon } from './main';
 import { ManagedLogStore } from './logs';
@@ -71,6 +74,7 @@ export interface ProductionDaemonRuntime {
   controller: DaemonRuntimeController;
   daemon: WtmDaemon;
   jobs: HeavyJobQueue | null;
+  ci: CiWatcher | null;
   start(): Promise<void>;
   close(): Promise<void>;
 }
@@ -274,14 +278,24 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
       resolveTask: async (cwd, taskName) => resolveHeavyJob(stateStore, paths.globalConfigPath, cwd, taskName),
     });
   }
+  const ci = stateStore.ci === undefined ? null : new CiWatcher({
+    store: stateStore.ci,
+    registration: stateStore,
+    provider: createGitHubProvider(createGhRunner()),
+    onError,
+  });
   const daemon = new WtmDaemon({
     stateStore,
     socketPath: paths.socketPath,
     processSupervisor: {
       recover: async () => supervisor.recover(),
-      close: async () => { await jobs?.close(); await supervisor.close(); },
+      close: async () => { await ci?.close(); await jobs?.close(); await supervisor.close(); },
     },
-    runtimeHandler: async (request, context) => jobCommandNames.has(request.command) && jobs !== null ? jobs.handle(request) : controller.handle(request, context),
+    runtimeHandler: async (request, context) => (
+      ciCommandNames.has(request.command) && ci !== null ? ci.handle(request)
+        : jobCommandNames.has(request.command) && jobs !== null ? jobs.handle(request)
+          : controller.handle(request, context)
+    ),
     // Preparation and lifecycle events belong to the pass that noticed the change, so a
     // worktree created while WTM is watching is prepared before anybody runs anything in it.
     onReconciled: async ({ repository, result }) => {
@@ -302,7 +316,8 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     controller,
     daemon,
     jobs,
-    start: async () => { await daemon.start(); await jobs?.start(); },
+    ci,
+    start: async () => { await daemon.start(); await jobs?.start(); await ci?.start(); },
     close: async () => {
       if (closed) return;
       closed = true;

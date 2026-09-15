@@ -202,6 +202,9 @@ export function createProductionRemovalCoordinator(
     },
 
     async releaseEndpointLeases(subject: RemovalSubject): Promise<EndpointReleaseReport> {
+      // The post-removal store step: a removed worktree's endpoint leases and its CI watches
+      // (`wtm ci watch`) both end here, since worktree rows are never deleted.
+      store.ci.deleteForWorktree(subject.worktreeId);
       return { released: store.releaseEndpointLeasesForWorktree(subject.worktreeId, now()) };
     },
 
