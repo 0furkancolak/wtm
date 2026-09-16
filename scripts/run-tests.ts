@@ -17,6 +17,13 @@
  *   process group is killed; the remaining files still run;
  * - any failing or hung file makes the run exit 1, and the summary lists them.
  *
+ * Two semantic differences from one `bun test` over everything, both accepted:
+ * - isolation is stronger, not weaker. Each file gets its own module registry, its own globals and
+ *   its own process, so a file can no longer be helped or harmed by what ran before it. A test
+ *   that only passed because of a neighbour's leftover state now fails on its own merits;
+ * - `--bail` bails that file, not the run. The remaining files still run, which is what makes a
+ *   hung file survivable in the first place, and the summary still names everything that failed.
+ *
  * Usage: bun scripts/run-tests.ts [--timeout ms] [--file-timeout ms] [bun test flags] [path patterns]
  * `--timeout` may repeat; the last one wins, which is what `bun run test --timeout N` relies on.
  */
@@ -26,16 +33,20 @@ import { join, relative, sep } from 'node:path';
 
 export const defaultTestTimeoutMs = 30_000;
 
+/** No file may hold the run longer than this, whatever the per-test bound is. */
+export const fileTimeoutCeilingMs = 600_000;
+
 /**
- * Five times the per-test bound, never under five minutes.
+ * Five times the per-test bound, never under five minutes and never over ten.
  *
  * This is a hang detector, not a speed limit: the slowest honest file in this repository measures
- * an idle daemon for ~22 s and finishes well inside a minute, and the widest bound any leg asks
- * for (win32's 300 s per test, for real per-call PowerShell costs) still lands under its own job
- * cap. A file that reaches this has stopped making progress, and naming it is the whole point.
+ * an idle daemon for ~22 s and finishes well inside a minute. The ceiling is what makes the guard
+ * real on the leg that needs it most -- win32 passes `--timeout 300000` for genuine per-call
+ * PowerShell costs, and five times that is 25 minutes, exactly the cap `ci.yml` already puts on
+ * that job. A guard that can only fire after the job has been killed is not a guard.
  */
 export function defaultFileTimeoutMs(testTimeoutMs: number): number {
-  return Math.max(300_000, testTimeoutMs * 5);
+  return Math.min(Math.max(300_000, testTimeoutMs * 5), fileTimeoutCeilingMs);
 }
 
 export interface RunnerArguments {
@@ -53,7 +64,7 @@ export interface RunnerArguments {
 const valueFlags = new Set([
   '-t', '--test-name-pattern', '--rerun-each', '--retry', '--seed', '--coverage-reporter',
   '--coverage-dir', '--reporter', '--reporter-outfile', '--path-ignore-patterns', '--preload',
-  '-r', '--max-concurrency', '--parallel', '--parallel-delay', '--shard', '--changed',
+  '-r', '--max-concurrency', '--parallel', '--parallel-delay', '--shard',
 ]);
 
 export function parseRunnerArguments(argv: readonly string[]): RunnerArguments {
@@ -145,6 +156,29 @@ function killTree(child: ChildProcess): void {
   }
 }
 
+/**
+ * The file currently running, for the signal handlers below.
+ *
+ * Each child is spawned `detached`, into its own process group, so that a hang can be killed as a
+ * group. The cost of that is the thing it buys: a SIGINT or SIGTERM delivered to *this* process's
+ * group (Ctrl-C at a terminal, a cancelled CI job) no longer reaches the child, which under a
+ * plain in-process `bun test` it did. The earlier hang logs show what that leaves behind -- the
+ * runner reaping orphan `bun` processes after the job was cancelled -- so the runner forwards the
+ * signal itself, to the whole group, and then leaves by it.
+ */
+let inFlight: ChildProcess | null = null;
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    if (inFlight !== null) killTree(inFlight);
+    process.stderr.write(`[run-tests] ${signal}, stopping\n`);
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  });
+}
+
+/** How long a killed group is given to actually die before the next file's output starts. */
+const reapGraceMs = 10_000;
+
 function runFile(parsed: RunnerArguments, file: string): Promise<FileOutcome> {
   return new Promise((resolve) => {
     // stdio is inherited, never piped: a leaked grandchild holding a pipe open must not be able to
@@ -153,28 +187,42 @@ function runFile(parsed: RunnerArguments, file: string): Promise<FileOutcome> {
       stdio: 'inherit',
       detached: process.platform !== 'win32',
     });
+    inFlight = child;
     let settled = false;
+    const settle = (outcome: FileOutcome): void => {
+      settled = true;
+      inFlight = null;
+      resolve(outcome);
+    };
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       killTree(child);
-      resolve({ kind: 'hung' });
+      // Waiting for the death it just ordered, rather than reporting over the top of it: on
+      // inherited stdio a killed child's last bytes would otherwise land after the next file's
+      // start line and blame the wrong file.
+      const reap = setTimeout(() => { settle({ kind: 'hung' }); }, reapGraceMs);
+      child.once('exit', () => { clearTimeout(reap); settle({ kind: 'hung' }); });
     }, parsed.fileTimeoutMs);
     child.once('error', (error) => {
       if (settled) return;
-      settled = true;
       clearTimeout(timer);
       process.stderr.write(`[run-tests] could not start bun for ${file}: ${String(error)}\n`);
-      resolve({ kind: 'exit', code: null, signal: null });
+      settle({ kind: 'exit', code: null, signal: null });
     });
     child.once('exit', (code, signal) => {
       if (settled) return;
-      settled = true;
       clearTimeout(timer);
       // Whatever the file left running in its process group dies with it, so it cannot
       // interfere with the files after it.
+      //
+      // This signals the group of a pid that has already been reaped, which on a busy machine the
+      // kernel could in principle have recycled into an unrelated group. Deliberately kept: a
+      // leaked child bleeding into the next file is the larger risk, and the observed one -- CI
+      // reaped orphan `bun` processes after both hung legs. Do not "tidy" this away, and do not
+      // narrow it to the hung path only; if it ever has to go, it goes together with `detached`.
       if (process.platform !== 'win32') killTree(child);
-      resolve({ kind: 'exit', code, signal });
+      settle({ kind: 'exit', code, signal });
     });
   });
 }

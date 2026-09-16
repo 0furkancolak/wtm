@@ -4,7 +4,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runScenario } from '../../packages/testkit/src/scenario-child';
-import { bunTestArguments, defaultFileTimeoutMs, discoverTestFiles, parseRunnerArguments } from '../run-tests';
+import {
+  bunTestArguments,
+  defaultFileTimeoutMs,
+  discoverTestFiles,
+  fileTimeoutCeilingMs,
+  parseRunnerArguments,
+} from '../run-tests';
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
 const runnerPath = fileURLToPath(new URL('../run-tests.ts', import.meta.url));
@@ -39,9 +45,21 @@ describe('parseRunnerArguments', () => {
     expect(parsed.fileTimeoutMs).toBe(90_000);
   });
 
-  test('never lets the per-file limit undercut a single test, and scales with the test bound', () => {
+  test('never lets the per-file limit undercut a single test, nor outlive the job that runs it', () => {
+    expect(defaultFileTimeoutMs(1_000)).toBe(300_000);
     expect(defaultFileTimeoutMs(60_000)).toBe(300_000);
-    expect(defaultFileTimeoutMs(300_000)).toBe(1_500_000);
+    // win32 CI passes --timeout 300000, and ci.yml caps that job at 25 minutes. Five times the
+    // per-test bound would be exactly 25 minutes: a guard that can only fire after the job has
+    // already been killed. The ceiling is what keeps it a guard there.
+    expect(defaultFileTimeoutMs(300_000)).toBe(fileTimeoutCeilingMs);
+    expect(fileTimeoutCeilingMs).toBe(600_000);
+  });
+
+  test('forwards a boolean flag without eating the argument after it', () => {
+    // --changed takes no value; treating it as if it did swallowed the path pattern behind it.
+    const parsed = parseRunnerArguments(['--changed', 'packages/core']);
+    expect(parsed.forwarded).toEqual(['--changed']);
+    expect(parsed.patterns).toEqual(['packages/core']);
   });
 
   test('separates path patterns from bun flags it forwards, including flags that take a value', () => {

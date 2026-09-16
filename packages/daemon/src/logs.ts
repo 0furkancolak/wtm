@@ -639,6 +639,13 @@ async function openSafeLog(path: string, fileTrust: FileTrustPolicy): Promise<Fi
   }
   try {
     await assertSafeFileHandle(handle, path, fileTrust);
+    // "Not shared by a hard link" and "still reachable under this name" are two questions, and only
+    // the first belongs in the trust port: `nlink === 0` says nothing about sharing (nothing can
+    // reach an inode with no names) but everything about reachability. A writer that appended to
+    // such an orphan would lose every byte it wrote, silently. `openExistingSafeLog` asks the
+    // reachability question through its before/after identity comparison; this path, which may
+    // legitimately create the file it opens, asks it here.
+    if ((await handle.stat()).nlink === 0) throw new ManagedLogIdentityChangedError();
     await handle.chmod(0o600);
     return handle;
   } catch (error) {

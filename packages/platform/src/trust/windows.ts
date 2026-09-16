@@ -107,10 +107,19 @@ export function createWindowsFileTrustPolicy(options: WindowsFileTrustPolicyOpti
       .every((rule) => (mask === 0o022 ? grantsOnlyReadAccess(rule) : false));
   }
 
-  // Same reading as the POSIX policy: more than one name is sharing, and zero names is an
-  // already-unlinked inode held open by a descriptor, which nothing else can reach.
+  /**
+   * Deliberately stricter than the POSIX policy, which accepts `nlink === 0`.
+   *
+   * That relaxation exists for one POSIX-only race: a name renamed away while a descriptor is
+   * still open, which leaves the inode reachable through the descriptor and reported with zero
+   * links. Windows does not have it -- an open handle without delete-sharing refuses the rename
+   * outright -- so nothing here needs the allowance. What Windows does have is libuv filling
+   * `st_nlink` from `NumberOfLinks`, which a network redirector or a FAT volume may not report at
+   * all, handing back `0` for a perfectly ordinary named file. Failing closed on that is the
+   * answer this policy wants, so it keeps the exact comparison it always made.
+   */
   function isNotSharedByHardLink(stat: NodeJsStats): boolean {
-    return stat.nlink <= 1;
+    return stat.nlink === 1;
   }
 
   return {

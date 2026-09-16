@@ -118,7 +118,9 @@ describe('createWindowsFileTrustPolicy', () => {
     const policy = policyWith({ ownerSid, accessRules: [] });
     expect(policy.isNotSharedByHardLink(stat({ nlink: 1 }))).toBe(true);
     expect(policy.isNotSharedByHardLink(stat({ nlink: 2 }))).toBe(false);
-    expect(policy.isNotSharedByHardLink(stat({ nlink: 0 }))).toBe(true);
+    // Stricter than POSIX on purpose: Windows has no rename-over-a-held-descriptor race to excuse
+    // zero links, and a volume that cannot report NumberOfLinks says zero for an ordinary file.
+    expect(policy.isNotSharedByHardLink(stat({ nlink: 0 }))).toBe(false);
   });
 
   test('the trusted-principal allowlist names exactly SYSTEM and Administrators', () => {

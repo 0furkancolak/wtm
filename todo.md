@@ -1602,9 +1602,11 @@ wtm-windows-arm64.exe
       linux x64 ve linux arm64 yeşil, darwin x64 test adımı **kırmızı** (asılma değil, 11.5 dk'da
       iki gerçek hata; ikisi de `process-supervisor.test.ts`): "RUNNING transition failure kills the
       group" testinde `descendantMarker` ENOENT, ve `restart` içinde `#stopLocked` `EPERM` ile
-      `RUNTIME_STOP_FAILED`. Her ikisinin kökü bu birimde düzeltildi (`nlink <= 1` güven kuralı,
-      `EPERM`'i gözleme bırakan sinyal yolu, yarışı kaldıran enjekte edilmiş RUNNING hatası), ancak
-      henüz bu düzeltmeleri içeren **yeşil bir darwin x64 koşusu yok**; kanıt gelene kadar `[~]`.
+      `RUNTIME_STOP_FAILED`. Her ikisinin kökü bu birimde düzeltildi: yarışı kaldıran enjekte
+      edilmiş RUNNING hatası ve `EPERM`'i errno yerine gözleme bırakan sinyal yolu. (Ayrı bir
+      kusur: darwin **arm64**'teki F1 kararsızlığı — run `34947174999` — `nlink <= 1` güven
+      kuralıyla düzeltildi; x64'teki iki hatayla ilgisi yok.) Ancak henüz bu düzeltmeleri içeren
+      **yeşil bir darwin x64 koşusu yok**; kanıt gelene kadar `[~]`.
 - [x] Linux x64 CI green. — `75a8626` / `34457543774`: test 1627/0, e2e 3/0, binary 10/0;
       lint/typecheck/build/package geçti. Takip yamalarının native kanıtı ayrıca izlenir.
 - [ ] Linux arm64 build doğrulanıyor.

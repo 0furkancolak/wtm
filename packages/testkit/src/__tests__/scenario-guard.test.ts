@@ -24,6 +24,106 @@ const scannedRoots = ['packages', 'scripts'] as const;
 /** The call shape this guard exists to catch: spawning another JS/TS runtime synchronously. */
 const pattern = /spawnSync\(\s*(?:'node'|"node"|'bun'|"bun"|process\.execPath)(?=[,)])/;
 
+/**
+ * The second, wider rule: any synchronous child spawn that runs *in the test process* and carries
+ * no real deadline.
+ *
+ * The rule above only ever named `node`, `bun` and `process.execPath`, which is how
+ * `spawnSync('/usr/bin/ruby', ...)` walked past it and held a darwin x64 CI leg silent until its
+ * 30 minute job cap. The command is not what makes such a call dangerous -- the synchrony is.
+ * `spawnSync`, `execFileSync` and `execSync` all block the very thread bun's per-test `--timeout`
+ * would have to fire on, so a child that waits (a macOS developer-tools shim waiting for a prompt
+ * nobody can see, Gatekeeper holding an unsigned executable, `npm` sitting on a registry or auth
+ * wait, `git` on an inherited credential prompt) does not fail its test. It stops the run, with no
+ * output naming it, for as long as whatever is above it will wait.
+ *
+ * So the requirement is per call, not per command: a `timeout` AND `killSignal: 'SIGKILL'`, the
+ * pair `runScenario` applies for everyone -- `timeout` alone sends `SIGTERM`, which is a request a
+ * child can ignore, and one that does turns the deadline into nothing. Both have to be written
+ * into the call itself rather than hidden behind a shared options constant, which is a limitation
+ * worth keeping: this guard stays something a reader can evaluate by looking at one line.
+ *
+ * Scope is deliberately `__tests__/*.test.ts`: those run in the test process. A `.scenario.ts` or
+ * `.child.ts` file is a child, and its whole process is already bounded transitively by the
+ * `runScenario` call that spawned it, which kills it with `SIGKILL` at its deadline whatever it is
+ * doing (spec D7) -- the same reasoning `idle-daemon.scenario.ts` is excepted under above.
+ */
+const synchronousSpawn = /\b(?:spawnSync|execFileSync|execSync)\s*\(/g;
+
+/**
+ * Blanks comments and string contents while keeping every other byte in place, so offsets still
+ * map to line numbers. Without it the guard reads its own prose -- and every `// spawnSync(...)`
+ * in an explanation of why a call was bounded -- as an unbounded call. String contents go too:
+ * `spawnSync(` inside a quoted string is not a call either.
+ *
+ * Comment starts are tested before quote starts, so an apostrophe in prose ("don't") cannot open
+ * a string that swallows the code after it; and because a quote in code consumes its whole string,
+ * a `//` inside one (`'https://example.invalid'`) is never read as a comment.
+ */
+function withoutComments(source: string, blankStrings = false): string {
+  const out = source.split('');
+  let index = 0;
+  const blank = (from: number, to: number): void => {
+    for (let at = from; at < to && at < out.length; at += 1) if (out[at] !== '\n') out[at] = ' ';
+  };
+  while (index < source.length) {
+    const character = source[index];
+    if (character === '/' && source[index + 1] === '/') {
+      const end = source.indexOf('\n', index);
+      const stop = end === -1 ? source.length : end;
+      blank(index, stop);
+      index = stop;
+      continue;
+    }
+    if (character === '/' && source[index + 1] === '*') {
+      const end = source.indexOf('*/', index + 2);
+      const stop = end === -1 ? source.length : end + 2;
+      blank(index, stop);
+      index = stop;
+      continue;
+    }
+    if (character === '\'' || character === '"' || character === '`') {
+      const quote = character;
+      const opened = index;
+      index += 1;
+      while (index < source.length && source[index] !== quote) {
+        index += source[index] === '\\' ? 2 : 1;
+      }
+      if (blankStrings) blank(opened + 1, Math.min(index, source.length));
+      index += 1;
+      continue;
+    }
+    index += 1;
+  }
+  return out.join('');
+}
+
+/**
+ * Where call *sites* are looked for: strings blanked as well, so a `spawnSync(` written inside a
+ * quoted string is not read as a call. The bound is still read from `withoutComments` output,
+ * because `killSignal: 'SIGKILL'` is itself a string.
+ */
+function withoutCommentsOrStrings(source: string): string {
+  return withoutComments(source, true);
+}
+
+/** The call's own text, from its name to its matching close paren. */
+function callText(source: string, start: number): string {
+  let depth = 0;
+  for (let index = source.indexOf('(', start); index < source.length; index += 1) {
+    if (source[index] === '(') depth += 1;
+    else if (source[index] === ')') {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1);
+    }
+  }
+  return source.slice(start);
+}
+
+function isBounded(call: string): boolean {
+  return /\btimeout\s*:/.test(call) && /\bkillSignal\s*:\s*'SIGKILL'/.test(call);
+}
+
 interface ReviewedException {
   file: string;
   /** Every excepted line must contain this, so an exception cannot silently widen its own scope. */
@@ -117,22 +217,40 @@ async function collect(directory: string, found: string[]): Promise<void> {
   }
 }
 
-async function findViolations(): Promise<{ violations: Violation[]; unmatchedExceptions: ReviewedException[] }> {
+async function findViolations(): Promise<{
+  violations: Violation[];
+  unbounded: Violation[];
+  unmatchedExceptions: ReviewedException[];
+}> {
   const violations: Violation[] = [];
+  const unbounded: Violation[] = [];
   const unmatchedExceptions = [...reviewedExceptions];
+  const except = (file: string, text: string): boolean => {
+    const matchIndex = unmatchedExceptions.findIndex((entry) => entry.file === file && text.includes(entry.requires));
+    if (matchIndex === -1) return false;
+    unmatchedExceptions.splice(matchIndex, 1);
+    return true;
+  };
   for (const file of await scannedFiles()) {
-    const lines = (await readFile(join(repositoryRoot, file), 'utf8')).split('\n');
+    const source = await readFile(join(repositoryRoot, file), 'utf8');
+    const lines = source.split('\n');
     lines.forEach((text, index) => {
       if (!pattern.test(text)) return;
-      const matchIndex = unmatchedExceptions.findIndex((entry) => entry.file === file && text.includes(entry.requires));
-      if (matchIndex !== -1) {
-        unmatchedExceptions.splice(matchIndex, 1);
-        return;
-      }
+      if (except(file, text)) return;
       violations.push({ file, line: index + 1, text: text.trim() });
     });
+    if (!file.endsWith('.test.ts')) continue;
+    const code = withoutComments(source);
+    for (const match of withoutCommentsOrStrings(source).matchAll(synchronousSpawn)) {
+      const start = match.index;
+      if (isBounded(callText(code, start))) continue;
+      const line = code.slice(0, start).split('\n').length;
+      const text = lines[line - 1] ?? '';
+      if (except(file, text)) continue;
+      unbounded.push({ file, line, text: text.trim() });
+    }
   }
-  return { violations, unmatchedExceptions };
+  return { violations, unbounded, unmatchedExceptions };
 }
 
 test('no test or scenario file spawns node, bun, or itself synchronously outside runScenario', async () => {
@@ -141,12 +259,48 @@ test('no test or scenario file spawns node, bun, or itself synchronously outside
   expect(violations.map(({ file, line, text }) => `${file}:${String(line)} ${text}`)).toEqual([]);
 });
 
+test('no test file spawns a child synchronously without a timeout and a SIGKILL', async () => {
+  const { unbounded } = await findViolations();
+
+  expect(unbounded.map(({ file, line, text }) => `${file}:${String(line)} ${text}`)).toEqual([]);
+});
+
 test('every reviewed exception still matches a line in its file', async () => {
   // An exception nothing matches any more is stale: the line it excused was fixed, renamed, or
   // moved, and the exception is now excusing nothing. A regex could hide that; this cannot.
   const { unmatchedExceptions } = await findViolations();
 
   expect(unmatchedExceptions.map((entry) => `${entry.file}: ${JSON.stringify(entry.requires)}`)).toEqual([]);
+});
+
+test('the wider rule reads calls, not lines: it sees through comments and multi-line arguments', () => {
+  // Proves the mechanism on source this guard controls, so "no violations" above cannot quietly
+  // mean "the detector stopped detecting".
+  const source = [
+    "// spawnSync('ruby', ['-c', path]);",
+    "/* execFileSync('git', ['status']); */",
+    "const message = 'spawnSync(\\'git\\', args)';",
+    "const bad = spawnSync('npm', ['pack'], { encoding: 'utf8' });",
+    'const good = execFileSync(',
+    "  'git',",
+    "  ['status'],",
+    "  { encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },",
+    ');',
+    "const asked = spawnSync('git', ['status'], { timeout: 1000 });",
+  ].join('\n');
+  const code = withoutComments(source);
+  const sites = withoutCommentsOrStrings(source);
+
+  const found = [...sites.matchAll(synchronousSpawn)].map((match) => ({
+    line: sites.slice(0, match.index).split('\n').length,
+    bounded: isBounded(callText(code, match.index)),
+  }));
+
+  expect(found).toEqual([
+    { line: 4, bounded: false },
+    { line: 5, bounded: true },
+    { line: 10, bounded: false },
+  ]);
 });
 
 test('the guard actually looks at test and scenario files', async () => {

@@ -15,7 +15,9 @@ test.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')(
     const root = mkdtempSync(join(tmpdir(), 'wtm-archive-fifo-'));
     try {
       const fifo = join(root, 'input');
-      const created = spawnSync('mkfifo', [fifo], { encoding: 'utf8', timeout: 5000, maxBuffer: 64 * 1024 });
+      // `timeout` alone is a request: it sends SIGTERM and then keeps waiting for a child that
+      // may ignore it. `killSignal: 'SIGKILL'` is what makes the deadline real.
+      const created = spawnSync('mkfifo', [fifo], { encoding: 'utf8', timeout: 5000, killSignal: 'SIGKILL', maxBuffer: 64 * 1024 });
       expect(created.error).toBeUndefined();
       expect(created.status).toBe(0);
       // runScenario throws if the reader blocks on the FIFO past the bound, instead of returning.
