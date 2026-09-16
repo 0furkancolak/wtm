@@ -609,12 +609,14 @@ describe('the production factory supervises through the runtime process port', (
     /**
      * The path CI actually took, per the run-34896095080 trace: the task outlived the grace budget,
      * so `waitForOwnedGroupChange` ran out its deadline with the identity present and answered
-     * `alive`, and the bad reading landed on the pre-SIGKILL `inspectWithRetry`
-     * (`process-supervisor.ts:585`), which turned it into `STALE_IDENTITY` at `:589`.
+     * `alive` (`process-supervisor.ts:758`), and the bad reading landed on the pre-SIGKILL
+     * `inspectWithRetry` at `:583`, which turned it into `STALE_IDENTITY` at `:596`.
      *
-     * The trace is asserted in order because that is how the branch was identified in CI: the
-     * `mismatch` branch at `:574` calls `#inspectGroup` before it transitions, and no group listing
-     * follows the bad reading — in the log, or here.
+     * The trace is asserted first, and in order, because that is how the branch was identified in
+     * CI: the `mismatch` branch at `:576` lists the group at `:577` before it transitions at
+     * `:579`, and no group listing follows the bad reading — in the log, or here. Asserting it
+     * ahead of the state keeps a regression's *reported* failure branch-specific rather than the
+     * `STOPPED`/`STALE_IDENTITY` line both cases would print.
      */
     test('a stop past its grace budget retries the unreadable reading instead of calling the task stale', async () => {
       const gracePeriodMs = 60;
@@ -634,6 +636,14 @@ describe('the production factory supervises through the runtime process port', (
             // listing — which `waitForOwnedGroupChange` serves *after* the inspect of the same
             // turn, and only on a turn that is therefore its last. That is what makes the bad
             // reading land on the pre-SIGKILL inspect rather than inside the wait loop.
+            //
+            // "Its last" holds up to a sub-millisecond gap: the loop's own deadline is
+            // `Date.now() + timeoutMs` taken at `process-supervisor.ts:742`, a few synchronous
+            // statements after `sigtermAt`. If that gap crosses a millisecond boundary the flip can
+            // fire one turn early — and the run then either fails loudly with
+            // `PROCESS_INSPECTION_FAILED` or degrades into case 2's `:576` branch, never into a
+            // false pass. Do not cushion the comparison: with a later flip the loop exits first,
+            // `:583` reads the live line and a SIGKILL goes out, which is worse.
             if (phase === 'running' && sigtermAt !== null && Date.now() >= sigtermAt + gracePeriodMs) {
               phase = 'exiting';
             }
@@ -655,23 +665,24 @@ describe('the production factory supervises through the runtime process port', (
       });
 
       expect(replay.signals).toEqual([{ pgid: pid, signal: 'SIGTERM' }]);
-      expect(replay.state).toBe('STOPPED');
-      expect(replay.recordState).toBe('STOPPED');
       // The wait loop really did run to its deadline with the task present, and the bad reading
       // really was served afterwards — otherwise this passes without exercising anything. The
       // absent retry with no group listing between it and the bad reading is the branch evidence:
-      // `:574`'s `mismatch` would have listed the group before transitioning.
+      // `:576`'s `mismatch` would have listed the group at `:577` before transitioning.
       expect(trace.filter((entry) => entry === 'group').length).toBeGreaterThan(1);
       expect(trace.slice(trace.indexOf('inspect:unreadable')))
         .toEqual(['inspect:unreadable', 'inspect:absent', 'group']);
+      expect(replay.state).toBe('STOPPED');
+      expect(replay.recordState).toBe('STOPPED');
     });
 
     /**
      * The same unreadable reading one branch earlier: here the task dies inside the grace budget,
      * so the bad answer arrives while `waitForOwnedGroupChange` is still polling and the group is
-     * still listed. Before the fix that is the `mismatch` branch at `:574` — `#inspectGroup` says
-     * the group is present, and `:577` answers `STALE_IDENTITY`. CI did not take this path, but the
-     * reader cannot tell the two apart and neither should the outcome.
+     * still listed. Before the fix that is the `mismatch` branch at `process-supervisor.ts:576` —
+     * `#inspectGroup` at `:577` says the group is present, and `:579` answers `STALE_IDENTITY`. CI
+     * did not take this path, but the reader cannot tell the two apart and neither should the
+     * outcome.
      */
     test('a stop inside its grace budget retries the unreadable reading instead of calling the task stale', async () => {
       let phase: 'running' | 'exiting' | 'gone' = 'running';

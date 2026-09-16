@@ -158,11 +158,11 @@ export function createDarwinProcessPlatform(
  *
  * Why it happens to a live process. `ps` reads the process table once (`KERN_PROC`) and then asks
  * `KERN_PROCARGS2` per process, so the two reads are not one instant. A process that begins exiting
- * between them is still in the snapshot with whatever state it had — `R`, `S`, no `E`, certainly no
- * `Z` — while `KERN_PROCARGS2` already refuses. For a task this daemon stops, that window opens by
- * construction: `SIGTERM` is sent and the very next poll can land inside it. Reading it as an
- * identity is what turned "my own child is dying" into "a different process holds this PID", i.e.
- * `RUNTIME_PROCESS_IDENTITY_STALE`.
+ * between them is still in the snapshot with a live state — `R<s`, no `E`, no `Z`, confirmed in CI
+ * run `34896095080` — while `KERN_PROCARGS2` already refuses. For a task this daemon stops, that
+ * window opens by construction: `SIGTERM` is sent and the very next poll can land inside it.
+ * Reading it as an identity is what turned "my own child is dying" into "a different process holds
+ * this PID", i.e. `RUNTIME_PROCESS_IDENTITY_STALE`.
  *
  * The two columns are matched as one string because `p_comm` may contain spaces, which the column
  * regex above splits on; whitespace runs are collapsed first because that regex also normalises the
