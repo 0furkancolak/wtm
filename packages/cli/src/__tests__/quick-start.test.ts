@@ -76,7 +76,10 @@ function prepareWorkspace(root: string, environment: NodeJS.ProcessEnv): string 
   // it somewhere else — and would leave the fixture reading the developer's global config while
   // the commands it feeds run without it.
   const git = (...args: string[]): void => {
-    execFileSync('git', args, { cwd: workspace, env: environment });
+    // Bounded, and killed rather than asked: `execFileSync` blocks the thread bun's per-test
+    // timeout would fire on, so a `git` that waits (a credential or editor prompt inherited from
+    // an unexpected environment) would hold the whole test run, not just this test.
+    execFileSync('git', args, { cwd: workspace, env: environment, timeout: 60_000, killSignal: 'SIGKILL' });
   };
   git('init', '-q', '--initial-branch=main');
   git('config', 'user.name', 'WTM Quick Start');

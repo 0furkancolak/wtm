@@ -31,9 +31,13 @@ describe('posixFileTrustPolicy', () => {
     await expect(posixFileTrustPolicy.isWritableOnlyByOwner(stat({ mode: 0o700 }), '/x', 0o077)).resolves.toBe(true);
   });
 
-  test('isNotSharedByHardLink is exactly stat.nlink === 1', () => {
+  test('isNotSharedByHardLink refuses a second name and accepts an already-unlinked inode', () => {
     expect(posixFileTrustPolicy.isNotSharedByHardLink(stat({ nlink: 1 }))).toBe(true);
     expect(posixFileTrustPolicy.isNotSharedByHardLink(stat({ nlink: 2 }))).toBe(false);
+    // An `fstat` of a descriptor whose last name was renamed away reports zero links. Nothing can
+    // reach that inode any more, so it is not shared; refusing it turned a managed log reader's
+    // bounded rotation retry into an outright refusal.
+    expect(posixFileTrustPolicy.isNotSharedByHardLink(stat({ nlink: 0 }))).toBe(true);
   });
 
   test('currentIdentityAvailable reflects whether process.getuid() answers at all', () => {

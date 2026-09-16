@@ -105,7 +105,9 @@ describe('resolveCommit', () => {
   test('answers an OID for a commit-ish and null for a name that is not one', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wtm-resolve-commit-'));
     try {
-      const git = (...args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+      // Bounded and `SIGKILL`-ed: a synchronous spawn blocks the thread bun's per-test timeout
+      // would fire on, so a `git` that waits stops the whole run rather than failing this test.
+      const git = (...args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' }).trim();
       git('init', '--initial-branch=main');
       git('config', 'user.name', 'WTM Test');
       git('config', 'user.email', 'wtm-test@example.invalid');

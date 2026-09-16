@@ -131,11 +131,13 @@ describe('resource sandbox guard', () => {
     const sandboxRoot = join(workspaceRoot, '.wtm-resources');
     await mkdir(sandboxRoot, { recursive: true, mode: 0o700 });
     await chmod(workspaceRoot, 0o700);
-    execFileSync('git', ['init', '-q', workspaceRoot], { stdio: 'ignore' });
+    // Bounded and `SIGKILL`-ed: a synchronous spawn blocks the thread bun's per-test timeout
+    // would fire on, so a `git` that waits stops the whole run rather than failing this test.
+    execFileSync('git', ['init', '-q', workspaceRoot], { stdio: 'ignore', timeout: 60_000, killSignal: 'SIGKILL' });
     execFileSync('git', [
       '-C', workspaceRoot, 'update-index', '--add', '--cacheinfo',
       `160000,${'1'.repeat(40)},.wtm-resources/vendor`,
-    ], { stdio: 'ignore' });
+    ], { stdio: 'ignore', timeout: 60_000, killSignal: 'SIGKILL' });
     const guard = await createResourceGuard({
       sandboxRoot,
       workspaceRoot,
