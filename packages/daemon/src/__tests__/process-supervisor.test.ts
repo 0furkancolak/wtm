@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { lstat, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -259,6 +260,13 @@ class FaultProcessStore extends MemoryProcessStore {
   throwOnCreate = false;
   createFailuresRemaining = 0;
   failRunningUpdate = false;
+  /**
+   * Runs immediately before the injected RUNNING failure. The supervisor reacts to that failure by
+   * killing the whole group, so anything a test wants the group to have done first has to be
+   * waited for here rather than asserted afterwards: the store's interface is synchronous, so the
+   * wait is too.
+   */
+  beforeRunningFailure: () => void = () => {};
 
   override createManagedProcess(
     input: ManagedProcessInput,
@@ -269,7 +277,7 @@ class FaultProcessStore extends MemoryProcessStore {
   }
 
   override updateManagedProcess(id: string, update: ManagedProcessUpdate): ManagedProcessRecord | null {
-    if (this.failRunningUpdate && update.state === 'RUNNING') return null;
+    if (this.failRunningUpdate && update.state === 'RUNNING') { this.beforeRunningFailure(); return null; }
     return super.updateManagedProcess(id, update);
   }
 }
@@ -562,6 +570,12 @@ describe('ManagedProcessSupervisor', () => {
     });
     cleanups.push(async () => { await supervisor.close(); await removeRootDirectory(root); });
     const descendantMarker = join(root, 'update-descendant-launched');
+    // The anchor acknowledges the launch as soon as the task is executed, which is before the
+    // task's own runtime has booted far enough to write anything. Failing the RUNNING transition
+    // at that moment killed the group mid-boot, and the marker assertion below read ENOENT on a
+    // darwin x64 leg. Holding the injected failure until the descendant has written removes the
+    // race rather than widening the window it lost.
+    store.beforeRunningFailure = () => waitForFileSync(descendantMarker);
     await expect(supervisor.start({
       worktreeId: 'worktree-1', taskName: 'update-fault',
       // Same portable stand-in as `create-fault` above: writes the marker, then keeps running until
@@ -973,6 +987,88 @@ describe('ManagedProcessSupervisor', () => {
     expect(signals).toEqual([]);
   });
 
+  /**
+   * A darwin x64 leg failed `restart` with `RUNTIME_STOP_FAILED`/`EPERM` on a group it had just
+   * verified as its own. `kill(2)` answers `EPERM` for a pid the kernel has already recycled into
+   * somebody else's process, and on Darwin for a group still holding an unreaped member owned by
+   * another uid -- both of which mean the verified group is gone, not that stopping it failed.
+   * The supervisor concludes nothing from the errno either way: it asks the kernel what is
+   * actually there, and only an observed-absent group becomes STOPPED.
+   */
+  test('a signal refused with EPERM settles on what inspection observes, not on the errno', async () => {
+    const { root, store, worktree } = await setup();
+    const identity = {
+      pid: 51003, pgid: 51003, processStartTime: 'start', commandFingerprint: 'fingerprint',
+    };
+    const record = store.createManagedProcess({
+      worktreeId: worktree.id,
+      taskName: 'eperm-gone',
+      ...identity,
+      state: 'RUNNING',
+      startedAt: new Date().toISOString(),
+      stoppedAt: null,
+      stdoutPath: join(root, 'eperm.stdout.log'),
+      stderrPath: join(root, 'eperm.stderr.log'),
+    });
+    const signals: NodeJS.Signals[] = [];
+    let present = true;
+    const supervisor = createSupervisor({
+      stateStore: store,
+      logs: new ManagedLogStore({ root: join(root, 'logs-eperm-gone') }),
+      gracePeriodMs: 100,
+      pollIntervalMs: 1,
+      inspectProcess: async (): Promise<ProcessInspection> => (
+        present ? { status: 'present', identity } : { status: 'absent' }
+      ),
+      inspectProcessGroup: async () => present ? { status: 'present', pids: [identity.pid] } : { status: 'absent' },
+      signalProcessGroup: (_pgid, signal) => {
+        signals.push(signal);
+        present = false;
+        throw Object.assign(new Error('Operation not permitted'), { code: 'EPERM' });
+      },
+    });
+    cleanups.push(() => supervisor.close());
+
+    expect((await supervisor.stopRecord(record)).state).toBe('STOPPED');
+    expect(signals).toEqual(['SIGTERM']);
+  });
+
+  test('a group that survives an EPERM refusal still fails the stop, on the observation not the errno', async () => {
+    const { root, store, worktree } = await setup();
+    const identity = {
+      pid: 51004, pgid: 51004, processStartTime: 'start', commandFingerprint: 'fingerprint',
+    };
+    const record = store.createManagedProcess({
+      worktreeId: worktree.id,
+      taskName: 'eperm-alive',
+      ...identity,
+      state: 'RUNNING',
+      startedAt: new Date().toISOString(),
+      stoppedAt: null,
+      stdoutPath: join(root, 'eperm-alive.stdout.log'),
+      stderrPath: join(root, 'eperm-alive.stderr.log'),
+    });
+    const signals: NodeJS.Signals[] = [];
+    const supervisor = createSupervisor({
+      stateStore: store,
+      logs: new ManagedLogStore({ root: join(root, 'logs-eperm-alive') }),
+      gracePeriodMs: 20,
+      pollIntervalMs: 1,
+      inspectProcess: async (): Promise<ProcessInspection> => ({ status: 'present', identity }),
+      inspectProcessGroup: async () => ({ status: 'present', pids: [identity.pid] }),
+      signalProcessGroup: (_pgid, signal) => {
+        signals.push(signal);
+        throw Object.assign(new Error('Operation not permitted'), { code: 'EPERM' });
+      },
+    });
+    cleanups.push(() => supervisor.close());
+
+    await expect(supervisor.stopRecord(record)).rejects.toMatchObject({
+      code: 'RUNTIME_STOP_FAILED', context: { reason: 'GROUP_REMAINED_ALIVE' },
+    });
+    expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
   test('daemon recovery verifies stored identities without adopting them', async () => {
     const { root, store, worktree, supervisor } = await setup();
     const pidFile = join(root, 'recovery.json');
@@ -1263,6 +1359,19 @@ async function waitForIdentity(pid: number): Promise<ProcessIdentity> {
   await waitFor(async () => { identity = await inspectProcessIdentity(pid); return identity !== null; });
   if (identity === null) throw new Error('Process identity unavailable');
   return identity;
+}
+
+/**
+ * Blocks this thread until `path` exists, or the bound elapses. `Atomics.wait` sleeps rather than
+ * spinning, so a child process still gets the CPU it needs to create the file.
+ */
+function waitForFileSync(path: string, timeoutMs = 10_000): void {
+  const deadline = Date.now() + timeoutMs;
+  const idle = new Int32Array(new SharedArrayBuffer(4));
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${path}`);
+    Atomics.wait(idle, 0, 0, 5);
+  }
 }
 
 async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 5_000): Promise<void> {

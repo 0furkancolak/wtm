@@ -107,8 +107,10 @@ export function createWindowsFileTrustPolicy(options: WindowsFileTrustPolicyOpti
       .every((rule) => (mask === 0o022 ? grantsOnlyReadAccess(rule) : false));
   }
 
+  // Same reading as the POSIX policy: more than one name is sharing, and zero names is an
+  // already-unlinked inode held open by a descriptor, which nothing else can reach.
   function isNotSharedByHardLink(stat: NodeJsStats): boolean {
-    return stat.nlink === 1;
+    return stat.nlink <= 1;
   }
 
   return {

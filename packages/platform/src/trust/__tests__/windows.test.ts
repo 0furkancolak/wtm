@@ -118,6 +118,7 @@ describe('createWindowsFileTrustPolicy', () => {
     const policy = policyWith({ ownerSid, accessRules: [] });
     expect(policy.isNotSharedByHardLink(stat({ nlink: 1 }))).toBe(true);
     expect(policy.isNotSharedByHardLink(stat({ nlink: 2 }))).toBe(false);
+    expect(policy.isNotSharedByHardLink(stat({ nlink: 0 }))).toBe(true);
   });
 
   test('the trusted-principal allowlist names exactly SYSTEM and Administrators', () => {
