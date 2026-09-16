@@ -26,8 +26,8 @@ const typeScriptEntry = /\.[cm]?ts$/i;
  *   `node --import <source hooks> <entry>`. Without a loader the child cannot resolve the
  *   extensionless relative imports and every queued job failed with `RUNTIME_START_FAILED`.
  *
- * Which of the parent's `process.execArgv` entries reach the child is the decision this function
- * exists to make, and the answer is *none of them*. Taken flag class by flag class:
+ * Which of the parent's `process.execArgv` entries reach the child *through argv* is the decision
+ * this function exists to make, and the answer is *none of them*. Taken flag class by flag class:
  *
  * - `--inspect`, `--inspect-brk`, `--inspect-port`: never propagated. Each binds a fixed debug
  *   port, so a second process inheriting one either fails to start or steals the port from the
@@ -50,6 +50,21 @@ const typeScriptEntry = /\.[cm]?ts$/i;
  * price is that the private runner module graph must stay erasable TypeScript;
  * `cli/src/__tests__/source-runtime-invocation.test.ts` loads every private mode through this
  * invocation, and audits the child's `spawn` calls, to keep both properties true.
+ *
+ * Two things this decision does *not* reach, both worth knowing before trusting the paragraph
+ * above:
+ *
+ * - `NODE_OPTIONS` is a second channel. Its entries show up in `process.execArgv` too, but they
+ *   travel to the child in the environment, which `process-supervisor.ts` `spawnAnchor` passes
+ *   through wholesale. A daemon started with `NODE_OPTIONS="--import tsx"` therefore still hands
+ *   its anchor tsx, and gets exactly the esbuild-in-a-detached-group hang described above,
+ *   whatever this function returns. Neutralising it belongs in the spawn, not here.
+ * - `cli/src/main.ts` `daemonProgramArguments` builds the *service unit* argv from this same
+ *   invocation. That graph is `bin.ts` -> `main.ts` -> the `@wtm/platform` barrel, which is not
+ *   erasable today (`platform/src/service/errors.ts` uses a parameter property), so a source
+ *   checkout's `wtm daemon install` still writes a unit that cannot start. That is not a
+ *   regression — the previous argv failed too, earlier and for a different reason — but the
+ *   erasability requirement below is about the private runner graph and does not cover it.
  *
  * `execPath` and `entry` are both made absolute because the anchor is spawned with `cwd` set to
  * the worktree (`process-supervisor.ts` `spawnAnchor`), not to the daemon's own directory. The
