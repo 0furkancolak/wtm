@@ -543,6 +543,8 @@ describe('the production factory supervises through the runtime process port', (
     const listing = (present: boolean) =>
       present ? `    1     1 Ss\n${String(pid)} ${String(pid)} R<s\n` : '    1     1 Ss\n';
     const psAbsent = () => Object.assign(new Error('ps'), { code: 1, stdout: '', stderr: '' });
+    const delay = (milliseconds: number) =>
+      new Promise<void>((resolve) => { setTimeout(resolve, milliseconds); });
 
     interface StopReplay {
       readonly state: string;
@@ -612,6 +614,21 @@ describe('the production factory supervises through the runtime process port', (
      * `alive` (`process-supervisor.ts:758`), and the bad reading landed on the pre-SIGKILL
      * `inspectWithRetry` at `:583`, which turned it into `STALE_IDENTITY` at `:596`.
      *
+     * Reproducing that needs the wait loop to turn exactly once, and nothing here is allowed to
+     * *guess* when it has: an earlier version opened the exit window at
+     * `Date.now() >= sigtermAt + gracePeriodMs`, which is a different clock from the loop's own
+     * `Date.now() + timeoutMs` taken at `:742`, and on a loaded CI runner the window opened while
+     * the loop was still turning — `waitForOwnedGroupChange` answered `failed` at `:745-746` and
+     * the stop died with `PROCESS_INSPECTION_FAILED` (PR #18, `Validate linux x64`).
+     *
+     * So the loop's exit is made structural instead. The group listing takes a real timer longer
+     * than the whole grace budget, and `waitForOwnedGroupChange` serves that listing *after* the
+     * inspect of the same turn and then checks its deadline — which the listing has therefore
+     * already blown. One turn, and load can only make the margin larger, because a timer never
+     * fires early. The stub then keys its answers off *how many listings it has served*, never off
+     * a clock: everything before the first listing is inside the loop, everything after it is the
+     * `:583` retry.
+     *
      * The trace is asserted first, and in order, because that is how the branch was identified in
      * CI: the `mismatch` branch at `:576` lists the group at `:577` before it transitions at
      * `:579`, and no group listing follows the bad reading — in the log, or here. Asserting it
@@ -619,37 +636,29 @@ describe('the production factory supervises through the runtime process port', (
      * `STOPPED`/`STALE_IDENTITY` line both cases would print.
      */
     test('a stop past its grace budget retries the unreadable reading instead of calling the task stale', async () => {
-      const gracePeriodMs = 60;
-      let phase: 'running' | 'exiting' | 'gone' = 'running';
-      let sigtermAt: number | null = null;
+      const gracePeriodMs = 150;
+      /** Longer than the whole grace budget, so the listing that ends a turn also ends the loop. */
+      const listingDelayMs = gracePeriodMs * 2;
+      let phase: 'running' | 'gone' = 'running';
+      let listingsServed = 0;
       let unreadableServed = false;
       const trace: string[] = [];
       const replay = await stopThroughDarwinReader({
         gracePeriodMs,
         pollIntervalMs: 5,
-        onSignal: () => { sigtermAt = Date.now(); },
+        onSignal: () => {},
         runCommand: async (_file, args) => {
           if (args.includes('-axo')) {
             trace.push('group');
+            listingsServed += 1;
             const stdout = listing(phase !== 'gone');
-            // The exit window opens only once the grace deadline has passed, and only on a group
-            // listing — which `waitForOwnedGroupChange` serves *after* the inspect of the same
-            // turn, and only on a turn that is therefore its last. That is what makes the bad
-            // reading land on the pre-SIGKILL inspect rather than inside the wait loop.
-            //
-            // "Its last" holds up to a sub-millisecond gap: the loop's own deadline is
-            // `Date.now() + timeoutMs` taken at `process-supervisor.ts:742`, a few synchronous
-            // statements after `sigtermAt`. If that gap crosses a millisecond boundary the flip can
-            // fire one turn early — and the run then either fails loudly with
-            // `PROCESS_INSPECTION_FAILED` or degrades into case 2's `:576` branch, never into a
-            // false pass. Do not cushion the comparison: with a later flip the loop exits first,
-            // `:583` reads the live line and a SIGKILL goes out, which is worse.
-            if (phase === 'running' && sigtermAt !== null && Date.now() >= sigtermAt + gracePeriodMs) {
-              phase = 'exiting';
-            }
+            await delay(listingDelayMs);
             return { stdout };
           }
-          if (phase === 'running') { trace.push('inspect:live'); return { stdout: liveLine }; }
+          // Before the first listing the reader is either `#stopLocked`'s pre-SIGTERM inspect or
+          // the wait loop's own — both must see a live, matching task. After it the loop is over,
+          // so the next inspect is the pre-SIGKILL `inspectWithRetry` at `:583`.
+          if (listingsServed === 0) { trace.push('inspect:live'); return { stdout: liveLine }; }
           // One `(node) (node)` answer, then the zombie is reaped. Until the pid itself has been
           // seen gone the group listing still shows the anchor, exactly as it did in CI — so the
           // outcome cannot come from the group having quietly emptied.
@@ -665,13 +674,16 @@ describe('the production factory supervises through the runtime process port', (
       });
 
       expect(replay.signals).toEqual([{ pgid: pid, signal: 'SIGTERM' }]);
-      // The wait loop really did run to its deadline with the task present, and the bad reading
-      // really was served afterwards — otherwise this passes without exercising anything. The
-      // absent retry with no group listing between it and the bad reading is the branch evidence:
-      // `:576`'s `mismatch` would have listed the group at `:577` before transitioning.
-      expect(trace.filter((entry) => entry === 'group').length).toBeGreaterThan(1);
+      // First, because it is the assertion that names the branch: the bad reading really was
+      // served, and the absent retry follows it with no listing in between. `:576`'s `mismatch`
+      // would have listed the group at `:577` before transitioning, so a regression that goes that
+      // way reports this line rather than a bare `STOPPED`/`STALE_IDENTITY`.
       expect(trace.slice(trace.indexOf('inspect:unreadable')))
         .toEqual(['inspect:unreadable', 'inspect:absent', 'group']);
+      // Exactly two listings: the wait loop's single turn, and the one `:591` takes once the retry
+      // has seen the task gone. A third would mean the loop turned again and the bad reading landed
+      // inside it — the flake this shape exists to rule out.
+      expect(trace.filter((entry) => entry === 'group')).toHaveLength(2);
       expect(replay.state).toBe('STOPPED');
       expect(replay.recordState).toBe('STOPPED');
     });
