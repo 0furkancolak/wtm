@@ -41,11 +41,15 @@ jobs:
     # same check is a plain `fs.stat`.
     # `win32_test_filter` (workflow_dispatch only) narrows evidence-gathering to the win32 leg: the
     # other four legs are pure repeats of the same full suite and add nothing when the point of the
-    # run is proving a targeted group of Windows test files green within the 25 minute cap. Matrix
-    # context is available in a job-level `if`, so each of the five generated jobs is evaluated on
-    # its own `matrix.platform` and keeps its normal name either way -- the four non-win32 runs just
-    # report skipped instead of disappearing from the run.
-    if: github.event_name != 'workflow_dispatch' || inputs.win32_test_filter == '' || matrix.platform == 'win32'
+    # run is proving a targeted group of Windows test files green within the 25 minute cap.
+    #
+    # This is done with a job `env:` plus step-level `if:`, not a job-level `if:` -- GitHub Actions
+    # only makes `github`, `needs`, `vars` and `inputs` available in `jobs.<job_id>.if`; `matrix` is
+    # not in that list (see the context-availability table in GitHub's docs), so an `if:` here that
+    # reads `matrix.platform` makes the whole workflow file invalid and breaks CI on every run. `env:`
+    # and step-level `if:` both do allow `matrix`, so the four non-win32 legs instead skip every step
+    # after checkout (see `WTM_WIN32_FILTER_RUN` below) -- their jobs still run and keep their normal
+    # `Validate <platform> <arch>` name, just reporting success with those steps shown as skipped.
     continue-on-error: ${{ matrix.platform == 'win32' }}
     timeout-minutes: ${{ matrix.platform == 'win32' && 25 || 30 }}
     # The release ships an executable per architecture, and they do not fail together: linking and
@@ -84,12 +88,23 @@ jobs:
           - platform: win32
             arch: x64
             runner: windows-latest
+    # true only for a workflow_dispatch run that set win32_test_filter -- computed once here (from
+    # `github`/`inputs`, both always available) so every step below can gate on one short, stable
+    # `env.WTM_WIN32_FILTER_RUN == 'true'`/`!= 'true'` check instead of repeating the two-context
+    # expression. `env:` values are always strings, hence the string comparison.
+    env:
+      WTM_WIN32_FILTER_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.win32_test_filter != '' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Skip (win32_test_filter run only exercises the win32 leg)
+        if: env.WTM_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32'
+        run: echo "Skipping this leg: workflow_dispatch requested a win32_test_filter run, which only exercises the win32 leg."
       - uses: oven-sh/setup-bun@v2
+        if: "!(env.WTM_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32')"
         with:
           bun-version: 1.3.14
       - uses: actions/setup-node@v4
+        if: "!(env.WTM_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32')"
         with:
           # The standalone build refuses any runtime but the pinned one, and this job builds it.
           node-version: 24.18.0
@@ -102,6 +117,7 @@ jobs:
       # not something this repo can fix at its source; `shell: bash` (Git Bash ships on
       # windows-latest) keeps one retry loop working the same on every leg.
       - name: bun install --frozen-lockfile
+        if: "!(env.WTM_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32')"
         shell: bash
         run: |
           for attempt in 1 2 3; do
@@ -111,7 +127,9 @@ jobs:
           done
           exit 1
       - run: bun run lint
+        if: "!(env.WTM_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32')"
       - run: bun run typecheck
+        if: "!(env.WTM_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32')"
       # A per-test timeout catches a hang; it is not an assertion about speed. The slowest
       # honest test measures an idle daemon for ~22s, and the Intel runner varies enough that
       # 30s failed work that was doing exactly what it should. win32 gets a much larger bound for
@@ -123,12 +141,12 @@ jobs:
       # imported session instead of paying the ~1.6s cold-start module import every call) is the
       # actual answer, tracked as its own follow-up rather than raised indefinitely here.
       - run: bun run test --timeout ${{ matrix.platform == 'win32' && 300000 || 60000 }}
-        if: "!(github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != '')"
+        if: env.WTM_WIN32_FILTER_RUN != 'true'
       # win32_test_filter never reaches the shell through `${{ inputs. }}` interpolation (that would
       # let a workflow_dispatch caller inject arbitrary shell into a `run:` script); it is passed
       # through `env:` and re-validated here as a second gate against a hand-typed input.
       - name: win32 targeted test filter
-        if: "github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != ''"
+        if: env.WTM_WIN32_FILTER_RUN == 'true' && matrix.platform == 'win32'
         shell: bash
         env:
           WIN32_TEST_FILTER: ${{ inputs.win32_test_filter }}
@@ -138,17 +156,18 @@ jobs:
             exit 1
           fi
           bun test --max-concurrency=1 --parallel=1 --timeout 300000 $WIN32_TEST_FILTER
-      # Skipped together with the step above when a win32_test_filter run only needs test evidence:
-      # none of e2e/build/package/binary add anything a targeted `bun test` run doesn't already show.
+      # Skipped on every leg when a win32_test_filter run only needs targeted test evidence: none of
+      # e2e/build/package/binary add anything a targeted `bun test` run doesn't already show, and the
+      # non-win32 legs never even installed bun above to run them.
       - run: bun run test:e2e
-        if: "!(github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != '')"
+        if: env.WTM_WIN32_FILTER_RUN != 'true'
       - run: bun run build
-        if: "!(github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != '')"
+        if: env.WTM_WIN32_FILTER_RUN != 'true'
       - run: bun run package:verify
-        if: "!(github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != '')"
+        if: env.WTM_WIN32_FILTER_RUN != 'true'
       # Ordinary CI proves the current host can produce a working executable; it never publishes one.
       - run: bun run binary:verify
-        if: "!(github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != '')"
+        if: env.WTM_WIN32_FILTER_RUN != 'true'
       - name: Verify the Linux executable archive
-        if: matrix.platform == 'linux'
+        if: matrix.platform == 'linux' && env.WTM_WIN32_FILTER_RUN != 'true'
         run: bun scripts/__tests__/release-artifacts-native.scenario.ts dist/sea/wtm

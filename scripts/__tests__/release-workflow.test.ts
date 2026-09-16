@@ -6,6 +6,7 @@ const root = fileURLToPath(new URL('../..', import.meta.url));
 const tagGuard = "startsWith(github.ref, 'refs/tags/v')";
 
 interface WorkflowStep {
+  name?: string;
   if?: string;
   run?: string;
   uses?: string;
@@ -16,6 +17,7 @@ interface WorkflowStep {
 interface WorkflowJob {
   strategy?: { matrix?: { include?: { platform: string; arch: string; runner: string }[] } };
   if?: string;
+  env?: Record<string, string>;
   permissions?: Record<string, string>;
   steps?: WorkflowStep[];
 }
@@ -35,6 +37,20 @@ function unguardedWritingJobs(parsed: Workflow): string[] {
   return Object.entries(parsed.jobs ?? {})
     .filter(([, job]) => Object.values(job.permissions ?? {}).includes('write'))
     .filter(([, job]) => !(job.if ?? '').includes(tagGuard))
+    .map(([name]) => name);
+}
+
+/**
+ * `jobs.<job_id>.if` only has `github`, `needs`, `vars` and `inputs` available -- not `matrix`, even
+ * though the job uses a matrix strategy (GitHub's context-availability table; `matrix` only becomes
+ * readable in fields evaluated per generated job, such as `env`, `runs-on`, `continue-on-error`,
+ * `timeout-minutes` and every step field). A job-level `if` that reads `matrix.*` anyway makes the
+ * whole workflow file invalid YAML-that-Actions-refuses, breaking every run, not just the intended
+ * matrix leg.
+ */
+function jobIfsReferencingMatrix(parsed: Workflow): string[] {
+  return Object.entries(parsed.jobs ?? {})
+    .filter(([, job]) => (job.if ?? '').includes('matrix.'))
     .map(([name]) => name);
 }
 
@@ -153,26 +169,28 @@ describe('release workflow', () => {
     const job = workflow('ci.yml').jobs?.validate;
     expect(job?.strategy?.matrix?.include).toContainEqual({ platform: 'linux', arch: 'arm64', runner: 'ubuntu-24.04-arm' });
     const steps = job?.steps ?? [];
-    // Only the win32 leg's own workflow_dispatch filter can skip these, so an unconditional find on
-    // any other command still proves the Linux legs (and everything but a filtered win32 run) get
-    // the full gate.
-    for (const command of ['bun run lint', 'bun run typecheck']) {
-      const step = steps.find((item) => item.run?.startsWith(command));
+    // Set-up steps and lint/typecheck are skipped only on a non-win32 leg during a win32_test_filter
+    // run (they'd otherwise waste runner time on a leg the run doesn't care about); on Linux, on
+    // every other trigger, and on win32 itself they still run.
+    const nonWin32DuringFilter = "!(env.WTM_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32')";
+    for (const command of ['bun install --frozen-lockfile', 'bun run lint', 'bun run typecheck']) {
+      const step = steps.find((item) => item.name === command || item.run?.startsWith(command));
       expect(step, command).toBeDefined();
-      expect(step?.if, command).toBeUndefined();
+      expect(step?.if, command).toBe(nonWin32DuringFilter);
     }
-    // The full-suite-only steps are skipped for a targeted win32_test_filter run, so on every other
-    // leg and every non-dispatch trigger they still carry that guard, not no condition at all.
-    const filterGuard = "!(github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != '')";
+    // The full-suite-only steps are skipped on every leg (not just win32) for a targeted
+    // win32_test_filter run: the non-win32 legs never installed bun above to run them, and win32's
+    // own targeted `bun test` step already covers the evidence being asked for.
+    const filterActive = "env.WTM_WIN32_FILTER_RUN != 'true'";
     for (const command of ['bun run test --timeout', 'bun run test:e2e', 'bun run build',
       'bun run package:verify', 'bun run binary:verify']) {
       const step = steps.find((item) => item.run?.startsWith(command));
       expect(step, command).toBeDefined();
-      expect(step?.if, command).toBe(filterGuard);
+      expect(step?.if, command).toBe(filterActive);
     }
     const archive = steps.findIndex((item) => item.run === 'bun scripts/__tests__/release-artifacts-native.scenario.ts dist/sea/wtm');
     expect(archive).toBeGreaterThan(steps.findIndex((item) => item.run?.startsWith('bun run binary:verify')));
-    expect(steps[archive]?.if).toBe("matrix.platform == 'linux'");
+    expect(steps[archive]?.if).toBe("matrix.platform == 'linux' && env.WTM_WIN32_FILTER_RUN != 'true'");
   });
 
   test('validates each commit once and keeps win32 from deciding the run until item 9', () => {
@@ -199,13 +217,46 @@ describe('release workflow', () => {
     expect(input?.description ?? '').toContain('bun test');
   });
 
-  test('narrows a workflow_dispatch run with a win32_test_filter to the win32 leg alone', () => {
-    const job = workflow('ci.yml').jobs?.validate;
+  test('never gates the validate job on matrix.* in jobs.<job_id>.if (GitHub Actions does not expose matrix there)', () => {
+    // Regression test: an earlier version of this workflow used a job-level
+    // `if: ... || matrix.platform == 'win32'` to narrow a win32_test_filter run to the win32 leg.
+    // `jobs.<job_id>.if` only has github/needs/vars/inputs available, not matrix, so that expression
+    // made the whole workflow file invalid and would have broken CI on every push and pull_request.
+    expect(jobIfsReferencingMatrix(workflow('ci.yml'))).toEqual([]);
+    expect(workflow('ci.yml').jobs?.validate?.if).toBeUndefined();
+  });
 
-    // A job-level `if` is evaluated per matrix combination, so this single condition both keeps the
-    // four non-win32 legs (and every push/pull_request run) unaffected and skips them outright when
-    // someone dispatches a filtered win32-only run.
-    expect(job?.if).toBe("github.event_name != 'workflow_dispatch' || inputs.win32_test_filter == '' || matrix.platform == 'win32'");
+  test('rejects a job whose if references matrix', () => {
+    const invalid: Workflow = {
+      jobs: {
+        safe: { if: "github.event_name == 'workflow_dispatch'" },
+        broken: { if: "matrix.platform == 'win32'" },
+      },
+    };
+
+    expect(jobIfsReferencingMatrix(invalid)).toEqual(['broken']);
+  });
+
+  test('computes a job-wide env flag for a win32_test_filter run from github/inputs only', () => {
+    // `env:` (unlike job-level `if:`) does have `matrix` available, but this flag deliberately does
+    // not read it: it is the same for every leg, and each step below combines it with its own
+    // `matrix.platform` check instead, keeping the matrix-dependent part at step level where GitHub
+    // Actions actually allows it.
+    const job = workflow('ci.yml').jobs?.validate;
+    expect(job?.env?.WTM_WIN32_FILTER_RUN).toBe("${{ github.event_name == 'workflow_dispatch' && inputs.win32_test_filter != '' }}");
+  });
+
+  test('narrows a workflow_dispatch run with a win32_test_filter to the win32 leg alone', () => {
+    const steps = workflow('ci.yml').jobs?.validate?.steps ?? [];
+
+    // The non-win32 legs skip every step after checkout (an explicit skip-announcement step, then
+    // setup and the full gate) instead of the whole job being skipped, since job-level `if` cannot
+    // read `matrix`; they still succeed, just with those steps reported as skipped.
+    const checkout = steps.findIndex((step) => step.uses === 'actions/checkout@v4');
+    expect(checkout).toBe(0);
+    const skipStep = steps.find((step) => step.name === 'Skip (win32_test_filter run only exercises the win32 leg)');
+    expect(skipStep?.if).toBe("env.WTM_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32'");
+    expect(steps.indexOf(skipStep as WorkflowStep)).toBe(checkout + 1);
   });
 
   test('runs the win32 filter through env, never by interpolating inputs. directly into a run: script', () => {
@@ -213,7 +264,7 @@ describe('release workflow', () => {
     const filterStep = steps.find((step) => step.name === 'win32 targeted test filter');
 
     expect(filterStep).toBeDefined();
-    expect(filterStep?.if).toBe("github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != ''");
+    expect(filterStep?.if).toBe("env.WTM_WIN32_FILTER_RUN == 'true' && matrix.platform == 'win32'");
     expect(filterStep?.shell).toBe('bash');
     expect(filterStep?.env?.WIN32_TEST_FILTER).toBe('${{ inputs.win32_test_filter }}');
 
