@@ -143,3 +143,98 @@ NOTE: unit W1-1 may edit the ci.yml test step in parallel (per-file progress run
 - `bun test scripts/__tests__/release-workflow.test.ts` passes; `bun run typecheck && bun run lint` pass.
 - If `actionlint` is available locally, run it on ci.yml (optional; don't install new global tools).
 - Report: .superpowers/sdd/2026-09-15-remaining-work-waves/W1-4-report.md
+
+---
+
+# W1 outcome — 2026-09-16 (cloud session)
+
+| Unit | PR | Result |
+|---|---|---|
+| controller | #15 | merged `95dff55` — items 2 and 18 closed, 9k/18 CI evidence |
+| W1-1 | #17 | merged `5ba0aa6` — macOS hang, F1, both Intel supervisor failures |
+| W1-4 | #16 | open, refreshed onto main |
+| W1-2 | #18 | open, refreshed onto main |
+| W1-3 | #19 | open, refreshed onto main |
+
+## What the wave actually found
+
+Three of the four units turned out to be production bugs rather than test timing, and in two cases
+the handoff note's own diagnosis was wrong:
+
+- **The macOS hang was not "the 16th file after render-homebrew-formula".** Bun streams output per
+  line, so the last line printed *is* where it stopped: run `34897205539` stops *inside*
+  `render-homebrew-formula.test.ts` on its 18th test, which ran `spawnSync('/usr/bin/ruby', …)` with
+  no timeout. macOS's `/usr/bin/ruby` is a developer-tools shim that can block forever, and
+  `spawnSync` holds the very thread Bun's `--timeout` fires on. Proven fixed: both darwin legs of
+  PR #17 ran all 234 files, 234 starts matched by 234 ends, darwin x64's test step in 6m47s.
+- **F1 was a wrong security predicate**, not a timing test: `nlink === 1` refused a descriptor
+  legitimately showing `nlink === 0` during the anchor's rename-replace. Relaxed on POSIX only.
+- **F2's root cause was confirmed from a CI log, not inferred.** Run `34896095080` records both `ps`
+  columns hashing to `sha256("(node)")` with `commandBytes: 6`, with `processStartTime` and `pgid`
+  identical in every reading — which empirically rules out start-time granularity, clock resolution
+  and pid reuse.
+- **W1-3's brief suggested the wrong fix.** Propagating `--import tsx` would have reintroduced a
+  hang (tsx's hooks leave an `esbuild --service` child inside the anchor's detached group, which then
+  cannot drain — a finding already recorded in `testkit/src/runtime-invocation.ts`). The loader is
+  replaced with an in-thread resolver instead.
+- **`process-supervisor.test.ts:308` had never evaluated anything.** Under `bun run test` the test
+  process was not a process-group leader, so both sides of the assertion were `{status:'absent'}`.
+  The per-file runner spawns each file detached, which made the group real — and the assertion
+  racy — for the first time.
+
+## Decisions taken in this session
+
+- **Decision: unit branches are not deleted after merge** — this environment's proxy refuses
+  `DELETE` on `git/refs` (403 "Write access to this GitHub API path is not permitted") and
+  `git push --delete` is rejected too. Why: no other route exists from here. Cost if wrong: merged
+  branches accumulate on the remote and someone has to prune them by hand.
+- **Decision: the W1-4/W1-1 merge-order ruling was void.** The ledger ordered W1-4 first because
+  both were expected to touch `ci.yml`; W1-1's fix turned out to need no `ci.yml` change at all (the
+  runner is wired into `package.json`), so W1-1 merged first instead, to give the other three
+  branches a CI that does not hang. Cost if wrong: nil — the merge was verified conflict-free.
+- **Decision: local gates were not re-run after refreshing a branch onto main.** Each branch was
+  gated before its PR; the refresh only adds main, and CI runs the same gate on four platforms,
+  which is strictly stronger than one Linux run. Cost if wrong: a conflict-induced failure surfaces
+  in CI rather than locally, costing one CI cycle.
+- **Decision: no third review round for W1-1.** Round 2 consisted entirely of the reviewer's own
+  pre-approved follow-up list, each item closed with its reasoning. Cost if wrong: the guard's
+  regex-vs-division lexer heuristic misreads an unusual expression and under-detects; the shapes
+  that would trip it are pinned in its own fixture.
+- **`gh` is not installed in this environment**, and raw Actions log downloads are proxy-blocked
+  (`blob.core.windows.net` → 403 CONNECT). GitHub is read through the MCP tools and the REST API.
+  Re-running a failed job is **not** permitted to this token (403 on `rerun-failed-jobs`); a branch
+  is refreshed onto main instead, which is a real commit rather than an empty one.
+
+## Follow-up units this wave recorded but did not do
+
+1. **A `raceHook` phase between the `open` and the `fstat`** in `openSafeLog`/`openExistingSafeLog`
+   (`packages/daemon/src/logs.ts`). Closes both the one untested `nlink === 0` branch and the lack of
+   a deterministic F1 reproduction. Agreed by implementer and reviewer; excluded because threading
+   the hook through two free functions is more churn than the fix it would test.
+2. **Make the repo erasable, and lint for it.** Erasable TypeScript is now load-bearing for the
+   private-runner module graph, and three modules already violate it with parameter properties:
+   `packages/platform/src/service/errors.ts`, `packages/core/src/state/ci.ts`,
+   `packages/core/src/analysis/worktree-reclaimable.ts`. The first makes the whole `@wtm/platform`
+   barrel unloadable under the hooks, so adding one barrel import to `process-anchor.ts` would break
+   every queued job. A test guards the runner graph transitively; there is no lint rule. Doing this
+   would also make the source-launched `wtm daemon install` unit actually start.
+3. **The third `defaultRuntimeInvocation()` copy** in `packages/core/src/plan/external-adapter.ts`,
+   with the same defect and a layering violation (core reading `process.*`). Needs the invocation
+   injected from the composition layer; collapse `cli/src/main.ts`'s duplicate `RuntimeInvocation`
+   type onto the platform one at the same time.
+4. **Two unconfirmed identity re-reads in `process-supervisor.ts`**: the single-read `mismatch` at
+   `:750` and the post-retry re-identification at `:596`, neither following `waitForIdentity`'s
+   two-agreeing-reads rule. Cite the run-`34896095080` trace. Moderate priority: W1-2 narrowed the
+   window, it did not close it.
+5. **A real SEA smoke in the gate**, so `sea-smoke`'s ten cases stop skipping for want of a built
+   executable.
+
+## Environment notes for the next session
+
+- Host is Linux. macOS-specific tests do not run locally; darwin evidence comes from CI.
+- Local bun is 1.3.11; the repo pins 1.3.14. Host `node` is v22 but the daemon requires >= 24 —
+  prepend `/opt/nvm/versions/node/v24.21.0/bin` to `PATH` for daemon scenario tests.
+- This sandbox runs as **root**, so four test files fail on any branch, including the merge base:
+  `cli/__tests__/reconcile-fallback`, `daemon/__tests__/main`, `daemon/__tests__/process-anchor`,
+  `daemon/__tests__/server.integration`. Several of their tests refuse uid 0 outright. Compare any
+  gate result against the merge base before calling a failure a regression.
