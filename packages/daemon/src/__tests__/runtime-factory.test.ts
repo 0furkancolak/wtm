@@ -508,11 +508,18 @@ describe('the production factory supervises through the runtime process port', (
 
   /**
    * The flake behind `default CLI client reaches the isolated production IPC address…`, replayed
-   * through the real macOS reader with the `ps` answers a `macos-15` runner gave (CI run
-   * 34896095080): the anchor takes SIGTERM, and one poll lands in the few milliseconds where it is
-   * exiting but not yet a zombie. `ps` prints `(node) (node)` for its arguments then, and a
-   * fingerprint of that is not the recorded one — so `stop` used to answer STALE_IDENTITY for the
-   * very process it had just stopped.
+   * through the real macOS reader rather than a stub, because the bug was in the reader.
+   *
+   * `stop` sends the anchor SIGTERM and then polls. One poll lands in the window where `ps`'s
+   * process-table snapshot still lists the anchor as live but `KERN_PROCARGS2` already refuses it,
+   * so `ps` prints `(node)` in both the `comm` and the `command` column. A fingerprint of that is
+   * not the recorded fingerprint, `waitForOwnedGroupChange` called it a mismatch, the group listing
+   * still showed a member — and `stop` answered `RUNTIME_PROCESS_IDENTITY_STALE` for the very
+   * process it had just stopped. The window is a few milliseconds wide on a loaded runner, which is
+   * exactly why it only ever failed in CI.
+   *
+   * Nothing here waits on wall-clock time: the `ps` answers are a scripted sequence and the
+   * supervisor's own bounded polls drive it, so the test is deterministic on any host.
    */
   test('stop does not call its own exiting anchor stale when ps can no longer read its arguments', async () => {
     const pid = 69874;

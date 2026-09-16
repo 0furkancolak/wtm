@@ -84,11 +84,12 @@ export const groupStats: Readonly<Record<string, string>> = {
 export const macosInspectLine = '50437 Ss   Tue Sep  1 21:27:02 2026 /bin/zsh /bin/zsh -c echo hello\n';
 
 /**
- * The same `ps` invocation against a process that has begun exiting but is not a zombie yet. macOS
- * can no longer hand `ps` the process's arguments at that point, so `ps` prints the kernel's short
- * name in parentheses in both columns. The state shape (`R<s`, no `Z`, no `E`) is the one a
- * `macos-15` runner reported in CI run 34896095080, a few milliseconds after the anchor recorded
- * its SIGTERM completion; the pid and name are the ones from that run.
+ * The same `ps` invocation against a process that began exiting between `ps`'s own two reads: the
+ * `KERN_PROC` snapshot it lists from, and the per-process `KERN_PROCARGS2` it reads arguments with.
+ * The snapshot still carries a live state — here `R<s`, no `E`, no `Z` — while `KERN_PROCARGS2`
+ * already refuses, and `getproclline()` substitutes `(<p_comm>)` for the entire argument buffer, so
+ * the `comm` and `command` columns come out identical. This is the line shape the daemon meets a
+ * few milliseconds after it sends its own task `SIGTERM`.
  */
 export const macosExitingInspectLine = '69874 R<s  Mon Sep 14 21:04:18 2026 (node) (node)\n';
 

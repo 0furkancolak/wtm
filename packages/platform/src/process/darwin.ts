@@ -144,19 +144,37 @@ export function createDarwinProcessPlatform(
 }
 
 /**
- * `ps` prints `(<p_comm>)` in both the `comm` and `command` columns when the kernel will not hand it
- * the process's arguments. For a process this daemon started, that happens in the window after the
- * process has begun exiting and before it is a zombie — the state column need not show `E` or `Z`
- * yet (a `macos-15` runner reported `R<s`). A fingerprint of that output is not the process's
- * fingerprint, and comparing it would turn a child that is merely dying into a "different" process,
- * so the reader reports that it cannot answer. The two columns are matched as one string because a
- * short name may contain spaces, which the column regex above splits on. `p_comm` is at most 16
- * bytes (`MAXCOMLEN`) and never empty. A live process whose real `comm` and command line are both
- * that same parenthesised name would have to have been exec'd as exactly that; it is reported as
- * unreadable too, which only ever makes a caller wait or refuse, never signal.
+ * `ps` prints `(<p_comm>)` in BOTH the `comm` and the `command` column when the kernel will not hand
+ * it a process's argument vector, and a fingerprint taken from that is not the process's
+ * fingerprint — it is the reader failing to read, spelled as if it were an answer.
+ *
+ * Why both columns: in Apple's `ps` (adv_cmds, `ps/keyword.c`) `comm` and `command` are the same
+ * printer over the same buffer — `comm` is `just_command`, `command` is `command`, and both go
+ * through `p_command_and_or_args()` onto `getproclline()`, which differ only in whether the NUL
+ * separators past argv[0] are turned into spaces. `getproclline()` is also where the fallback lives:
+ * when `KERN_PROCARGS2` fails it produces `asprintf(&name, "(%s)", p_comm)` for the whole buffer, so
+ * the two columns come out identical. That is why the columns are compared to each other rather
+ * than to any expected text: the equality IS the signal.
+ *
+ * Why it happens to a live process. `ps` reads the process table once (`KERN_PROC`) and then asks
+ * `KERN_PROCARGS2` per process, so the two reads are not one instant. A process that begins exiting
+ * between them is still in the snapshot with whatever state it had — `R`, `S`, no `E`, certainly no
+ * `Z` — while `KERN_PROCARGS2` already refuses. For a task this daemon stops, that window opens by
+ * construction: `SIGTERM` is sent and the very next poll can land inside it. Reading it as an
+ * identity is what turned "my own child is dying" into "a different process holds this PID", i.e.
+ * `RUNTIME_PROCESS_IDENTITY_STALE`.
+ *
+ * The two columns are matched as one string because `p_comm` may contain spaces, which the column
+ * regex above splits on; whitespace runs are collapsed first because that regex also normalises the
+ * padding `ps` emits between columns and would otherwise make a two-space name compare unequal to
+ * itself. `p_comm` is at most `MAXCOMLEN` (16) bytes and is never empty.
+ *
+ * A live process whose real argv[0] and whole command line are both literally that parenthesised
+ * short name would be reported unreadable too. That is the safe direction: `failed` only ever makes
+ * a caller poll again or refuse — no caller treats it as absence, and none of them signal on it.
  */
 function argumentsUnavailable(columns: string): boolean {
-  return /^(\([^\n]{1,16}\))\s+\1$/.test(columns);
+  return /^(\(.{1,16}\)) \1$/.test(columns.replace(/\s+/g, ' ').trim());
 }
 
 function stableEnvironment(): NodeJS.ProcessEnv { return { ...process.env, LC_ALL: 'C', LANG: 'C' }; }

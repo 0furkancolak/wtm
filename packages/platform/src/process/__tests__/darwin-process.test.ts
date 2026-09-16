@@ -74,10 +74,11 @@ describe('inspectProcess', () => {
   });
 
   /**
-   * An exiting process is neither the process the caller recorded nor a different one: its
-   * arguments are simply gone, so a fingerprint taken from `(node) (node)` would read as a changed
-   * identity and make the supervisor call its own dying child stale. The reader cannot answer, so
-   * it says so, and every supervisor caller already polls again on `failed`.
+   * A process whose arguments `ps` could not read is neither the process the caller recorded nor a
+   * different one: `getproclline()` substituted `(<p_comm>)` for the whole argument buffer, so both
+   * columns carry the same short name and a fingerprint of them would read as a changed identity —
+   * which is how the supervisor came to call its own dying child stale. The reader cannot answer,
+   * so it says so, and every caller polls again or refuses on `failed`; none of them signal.
    */
   test('reports a process whose arguments are no longer readable as a failure, not an identity', async () => {
     const platform = createDarwinProcessPlatform({ runCommand: stdout(macosExitingInspectLine) });
@@ -91,6 +92,38 @@ describe('inspectProcess', () => {
     });
     expect(await platform.inspectProcess(70001))
       .toEqual({ status: 'failed', reason: 'PS_ARGUMENTS_UNAVAILABLE' });
+  });
+
+  /**
+   * `ps` pads its columns, and a `p_comm` may hold more than one space in a row; neither changes
+   * whether the arguments were readable, so neither may change the answer. The column regex above
+   * splits on whitespace, so without collapsing it this line would compare `(two  spaces)` against
+   * `(two spaces)` and report an identity computed from a name.
+   */
+  test('recognises the unreadable-arguments form through column padding and repeated spaces', async () => {
+    const platform = createDarwinProcessPlatform({
+      runCommand: stdout('70002 R    Mon Sep 14 21:04:18 2026 (two  spaces)    (two  spaces)   \n'),
+    });
+    expect(await platform.inspectProcess(70002))
+      .toEqual({ status: 'failed', reason: 'PS_ARGUMENTS_UNAVAILABLE' });
+  });
+
+  /**
+   * The equality of the two columns is the whole signal: a parenthesised `comm` on its own is just
+   * a name, and refusing to identify every process that happens to have one would be a new way to
+   * lose a lease rather than a way to keep it.
+   */
+  test('identifies a process whose parenthesised comm differs from its command', async () => {
+    const platform = createDarwinProcessPlatform({
+      runCommand: stdout('70003 S    Mon Sep 14 21:04:18 2026 (node) (node) --version\n'),
+    });
+    expect(await platform.inspectProcess(70003)).toEqual({
+      status: 'present',
+      identity: {
+        pid: 70003, pgid: 70003, processStartTime: 'Mon Sep 14 21:04:18 2026',
+        commandFingerprint: observedCommandFingerprint('(node)', '(node) --version'),
+      },
+    });
   });
 
   test('still identifies a live process whose command merely contains parentheses', async () => {
