@@ -22,10 +22,13 @@
  *    package composes, and no caller-controlled text reaches PowerShell as source (property 3).
  *    What the wrapper *does* guarantee against accidental drift is the two settings a failure
  *    would silently ride on — `$ErrorActionPreference` and the working directory are
- *    re-established before every request — and every command this session's own scripts invoke is
- *    module-qualified (`Microsoft.PowerShell.Security\Get-Acl`,
- *    `Microsoft.PowerShell.Management\Set-Location`), so a shadowing function or alias cannot
- *    intercept one. That qualification is the load-bearing part: almost every escape above fails
+ *    re-established before every request — and every command named anywhere this session
+ *    executes, in the prologue, in the wrapper and in both request scripts, is module-qualified
+ *    (`Microsoft.PowerShell.Security\Get-Acl`, `Microsoft.PowerShell.Management\Set-Location`,
+ *    `Microsoft.PowerShell.Core\ForEach-Object`, ...), so a shadowing function or alias cannot
+ *    intercept one. `ForEach-Object` earns that as much as `Get-Acl` does: it is what renders the
+ *    script's output before `[string]::Join` sees it, so hijacking it would rewrite an answer
+ *    rather than refuse one. That qualification is the load-bearing part: almost every escape above fails
  *    *closed* (a broken preference or a hijacked `ConvertTo-Json` throws, which is a refusal),
  *    but a shadowed `Get-Acl` or a remapped `[PSCustomObject]` accelerator could hand back a
  *    forged reading, which is the one shape that would be a wrong "trusted" rather than a wrong
@@ -40,8 +43,11 @@
  *    maximum queue depth, a maximum session lifetime and a maximum number of requests per
  *    session, plus an idle deadline after which the process exits. A session that wedges rejects
  *    its work and is replaced — including the wedged-but-*alive* case, where an interpreter keeps
- *    answering and every answer is a failure: a run of consecutive failed requests retires it, so
- *    the next caller meets a fresh interpreter instead of a bad one that cannot die on its own.
+ *    answering and every answer fails inside the wrapper: a run of consecutive *wrapper* failures
+ *    retires it, so the next caller meets a fresh interpreter instead of a bad one that cannot die
+ *    on its own. A failed *script* is not that and is not counted: a path whose ACL cannot be read
+ *    is an ordinary answer, and recycling a healthy interpreter over one would reintroduce the
+ *    cold start this file exists to remove.
  */
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -78,10 +84,9 @@ export interface PowershellSessionOptions {
   /** Upper bound on bytes one request may produce before it is failed and the session replaced. */
   readonly maxResponseBytes?: number;
   /**
-   * How many *consecutive* failed requests retire an interpreter that is still alive and still
-   * answering. A session whose prologue did not take leaves every later request failing in the
-   * wrapper, which is fail-closed but would otherwise persist for the whole session lifetime and
-   * make the daemon refuse every path at once.
+   * How many consecutive *wrapper* failures retire an interpreter that is still alive and still
+   * answering. Script failures -- an ACL that could not be read -- deliberately do not count:
+   * they are statements about a path, not about the interpreter.
    */
   readonly maxConsecutiveFailures?: number;
   readonly now?: () => number;
@@ -119,8 +124,8 @@ const defaults = {
 const prologue: readonly string[] = [
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
-  '$OutputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)',
-  'Import-Module -Name "$PSHOME\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1"',
+  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  'Microsoft.PowerShell.Core\\Import-Module -Name "$PSHOME\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1"',
   '$WtmOrigin = (Microsoft.PowerShell.Management\\Get-Location).Path',
 ];
 
@@ -135,14 +140,25 @@ const prologue: readonly string[] = [
 function frame(script: string, token: string): string {
   const encoded = Buffer.from(script, 'utf8').toString('base64');
   return [
-    `$WtmScript = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))`,
     "$WtmOut = ''",
-    "$WtmOk = '0'",
+    "$WtmOk = '2'",
+    '$WtmBlock = $null',
+    // Everything the *wrapper* owns, in its own `try`. A failure here is a property of the
+    // interpreter, not of the path being asked about, so it reports `2` and counts toward the
+    // breaker. Decoding the script lives in here too: outside a `try` it would emit no frame at
+    // all and cost a caller the full request deadline before anything noticed.
     "try { $ErrorActionPreference = 'Stop';"
       + ' if ($null -ne $WtmOrigin) { Microsoft.PowerShell.Management\\Set-Location -LiteralPath $WtmOrigin };'
-      + ' $WtmOut = [string]::Join([string][char]10, @(& ([ScriptBlock]::Create($WtmScript))'
-      + " | ForEach-Object { [string]$_ })); $WtmOk = '1' }"
-      + " catch { $WtmOk = '0'; $WtmOut = '' }",
+      + ` $WtmBlock = [ScriptBlock]::Create([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))) }`
+      + " catch { $WtmOk = '2'; $WtmBlock = $null }",
+    // The script itself. Its failure reports `0` and is an ordinary refusal about one path, not
+    // evidence about the interpreter -- `Get-Acl` under `Stop` throws `ItemNotFoundException` for
+    // a path renamed out from under a rotation check and `UnauthorizedAccessException` for one
+    // this process may not read, and both are routine.
+    'if ($null -ne $WtmBlock) { try {'
+      + ' $WtmOut = [string]::Join([string][char]10, @(& $WtmBlock'
+      + " | Microsoft.PowerShell.Core\\ForEach-Object { [string]$_ })); $WtmOk = '1' }"
+      + " catch { $WtmOk = '0'; $WtmOut = '' } }",
     `[Console]::Out.WriteLine('${token} ' + $WtmOk + ' ' + [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([string]$WtmOut)))`,
   ].join('; ');
 }
@@ -198,7 +214,11 @@ export function createPowershellSession(options: PowershellSessionOptions = {}):
     }
   }
 
-  function settle(token: string, ok: boolean, payload: string): void {
+  /**
+   * `'1'` the script ran, `'0'` the script threw, `'2'` the wrapper itself threw before the
+   * script ever ran. Only `'2'` (and an undecodable payload) says anything about the interpreter.
+   */
+  function settle(token: string, status: string, payload: string): void {
     const running = active;
     // A frame whose token is not the running request's is late output from a request that was
     // already failed. It can never satisfy a different one: tokens are fresh random per request.
@@ -209,22 +229,30 @@ export function createPowershellSession(options: PowershellSessionOptions = {}):
     if (running.runTimer !== undefined) clearTimeout(running.runTimer);
     served += 1;
     let decoded: string | undefined;
-    if (ok) {
+    if (status === '1') {
       try { decoded = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(payload, 'base64')); }
       catch { decoded = undefined; }
     }
-    if (decoded === undefined) {
-      consecutiveFailures += 1;
-      running.reject(new Error(ok ? 'POWERSHELL_SESSION_ENCODING' : 'POWERSHELL_SESSION_COMMAND_FAILED'));
-      // An interpreter that answers every request with a failure is wedged, not busy: the frame
-      // came back, so nothing else here will ever kill it. The most likely cause is a prologue
-      // that did not take, and the only repair is a different interpreter -- so a run of
-      // consecutive failures retires this one, and the next caller starts a fresh process
-      // instead of meeting the same broken session for the rest of its five-minute lifetime.
-      if (consecutiveFailures >= settings.maxConsecutiveFailures) retire('POWERSHELL_SESSION_WEDGED');
-    } else {
+    if (decoded !== undefined) {
       consecutiveFailures = 0;
       running.resolve(decoded);
+      pump();
+      return;
+    }
+    running.reject(new Error(status === '0' ? 'POWERSHELL_SESSION_COMMAND_FAILED'
+      : status === '2' ? 'POWERSHELL_SESSION_WRAPPER_FAILED' : 'POWERSHELL_SESSION_ENCODING'));
+    // Only a failure the *wrapper* owns is evidence about the interpreter. A script failure is
+    // not: `Get-Acl` throws for a path that no longer exists or whose ACL this process may not
+    // read, both of which `windows-acl-batch.ts` already treats as routine enough to isolate per
+    // path -- and a rotation renaming a log file out from under a check is exactly what
+    // `logs.test.ts` constructs. Counting those would SIGKILL a healthy interpreter every third
+    // refusal and pay a cold start to replace it, which is the cost this whole unit exists to
+    // remove. An undecodable payload does count: the frame builds it with
+    // `ToBase64String(UTF8.GetBytes(...))`, so a well-behaved interpreter cannot produce one and
+    // no script-level condition can cause it either.
+    if (status !== '0') {
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= settings.maxConsecutiveFailures) retire('POWERSHELL_SESSION_WEDGED');
     }
     pump();
   }
@@ -240,10 +268,10 @@ export function createPowershellSession(options: PowershellSessionOptions = {}):
       buffer = buffer.slice(newline + 1);
       // The payload group is optional because an empty base64 body leaves a trailing space that
       // a console or a trim can eat; a framed failure with no output is still a framed failure.
-      const match = /^([0-9a-f]{32}) ([01])(?: ([A-Za-z0-9+/=]*))?$/.exec(line);
+      const match = /^([0-9a-f]{32}) ([0-2])(?: ([A-Za-z0-9+/=]*))?$/.exec(line);
       // Anything that is not a response frame is a diagnostic the script wrote to the console.
       // It is discarded rather than parsed: only a framed line can settle a request.
-      if (match !== null) { settle(match[1]!, match[2] === '1', match[3] ?? ''); return; }
+      if (match !== null) { settle(match[1]!, match[2]!, match[3] ?? ''); return; }
       newline = buffer.indexOf('\n');
     }
   }

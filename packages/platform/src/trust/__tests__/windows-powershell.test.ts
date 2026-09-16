@@ -106,6 +106,19 @@ describe('createWindowsAclReader command construction', () => {
     });
     await reader('C:\\x');
     expect(capturedCommand).toContain('Import-Module -Name "$PSHOME\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1"');
+    // Every command this script names is module-qualified, and this is the only place it can be
+    // pinned: the pooled session carries this script base64-encoded, so a regex over what the
+    // session writes structurally cannot see it. PowerShell resolves alias before function before
+    // cmdlet, and a long-lived session makes a shadowing definition permanent -- `Get-Acl` is the
+    // one call whose answer *is* the trust decision, so an unqualified one must not pass review
+    // with every test still green.
+    expect(capturedCommand).toContain('Microsoft.PowerShell.Security\\Get-Acl -LiteralPath');
+    expect(capturedCommand).toContain('Microsoft.PowerShell.Core\\ForEach-Object');
+    expect(capturedCommand).toContain('Microsoft.PowerShell.Utility\\ConvertTo-Json');
+    for (const command of ['Get-Acl', 'Import-Module', 'ForEach-Object', 'ConvertTo-Json']) {
+      expect(`${command} unqualified: ${String(new RegExp(`(?<![\\\\])\\b${command}\\b`).test(capturedCommand ?? ''))}`)
+        .toBe(`${command} unqualified: false`);
+    }
     expect(capturedCommand?.indexOf('Import-Module')).toBeLessThan(capturedCommand?.indexOf('Get-Acl') ?? -1);
   });
 });

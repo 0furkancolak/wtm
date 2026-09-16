@@ -12,10 +12,11 @@ interface FakeChild {
   readonly writes: string[];
   kills: number;
   emit(key: string, value?: unknown): void;
-  answer(token: string, value: string, ok?: boolean): void;
+  answer(token: string, value: string, status?: '0' | '1' | '2'): void;
 }
 
-type Responder = (script: string, token: string) => { ok?: boolean; out: string } | undefined;
+/** `status`: '1' ran, '0' the script threw, '2' the wrapper threw before it ever ran. */
+type Responder = (script: string, token: string) => { status?: '0' | '1' | '2'; out: string } | undefined;
 
 function frameOf(line: string): { token: string; script: string } | undefined {
   const token = /'([0-9a-f]{32}) '/.exec(line)?.[1];
@@ -36,8 +37,8 @@ function fakePowershell(respond?: Responder): { children: FakeChild[]; spawn: Po
     function emit(key: string, value?: unknown): void {
       for (const listener of [...(handlers.get(key) ?? [])]) listener(value);
     }
-    function answer(token: string, value: string, ok = true): void {
-      emit('stdout:data', Buffer.from(`${token} ${ok ? '1' : '0'} ${Buffer.from(value, 'utf8').toString('base64')}\n`));
+    function answer(token: string, value: string, status: '0' | '1' | '2' = '1'): void {
+      emit('stdout:data', Buffer.from(`${token} ${status} ${Buffer.from(value, 'utf8').toString('base64')}\n`));
     }
     const child = {
       writes, kills: 0, emit, answer,
@@ -47,7 +48,7 @@ function fakePowershell(respond?: Responder): { children: FakeChild[]; spawn: Po
           const parsed = frameOf(chunk);
           if (respond === undefined || parsed === undefined) return true;
           const reply = respond(parsed.script, parsed.token);
-          if (reply !== undefined) queueMicrotask(() => { answer(parsed.token, reply.out, reply.ok ?? true); });
+          if (reply !== undefined) queueMicrotask(() => { answer(parsed.token, reply.out, reply.status ?? '1'); });
           return true;
         },
         on(event: string, listener: (value: unknown) => void) { on(`stdin:${event}`, listener); },
@@ -150,7 +151,7 @@ describe('a session that dies is a refusal, never a trusted answer', () => {
   });
 
   test('a script that fails inside the session rejects instead of resolving empty output', async () => {
-    const host = fakePowershell(() => ({ ok: false, out: '' }));
+    const host = fakePowershell(() => ({ status: '0', out: '' }));
     const session = createPowershellSession({ spawn: host.spawn });
     try { await expect(session.run('Get-Acl -LiteralPath $p')).rejects.toThrow('POWERSHELL_SESSION_COMMAND_FAILED'); }
     finally { session.close(); }
@@ -210,17 +211,25 @@ describe('one call cannot reach another', () => {
     } finally { session.close(); }
   });
 
-  test('every command the session itself invokes is module-qualified', async () => {
+  test('every command the session prologue and wrapper name is module-qualified', async () => {
     // A shadowing global function or alias is the one escape that could forge an answer rather
-    // than refuse; qualification is what makes it unreachable.
+    // than refuse; qualification is what makes it unreachable. `ForEach-Object` counts as much as
+    // `Get-Acl`: it renders the script's output before `[string]::Join` sees it, so hijacking it
+    // rewrites an answer. (`aclScript`'s own qualification cannot be seen from here -- it travels
+    // base64-encoded -- and is pinned in `windows-powershell.test.ts` instead.)
     const host = fakePowershell(() => ({ out: 'ok' }));
     const session = createPowershellSession({ spawn: host.spawn });
     try {
       await session.run('x');
       const written = host.children[0]!.writes.join('');
-      expect(written).toContain('Microsoft.PowerShell.Management\\Get-Location');
-      expect(written).toContain('Microsoft.PowerShell.Management\\Set-Location');
-      expect(/(?<![\\\\])\bSet-Location\b/.test(written)).toBe(false);
+      for (const qualified of ['Microsoft.PowerShell.Management\\Get-Location',
+        'Microsoft.PowerShell.Management\\Set-Location', 'Microsoft.PowerShell.Core\\Import-Module',
+        'Microsoft.PowerShell.Core\\ForEach-Object']) expect(written).toContain(qualified);
+      for (const command of ['Get-Location', 'Set-Location', 'Import-Module', 'ForEach-Object',
+        'New-Object']) {
+        expect(`${command} unqualified: ${String(new RegExp(`(?<![\\\\])\\b${command}\\b`).test(written))}`)
+          .toBe(`${command} unqualified: false`);
+      }
     } finally { session.close(); }
   });
 
@@ -233,8 +242,11 @@ describe('one call cannot reach another', () => {
       for (const line of host.children[0]!.writes.filter((value) => frameOf(value) !== undefined)) {
         expect(line).toContain("$ErrorActionPreference = 'Stop'");
         expect(line).toContain('Set-Location -LiteralPath $WtmOrigin');
-        // The caller's script runs in its own scope, so its variables cannot outlive it.
-        expect(line).toContain('[ScriptBlock]::Create($WtmScript)');
+        // The caller's script runs in its own scope, so its implicit assignments cannot outlive
+        // it, and it is compiled inside the wrapper's own `try` so a failure to compile reports
+        // as the wrapper's, not as the script's.
+        expect(line).toContain('[ScriptBlock]::Create([System.Text.Encoding]::UTF8.GetString(');
+        expect(line).toContain('& $WtmBlock');
       }
     } finally { session.close(); }
   });
@@ -308,17 +320,20 @@ describe('nothing about the session is unbounded', () => {
     } finally { session.close(); }
   });
 
-  test('an interpreter that answers but only ever fails is retired, not kept for its lifetime', async () => {
-    // Fail-closed, but the per-call design could not get stuck this way: a prologue that did not
-    // take leaves a live interpreter failing every request for the whole session lifetime, and
-    // `COMMAND_FAILED` on its own never kills a child. The breaker is what makes "a wedged
-    // session is replaced" true for the alive case too.
+  test('an interpreter whose wrapper keeps failing is retired, not kept for its lifetime', async () => {
+    // Fail-closed, but the per-call design could not get stuck this way: an interpreter whose
+    // wrapper throws before the script ever runs keeps answering, and a framed failure on its own
+    // never kills a child. The breaker is what makes "a wedged session is replaced" true for the
+    // alive case too.
     let failures = 0;
-    const host = fakePowershell(() => { failures += 1; return failures <= 3 ? { ok: false, out: '' } : { out: 'ok' }; });
+    const host = fakePowershell(() => {
+      failures += 1;
+      return failures <= 3 ? { status: '2' as const, out: '' } : { out: 'ok' };
+    });
     const session = createPowershellSession({ spawn: host.spawn, maxConsecutiveFailures: 3 });
     try {
       for (let call = 0; call < 3; call++) {
-        await expect(session.run('x')).rejects.toThrow('POWERSHELL_SESSION_COMMAND_FAILED');
+        await expect(session.run('x')).rejects.toThrow('POWERSHELL_SESSION_WRAPPER_FAILED');
       }
       expect(host.children).toHaveLength(1);
       expect(host.children[0]!.kills).toBe(1);
@@ -328,13 +343,53 @@ describe('nothing about the session is unbounded', () => {
     } finally { session.close(); }
   });
 
-  test('a success between failures resets the breaker, so ordinary refusals never recycle a good session', async () => {
+  test('ordinary ACL refusals never recycle a healthy interpreter, however many arrive in a row', async () => {
+    // The regression this pins: `aclScript` runs under `$ErrorActionPreference = 'Stop'`, so a
+    // path that no longer exists or whose ACL this process may not read makes `Get-Acl` throw and
+    // the script fail. Those are routine -- `windows-acl-batch.ts` isolates each path for exactly
+    // this population, and `logs.test.ts`'s rotation tests rename a log file out from under a
+    // check on purpose. Counting them would SIGKILL a healthy interpreter every third refusal and
+    // pay a cold start to replace it, turning a refusal-heavy workload into the per-call cost
+    // this unit exists to remove.
+    const host = fakePowershell(() => ({ status: '0' as const, out: '' }));
+    const session = createPowershellSession({ spawn: host.spawn, maxConsecutiveFailures: 3 });
+    try {
+      for (let call = 0; call < 20; call++) {
+        await expect(session.run('x')).rejects.toThrow('POWERSHELL_SESSION_COMMAND_FAILED');
+      }
+      expect(host.children).toHaveLength(1);
+      expect(host.children[0]!.kills).toBe(0);
+    } finally { session.close(); }
+  });
+
+  test('an undecodable payload counts toward the breaker, because no script can cause one', async () => {
+    // The frame builds its payload with `ToBase64String(UTF8.GetBytes(...))`, so a well-behaved
+    // interpreter cannot emit invalid UTF-8 and no script-level condition can either.
+    const host = fakePowershell();
+    const session = createPowershellSession({ spawn: host.spawn, maxConsecutiveFailures: 2 });
+    try {
+      for (let call = 0; call < 2; call++) {
+        const pending = session.run('x');
+        await Promise.resolve();
+        const child = host.children.at(-1)!;
+        const token = frameOf(child.writes.at(-1)!)!.token;
+        child.emit('stdout:data', Buffer.from(`${token} 1 ${Buffer.from([0xff, 0xfe]).toString('base64')}\n`));
+        await expect(pending).rejects.toThrow('POWERSHELL_SESSION_ENCODING');
+      }
+      expect(host.children[0]!.kills).toBe(1);
+    } finally { session.close(); }
+  });
+
+  test('a success between wrapper failures resets the breaker', async () => {
     let call = 0;
-    const host = fakePowershell(() => { call += 1; return call % 2 === 1 ? { ok: false, out: '' } : { out: 'ok' }; });
+    const host = fakePowershell(() => {
+      call += 1;
+      return call % 2 === 1 ? { status: '2' as const, out: '' } : { out: 'ok' };
+    });
     const session = createPowershellSession({ spawn: host.spawn, maxConsecutiveFailures: 3 });
     try {
       for (let index = 0; index < 8; index++) {
-        if (index % 2 === 0) await expect(session.run('x')).rejects.toThrow('POWERSHELL_SESSION_COMMAND_FAILED');
+        if (index % 2 === 0) await expect(session.run('x')).rejects.toThrow('POWERSHELL_SESSION_WRAPPER_FAILED');
         else expect(await session.run('x')).toBe('ok');
       }
       expect(host.children).toHaveLength(1);

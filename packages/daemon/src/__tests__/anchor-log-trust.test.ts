@@ -115,7 +115,10 @@ test.skipIf(process.platform !== 'win32')('Windows refuses to rename a log direc
       .catch((error: NodeJS.ErrnoException) => { code = error.code ?? error.message; throw error; })).rejects.toThrow();
     // Recorded, not merely non-null: the value is the measurement this test exists to publish, so
     // a refusal with an unexpected errno fails here and prints the one the host actually gave.
-    expect(['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY']).toContain(code);
+    // Only the spellings of an open-handle refusal. `ENOTEMPTY` would be renaming *onto* a
+    // populated directory and the destination does not exist here, so admitting it could only let
+    // an unrelated failure masquerade as confirmation of the claim that carries the skip above.
+    expect(['EPERM', 'EACCES', 'EBUSY']).toContain(code);
   } finally { allowed.resolve(evidence(requested)); await run.close(); }
 });
 

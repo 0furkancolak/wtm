@@ -60,7 +60,7 @@ const defaultRunPowershell: PowershellRunner = createPooledPowershellRunner({
  * proved works, regardless of what else is installed on the host or how it orders `PSModulePath`.
  */
 function importSecurityModuleByExplicitPath(): string {
-  return `Import-Module -Name "$PSHOME\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1"`;
+  return `Microsoft.PowerShell.Core\\Import-Module -Name "$PSHOME\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1"`;
 }
 
 /**
@@ -90,11 +90,11 @@ function aclScript(path: string): string {
     `$descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)`,
     `$daclPresent = ($null -ne $descriptor.DiscretionaryAcl) -and (($descriptor.ControlFlags -band [System.Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -ne 0)`,
     `$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value`,
-    `$rules = $acl.Access | ForEach-Object {`,
+    `$rules = $acl.Access | Microsoft.PowerShell.Core\\ForEach-Object {`,
     `  $sid = try { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { $_.IdentityReference.Value }`,
     `  [PSCustomObject]@{ Sid = $sid; Rights = $_.FileSystemRights.ToString(); ControlType = $_.AccessControlType.ToString() }`,
     `}`,
-    `[PSCustomObject]@{ DaclPresent = $daclPresent; OwnerSid = $owner; AccessRules = @($rules) } | ConvertTo-Json -Depth 5 -Compress`,
+    `[PSCustomObject]@{ DaclPresent = $daclPresent; OwnerSid = $owner; AccessRules = @($rules) } | Microsoft.PowerShell.Utility\\ConvertTo-Json -Depth 5 -Compress`,
   ].join('; ');
 }
 
