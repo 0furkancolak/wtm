@@ -83,6 +83,18 @@ export const groupStats: Readonly<Record<string, string>> = {
  */
 export const macosInspectLine = '50437 Ss   Tue Sep  1 21:27:02 2026 /bin/zsh /bin/zsh -c echo hello\n';
 
+/**
+ * The same `ps` invocation against a process that began exiting between `ps`'s own two reads: the
+ * `KERN_PROC` snapshot it lists from, and the per-process `KERN_PROCARGS2` it reads arguments with.
+ * The snapshot still carries a live state — here `R<s`, no `E`, no `Z`, confirmed in CI run
+ * `34896095080` — while `KERN_PROCARGS2` already refuses, and `getproclline()` substitutes
+ * `(<p_comm>)` for the entire argument buffer, so the `comm` and `command` columns come out
+ * identical. That run's `firstMismatch` entry is where the pid, the `lstart` and the state below
+ * come from, and it recorded both column hashes as `sha256("(node)")` with `commandBytes: 6`. This
+ * is the line shape the daemon meets a few milliseconds after it sends its own task `SIGTERM`.
+ */
+export const macosExitingInspectLine = '69874 R<s  Mon Sep 14 21:04:18 2026 (node) (node)\n';
+
 /** `ps -ww -p <pid> -o lstart=` on macOS 15, including the trailing padding `ps` emits. */
 export const macosLstartLine = 'Tue Sep  1 21:27:02 2026    \n';
 

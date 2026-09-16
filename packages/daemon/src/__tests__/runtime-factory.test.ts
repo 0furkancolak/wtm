@@ -5,7 +5,9 @@ import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { join as posixJoin } from 'node:path/posix';
 import { fileURLToPath } from 'node:url';
 import type { DaemonStateStore } from '@wtm/core';
-import { UnsupportedPlatformError, selectPlatformRuntime } from '@wtm/platform';
+import {
+  UnsupportedPlatformError, createDarwinProcessPlatform, observedCommandFingerprint, selectPlatformRuntime,
+} from '@wtm/platform';
 import type { PlatformRuntime } from '@wtm/platform/ports';
 import { DaemonSocketPathTooLongError, daemonSocketFileName } from '@wtm/platform/socket';
 import { isolatedHomeEnvironment } from '../../../testkit/src/isolated-home';
@@ -502,5 +504,230 @@ describe('the production factory supervises through the runtime process port', (
     expect(inspected).toContain(4242);
     expect(inspectedGroups).toContain(4242);
     expect(stateStore.getManagedProcess(record.id)?.state).toBe('STOPPED');
+  });
+
+  /**
+   * The flake behind the two `production daemon composition` tests that drive
+   * `runtime-factory.scenario.ts`, replayed through the real macOS reader rather than a stub,
+   * because the bug was in the reader.
+   *
+   * macOS `ps` reads the process table once (`KERN_PROC`) and then asks `KERN_PROCARGS2` per
+   * process. A task that begins exiting between those two reads is still in the snapshot with a
+   * live state while `KERN_PROCARGS2` already refuses, and Apple's `getproclline()` then
+   * substitutes `(<p_comm>)` for the whole argument buffer — so both the `comm` and the `command`
+   * column come out as the same short name. A fingerprint of `(node) (node)` is not the recorded
+   * fingerprint, and reading it as an identity is how `stop` came to answer
+   * `RUNTIME_PROCESS_IDENTITY_STALE` for the very process it had just stopped.
+   *
+   * CI run 34896095080 (`Validate darwin x64`, head `c8eaf5b`) caught one, and its `firstMismatch`
+   * entry is what these two tests replay: `state: "R<s"` — live, no `E`, no `Z`, so the reader's
+   * zombie check never fired — with `commHash` and `commandHash` both
+   * `sha256("(node)")` and `commandBytes: 6`, against `238` and the correct fingerprint in the
+   * three readings before it. `processStartTime` and `pgid` are byte-identical in every reading
+   * including the bad one, which is what rules out start-time granularity, clock resolution and
+   * pgid drift; the anchor's `completion` record puts the bad reading 17 ms after it took SIGTERM,
+   * which is far too little for PID reuse to reproduce the same `lstart` and pgid.
+   *
+   * Neither test waits on wall-clock time for its *outcome*: the `ps` answers are a state machine
+   * the supervisor's own bounded polls drive, so the assertions hold on any host.
+   */
+  describe('a ps reading whose arguments the kernel would not hand over', () => {
+    const pid = 69874;
+    const start = 'Mon Sep 14 21:04:18 2026';
+    const node = '/Users/runner/hostedtoolcache/node/24.18.0/x64/bin/node';
+    const command = `${node} --import tsx anchor.ts ${'a'.repeat(64)}`;
+    /** The three good readings: `commandBytes: 238`-shaped, fingerprint intact. */
+    const liveLine = `${String(pid)} S<s  ${start} ${node} ${command}\n`;
+    /** The bad reading, in the shape and state the runner reported. */
+    const unreadableLine = `${String(pid)} R<s  ${start} (node) (node)\n`;
+    const listing = (present: boolean) =>
+      present ? `    1     1 Ss\n${String(pid)} ${String(pid)} R<s\n` : '    1     1 Ss\n';
+    const psAbsent = () => Object.assign(new Error('ps'), { code: 1, stdout: '', stderr: '' });
+    const delay = (milliseconds: number) =>
+      new Promise<void>((resolve) => { setTimeout(resolve, milliseconds); });
+
+    interface StopReplay {
+      readonly state: string;
+      readonly recordState: string | undefined;
+      readonly signals: readonly { pgid: number; signal: NodeJS.Signals }[];
+    }
+
+    /**
+     * One real `createProductionDaemon` over one real `createDarwinProcessPlatform`, reading the
+     * `ps` answers the caller's state machine serves. Only the answers differ between the two
+     * tests; everything the supervisor does with them is production code.
+     */
+    async function stopThroughDarwinReader(options: {
+      gracePeriodMs: number;
+      pollIntervalMs: number;
+      runCommand: (file: string, args: readonly string[]) => Promise<{ stdout: string }>;
+      onSignal: (pgid: number, signal: NodeJS.Signals) => void;
+    }): Promise<StopReplay> {
+      const signals: { pgid: number; signal: NodeJS.Signals }[] = [];
+      const darwinProcess = createDarwinProcessPlatform({
+        runCommand: async (file, args) => await options.runCommand(file, args),
+      });
+      const platformRuntime: PlatformRuntime = {
+        ...selectPlatformRuntime({ platform: 'darwin', home: '/Users/somebody', env: {} }),
+        process: {
+          ...darwinProcess,
+          // Recorded rather than asserted here: an `expect` thrown inside the supervisor's own
+          // try/catch comes back as RUNTIME_STOP_FAILED instead of a readable assertion.
+          signalProcessGroup: (pgid, signal) => { signals.push({ pgid, signal }); options.onSignal(pgid, signal); },
+        },
+      };
+      const dataRoot = mkdtempSync(join(shortTmpRoot(), 'wtm-exiting-'));
+      const stateStore = new MemoryManagedProcessStore();
+      stateStore.reserveManagedProcessStart('worktree-1', 'hold', 'token', new Date().toISOString());
+      const record = stateStore.createManagedProcess({
+        worktreeId: 'worktree-1', taskName: 'hold', pid, pgid: pid, processStartTime: start,
+        commandFingerprint: observedCommandFingerprint(node, command),
+        state: 'RUNNING', startedAt: new Date().toISOString(), stoppedAt: null,
+        stdoutPath: join(dataRoot, 'out.log'), stderrPath: join(dataRoot, 'err.log'),
+      }, { reservationToken: 'token' });
+      try {
+        const runtime = await createProductionDaemon({
+          dataRoot,
+          socketPath: join(dataRoot, 'wtmd.sock'),
+          logRoot: join(dataRoot, 'logs'),
+          platformRuntime,
+          stateStore: stateStore as unknown as DaemonStateStore,
+          gracePeriodMs: options.gracePeriodMs,
+          pollIntervalMs: options.pollIntervalMs,
+        });
+        try {
+          const stopped = await runtime.supervisor.stop({ worktreeId: 'worktree-1', taskName: 'hold' });
+          return {
+            state: stopped.state,
+            recordState: stateStore.getManagedProcess(record.id)?.state,
+            signals,
+          };
+        } finally { await runtime.close(); }
+      } finally {
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    }
+
+    /**
+     * The path CI actually took, per the run-34896095080 trace: the task outlived the grace budget,
+     * so `waitForOwnedGroupChange` ran out its deadline with the identity present and answered
+     * `alive` (`process-supervisor.ts:758`), and the bad reading landed on the pre-SIGKILL
+     * `inspectWithRetry` at `:583`, which turned it into `STALE_IDENTITY` at `:596`.
+     *
+     * Reproducing that needs the wait loop to turn exactly once, and nothing here is allowed to
+     * *guess* when it has: an earlier version opened the exit window at
+     * `Date.now() >= sigtermAt + gracePeriodMs`, which is a different clock from the loop's own
+     * `Date.now() + timeoutMs` taken at `:742`, and on a loaded CI runner the window opened while
+     * the loop was still turning — `waitForOwnedGroupChange` answered `failed` at `:745-746` and
+     * the stop died with `PROCESS_INSPECTION_FAILED` (PR #18, `Validate linux x64`).
+     *
+     * So the loop's exit is made structural instead. The group listing takes a real timer longer
+     * than the whole grace budget, and `waitForOwnedGroupChange` serves that listing *after* the
+     * inspect of the same turn and then checks its deadline — which the listing has therefore
+     * already blown. One turn, and load can only make the margin larger, because a timer never
+     * fires early. The stub then keys its answers off *how many listings it has served*, never off
+     * a clock: everything before the first listing is inside the loop, everything after it is the
+     * `:583` retry.
+     *
+     * The trace is asserted first, and in order, because that is how the branch was identified in
+     * CI: the `mismatch` branch at `:576` lists the group at `:577` before it transitions at
+     * `:579`, and no group listing follows the bad reading — in the log, or here. Asserting it
+     * ahead of the state keeps a regression's *reported* failure branch-specific rather than the
+     * `STOPPED`/`STALE_IDENTITY` line both cases would print.
+     */
+    test('a stop past its grace budget retries the unreadable reading instead of calling the task stale', async () => {
+      const gracePeriodMs = 150;
+      /** Longer than the whole grace budget, so the listing that ends a turn also ends the loop. */
+      const listingDelayMs = gracePeriodMs * 2;
+      let phase: 'running' | 'gone' = 'running';
+      let listingsServed = 0;
+      let unreadableServed = false;
+      const trace: string[] = [];
+      const replay = await stopThroughDarwinReader({
+        gracePeriodMs,
+        pollIntervalMs: 5,
+        onSignal: () => {},
+        runCommand: async (_file, args) => {
+          if (args.includes('-axo')) {
+            trace.push('group');
+            listingsServed += 1;
+            const stdout = listing(phase !== 'gone');
+            await delay(listingDelayMs);
+            return { stdout };
+          }
+          // Before the first listing the reader is either `#stopLocked`'s pre-SIGTERM inspect or
+          // the wait loop's own — both must see a live, matching task. After it the loop is over,
+          // so the next inspect is the pre-SIGKILL `inspectWithRetry` at `:583`.
+          if (listingsServed === 0) { trace.push('inspect:live'); return { stdout: liveLine }; }
+          // One `(node) (node)` answer, then the zombie is reaped. Until the pid itself has been
+          // seen gone the group listing still shows the anchor, exactly as it did in CI — so the
+          // outcome cannot come from the group having quietly emptied.
+          if (!unreadableServed) {
+            unreadableServed = true;
+            trace.push('inspect:unreadable');
+            return { stdout: unreadableLine };
+          }
+          phase = 'gone';
+          trace.push('inspect:absent');
+          throw psAbsent();
+        },
+      });
+
+      expect(replay.signals).toEqual([{ pgid: pid, signal: 'SIGTERM' }]);
+      // First, because it is the assertion that names the branch: the bad reading really was
+      // served, and the absent retry follows it with no listing in between. `:576`'s `mismatch`
+      // would have listed the group at `:577` before transitioning, so a regression that goes that
+      // way reports this line rather than a bare `STOPPED`/`STALE_IDENTITY`.
+      expect(trace.slice(trace.indexOf('inspect:unreadable')))
+        .toEqual(['inspect:unreadable', 'inspect:absent', 'group']);
+      // Exactly two listings: the wait loop's single turn, and the one `:591` takes once the retry
+      // has seen the task gone. A third would mean the loop turned again and the bad reading landed
+      // inside it — the flake this shape exists to rule out.
+      expect(trace.filter((entry) => entry === 'group')).toHaveLength(2);
+      expect(replay.state).toBe('STOPPED');
+      expect(replay.recordState).toBe('STOPPED');
+    });
+
+    /**
+     * The same unreadable reading one branch earlier: here the task dies inside the grace budget,
+     * so the bad answer arrives while `waitForOwnedGroupChange` is still polling and the group is
+     * still listed. Before the fix that is the `mismatch` branch at `process-supervisor.ts:576` —
+     * `#inspectGroup` at `:577` says the group is present, and `:579` answers `STALE_IDENTITY`. CI
+     * did not take this path, but the reader cannot tell the two apart and neither should the
+     * outcome.
+     */
+    test('a stop inside its grace budget retries the unreadable reading instead of calling the task stale', async () => {
+      let phase: 'running' | 'exiting' | 'gone' = 'running';
+      let unreadableServed = false;
+      const trace: string[] = [];
+      const replay = await stopThroughDarwinReader({
+        gracePeriodMs: 1_000,
+        pollIntervalMs: 5,
+        onSignal: () => { phase = 'exiting'; },
+        runCommand: async (_file, args) => {
+          if (args.includes('-axo')) {
+            trace.push('group');
+            return { stdout: listing(phase !== 'gone') };
+          }
+          if (phase === 'running') { trace.push('inspect:live'); return { stdout: liveLine }; }
+          // One `(node) (node)` answer, then the zombie is reaped. Until the pid itself has been
+          // seen gone the group listing still shows the anchor, exactly as it did in CI — which is
+          // what makes the pre-fix answer `STALE_IDENTITY` rather than `STOPPED`.
+          if (!unreadableServed) {
+            unreadableServed = true;
+            trace.push('inspect:unreadable');
+            return { stdout: unreadableLine };
+          }
+          phase = 'gone';
+          trace.push('inspect:absent');
+          throw psAbsent();
+        },
+      });
+
+      expect(replay.signals).toEqual([{ pgid: pid, signal: 'SIGTERM' }]);
+      expect(trace).toContain('inspect:unreadable');
+      expect(replay.state).toBe('STOPPED');
+      expect(replay.recordState).toBe('STOPPED');
+    });
   });
 });
