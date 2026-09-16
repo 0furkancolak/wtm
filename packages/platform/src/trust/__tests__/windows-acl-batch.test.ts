@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { type ChildProcessWithoutNullStreams, type spawn } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { createWindowsAclBatchReader, readWindowsAclBatch } from '../windows-acl-batch';
+import { createWindowsFileTrustPolicy } from '../windows';
 
 const sid = 'S-1-5-21-42';
 const acl = { OwnerSid: sid, DaclPresent: true,
@@ -98,4 +99,32 @@ test('the production stdout boundary rejects invalid UTF-8 instead of replacemen
   const target = bytes.indexOf('FullControl'); bytes[target] = 0xff;
   child.stdout.write(bytes); child.emit('close', 0);
   await expect(pending).rejects.toThrow('WINDOWS_ACL_BATCH_ENCODING');
+});
+
+test('one unreadable path in a batch refuses only itself, and decides nothing for the others', async () => {
+  const paths = ['C:\\logs\\gone', 'C:\\logs\\kept'];
+  const batch = await readWindowsAclBatch(paths, { run: async (script) => {
+    // The per-path inspection is isolated in the script itself, not by a pipeline-wide Stop.
+    expect(script).toContain('} catch { $value = $null }');
+    return JSON.stringify({ CurrentSid: sid,
+      Entries: [{ Path: paths[0], Acl: null }, { Path: paths[1], Acl: acl }] });
+  } });
+  expect(batch.acls.has(paths[0]!)).toBe(false);
+  expect(batch.acls.get(paths[1]!)).toEqual({ ownerSid: sid,
+    accessRules: [{ identitySid: sid, fileSystemRights: 'FullControl', accessControlType: 'Allow' }] });
+
+  // "No evidence" is a refusal for that path, never an allowance, and never a blanket one.
+  const policy = createWindowsFileTrustPolicy({ readAcl: async (target) => batch.acls.get(target),
+    currentUserSid: async () => batch.currentSid });
+  const stat = { uid: 0, mode: 0, nlink: 1 };
+  expect(await policy.isOwnedByCurrentUser(stat, paths[0]!)).toBe(false);
+  expect(await policy.isWritableOnlyByOwner(stat, paths[0]!, 0o077)).toBe(false);
+  expect(await policy.isOwnedByCurrentUser(stat, paths[1]!)).toBe(true);
+  expect(await policy.isWritableOnlyByOwner(stat, paths[1]!, 0o077)).toBe(true);
+});
+
+test('a record missing its ACL key is malformed, not an unreadable path, and fails the batch', async () => {
+  await expect(readWindowsAclBatch(['a'], {
+    run: async () => JSON.stringify({ CurrentSid: sid, Entries: [{ Path: 'a' }] }),
+  })).rejects.toThrow('WINDOWS_ACL_BATCH_INVALID');
 });

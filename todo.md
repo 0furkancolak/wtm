@@ -1641,6 +1641,13 @@ wtm-windows-arm64.exe
       win32_test_filter="..."` ile hedeflenen test dosyalarını sadece win32 leg'inde, diğer dört
       leg'i ve e2e/build/package/binary adımlarını atlayarak 25 dakikalık sınır içinde yeşile
       kanıtlamak mümkün. Ayrıntı: `docs/12-open-source-distribution.md`.
+      **2026-09-16 (W2-2 / 9c):** win32 leg'inin en büyük tek gideri olan "her ACL çağrısında
+      soğuk `powershell.exe` başlatma" kaldırıldı: `packages/platform/src/trust/`
+      `windows-powershell-session.ts` tek bir uzun ömürlü `powershell.exe -Command -` oturumunu
+      paylaşıyor; güven cevabı aynı (oturum ölümü/timeout reddir, asla "güvenli" değil), yol
+      artık script metnine değil base64 veriye gidiyor, ve istek/kuyruk/ömür/boşta/çıktı sınırları
+      açık. `ci.yml`'deki 300000 ms win32 test timeout'u bu maddeyle birlikte tekrar
+      değerlendirilebilir. `logs.test.ts`'in win32 süresi CI kanıtı bekliyor.
 - [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
 - [ ] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
       `plistPath` macOS'a özel bir ek alan olarak bilerek duruyor (D11), kaldırılması daemon JSON

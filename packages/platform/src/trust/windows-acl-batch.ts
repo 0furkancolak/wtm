@@ -29,14 +29,24 @@ function batchScript(paths: readonly string[]): string {
     '$OutputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)',
     'Import-Module -Name "$PSHOME\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1"',
     `$paths = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json`,
+    // Each path's inspection is isolated. One path that cannot be read at all (it was removed
+    // between the operation's stat and this call, or the process may not read its ACL) reports a
+    // null ACL for that path only: it leaves the batch without evidence for it, which every
+    // caller reads as "not trusted", and it does not decide the other paths either way. The
+    // alternative -- letting `$ErrorActionPreference = 'Stop'` abort the pipeline -- turned one
+    // path's ordinary absence into a blanket verdict over the whole operation.
     '$entries = @($paths | ForEach-Object {',
     '  $path = $_',
-    '  $acl = Get-Acl -LiteralPath $path',
-    '  $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)',
-    '  $rules = @($acl.Access | ForEach-Object {',
-    '    [PSCustomObject]@{ Sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; Rights = $_.FileSystemRights.ToString(); ControlType = $_.AccessControlType.ToString() }',
-    '  })',
-    '  [PSCustomObject]@{ Path = $path; Acl = [PSCustomObject]@{ OwnerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; DaclPresent = (($null -ne $descriptor.DiscretionaryAcl) -and (($descriptor.ControlFlags -band [System.Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -ne 0)); AccessRules = $rules } }',
+    '  $value = $null',
+    '  try {',
+    '    $acl = Get-Acl -LiteralPath $path',
+    '    $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)',
+    '    $rules = @($acl.Access | ForEach-Object {',
+    '      [PSCustomObject]@{ Sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; Rights = $_.FileSystemRights.ToString(); ControlType = $_.AccessControlType.ToString() }',
+    '    })',
+    '    $value = [PSCustomObject]@{ OwnerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; DaclPresent = (($null -ne $descriptor.DiscretionaryAcl) -and (($descriptor.ControlFlags -band [System.Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -ne 0)); AccessRules = $rules }',
+    '  } catch { $value = $null }',
+    '  [PSCustomObject]@{ Path = $path; Acl = $value }',
     '})',
     '[PSCustomObject]@{ CurrentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; Entries = $entries } | ConvertTo-Json -Depth 8 -Compress',
   ].join('\n');
@@ -117,9 +127,16 @@ async function readBatch(paths: readonly string[], options: WindowsAclBatchOptio
     if (typeof record.CurrentSid !== 'string' || !/^S-\d+(?:-\d+)+$/.test(record.CurrentSid)
       || !Array.isArray(record.Entries) || record.Entries.length !== expected.size) throw new Error('WINDOWS_ACL_BATCH_INVALID');
     const acls = new Map<string, WindowsPathAcl>();
+    const seen = new Set<string>();
     for (const entry of record.Entries) {
       if (entry === null || typeof entry !== 'object' || typeof entry.Path !== 'string'
-        || !expected.has(entry.Path) || acls.has(entry.Path)) throw new Error('WINDOWS_ACL_BATCH_INVALID');
+        || !expected.has(entry.Path) || seen.has(entry.Path)) throw new Error('WINDOWS_ACL_BATCH_INVALID');
+      seen.add(entry.Path);
+      // An explicit `null` is the script saying it could not read that one path: the batch stays
+      // valid and simply carries no evidence for it, so the policy refuses that path and decides
+      // the others normally. A *missing* key is not that statement -- it is a malformed record,
+      // and a malformed record still fails the whole batch rather than silently refusing a path.
+      if (entry.Acl === null) continue;
       const acl = parseWindowsPathAcl(entry.Acl);
       if (acl === undefined || acl.accessRules.length > 4096) throw new Error('WINDOWS_ACL_BATCH_INVALID');
       acls.set(entry.Path, acl);
