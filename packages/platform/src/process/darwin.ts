@@ -101,6 +101,9 @@ export function createDarwinProcessPlatform(
     const pgid = Number.parseInt(match[1] as string, 10);
     if (!Number.isSafeInteger(pgid) || pgid < 1) return { status: 'failed', reason: 'PS_PARSE_FAILED' };
     if ((match[2] as string).startsWith('Z')) return { status: 'absent' };
+    if (argumentsUnavailable(`${match[4] as string} ${match[5] as string}`)) {
+      return { status: 'failed', reason: 'PS_ARGUMENTS_UNAVAILABLE' };
+    }
     return { status: 'present', identity: {
       pid, pgid, processStartTime: match[3] as string,
       commandFingerprint: observedCommandFingerprint(match[4] as string, match[5] as string),
@@ -138,6 +141,22 @@ export function createDarwinProcessPlatform(
   }
 
   return { readStartTime, inspectProcess, inspectProcessGroup, signalProcessGroup };
+}
+
+/**
+ * `ps` prints `(<p_comm>)` in both the `comm` and `command` columns when the kernel will not hand it
+ * the process's arguments. For a process this daemon started, that happens in the window after the
+ * process has begun exiting and before it is a zombie — the state column need not show `E` or `Z`
+ * yet (a `macos-15` runner reported `R<s`). A fingerprint of that output is not the process's
+ * fingerprint, and comparing it would turn a child that is merely dying into a "different" process,
+ * so the reader reports that it cannot answer. The two columns are matched as one string because a
+ * short name may contain spaces, which the column regex above splits on. `p_comm` is at most 16
+ * bytes (`MAXCOMLEN`) and never empty. A live process whose real `comm` and command line are both
+ * that same parenthesised name would have to have been exec'd as exactly that; it is reported as
+ * unreadable too, which only ever makes a caller wait or refuse, never signal.
+ */
+function argumentsUnavailable(columns: string): boolean {
+  return /^(\([^\n]{1,16}\))\s+\1$/.test(columns);
 }
 
 function stableEnvironment(): NodeJS.ProcessEnv { return { ...process.env, LC_ALL: 'C', LANG: 'C' }; }

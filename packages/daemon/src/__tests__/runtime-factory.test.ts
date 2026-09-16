@@ -5,7 +5,9 @@ import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { join as posixJoin } from 'node:path/posix';
 import { fileURLToPath } from 'node:url';
 import type { DaemonStateStore } from '@wtm/core';
-import { UnsupportedPlatformError, selectPlatformRuntime } from '@wtm/platform';
+import {
+  UnsupportedPlatformError, createDarwinProcessPlatform, observedCommandFingerprint, selectPlatformRuntime,
+} from '@wtm/platform';
 import type { PlatformRuntime } from '@wtm/platform/ports';
 import { DaemonSocketPathTooLongError, daemonSocketFileName } from '@wtm/platform/socket';
 import { isolatedHomeEnvironment } from '../../../testkit/src/isolated-home';
@@ -501,6 +503,79 @@ describe('the production factory supervises through the runtime process port', (
 
     expect(inspected).toContain(4242);
     expect(inspectedGroups).toContain(4242);
+    expect(stateStore.getManagedProcess(record.id)?.state).toBe('STOPPED');
+  });
+
+  /**
+   * The flake behind `default CLI client reaches the isolated production IPC address…`, replayed
+   * through the real macOS reader with the `ps` answers a `macos-15` runner gave (CI run
+   * 34896095080): the anchor takes SIGTERM, and one poll lands in the few milliseconds where it is
+   * exiting but not yet a zombie. `ps` prints `(node) (node)` for its arguments then, and a
+   * fingerprint of that is not the recorded one — so `stop` used to answer STALE_IDENTITY for the
+   * very process it had just stopped.
+   */
+  test('stop does not call its own exiting anchor stale when ps can no longer read its arguments', async () => {
+    const pid = 69874;
+    const start = 'Mon Sep 14 21:04:18 2026';
+    const node = '/Users/runner/hostedtoolcache/node/24.18.0/x64/bin/node';
+    const command = `${node} --import tsx anchor.ts ${'a'.repeat(64)}`;
+    let phase: 'running' | 'exiting' | 'gone' = 'running';
+    const answers: string[] = [];
+    const runCommand = async (_file: string, args: readonly string[]): Promise<{ stdout: string }> => {
+      const absent = () => { throw Object.assign(new Error('ps'), { code: 1, stdout: '', stderr: '' }); };
+      if (args.includes('-axo')) {
+        return { stdout: phase === 'gone' ? '    1     1 Ss\n' : `    1     1 Ss\n${String(pid)} ${String(pid)} R<s\n` };
+      }
+      answers.push(phase);
+      if (phase === 'running') return { stdout: `${String(pid)} S<s  ${start} ${node} ${command}\n` };
+      // One `(node) (node)` answer, then the zombie is reaped. Until the pid itself has been seen
+      // gone the group listing still shows the anchor, exactly as it did in CI.
+      if (phase === 'exiting' && !answers.slice(0, -1).includes('exiting')) {
+        return { stdout: `${String(pid)} R<s  ${start} (node) (node)\n` };
+      }
+      phase = 'gone';
+      return absent();
+    };
+    const darwinProcess = createDarwinProcessPlatform({ runCommand });
+    const platformRuntime: PlatformRuntime = {
+      ...selectPlatformRuntime({ platform: 'darwin', home: '/Users/somebody', env: {} }),
+      process: {
+        ...darwinProcess,
+        signalProcessGroup: (pgid, signal) => {
+          expect({ pgid, signal }).toEqual({ pgid: pid, signal: 'SIGTERM' });
+          phase = 'exiting';
+        },
+      },
+    };
+    const dataRoot = mkdtempSync(join(shortTmpRoot(), 'wtm-exiting-'));
+    const stateStore = new MemoryManagedProcessStore();
+    stateStore.reserveManagedProcessStart('worktree-1', 'hold', 'token', new Date().toISOString());
+    const record = stateStore.createManagedProcess({
+      worktreeId: 'worktree-1', taskName: 'hold', pid, pgid: pid, processStartTime: start,
+      commandFingerprint: observedCommandFingerprint(node, command),
+      state: 'RUNNING', startedAt: new Date().toISOString(), stoppedAt: null,
+      stdoutPath: join(dataRoot, 'out.log'), stderrPath: join(dataRoot, 'err.log'),
+    }, { reservationToken: 'token' });
+    let stopped: { state: string } | undefined;
+    try {
+      const runtime = await createProductionDaemon({
+        dataRoot,
+        socketPath: join(dataRoot, 'wtmd.sock'),
+        logRoot: join(dataRoot, 'logs'),
+        platformRuntime,
+        stateStore: stateStore as unknown as DaemonStateStore,
+        gracePeriodMs: 1_000,
+        pollIntervalMs: 5,
+      });
+      try { stopped = await runtime.supervisor.stop({ worktreeId: 'worktree-1', taskName: 'hold' }); }
+      finally { await runtime.close(); }
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+
+    // The exiting answer really was served — otherwise this passes without exercising anything.
+    expect(answers).toContain('exiting');
+    expect(stopped?.state).toBe('STOPPED');
     expect(stateStore.getManagedProcess(record.id)?.state).toBe('STOPPED');
   });
 });

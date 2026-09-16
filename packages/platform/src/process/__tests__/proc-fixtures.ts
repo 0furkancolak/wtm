@@ -83,6 +83,15 @@ export const groupStats: Readonly<Record<string, string>> = {
  */
 export const macosInspectLine = '50437 Ss   Tue Sep  1 21:27:02 2026 /bin/zsh /bin/zsh -c echo hello\n';
 
+/**
+ * The same `ps` invocation against a process that has begun exiting but is not a zombie yet. macOS
+ * can no longer hand `ps` the process's arguments at that point, so `ps` prints the kernel's short
+ * name in parentheses in both columns. The state shape (`R<s`, no `Z`, no `E`) is the one a
+ * `macos-15` runner reported in CI run 34896095080, a few milliseconds after the anchor recorded
+ * its SIGTERM completion; the pid and name are the ones from that run.
+ */
+export const macosExitingInspectLine = '69874 R<s  Mon Sep 14 21:04:18 2026 (node) (node)\n';
+
 /** `ps -ww -p <pid> -o lstart=` on macOS 15, including the trailing padding `ps` emits. */
 export const macosLstartLine = 'Tue Sep  1 21:27:02 2026    \n';
 

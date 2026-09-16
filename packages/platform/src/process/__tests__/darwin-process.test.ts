@@ -4,7 +4,7 @@ import { observedCommandFingerprint } from '../identity';
 import {
   createDarwinProcessPlatform, type DarwinCommandOptions, type DarwinCommandRunner,
 } from '../darwin';
-import { macosInspectLine, macosLstartLine } from './proc-fixtures';
+import { macosExitingInspectLine, macosInspectLine, macosLstartLine } from './proc-fixtures';
 
 /**
  * These tests exist to pin behaviour that was moved, not behaviour that was designed. The macOS
@@ -71,6 +71,39 @@ describe('inspectProcess', () => {
       runCommand: stdout('50437 Z    Tue Sep  1 21:27:02 2026 /bin/zsh /bin/zsh\n'),
     });
     expect(await platform.inspectProcess(50437)).toEqual({ status: 'absent' });
+  });
+
+  /**
+   * An exiting process is neither the process the caller recorded nor a different one: its
+   * arguments are simply gone, so a fingerprint taken from `(node) (node)` would read as a changed
+   * identity and make the supervisor call its own dying child stale. The reader cannot answer, so
+   * it says so, and every supervisor caller already polls again on `failed`.
+   */
+  test('reports a process whose arguments are no longer readable as a failure, not an identity', async () => {
+    const platform = createDarwinProcessPlatform({ runCommand: stdout(macosExitingInspectLine) });
+    expect(await platform.inspectProcess(69874))
+      .toEqual({ status: 'failed', reason: 'PS_ARGUMENTS_UNAVAILABLE' });
+  });
+
+  test('recognises the unreadable-arguments form when the short name contains a space', async () => {
+    const platform = createDarwinProcessPlatform({
+      runCommand: stdout('70001 R    Mon Sep 14 21:04:18 2026 (Google Chrome He) (Google Chrome He)\n'),
+    });
+    expect(await platform.inspectProcess(70001))
+      .toEqual({ status: 'failed', reason: 'PS_ARGUMENTS_UNAVAILABLE' });
+  });
+
+  test('still identifies a live process whose command merely contains parentheses', async () => {
+    const platform = createDarwinProcessPlatform({
+      runCommand: stdout('  512 Ss   Tue Sep  1 21:27:02 2026 /usr/libexec/UserEventAgent /usr/libexec/UserEventAgent (Aqua)\n'),
+    });
+    expect(await platform.inspectProcess(512)).toEqual({
+      status: 'present',
+      identity: {
+        pid: 512, pgid: 512, processStartTime: 'Tue Sep  1 21:27:02 2026',
+        commandFingerprint: observedCommandFingerprint('/usr/libexec/UserEventAgent', '/usr/libexec/UserEventAgent (Aqua)'),
+      },
+    });
   });
 
   test('reads ps exiting 1 with silent streams as absence', async () => {
