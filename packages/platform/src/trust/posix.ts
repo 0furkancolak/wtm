@@ -17,8 +17,16 @@ export const posixFileTrustPolicy: FileTrustPolicy = {
     return Promise.resolve((stat.mode & mask) === 0);
   },
 
+  /**
+   * `nlink > 1` is the only shape that means "another name points at this inode". `nlink === 0`
+   * is an `fstat` of a descriptor whose last directory entry has already been removed — an
+   * anonymous, unreachable inode that no second name can reach, so it is the opposite of shared.
+   * Reading it as unsafe is what made a managed log reader refuse a generation marker it had
+   * opened microseconds before the anchor's rotation renamed a replacement over it, and turned a
+   * bounded retry into a hard `Unsafe managed log target` failure on macOS CI.
+   */
   isNotSharedByHardLink(stat: NodeJsStats): boolean {
-    return stat.nlink === 1;
+    return stat.nlink <= 1;
   },
 
   currentIdentityAvailable(): boolean {

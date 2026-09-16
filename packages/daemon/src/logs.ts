@@ -638,7 +638,21 @@ async function openSafeLog(path: string, fileTrust: FileTrustPolicy): Promise<Fi
     throw new Error('Unsafe managed log target', { cause: error });
   }
   try {
-    await assertSafeFileHandle(handle, path, fileTrust);
+    const opened = await assertSafeFileHandle(handle, path, fileTrust);
+    // "Not shared by a hard link" and "still reachable under this name" are two questions, and only
+    // the first belongs in the trust port: `nlink === 0` says nothing about sharing (nothing can
+    // reach an inode with no names) but everything about reachability. A writer that appended to
+    // such an orphan would lose every byte it wrote, silently. `openExistingSafeLog` asks the
+    // reachability question through its before/after identity comparison; this path, which may
+    // legitimately create the file it opens, asks it here, from the stat the assertion above
+    // already took.
+    //
+    // Unlike the reader, this path does not retry what it raises. `#open` closes what it holds and
+    // rethrows, and no caller of `open`/`prepare` catches `ManagedLogIdentityChangedError`; the
+    // bounded generation retry lives in `readCursor`. Refusing to open is the right answer here
+    // anyway -- the alternative is a handle onto bytes nobody can ever read -- but the error class
+    // is shared with a path that does retry, so this is worth saying rather than assuming.
+    if (opened.nlink === 0) throw new ManagedLogIdentityChangedError();
     await handle.chmod(0o600);
     return handle;
   } catch (error) {
@@ -769,13 +783,15 @@ function completeUtf8PrefixLength(buffer: Buffer): number {
   return buffer.byteLength - lead < expected ? lead : buffer.byteLength;
 }
 
-async function assertSafeFileHandle(handle: FileHandle, path: string, fileTrust: FileTrustPolicy): Promise<void> {
+/** Returns the stat it judged, so a caller asking a further question of it need not take another. */
+async function assertSafeFileHandle(handle: FileHandle, path: string, fileTrust: FileTrustPolicy): Promise<Stats> {
   const stat = await handle.stat();
   const unsafe = !stat.isFile()
     || !fileTrust.isNotSharedByHardLink(stat)
     || !fileTrust.currentIdentityAvailable()
     || !(await fileTrust.isOwnedByCurrentUser(stat, path));
   if (unsafe) throw new UnsafeManagedLogTargetError();
+  return stat;
 }
 
 function assertSafeIdentifier(value: string): void {

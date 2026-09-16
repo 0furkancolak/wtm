@@ -89,10 +89,15 @@ function runStandalone(
   args: readonly string[],
   options: { cwd: string; home: string; temporary: string },
 ): { status: number; stdout: string; stderr: string } {
+  // Bounded, and `SIGKILL`-ed rather than asked. This runs a freshly built, unsigned Mach-O:
+  // Gatekeeper can hold exactly such a binary with no output at all, and `spawnSync` blocks the
+  // thread bun's per-test timeout would fire on, so the wait would be the whole run's.
   const result = spawnSync(executable, [...args], {
     cwd: options.cwd,
     encoding: 'utf8',
     env: standaloneEnvironment(options),
+    timeout: 120_000,
+    killSignal: 'SIGKILL',
   });
   return { status: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
@@ -102,7 +107,7 @@ function git(cwd: string, args: readonly string[]): void {
   // Windows, and this call inherits the full test-runner environment (no `env` override), so PATH
   // already has whatever `git` the CI image installed — the same trust `quick-start.test.ts`
   // already places in a bare `git`.
-  const result = spawnSync('git', [...args], { cwd, encoding: 'utf8' });
+  const result = spawnSync('git', [...args], { cwd, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' });
   if (result.status !== 0) throw new Error(result.stderr || result.stdout);
 }
 

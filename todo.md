@@ -1602,6 +1602,15 @@ wtm-windows-arm64.exe
       Intel x64 1629 pass / 2 fail. Rotation gözlem/recovery kusuru düzeltildi; stale process
       identity nedeni henüz kanıtlanmadı, failure-only native trace eklendi. Önceki yeşil koşu
       bu yeni kırmızılığı kapatmaz.
+      2026-09-16 (W1-1): main'deki son tamamlanmış koşu `360a7da` / `34947190062` — darwin arm64,
+      linux x64 ve linux arm64 yeşil, darwin x64 test adımı **kırmızı** (asılma değil, 11.5 dk'da
+      iki gerçek hata; ikisi de `process-supervisor.test.ts`): "RUNNING transition failure kills the
+      group" testinde `descendantMarker` ENOENT, ve `restart` içinde `#stopLocked` `EPERM` ile
+      `RUNTIME_STOP_FAILED`. Her ikisinin kökü bu birimde düzeltildi: yarışı kaldıran enjekte
+      edilmiş RUNNING hatası ve `EPERM`'i errno yerine gözleme bırakan sinyal yolu. (Ayrı bir
+      kusur: darwin **arm64**'teki F1 kararsızlığı — run `34947174999` — `nlink <= 1` güven
+      kuralıyla düzeltildi; x64'teki iki hatayla ilgisi yok.) Ancak henüz bu düzeltmeleri içeren
+      **yeşil bir darwin x64 koşusu yok**; kanıt gelene kadar `[~]`.
 - [x] Linux x64 CI green. — `75a8626` / `34457543774`: test 1627/0, e2e 3/0, binary 10/0;
       lint/typecheck/build/package geçti. Takip yamalarının native kanıtı ayrıca izlenir.
 - [x] Linux arm64 build doğrulanıyor. — `360a7da` / `34947190062` `ubuntu-24.04-arm` bacağı:

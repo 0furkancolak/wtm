@@ -29,7 +29,9 @@ async function workspace(): Promise<Place> {
   await mkdir(main, { recursive: true });
   await mkdir(worktree, { recursive: true });
   // Every rule here is about what Git already owns, so the worktree has to be a repository.
-  execFileSync('git', ['init', '-q'], { cwd: worktree });
+  // Bounded and `SIGKILL`-ed: a synchronous spawn blocks the thread bun's per-test timeout would
+  // fire on, so a `git` that waits stops the whole run rather than failing this test.
+  execFileSync('git', ['init', '-q'], { cwd: worktree, timeout: 60_000, killSignal: 'SIGKILL' });
   return {
     root,
     main,
@@ -99,7 +101,7 @@ describe('prepareResources', () => {
     const place = await workspace();
     await writeFile(join(place.main, 'config.json'), '{}');
     await writeFile(join(place.worktree, 'config.json'), '{"tracked":true}');
-    execFileSync('git', ['add', 'config.json'], { cwd: place.worktree });
+    execFileSync('git', ['add', 'config.json'], { cwd: place.worktree, timeout: 60_000, killSignal: 'SIGKILL' });
     await rm(join(place.worktree, 'config.json'));
 
     const [prepared] = await prepareResources(declare(place, {

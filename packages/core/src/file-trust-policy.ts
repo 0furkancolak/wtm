@@ -68,8 +68,17 @@ export const defaultCoreFileTrustPolicy: FileTrustPolicy = {
   isWritableOnlyByOwner(stat: CoreFileStat, _path: string, mask: OwnerOnlyMask): Promise<boolean> {
     return Promise.resolve((Number(stat.mode) & mask) === 0);
   },
+  /**
+   * `nlink > 1` is the only shape that means "another name points at this inode". `nlink === 0` is
+   * an `fstat` of a descriptor whose last directory entry has already been removed -- an anonymous
+   * inode no second name can reach, so it is the opposite of shared. Refusing it turns a
+   * rename-over-a-held-descriptor race into a hard refusal: `@wtm/daemon`'s managed log reader hit
+   * exactly that on macOS CI, and core's own fd-stat callers (`adapter-trust.ts`,
+   * `materializer.ts`) can hit it the same way. Kept byte-equivalent to `@wtm/platform`'s
+   * `posixFileTrustPolicy`, which `file-trust-guard.test.ts` pins.
+   */
   isNotSharedByHardLink(stat: CoreFileStat): boolean {
-    return Number(stat.nlink) === 1;
+    return Number(stat.nlink) <= 1;
   },
   currentIdentityAvailable(): boolean {
     return process.getuid?.() !== undefined;
