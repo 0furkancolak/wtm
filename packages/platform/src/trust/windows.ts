@@ -107,6 +107,17 @@ export function createWindowsFileTrustPolicy(options: WindowsFileTrustPolicyOpti
       .every((rule) => (mask === 0o022 ? grantsOnlyReadAccess(rule) : false));
   }
 
+  /**
+   * Deliberately stricter than the POSIX policy, which accepts `nlink === 0`.
+   *
+   * That relaxation exists for one POSIX-only *reading*: zero links on a held descriptor means the
+   * last name was removed while the file stayed reachable through the descriptor. Windows never
+   * says that. libuv fills `st_nlink` from `NumberOfLinks`, and a handle whose delete is pending
+   * still reports **1**, not 0 -- so a zero here is never "unlinked but held". What it can be is a
+   * volume that does not report the field at all: some network redirectors and FAT paths hand back
+   * `0` for a perfectly ordinary named file. There is nothing to allow and something to refuse, so
+   * this policy keeps the exact comparison it always made.
+   */
   function isNotSharedByHardLink(stat: NodeJsStats): boolean {
     return stat.nlink === 1;
   }

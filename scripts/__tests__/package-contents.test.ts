@@ -3,9 +3,13 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 test('the public npm package contains runtime bundles, migrations, docs, license, and the agent skill', () => {
-  const build = spawnSync('bun', ['run', 'build'], { encoding: 'utf8' });
+  // Both spawns are synchronous, so they block the thread bun's per-test timeout would fire on:
+  // an `npm pack` that sits on a registry or auth wait would stop the whole run, silently, the
+  // way an unbounded `spawnSync` already stopped a darwin x64 leg until its job cap.
+  const build = spawnSync('bun', ['run', 'build'], { encoding: 'utf8', timeout: 300_000, killSignal: 'SIGKILL' });
   expect(build.status, build.stderr || build.stdout).toBe(0);
-  const packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { encoding: 'utf8' });
+  const packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'],
+    { encoding: 'utf8', timeout: 300_000, killSignal: 'SIGKILL' });
   expect(packed.status, packed.stderr || packed.stdout).toBe(0);
   const files = (JSON.parse(packed.stdout)[0].files as Array<{ path: string }>).map(({ path }) => path);
   for (const required of [
