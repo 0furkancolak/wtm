@@ -72,7 +72,10 @@ const aclJson = JSON.stringify({
 describe('the pooled session spends one powershell.exe, not one per call', () => {
   test('fifty ACL reads start exactly one process and import the security module once', async () => {
     const host = fakePowershell(() => ({ out: aclJson }));
-    const runner = createPooledPowershellRunner({ spawn: host.spawn });
+    // `maxRequests` is pinned rather than inherited: the whole claim is "one process for these
+    // fifty calls", and a default that later dropped below fifty would quietly recycle mid-run
+    // and make this test measure the default instead of the pooling.
+    const runner = createPooledPowershellRunner({ spawn: host.spawn, maxRequests: 500 });
     const readAcl = createWindowsAclReader(runner);
     try {
       for (let call = 0; call < 50; call++) {
@@ -194,6 +197,33 @@ describe('one call cannot reach another', () => {
     } finally { session.close(); }
   });
 
+  test('a session whose prologue left no origin still runs, instead of refusing every request', async () => {
+    // The guard is in the frame, so what this pins is that the restore is conditional: an
+    // unguarded `Set-Location -LiteralPath $null` throws in every later wrapper and turns the
+    // whole session into a refusal machine that nothing else here would ever kill.
+    const host = fakePowershell(() => ({ out: 'ok' }));
+    const session = createPowershellSession({ spawn: host.spawn });
+    try {
+      await session.run('one');
+      const framed = host.children[0]!.writes.filter((line) => frameOf(line) !== undefined);
+      expect(framed[0]).toContain('if ($null -ne $WtmOrigin) { Microsoft.PowerShell.Management\\Set-Location');
+    } finally { session.close(); }
+  });
+
+  test('every command the session itself invokes is module-qualified', async () => {
+    // A shadowing global function or alias is the one escape that could forge an answer rather
+    // than refuse; qualification is what makes it unreachable.
+    const host = fakePowershell(() => ({ out: 'ok' }));
+    const session = createPowershellSession({ spawn: host.spawn });
+    try {
+      await session.run('x');
+      const written = host.children[0]!.writes.join('');
+      expect(written).toContain('Microsoft.PowerShell.Management\\Get-Location');
+      expect(written).toContain('Microsoft.PowerShell.Management\\Set-Location');
+      expect(/(?<![\\\\])\bSet-Location\b/.test(written)).toBe(false);
+    } finally { session.close(); }
+  });
+
   test('each request re-establishes error preference and working directory before running', async () => {
     const host = fakePowershell(() => ({ out: 'ok' }));
     const session = createPowershellSession({ spawn: host.spawn });
@@ -275,6 +305,51 @@ describe('nothing about the session is unbounded', () => {
       host.children[0]!.emit('stdout:data', Buffer.alloc(128, 0x61));
       await expect(pending).rejects.toThrow('POWERSHELL_SESSION_OUTPUT_LIMIT');
       expect(host.children[0]!.kills).toBe(1);
+    } finally { session.close(); }
+  });
+
+  test('an interpreter that answers but only ever fails is retired, not kept for its lifetime', async () => {
+    // Fail-closed, but the per-call design could not get stuck this way: a prologue that did not
+    // take leaves a live interpreter failing every request for the whole session lifetime, and
+    // `COMMAND_FAILED` on its own never kills a child. The breaker is what makes "a wedged
+    // session is replaced" true for the alive case too.
+    let failures = 0;
+    const host = fakePowershell(() => { failures += 1; return failures <= 3 ? { ok: false, out: '' } : { out: 'ok' }; });
+    const session = createPowershellSession({ spawn: host.spawn, maxConsecutiveFailures: 3 });
+    try {
+      for (let call = 0; call < 3; call++) {
+        await expect(session.run('x')).rejects.toThrow('POWERSHELL_SESSION_COMMAND_FAILED');
+      }
+      expect(host.children).toHaveLength(1);
+      expect(host.children[0]!.kills).toBe(1);
+      // The next caller meets a fresh interpreter rather than the broken one.
+      expect(await session.run('x')).toBe('ok');
+      expect(host.children).toHaveLength(2);
+    } finally { session.close(); }
+  });
+
+  test('a success between failures resets the breaker, so ordinary refusals never recycle a good session', async () => {
+    let call = 0;
+    const host = fakePowershell(() => { call += 1; return call % 2 === 1 ? { ok: false, out: '' } : { out: 'ok' }; });
+    const session = createPowershellSession({ spawn: host.spawn, maxConsecutiveFailures: 3 });
+    try {
+      for (let index = 0; index < 8; index++) {
+        if (index % 2 === 0) await expect(session.run('x')).rejects.toThrow('POWERSHELL_SESSION_COMMAND_FAILED');
+        else expect(await session.run('x')).toBe('ok');
+      }
+      expect(host.children).toHaveLength(1);
+      expect(host.children[0]!.kills).toBe(0);
+    } finally { session.close(); }
+  });
+
+  test('an empty script is refused rather than framed, because a blank line ends -Command -', async () => {
+    const host = fakePowershell(() => ({ out: 'ok' }));
+    const session = createPowershellSession({ spawn: host.spawn });
+    try {
+      for (const script of ['', '   ', '\n']) {
+        await expect(session.run(script)).rejects.toThrow('POWERSHELL_SESSION_EMPTY_SCRIPT');
+      }
+      expect(host.children).toHaveLength(0);
     } finally { session.close(); }
   });
 

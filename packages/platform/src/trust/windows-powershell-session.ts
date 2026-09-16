@@ -13,13 +13,24 @@
  *    matched, well-formed response frame rejects. `createWindowsAclReader` turns a rejection into
  *    `undefined` and the policy turns `undefined` into `false`, so a crashed, killed or timed-out
  *    session denies exactly the way a failed `execFile` denied before.
- * 2. **No call can influence a later call.** Each request runs inside its own `ScriptBlock`, so
- *    its assignments are local to that scope. The wrapper re-establishes `$ErrorActionPreference`
- *    and the session's original working directory *before* every request, so a previous script
- *    cannot poison either. `Get-Acl`'s module is imported by literal `$PSHOME` path inside each
- *    request script (unchanged from the per-call code), so an unloaded or shadowed module
- *    re-imports rather than silently resolving elsewhere. The session is started `-NoProfile`
- *    `-NonInteractive` and never runs a script *file*, so execution policy has nothing to govern.
+ * 2. **What the reuse does and does not confine.** Invoking each request as `& <ScriptBlock>`
+ *    gives it its own scope, which confines its *implicit* assignments — and only those. A script
+ *    that wrote `$global:x`, `Set-Variable -Scope Global`, a global function or alias, `$env:*`,
+ *    `$PSDefaultParameterValues`, a type accelerator, `Update-FormatData` or `New-PSDrive -Scope
+ *    Global` would outlive its request, and `Import-Module` of an already-loaded module would not
+ *    undo it. None of that is reachable: the only scripts that ever run here are the two this
+ *    package composes, and no caller-controlled text reaches PowerShell as source (property 3).
+ *    What the wrapper *does* guarantee against accidental drift is the two settings a failure
+ *    would silently ride on — `$ErrorActionPreference` and the working directory are
+ *    re-established before every request — and every command this session's own scripts invoke is
+ *    module-qualified (`Microsoft.PowerShell.Security\Get-Acl`,
+ *    `Microsoft.PowerShell.Management\Set-Location`), so a shadowing function or alias cannot
+ *    intercept one. That qualification is the load-bearing part: almost every escape above fails
+ *    *closed* (a broken preference or a hijacked `ConvertTo-Json` throws, which is a refusal),
+ *    but a shadowed `Get-Acl` or a remapped `[PSCustomObject]` accelerator could hand back a
+ *    forged reading, which is the one shape that would be a wrong "trusted" rather than a wrong
+ *    "untrusted". The session is started `-NoProfile` `-NonInteractive` and never runs a script
+ *    *file*, so execution policy has nothing to govern.
  * 3. **No caller data is ever script text.** The request script is base64-encoded into the
  *    wrapper and the path is base64-encoded into the request script (`windows-powershell.ts`), so
  *    a path containing quotes, `$(...)`, backticks or newlines travels as `[A-Za-z0-9+/=]` and is
@@ -28,7 +39,9 @@
  * 4. **Everything is bounded.** Per-request execution deadline, per-request *queue* deadline, a
  *    maximum queue depth, a maximum session lifetime and a maximum number of requests per
  *    session, plus an idle deadline after which the process exits. A session that wedges rejects
- *    its work and is replaced; it cannot hold the daemon.
+ *    its work and is replaced — including the wedged-but-*alive* case, where an interpreter keeps
+ *    answering and every answer is a failure: a run of consecutive failed requests retires it, so
+ *    the next caller meets a fresh interpreter instead of a bad one that cannot die on its own.
  */
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -36,7 +49,7 @@ import type { PowershellRunner } from './windows-powershell';
 
 /** The pieces of a child process this module actually uses; a test fake supplies the same shape. */
 export interface PowershellChild {
-  readonly stdin: { write(chunk: string): unknown; end?(): unknown; on(event: string, listener: (value: never) => void): unknown; unref?(): unknown };
+  readonly stdin: { write(chunk: string): unknown; on(event: string, listener: (value: never) => void): unknown; unref?(): unknown };
   readonly stdout: { on(event: 'data', listener: (chunk: Buffer | string) => void): unknown; unref?(): unknown };
   readonly stderr: { on(event: 'data', listener: (chunk: Buffer | string) => void): unknown; unref?(): unknown };
   on(event: string, listener: (...values: never[]) => void): unknown;
@@ -64,6 +77,13 @@ export interface PowershellSessionOptions {
   readonly maxQueued?: number;
   /** Upper bound on bytes one request may produce before it is failed and the session replaced. */
   readonly maxResponseBytes?: number;
+  /**
+   * How many *consecutive* failed requests retire an interpreter that is still alive and still
+   * answering. A session whose prologue did not take leaves every later request failing in the
+   * wrapper, which is fail-closed but would otherwise persist for the whole session lifetime and
+   * make the daemon refuse every path at once.
+   */
+  readonly maxConsecutiveFailures?: number;
   readonly now?: () => number;
 }
 
@@ -82,12 +102,19 @@ const defaults = {
   maxRequests: 500,
   maxQueued: 64,
   maxResponseBytes: 4 * 1024 * 1024,
+  maxConsecutiveFailures: 3,
 };
 
 /**
  * Sent once per process. Each statement stands alone, so `-Command -` can execute them as it
- * reads. A failure here is not fatal: every request script imports the security module by its own
- * literal path anyway, and `$WtmOrigin` is only ever read back through `Set-Location`.
+ * reads.
+ *
+ * A failure here must not be able to wedge the session. The security-module import is harmless to
+ * lose, because every request script imports it by the same literal path anyway. `$WtmOrigin` is
+ * the one that could bite: if this line never ran, or yielded `$null`, an unguarded
+ * `Set-Location -LiteralPath $WtmOrigin` would throw inside *every* later request's wrapper and
+ * turn the whole session into a refusal machine. `frame` therefore restores the location only
+ * when there is one to restore, and a run of consecutive failures retires the interpreter.
  */
 const prologue: readonly string[] = [
   "$ErrorActionPreference = 'Stop'",
@@ -111,7 +138,8 @@ function frame(script: string, token: string): string {
     `$WtmScript = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))`,
     "$WtmOut = ''",
     "$WtmOk = '0'",
-    "try { $ErrorActionPreference = 'Stop'; Microsoft.PowerShell.Management\\Set-Location -LiteralPath $WtmOrigin;"
+    "try { $ErrorActionPreference = 'Stop';"
+      + ' if ($null -ne $WtmOrigin) { Microsoft.PowerShell.Management\\Set-Location -LiteralPath $WtmOrigin };'
       + ' $WtmOut = [string]::Join([string][char]10, @(& ([ScriptBlock]::Create($WtmScript))'
       + " | ForEach-Object { [string]$_ })); $WtmOk = '1' }"
       + " catch { $WtmOk = '0'; $WtmOut = '' }",
@@ -145,6 +173,7 @@ export function createPowershellSession(options: PowershellSessionOptions = {}):
   let bytes = 0;
   let served = 0;
   let bornAt = 0;
+  let consecutiveFailures = 0;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
 
@@ -179,12 +208,24 @@ export function createPowershellSession(options: PowershellSessionOptions = {}):
     bytes = 0;
     if (running.runTimer !== undefined) clearTimeout(running.runTimer);
     served += 1;
+    let decoded: string | undefined;
     if (ok) {
-      let decoded: string;
       try { decoded = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(payload, 'base64')); }
-      catch { running.reject(new Error('POWERSHELL_SESSION_ENCODING')); pump(); return; }
+      catch { decoded = undefined; }
+    }
+    if (decoded === undefined) {
+      consecutiveFailures += 1;
+      running.reject(new Error(ok ? 'POWERSHELL_SESSION_ENCODING' : 'POWERSHELL_SESSION_COMMAND_FAILED'));
+      // An interpreter that answers every request with a failure is wedged, not busy: the frame
+      // came back, so nothing else here will ever kill it. The most likely cause is a prologue
+      // that did not take, and the only repair is a different interpreter -- so a run of
+      // consecutive failures retires this one, and the next caller starts a fresh process
+      // instead of meeting the same broken session for the rest of its five-minute lifetime.
+      if (consecutiveFailures >= settings.maxConsecutiveFailures) retire('POWERSHELL_SESSION_WEDGED');
+    } else {
+      consecutiveFailures = 0;
       running.resolve(decoded);
-    } else running.reject(new Error('POWERSHELL_SESSION_COMMAND_FAILED'));
+    }
     pump();
   }
 
@@ -214,6 +255,7 @@ export function createPowershellSession(options: PowershellSessionOptions = {}):
     child = started;
     bornAt = now();
     served = 0;
+    consecutiveFailures = 0;
     buffer = '';
     bytes = 0;
     started.stdout.on('data', (data) => { if (child === started) consume(data); });
@@ -269,6 +311,11 @@ export function createPowershellSession(options: PowershellSessionOptions = {}):
     run(script) {
       return new Promise<string>((resolve, reject) => {
         if (closed) { reject(new Error('POWERSHELL_SESSION_CLOSED')); return; }
+        // Windows PowerShell 5.1's `-Command -` ends its input on a *blank line*, not only on
+        // EOF. No script this package composes is empty, but nothing else enforces that, and an
+        // empty one would frame down to a blank statement and silently shut the interpreter. A
+        // structural refusal is cheaper than a session that dies for a reason nothing reports.
+        if (script.trim() === '') { reject(new Error('POWERSHELL_SESSION_EMPTY_SCRIPT')); return; }
         if (queue.length >= settings.maxQueued) { reject(new Error('POWERSHELL_SESSION_QUEUE_LIMIT')); return; }
         const pending: Pending = { script, resolve, reject, token: '', queueTimer: undefined, runTimer: undefined };
         pending.queueTimer = setTimeout(() => {
@@ -305,6 +352,10 @@ export function createPooledPowershellRunner(
 ): PowershellRunner & { close(): void } {
   const session = createPowershellSession(options);
   const runner = async (args: readonly string[]): Promise<{ stdout: string }> => {
+    // Argv-shaped because `PowershellRunner` already is: keeping that seam byte-identical is what
+    // lets every `windows-powershell.test.ts` fixture keep passing unchanged, so this change is
+    // provably only about where the process comes from. The session supplies `-NoProfile` and
+    // `-NonInteractive` itself, so the script after `-Command` is the whole of the request.
     const index = args.indexOf('-Command');
     const script = index < 0 ? undefined : args[index + 1];
     if (script === undefined) throw new Error('POWERSHELL_SESSION_SCRIPT_MISSING');

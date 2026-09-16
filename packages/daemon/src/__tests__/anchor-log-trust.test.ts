@@ -95,6 +95,30 @@ test.skipIf(process.platform === 'win32')('a parent swap while ACL authorization
   } finally { allowed.resolve(evidence(requested)); await run.close(); }
 });
 
+// The win32 half of the skip above, and the reason it is a finding rather than an assumption.
+// `LOG_DIRECTORY_CHANGED` is asserted in exactly one place in this suite, and that place is now
+// skipped on win32 -- so the claim carrying that skip ("Windows refuses the rename itself") has to
+// be measured here rather than inferred. No CI leg has ever printed the errno: the rename's
+// failure was masked by the abandoned `open()` that settled after it. This asserts the platform
+// behaviour directly, so the day Windows, NTFS or libuv's share-delete flags stop refusing, this
+// fails and names the skip that has to come back.
+test.skipIf(process.platform !== 'win32')('Windows refuses to rename a log directory whose temporaries are open', async () => {
+  const allowed = deferred<WindowsAclBatch>(); let requested: readonly string[] = [];
+  const run = await fixture(async (paths) => { requested = paths; return await allowed.promise; });
+  let opened!: Promise<unknown>;
+  try {
+    opened = run.store.open(); void opened.catch(() => {});
+    await flush();
+    expect(requested.some((path) => path.endsWith('.tmp'))).toBe(true);
+    let code = 'the rename succeeded';
+    await expect(rename(run.directory, `${run.directory}-original`)
+      .catch((error: NodeJS.ErrnoException) => { code = error.code ?? error.message; throw error; })).rejects.toThrow();
+    // Recorded, not merely non-null: the value is the measurement this test exists to publish, so
+    // a refusal with an unexpected errno fails here and prints the one the host actually gave.
+    expect(['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY']).toContain(code);
+  } finally { allowed.resolve(evidence(requested)); await run.close(); }
+});
+
 // The same authorization window, mutated the way Windows does permit: the log file the batch was
 // asked about is replaced by a different inode while the answer is outstanding. Authorization
 // evidence is bound to a path, so a path that no longer names what was inspected must refuse

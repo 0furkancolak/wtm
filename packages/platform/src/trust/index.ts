@@ -16,7 +16,6 @@ export {
   parseWindowsPathAcl,
 } from './windows-powershell';
 export type { PowershellRunner } from './windows-powershell';
-export { closePooledPowershellSession } from './windows-powershell';
 export {
   createPooledPowershellRunner,
   createPowershellSession,

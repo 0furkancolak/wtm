@@ -39,8 +39,14 @@ function batchScript(paths: readonly string[]): string {
     '  $path = $_',
     '  $value = $null',
     '  try {',
-    '    $acl = Get-Acl -LiteralPath $path',
+    '    $acl = Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $path',
     '    $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)',
+    // No `.IdentityReference.Value` fallback here where `windows-powershell.ts`'s single-path
+    // script has one, and the two still agree on the outcome: an identity that will not translate
+    // to a SID makes this path's inspection throw, which the per-path catch below turns into a
+    // null ACL and every caller into a refusal for that path -- while over there the fallback
+    // yields a display name that `parseWindowsPathAcl`'s `isSid` rejects, refusing the same path.
+    // The batch simply reaches the refusal one step earlier.
     '    $rules = @($acl.Access | ForEach-Object {',
     '      [PSCustomObject]@{ Sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; Rights = $_.FileSystemRights.ToString(); ControlType = $_.AccessControlType.ToString() }',
     '    })',

@@ -35,14 +35,9 @@ export type PowershellRunner = (args: readonly string[]) => Promise<{ stdout: st
  * pool does and does not carry between calls; the deadline below is the same bounded wait C3's
  * hang-prevention intent asked for, now applied to a request rather than to a process start.
  */
-const pooledRunner = createPooledPowershellRunner({ requestTimeoutMs: powershellTimeoutMs });
-
-const defaultRunPowershell: PowershellRunner = pooledRunner;
-
-/** Ends the pooled process now. For a composition root shutting down; callers restart it lazily. */
-export function closePooledPowershellSession(): void {
-  pooledRunner.close();
-}
+const defaultRunPowershell: PowershellRunner = createPooledPowershellRunner({
+  requestTimeoutMs: powershellTimeoutMs,
+});
 
 /**
  * `Get-Acl` lives in the `Microsoft.PowerShell.Security` module, which Windows PowerShell 5.1
@@ -85,7 +80,13 @@ function aclScript(path: string): string {
     `$ErrorActionPreference = 'Stop'`,
     importSecurityModuleByExplicitPath(),
     `$target = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))`,
-    `$acl = Get-Acl -LiteralPath $target`,
+    // Module-qualified, like every command the pooled session's own wrapper invokes. PowerShell
+    // resolves alias before function before cmdlet, so a `function global:Get-Acl` or a global
+    // alias defined once in a long-lived session would shadow the real cmdlet for the rest of its
+    // life -- and re-importing an already-loaded module does not remove it. Nothing in this
+    // package can define one, but this is the single call whose answer *is* the trust decision,
+    // so it names the cmdlet it means rather than relying on nothing ever shadowing it.
+    `$acl = Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $target`,
     `$descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)`,
     `$daclPresent = ($null -ne $descriptor.DiscretionaryAcl) -and (($descriptor.ControlFlags -band [System.Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -ne 0)`,
     `$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value`,
