@@ -47,6 +47,7 @@ export function developmentRuntimeInvocation(): RuntimeInvocation {
 
 export function developmentNodeExecutable(): string {
   return Object.hasOwn(process.versions, 'bun')
-    ? execFileSync('node', ['-p', 'process.execPath'], { encoding: 'utf8' }).trim()
+    ? execFileSync('node', ['-p', 'process.execPath'],
+      { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }).trim()
     : process.execPath;
 }

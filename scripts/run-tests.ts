@@ -146,7 +146,10 @@ type FileOutcome = { kind: 'exit'; code: number | null; signal: NodeJS.Signals |
 function killTree(child: ChildProcess): void {
   if (child.pid === undefined) return;
   if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', timeout: 30_000 });
+    // `timeout` alone sends SIGTERM and keeps waiting; the pair is what the guard requires of
+    // every synchronous spawn in a test, and this runner obeys its own rule.
+    spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'],
+      { stdio: 'ignore', timeout: 30_000, killSignal: 'SIGKILL' });
     return;
   }
   try {
@@ -168,12 +171,19 @@ function killTree(child: ChildProcess): void {
  */
 let inFlight: ChildProcess | null = null;
 
-for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(signal, () => {
-    if (inFlight !== null) killTree(inFlight);
-    process.stderr.write(`[run-tests] ${signal}, stopping\n`);
-    process.exit(signal === 'SIGINT' ? 130 : 143);
-  });
+/**
+ * Installed by the entry point only. This module is also imported for its pure functions
+ * (`parseRunnerArguments`, `discoverTestFiles`) by its own tests, and a module imported for those
+ * has no business installing a `process.exit` handler in the importing process.
+ */
+function forwardTerminationSignals(): void {
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, () => {
+      if (inFlight !== null) killTree(inFlight);
+      process.stderr.write(`[run-tests] ${signal}, stopping\n`);
+      process.exit(signal === 'SIGINT' ? 130 : 143);
+    });
+  }
 }
 
 /** How long a killed group is given to actually die before the next file's output starts. */
@@ -191,7 +201,12 @@ function runFile(parsed: RunnerArguments, file: string): Promise<FileOutcome> {
     let settled = false;
     const settle = (outcome: FileOutcome): void => {
       settled = true;
-      inFlight = null;
+      // Only if this child is still the one in flight. A group that survives `SIGKILL` past the
+      // reap grace -- uninterruptible I/O -- settles as hung, the loop starts the next file, and
+      // this child's still-registered `exit` listener fires afterwards. Clearing the slot then
+      // would disarm the signal forwarding for the file now running, exactly when things are
+      // already going wrong.
+      if (inFlight === child) inFlight = null;
       resolve(outcome);
     };
     const timer = setTimeout(() => {
@@ -273,5 +288,6 @@ async function main(): Promise<number> {
 }
 
 if (import.meta.main) {
+  forwardTerminationSignals();
   process.exitCode = await main();
 }

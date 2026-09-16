@@ -20,6 +20,14 @@ import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = fileURLToPath(new URL('../../../..', import.meta.url));
 const scannedRoots = ['packages', 'scripts'] as const;
+/** Imported by tests, so its children are the test process's children. */
+const testkitSource = 'packages/testkit/src/';
+
+/** Whether a scanned file's spawns block the thread bun's per-test timeout would fire on. */
+function runsInTestProcess(file: string): boolean {
+  if (file.endsWith('.scenario.ts') || file.endsWith('.child.ts')) return false;
+  return file.endsWith('.test.ts') || file.startsWith(testkitSource);
+}
 
 /** The call shape this guard exists to catch: spawning another JS/TS runtime synchronously. */
 const pattern = /spawnSync\(\s*(?:'node'|"node"|'bun'|"bun"|process\.execPath)(?=[,)])/;
@@ -43,24 +51,48 @@ const pattern = /spawnSync\(\s*(?:'node'|"node"|'bun'|"bun"|process\.execPath)(?
  * into the call itself rather than hidden behind a shared options constant, which is a limitation
  * worth keeping: this guard stays something a reader can evaluate by looking at one line.
  *
- * Scope is deliberately `__tests__/*.test.ts`: those run in the test process. A `.scenario.ts` or
- * `.child.ts` file is a child, and its whole process is already bounded transitively by the
- * `runScenario` call that spawned it, which kills it with `SIGKILL` at its deadline whatever it is
- * doing (spec D7) -- the same reasoning `idle-daemon.scenario.ts` is excepted under above.
+ * Scope is everything that runs *in the test process*: the `.test.ts` files themselves, and the
+ * `@wtm/testkit` modules they import -- `runtime-invocation.ts` and `real-executable.ts` each
+ * spawned a synchronous child on behalf of whichever test imported them, invisible to a rule that
+ * only read `.test.ts`. A `.scenario.ts` or `.child.ts` file is a child, and its whole process is
+ * already bounded transitively by the `runScenario` call that spawned it, which kills it with
+ * `SIGKILL` at its deadline whatever it is doing (spec D7) -- the same reasoning
+ * `idle-daemon.scenario.ts` is excepted under above.
  */
 const synchronousSpawn = /\b(?:spawnSync|execFileSync|execSync)\s*\(/g;
 
 /**
- * Blanks comments and string contents while keeping every other byte in place, so offsets still
- * map to line numbers. Without it the guard reads its own prose -- and every `// spawnSync(...)`
- * in an explanation of why a call was bounded -- as an unbounded call. String contents go too:
- * `spawnSync(` inside a quoted string is not a call either.
+ * Blanks comments, string contents and regular-expression bodies while keeping every other byte in
+ * place, so offsets still map to line numbers. Without it the guard reads its own prose -- and
+ * every `// spawnSync(...)` in an explanation of why a call was bounded -- as an unbounded call.
+ * String and regex contents go too: `spawnSync(` written inside either is not a call.
  *
- * Comment starts are tested before quote starts, so an apostrophe in prose ("don't") cannot open
- * a string that swallows the code after it; and because a quote in code consumes its whole string,
- * a `//` inside one (`'https://example.invalid'`) is never read as a comment.
+ * Order matters, and every misparse here fails *open* -- a swallowed region is a call nobody
+ * looks at -- which is why the three states are all handled rather than two of them documented:
+ * - comment starts are tested before quote starts, so an apostrophe in prose ("don't") cannot open
+ *   a string that swallows the code after it;
+ * - a quote in code consumes its whole string, so a `//` inside one (`'https://example.invalid'`)
+ *   is never read as a comment;
+ * - a regex literal is consumed as a unit, so one ending in an escaped slash (`/https?:\/\//`)
+ *   cannot be read as a comment start, and one holding an odd quote (`/['"]/`) cannot open a
+ *   phantom string.
+ *
+ * Regex-versus-division is the one genuinely ambiguous call in JavaScript's grammar, and it is
+ * settled here the way every lexer without a parser settles it: by what precedes the slash. A
+ * regex may only begin where a value may begin, so the preceding significant token is checked
+ * against the operators and keywords that can be followed by one. A division misread as a regex
+ * would blank real code, so the test the fixture below pins is that ordinary arithmetic is not
+ * taken for a literal.
  */
-function withoutComments(source: string, blankStrings = false): string {
+const regexPrecedingKeyword = /\b(?:return|typeof|instanceof|case|in|of|new|delete|void|do|else|yield|await)$/;
+
+function startsRegularExpression(before: string): boolean {
+  const trimmed = before.replace(/\s+$/, '');
+  if (trimmed === '') return true;
+  return '(,=:[!&|?{};+-*%~^<>'.includes(trimmed.at(-1) as string) || regexPrecedingKeyword.test(trimmed);
+}
+
+function withoutComments(source: string, blankBodies = false): string {
   const out = source.split('');
   let index = 0;
   const blank = (from: number, to: number): void => {
@@ -82,6 +114,22 @@ function withoutComments(source: string, blankStrings = false): string {
       index = stop;
       continue;
     }
+    if (character === '/' && startsRegularExpression(source.slice(0, index))) {
+      const opened = index;
+      index += 1;
+      let inClass = false;
+      while (index < source.length && source[index] !== '\n') {
+        const current = source[index];
+        if (current === '\\') { index += 2; continue; }
+        if (current === '[') inClass = true;
+        else if (current === ']') inClass = false;
+        else if (current === '/' && !inClass) break;
+        index += 1;
+      }
+      if (blankBodies) blank(opened + 1, Math.min(index, source.length));
+      index += 1;
+      continue;
+    }
     if (character === '\'' || character === '"' || character === '`') {
       const quote = character;
       const opened = index;
@@ -89,7 +137,7 @@ function withoutComments(source: string, blankStrings = false): string {
       while (index < source.length && source[index] !== quote) {
         index += source[index] === '\\' ? 2 : 1;
       }
-      if (blankStrings) blank(opened + 1, Math.min(index, source.length));
+      if (blankBodies) blank(opened + 1, Math.min(index, source.length));
       index += 1;
       continue;
     }
@@ -99,25 +147,34 @@ function withoutComments(source: string, blankStrings = false): string {
 }
 
 /**
- * Where call *sites* are looked for: strings blanked as well, so a `spawnSync(` written inside a
- * quoted string is not read as a call. The bound is still read from `withoutComments` output,
- * because `killSignal: 'SIGKILL'` is itself a string.
+ * Where call *sites* and call *spans* are found: strings and regex bodies blanked as well, so a
+ * `spawnSync(` written inside either is not read as a call, and a parenthesis inside a string
+ * argument cannot be counted as structure. The bound is then read from the same span of the
+ * comments-only text, because `killSignal: 'SIGKILL'` is itself a string.
  */
 function withoutCommentsOrStrings(source: string): string {
   return withoutComments(source, true);
 }
 
-/** The call's own text, from its name to its matching close paren. */
-function callText(source: string, start: number): string {
+/**
+ * The call's own text, from its name to its matching close paren.
+ *
+ * The span is measured on `sites` (strings blanked) and sliced out of `code` (strings intact),
+ * which are the same length byte for byte. Counting parentheses on `code` was wrong in both
+ * directions: a `(` in a string argument ran the span past the real close paren and let the *next*
+ * call's `timeout:` vouch for an unbounded one, and a `)` in a string truncated a bounded call's
+ * text before its options and reported it unbounded.
+ */
+function callText(sites: string, code: string, start: number): string {
   let depth = 0;
-  for (let index = source.indexOf('(', start); index < source.length; index += 1) {
-    if (source[index] === '(') depth += 1;
-    else if (source[index] === ')') {
+  for (let index = sites.indexOf('(', start); index < sites.length; index += 1) {
+    if (sites[index] === '(') depth += 1;
+    else if (sites[index] === ')') {
       depth -= 1;
-      if (depth === 0) return source.slice(start, index + 1);
+      if (depth === 0) return code.slice(start, index + 1);
     }
   }
-  return source.slice(start);
+  return code.slice(start);
 }
 
 function isBounded(call: string): boolean {
@@ -198,7 +255,7 @@ async function scannedFiles(): Promise<string[]> {
   return found
     .map((path) => repoRelative(path))
     .filter((path) => path !== selfPath)
-    .filter((path) => path.includes('__tests__/') || path.endsWith('.scenario.ts'))
+    .filter((path) => path.includes('__tests__/') || path.endsWith('.scenario.ts') || path.startsWith(testkitSource))
     .sort();
 }
 
@@ -239,11 +296,12 @@ async function findViolations(): Promise<{
       if (except(file, text)) return;
       violations.push({ file, line: index + 1, text: text.trim() });
     });
-    if (!file.endsWith('.test.ts')) continue;
+    if (!runsInTestProcess(file)) continue;
     const code = withoutComments(source);
-    for (const match of withoutCommentsOrStrings(source).matchAll(synchronousSpawn)) {
+    const sites = withoutCommentsOrStrings(source);
+    for (const match of sites.matchAll(synchronousSpawn)) {
       const start = match.index;
-      if (isBounded(callText(code, start))) continue;
+      if (isBounded(callText(sites, code, start))) continue;
       const line = code.slice(0, start).split('\n').length;
       const text = lines[line - 1] ?? '';
       if (except(file, text)) continue;
@@ -273,9 +331,13 @@ test('every reviewed exception still matches a line in its file', async () => {
   expect(unmatchedExceptions.map((entry) => `${entry.file}: ${JSON.stringify(entry.requires)}`)).toEqual([]);
 });
 
-test('the wider rule reads calls, not lines: it sees through comments and multi-line arguments', () => {
+test('the wider rule reads calls, not lines: comments, strings, regexes and spans', () => {
   // Proves the mechanism on source this guard controls, so "no violations" above cannot quietly
-  // mean "the detector stopped detecting".
+  // mean "the detector stopped detecting". Every shape here has failed one direction or the other
+  // in review: a call hidden in a comment or a string (false positive), a parenthesis inside a
+  // string argument truncating a bounded call's span or running it into the next call's options
+  // (both directions), and a regex literal whose trailing escaped slash or odd quote would open a
+  // phantom comment or string and swallow the call after it (false negative, the bad one).
   const source = [
     "// spawnSync('ruby', ['-c', path]);",
     "/* execFileSync('git', ['status']); */",
@@ -287,19 +349,36 @@ test('the wider rule reads calls, not lines: it sees through comments and multi-
     "  { encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },",
     ');',
     "const asked = spawnSync('git', ['status'], { timeout: 1000 });",
+    "const closer = spawnSync('sh', ['-c', 'echo )'], { timeout: 1, killSignal: 'SIGKILL' });",
+    "const opener = spawnSync('sh', ['-c', 'echo (']);",
+    "const after = spawnSync('sh', ['-c', 'ok'], { timeout: 1, killSignal: 'SIGKILL' });",
+    "const found = /https?:\\/\\//.test(url) && spawnSync('a', ['b']).status === 0;",
+    "const quoted = /['\"]/.test(url) && spawnSync('c', ['d']).status === 0;",
+    "const half = total / 2; const divided = spawnSync('e', ['f']);",
   ].join('\n');
   const code = withoutComments(source);
   const sites = withoutCommentsOrStrings(source);
 
   const found = [...sites.matchAll(synchronousSpawn)].map((match) => ({
     line: sites.slice(0, match.index).split('\n').length,
-    bounded: isBounded(callText(code, match.index)),
+    bounded: isBounded(callText(sites, code, match.index)),
   }));
 
   expect(found).toEqual([
     { line: 4, bounded: false },
     { line: 5, bounded: true },
     { line: 10, bounded: false },
+    // A `)` inside a string argument must not truncate the span before the options that bound it.
+    { line: 11, bounded: true },
+    // A `(` inside a string argument must not run the span into the next call's options, which
+    // would let line 13's bound vouch for this unbounded call.
+    { line: 12, bounded: false },
+    { line: 13, bounded: true },
+    // Each of these three calls is only reachable if the regex or the division before it was
+    // lexed as what it is.
+    { line: 14, bounded: false },
+    { line: 15, bounded: false },
+    { line: 16, bounded: false },
   ]);
 });
 

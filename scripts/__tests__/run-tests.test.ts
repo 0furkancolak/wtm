@@ -138,6 +138,20 @@ describe('the repository test command', () => {
 });
 
 describe('run-tests.ts', () => {
+  test('importing the module installs nothing in the importing process', async () => {
+    // The signal handlers belong to the entry point. This module is also imported for its pure
+    // functions -- this file does exactly that, above -- and an import that quietly installs a
+    // `process.exit` handler on SIGINT/SIGTERM changes the behaviour of whoever imported it.
+    const script = [
+      `await import(${JSON.stringify(runnerPath)});`,
+      "process.stdout.write(JSON.stringify(['SIGINT', 'SIGTERM'].map((s) => process.listenerCount(s))));",
+    ].join('\n');
+    const result = runScenario('bun', ['-e', script], { cwd: repositoryRoot, timeoutMs: 60_000 });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([0, 0]);
+  }, 90_000);
+
   test('names and kills a file that never finishes, keeps going, and fails the run', async () => {
     const root = await fixture({
       // A synchronous spin cannot be interrupted by bun's own per-test timeout: exactly the class of

@@ -216,9 +216,20 @@ test('every reviewed exception still describes something that is really there', 
  */
 const platformPosixPolicyFile = 'packages/platform/src/trust/posix.ts';
 
+/** Every POSIX answer both copies claim to share, sync and async alike. */
+const duplicatedPredicates = [
+  'isOwnedByCurrentUser',
+  'isWritableOnlyByOwner',
+  'isNotSharedByHardLink',
+  'currentIdentityAvailable',
+] as const;
+
 function predicateBody(source: string, name: string): string {
-  const match = new RegExp(`${name}\\(stat[^)]*\\)\\s*:\\s*boolean\\s*\\{([^}]*)\\}`).exec(source);
+  const match = new RegExp(`${name}\\s*\\([^)]*\\)\\s*:\\s*(?:Promise<boolean>|boolean)\\s*\\{([^}]*)\\}`)
+    .exec(source);
   if (match === null) throw new Error(`no ${name} predicate found`);
+  // Core's `CoreFileStat` is its own structural type rather than `fs.Stats`, so its copy coerces
+  // each field it reads. Nothing else is normalized away.
   return (match[1] as string).replaceAll(/Number\(([^)]*)\)/g, '$1').replaceAll(/\s+/g, '');
 }
 
@@ -226,8 +237,8 @@ test('core\'s POSIX file-trust answers have not drifted from the platform copy t
   const core = await readFile(join(repositoryRoot, portFile), 'utf8');
   const platform = await readFile(join(repositoryRoot, platformPosixPolicyFile), 'utf8');
 
-  expect(predicateBody(core, 'isNotSharedByHardLink'))
-    .toBe(predicateBody(platform, 'isNotSharedByHardLink'));
+  expect(duplicatedPredicates.map((name) => `${name}: ${predicateBody(core, name)}`))
+    .toEqual(duplicatedPredicates.map((name) => `${name}: ${predicateBody(platform, name)}`));
   // Named outright, so a drift that happens to agree on the wrong answer is still a failure.
   expect(predicateBody(core, 'isNotSharedByHardLink')).toBe('returnstat.nlink<=1;');
 });
