@@ -7,6 +7,16 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      win32_test_filter:
+        description: >-
+          Space-separated list of test file paths/patterns passed to `bun test` on the win32 leg
+          only (e.g. "packages/x/src/__tests__/a.test.ts"). Skips the other four legs and the
+          win32 leg's full-suite-only steps (e2e/build/package/binary); lint and typecheck still
+          run. Leave empty to run the full suite on every leg as usual.
+        required: false
+        default: ''
+        type: string
 # A new commit on the same pull request makes the older run's answer obsolete. main keeps every run,
 # so each merged commit gets its own result.
 concurrency:
@@ -29,7 +39,24 @@ jobs:
     # 5.1 process genuinely costs on the order of a second to start and import
     # Microsoft.PowerShell.Security -- there is no equivalent per-call cost on POSIX, where the
     # same check is a plain `fs.stat`.
-    continue-on-error: ${{ matrix.platform == 'win32' }}
+    # `win32_test_filter` (workflow_dispatch only) narrows evidence-gathering to the win32 leg: the
+    # other four legs are pure repeats of the same full suite and add nothing when the point of the
+    # run is proving a targeted group of Windows test files green within the 25 minute cap.
+    #
+    # This is done with a job `env:` plus step-level `if:`, not a job-level `if:` -- GitHub Actions
+    # only makes `github`, `needs`, `vars` and `inputs` available in `jobs.<job_id>.if`; `matrix` is
+    # not in that list (see the context-availability table in GitHub's docs), so an `if:` here that
+    # reads `matrix.platform` makes the whole workflow file invalid and breaks CI on every run. `env:`
+    # and step-level `if:` both do allow `matrix`, so the four non-win32 legs instead skip every step
+    # after checkout (see `CI_WIN32_FILTER_RUN` below) -- their jobs still run and keep their normal
+    # `Validate <platform> <arch>` name, just reporting success with those steps shown as skipped.
+    # A filter run exists to prove a targeted group of Windows test files green, so its result has
+    # to decide the run; `continue-on-error` would report success whatever `bun test` did. The
+    # condition is spelled out instead of reusing `env.CI_WIN32_FILTER_RUN` because
+    # `jobs.<job_id>.continue-on-error` is evaluated without the `env` context.
+    continue-on-error: >-
+      ${{ matrix.platform == 'win32'
+      && !(github.event_name == 'workflow_dispatch' && inputs.win32_test_filter != '') }}
     timeout-minutes: ${{ matrix.platform == 'win32' && 25 || 30 }}
     # The release ships an executable per architecture, and they do not fail together: linking and
     # signing behave differently on x64. Building only on Apple silicon left the other half of the
@@ -67,12 +94,24 @@ jobs:
           - platform: win32
             arch: x64
             runner: windows-latest
+    # true only for a workflow_dispatch run that set win32_test_filter -- computed once here (from
+    # `github`/`inputs`, both always available) so every step below can gate on one short, stable
+    # `env.CI_WIN32_FILTER_RUN == 'true'`/`!= 'true'` check instead of repeating the two-context
+    # expression. `env:` values are always strings, hence the string comparison.
+    env:
+      CI_WIN32_FILTER_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.win32_test_filter != '' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Skip (win32_test_filter run only exercises the win32 leg)
+        if: env.CI_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32'
+        # Quoted as a whole: a plain YAML scalar may not contain ": ", and the message wants a colon.
+        run: 'echo "Skipping this leg: workflow_dispatch requested a win32_test_filter run, which only exercises the win32 leg."'
       - uses: oven-sh/setup-bun@v2
+        if: "!(env.CI_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32')"
         with:
           bun-version: 1.3.14
       - uses: actions/setup-node@v4
+        if: "!(env.CI_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32')"
         with:
           # The standalone build refuses any runtime but the pinned one, and this job builds it.
           node-version: 24.18.0
@@ -85,6 +124,7 @@ jobs:
       # not something this repo can fix at its source; `shell: bash` (Git Bash ships on
       # windows-latest) keeps one retry loop working the same on every leg.
       - name: bun install --frozen-lockfile
+        if: "!(env.CI_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32')"
         shell: bash
         run: |
           for attempt in 1 2 3; do
@@ -93,8 +133,31 @@ jobs:
             sleep 5
           done
           exit 1
+      # Placed before lint/typecheck: a filter run is dispatched to get Windows test evidence,
+      # often mid-refactor, and a red lint or tsc would otherwise end the job before the one
+      # step the run exists for had a chance to report.
+      # win32_test_filter never reaches the shell through `${{ inputs. }}` interpolation (that would
+      # let a workflow_dispatch caller inject arbitrary shell into a `run:` script); it is passed
+      # through `env:` and re-validated here as a second gate against a hand-typed input.
+      - name: win32 targeted test filter
+        if: env.CI_WIN32_FILTER_RUN == 'true' && matrix.platform == 'win32'
+        shell: bash
+        env:
+          WIN32_TEST_FILTER: ${{ inputs.win32_test_filter }}
+        run: |
+          # Workflow commands are read from a step's stdout, so the annotation must not go to stderr.
+          if [[ ! "$WIN32_TEST_FILTER" =~ ^[A-Za-z0-9_./ *-]+$ ]]; then
+            echo "::error::win32_test_filter allows only [A-Za-z0-9_./*-] and spaces"
+            exit 1
+          fi
+          # The character class permits a leading `-`, which would otherwise reach `bun test` as an
+          # option (`--preload ...`) rather than a path. `--` ends option parsing; the filter is
+          # intentionally left unquoted so spaces split it into separate file arguments.
+          bun test --max-concurrency=1 --parallel=1 --timeout 300000 -- $WIN32_TEST_FILTER
       - run: bun run lint
+        if: "!(env.CI_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32')"
       - run: bun run typecheck
+        if: "!(env.CI_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32')"
       # A per-test timeout catches a hang; it is not an assertion about speed. The slowest
       # honest test measures an idle daemon for ~22s, and the Intel runner varies enough that
       # 30s failed work that was doing exactly what it should. win32 gets a much larger bound for
@@ -106,11 +169,19 @@ jobs:
       # imported session instead of paying the ~1.6s cold-start module import every call) is the
       # actual answer, tracked as its own follow-up rather than raised indefinitely here.
       - run: bun run test --timeout ${{ matrix.platform == 'win32' && 300000 || 60000 }}
+        if: env.CI_WIN32_FILTER_RUN != 'true'
+      # Skipped on every leg when a win32_test_filter run only needs targeted test evidence: none of
+      # e2e/build/package/binary add anything a targeted `bun test` run doesn't already show, and the
+      # non-win32 legs never even installed bun above to run them.
       - run: bun run test:e2e
+        if: env.CI_WIN32_FILTER_RUN != 'true'
       - run: bun run build
+        if: env.CI_WIN32_FILTER_RUN != 'true'
       - run: bun run package:verify
+        if: env.CI_WIN32_FILTER_RUN != 'true'
       # Ordinary CI proves the current host can produce a working executable; it never publishes one.
       - run: bun run binary:verify
+        if: env.CI_WIN32_FILTER_RUN != 'true'
       - name: Verify the Linux executable archive
-        if: matrix.platform == 'linux'
+        if: matrix.platform == 'linux' && env.CI_WIN32_FILTER_RUN != 'true'
         run: bun scripts/__tests__/release-artifacts-native.scenario.ts dist/sea/wtm

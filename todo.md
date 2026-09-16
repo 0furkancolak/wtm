@@ -1636,6 +1636,11 @@ wtm-windows-arm64.exe
       `34873813789` koşusunda 80 native fail vardı ve birkaç test 300 sn'lik test sınırını bekliyordu.
       Bu yüzden her koşu 60 dk'da kesilip kırmızı bitiyordu. Bu madde kapanınca `continue-on-error`
       kaldırılmalı ve leg yeniden zorunlu olmalı.
+      **2026-09-16:** bu madde üzerinde çalışan sonraki Windows artımları (W2-W5) için `ci.yml`'e
+      `workflow_dispatch.inputs.win32_test_filter` eklendi: `gh workflow run CI --ref <branch> -f
+      win32_test_filter="..."` ile hedeflenen test dosyalarını sadece win32 leg'inde, diğer dört
+      leg'i ve e2e/build/package/binary adımlarını atlayarak 25 dakikalık sınır içinde yeşile
+      kanıtlamak mümkün. Ayrıntı: `docs/12-open-source-distribution.md`.
 - [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
 - [ ] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
       `plistPath` macOS'a özel bir ek alan olarak bilerek duruyor (D11), kaldırılması daemon JSON
