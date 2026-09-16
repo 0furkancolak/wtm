@@ -125,6 +125,19 @@ fail the run. CI runs on pull requests and on pushes to `main`, once per commit.
 first passing native result is still pending. The five configured CI legs do not imply five
 release targets.
 
+A manual `workflow_dispatch` run can narrow that 25 minute win32 leg to a chosen group of test
+files instead of the full suite, to prove a fix green without waiting on every leg: dispatch the
+workflow with the `win32_test_filter` input set to a space-separated list of test file paths or
+patterns. The other four legs are skipped for that run, and the win32 leg itself skips its
+full-suite-only steps (e2e, build, package, binary) since a targeted `bun test` result is the only
+evidence being asked for; lint and typecheck still run.
+
+```
+gh workflow run CI --ref <branch> -f win32_test_filter="packages/x/src/__tests__/a.test.ts ..."
+```
+
+Leaving the input empty (or triggering CI any other way) runs the full suite on every leg as before.
+
 The current tag workflow publishes `wtm-darwin-arm64.tar.gz`, `wtm-darwin-x64.tar.gz` and
 `SHA256SUMS`. The verified published prerelease `v0.1.0-rc.1` has those macOS assets. There is no
 published Linux or Windows archive in that verified release. Linux users can build from source;

@@ -7,6 +7,16 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      win32_test_filter:
+        description: >-
+          Space-separated list of test file paths/patterns passed to `bun test` on the win32 leg
+          only (e.g. "packages/x/src/__tests__/a.test.ts"). Skips the other four legs and the
+          win32 leg's full-suite-only steps (e2e/build/package/binary); lint and typecheck still
+          run. Leave empty to run the full suite on every leg as usual.
+        required: false
+        default: ''
+        type: string
 # A new commit on the same pull request makes the older run's answer obsolete. main keeps every run,
 # so each merged commit gets its own result.
 concurrency:
@@ -29,6 +39,13 @@ jobs:
     # 5.1 process genuinely costs on the order of a second to start and import
     # Microsoft.PowerShell.Security -- there is no equivalent per-call cost on POSIX, where the
     # same check is a plain `fs.stat`.
+    # `win32_test_filter` (workflow_dispatch only) narrows evidence-gathering to the win32 leg: the
+    # other four legs are pure repeats of the same full suite and add nothing when the point of the
+    # run is proving a targeted group of Windows test files green within the 25 minute cap. Matrix
+    # context is available in a job-level `if`, so each of the five generated jobs is evaluated on
+    # its own `matrix.platform` and keeps its normal name either way -- the four non-win32 runs just
+    # report skipped instead of disappearing from the run.
+    if: github.event_name != 'workflow_dispatch' || inputs.win32_test_filter == '' || matrix.platform == 'win32'
     continue-on-error: ${{ matrix.platform == 'win32' }}
     timeout-minutes: ${{ matrix.platform == 'win32' && 25 || 30 }}
     # The release ships an executable per architecture, and they do not fail together: linking and
@@ -106,11 +123,32 @@ jobs:
       # imported session instead of paying the ~1.6s cold-start module import every call) is the
       # actual answer, tracked as its own follow-up rather than raised indefinitely here.
       - run: bun run test --timeout ${{ matrix.platform == 'win32' && 300000 || 60000 }}
+        if: "!(github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != '')"
+      # win32_test_filter never reaches the shell through `${{ inputs. }}` interpolation (that would
+      # let a workflow_dispatch caller inject arbitrary shell into a `run:` script); it is passed
+      # through `env:` and re-validated here as a second gate against a hand-typed input.
+      - name: win32 targeted test filter
+        if: "github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != ''"
+        shell: bash
+        env:
+          WIN32_TEST_FILTER: ${{ inputs.win32_test_filter }}
+        run: |
+          if [[ ! "$WIN32_TEST_FILTER" =~ ^[A-Za-z0-9_./ *-]+$ ]]; then
+            echo "::error::win32_test_filter allows only [A-Za-z0-9_./*-] and spaces" >&2
+            exit 1
+          fi
+          bun test --max-concurrency=1 --parallel=1 --timeout 300000 $WIN32_TEST_FILTER
+      # Skipped together with the step above when a win32_test_filter run only needs test evidence:
+      # none of e2e/build/package/binary add anything a targeted `bun test` run doesn't already show.
       - run: bun run test:e2e
+        if: "!(github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != '')"
       - run: bun run build
+        if: "!(github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != '')"
       - run: bun run package:verify
+        if: "!(github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != '')"
       # Ordinary CI proves the current host can produce a working executable; it never publishes one.
       - run: bun run binary:verify
+        if: "!(github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != '')"
       - name: Verify the Linux executable archive
         if: matrix.platform == 'linux'
         run: bun scripts/__tests__/release-artifacts-native.scenario.ts dist/sea/wtm

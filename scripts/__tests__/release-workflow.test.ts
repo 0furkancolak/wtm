@@ -10,6 +10,7 @@ interface WorkflowStep {
   run?: string;
   uses?: string;
   env?: Record<string, string>;
+  shell?: string;
 }
 
 interface WorkflowJob {
@@ -152,20 +153,31 @@ describe('release workflow', () => {
     const job = workflow('ci.yml').jobs?.validate;
     expect(job?.strategy?.matrix?.include).toContainEqual({ platform: 'linux', arch: 'arm64', runner: 'ubuntu-24.04-arm' });
     const steps = job?.steps ?? [];
-    for (const command of ['bun run lint', 'bun run typecheck', 'bun run test --timeout', 'bun run test:e2e',
-      'bun run build', 'bun run package:verify', 'bun run binary:verify']) {
+    // Only the win32 leg's own workflow_dispatch filter can skip these, so an unconditional find on
+    // any other command still proves the Linux legs (and everything but a filtered win32 run) get
+    // the full gate.
+    for (const command of ['bun run lint', 'bun run typecheck']) {
       const step = steps.find((item) => item.run?.startsWith(command));
       expect(step, command).toBeDefined();
       expect(step?.if, command).toBeUndefined();
     }
+    // The full-suite-only steps are skipped for a targeted win32_test_filter run, so on every other
+    // leg and every non-dispatch trigger they still carry that guard, not no condition at all.
+    const filterGuard = "!(github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != '')";
+    for (const command of ['bun run test --timeout', 'bun run test:e2e', 'bun run build',
+      'bun run package:verify', 'bun run binary:verify']) {
+      const step = steps.find((item) => item.run?.startsWith(command));
+      expect(step, command).toBeDefined();
+      expect(step?.if, command).toBe(filterGuard);
+    }
     const archive = steps.findIndex((item) => item.run === 'bun scripts/__tests__/release-artifacts-native.scenario.ts dist/sea/wtm');
-    expect(archive).toBeGreaterThan(steps.findIndex((item) => item.run === 'bun run binary:verify'));
+    expect(archive).toBeGreaterThan(steps.findIndex((item) => item.run?.startsWith('bun run binary:verify')));
     expect(steps[archive]?.if).toBe("matrix.platform == 'linux'");
   });
 
   test('validates each commit once and keeps win32 from deciding the run until item 9', () => {
     const ci = workflow('ci.yml') as Workflow & { concurrency?: { group?: string; 'cancel-in-progress'?: string } };
-    expect(ci.on).toEqual({ push: { branches: ['main'] }, pull_request: null, workflow_dispatch: null });
+    expect(ci.on).toMatchObject({ push: { branches: ['main'] }, pull_request: null });
     expect(ci.concurrency?.group).toContain('github.event.pull_request.number');
     expect(ci.concurrency?.['cancel-in-progress']).toBe("${{ github.ref != 'refs/heads/main' }}");
 
@@ -173,5 +185,49 @@ describe('release workflow', () => {
     expect(job['continue-on-error']).toBe("${{ matrix.platform == 'win32' }}");
     expect(job['timeout-minutes']).toBe("${{ matrix.platform == 'win32' && 25 || 30 }}");
     expect(job.strategy?.matrix?.include).toContainEqual({ platform: 'win32', arch: 'x64', runner: 'windows-latest' });
+  });
+
+  test('accepts an optional win32_test_filter input, defaulting to the full suite on every leg', () => {
+    type DispatchOn = { on?: { workflow_dispatch?: { inputs?: Record<string, { description?: string; required?: boolean; default?: string; type?: string }> } } };
+    const ci = workflow('ci.yml') as DispatchOn;
+    const input = ci.on?.workflow_dispatch?.inputs?.win32_test_filter;
+
+    expect(input).toBeDefined();
+    expect(input?.type).toBe('string');
+    expect(input?.required).toBe(false);
+    expect(input?.default).toBe('');
+    expect(input?.description ?? '').toContain('bun test');
+  });
+
+  test('narrows a workflow_dispatch run with a win32_test_filter to the win32 leg alone', () => {
+    const job = workflow('ci.yml').jobs?.validate;
+
+    // A job-level `if` is evaluated per matrix combination, so this single condition both keeps the
+    // four non-win32 legs (and every push/pull_request run) unaffected and skips them outright when
+    // someone dispatches a filtered win32-only run.
+    expect(job?.if).toBe("github.event_name != 'workflow_dispatch' || inputs.win32_test_filter == '' || matrix.platform == 'win32'");
+  });
+
+  test('runs the win32 filter through env, never by interpolating inputs. directly into a run: script', () => {
+    const steps = workflow('ci.yml').jobs?.validate?.steps ?? [];
+    const filterStep = steps.find((step) => step.name === 'win32 targeted test filter');
+
+    expect(filterStep).toBeDefined();
+    expect(filterStep?.if).toBe("github.event_name == 'workflow_dispatch' && matrix.platform == 'win32' && inputs.win32_test_filter != ''");
+    expect(filterStep?.shell).toBe('bash');
+    expect(filterStep?.env?.WIN32_TEST_FILTER).toBe('${{ inputs.win32_test_filter }}');
+
+    // Every `run:` script in the workflow (not just this step) must read the filter from the
+    // environment rather than splicing `${{ inputs.win32_test_filter }}` straight into shell text --
+    // an attacker-controlled workflow_dispatch input landing directly in a script is a classic
+    // script-injection vector.
+    for (const step of steps) {
+      expect(step.run ?? '').not.toContain('inputs.win32_test_filter');
+    }
+
+    expect(filterStep?.run ?? '').toContain('$WIN32_TEST_FILTER');
+    expect(filterStep?.run ?? '').toContain('bun test --max-concurrency=1 --parallel=1 --timeout 300000');
+    // Validated in shell before use: only path-ish characters and spaces are allowed through.
+    expect(filterStep?.run ?? '').toMatch(/\[\[ ! "\$WIN32_TEST_FILTER" =~ .*\]\]/u);
   });
 });
