@@ -958,10 +958,20 @@ Sonuçlar:
 
 Açık kalanlar: gerçek iki AI oturumu, daha ağır bir görev ve Linux/Windows ölçümleri.
 
-Ayrıca ölçüm sırasında bulunan bir sınır: kaynaktan `node --import tsx` ile başlatılan daemon
-kuyruktaki işi başlatamıyor (`RUNTIME_START_FAILED`). Özel runner modları için yeniden çağrılan
-giriş noktası tsx yükleyicisini almıyor. Ölçüm build ile yapıldı. Testler bu durumu
-`developmentRuntimeInvocation()` ile aşıyor.
+Ayrıca ölçüm sırasında bulunan bir sınır (50c) **giderildi.** Kaynaktan `node --import tsx` ile
+başlatılan daemon, kuyruktaki işi `RUNTIME_START_FAILED` ile düşürüyordu: özel runner modları için
+yeniden çağrılan giriş noktası hiçbir yükleyici almıyordu. Yeniden çağırma artık tek bir yerde,
+`packages/platform/src/runtime-invocation.ts` içindeki `selfRuntimeInvocation()` ile kuruluyor;
+`.ts` girişli bir süreç kendini `--import <source hooks>` ile yeniden çağırıyor
+(`packages/platform/src/source-runtime-hooks.ts`, uzantısız göreli importları iş parçacığı içinde
+çözer, tip soyma Node'a bırakılır). Ebeveynin `process.execArgv` girdilerinin hiçbiri
+devralınmaz; gerekçesi (özellikle `--inspect*` port çakışması ve tsx'in anchor'ın süreç grubunda
+bırakacağı `esbuild --service` çocuğu) `selfRuntimeInvocation()` yorumunda yazılıdır. SEA yolu
+değişmedi. Kanıt: `packages/cli/src/__tests__/source-daemon-jobs.test.ts` — "a daemon started from
+source with node --import tsx runs a queued job to success" (enjeksiyon yok, uçtan uca);
+ayrıca `packages/cli/src/__tests__/source-runtime-invocation.test.ts` ve
+`packages/platform/src/__tests__/runtime-invocation.test.ts`. `developmentRuntimeInvocation()`
+mevcut testlerde olduğu gibi bırakıldı. Ölçümün kendisi build ile yapılmıştı; bu değişmedi.
 
 #### Kapsam ve ilk dilim
 

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { selfRuntimeInvocation } from '@wtm/platform';
+import { selfRuntimeInvocation, sourceRuntimeHooksUrl } from '@wtm/platform';
 import { developmentNodeExecutable } from '../../../testkit/src/runtime-invocation';
 import { runScenario } from '../../../testkit/src/scenario-child';
 
@@ -80,4 +80,25 @@ test('every private runner module loads under the source hooks without tsx', () 
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout.trim()).toBe('loaded');
   expect(result.stderr).toBe('');
+});
+
+// The decision recorded in `selfRuntimeInvocation`'s comment, observed rather than asserted about a
+// fabricated host: a parent carrying both a loader flag and a debugger flag hands the child
+// neither. `--inspect-port` binds a fixed port, so a per-job runner inheriting it would fight the
+// daemon for it; the loader is replaced by the in-thread source hooks, not inherited.
+test('a re-invocation inherits no execArgv entry — not the loader, not the debug port', () => {
+  const probe = fileURLToPath(new URL('./source-runtime-invocation.scenario.ts', import.meta.url));
+  const result = runScenario(developmentNodeExecutable(), ['--inspect-port=0', '--import', 'tsx', probe], {
+    env: { ...process.env, NODE_OPTIONS: '', TSX_DISABLE_CACHE: '1' },
+  });
+  expect(result.status, result.stderr).toBe(0);
+  const printed = JSON.parse(result.stdout) as {
+    execArgv: string[];
+    invocation: { executable: string; prefixArgs: string[] };
+  };
+  expect(printed.execArgv).toEqual(['--inspect-port=0', '--import', 'tsx']);
+  expect(printed.invocation).toEqual({
+    executable: developmentNodeExecutable(),
+    prefixArgs: ['--import', sourceRuntimeHooksUrl(), probe],
+  });
 });
