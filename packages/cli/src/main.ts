@@ -12,7 +12,7 @@ import {
   measureDaemonSocketPath,
   publishedDaemonSocketPath,
 } from '@wtm/platform/socket';
-import { selectPlatformRuntime } from '@wtm/platform';
+import { selectPlatformRuntime, selfRuntimeInvocation } from '@wtm/platform';
 import type { PlatformRuntime } from '@wtm/platform/ports';
 import type { AdapterTrustStore } from '@wtm/core';
 import {
@@ -2061,13 +2061,8 @@ function isRuntimeInvocation(argv: readonly string[]): boolean {
 
 
 export function defaultRuntimeInvocation(): RuntimeInvocation {
-  // A standalone executable re-invokes itself; there is no separate entry script.
-  if (process.getBuiltinModule?.('node:sea')?.isSea() === true) {
-    return { executable: process.execPath, prefixArgs: [] };
-  }
-  const entry = process.argv[1];
-  if (entry === undefined) throw new Error('WTM CLI entry path is unavailable');
-  return { executable: resolve(process.execPath), prefixArgs: [resolve(entry)] };
+  // Standalone, built and TypeScript-source entries each re-invoke differently; see the helper.
+  return selfRuntimeInvocation();
 }
 
 export function daemonProgramArguments(invocation: RuntimeInvocation): readonly string[] {

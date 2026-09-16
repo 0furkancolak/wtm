@@ -6,7 +6,7 @@ import type {
   ManagedProcessRecord, ManagedProcessState, ManagedProcessInput, ManagedProcessQuery,
   ManagedProcessUpdate, ManagedProcessCreateOptions, ManagedProcessReservationOptions,
 } from '@wtm/core';
-import { selectPlatformRuntime } from '@wtm/platform';
+import { selectPlatformRuntime, selfRuntimeInvocation } from '@wtm/platform';
 import type {
   ObservedProcessIdentity, PlatformId, PlatformRuntime, ProcessPlatform,
   ProcessInspection as PlatformProcessInspection,
@@ -180,7 +180,7 @@ export class ManagedProcessSupervisor {
     this.#onError = options.onError ?? (() => {});
     this.#onExit = options.onExit ?? (() => {});
     this.#anchorIgnoresAbort = options.anchorIgnoresAbort ?? false;
-    this.#runtimeInvocation = options.runtimeInvocation ?? defaultRuntimeInvocation();
+    this.#runtimeInvocation = options.runtimeInvocation ?? selfRuntimeInvocation();
     this.#platform = options.platform;
   }
 
@@ -1012,16 +1012,6 @@ function reservationExpiry(acquiredAt: string): string {
   const milliseconds = Date.parse(acquiredAt);
   if (!Number.isFinite(milliseconds)) throw new Error('Managed process reservation time is invalid');
   return new Date(milliseconds + 30_000).toISOString();
-}
-
-function defaultRuntimeInvocation(): RuntimeInvocation {
-  // A standalone executable re-invokes itself; there is no separate entry script.
-  if (process.getBuiltinModule?.('node:sea')?.isSea() === true) {
-    return { executable: process.execPath, prefixArgs: [] };
-  }
-  const entry = process.argv[1];
-  if (entry === undefined) throw new Error('WTM CLI entry path is unavailable');
-  return { executable: process.execPath, prefixArgs: [entry] };
 }
 
 function ownerKey(worktreeId: string, taskName: string): string { return `${worktreeId}\0${taskName}`; }
