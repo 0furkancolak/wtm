@@ -300,12 +300,49 @@ class FaultProcessStore extends MemoryProcessStore {
 describe('the daemon default process readers are this host\'s platform port', () => {
   const platform = hostProcessBackend();
 
+  /**
+   * The group reading is taken of a quiescent group this test owns, never of this process's own.
+   *
+   * A live pid set cannot be compared across two reads here, on any host whose group reader shells
+   * out: the BSD reader runs `ps -axo pid=,pgid=,state=`, that `ps` inherits its caller's process
+   * group, and `ps` lists itself -- so every reading of *this* process's group contains that
+   * reading's own transient `ps`, and two readings differ by exactly that pid. Reproduced directly
+   * against `createDarwinProcessPlatform()`: consecutive reads returned `[18505, 18518]` and
+   * `[18505, 18519]`, the same shape as the darwin arm64 failure (`[…, 71708]` vs `[…, 71707]`).
+   *
+   * It never failed before because it never ran: under `bun run test` the test process is a child
+   * of `bun run` and inherits its process group, so `process.pid` is not a pgid, no process answers
+   * to it, and both readings were `{ status: 'absent' }` -- equal, and vacuous. Running each file
+   * in its own process group (the per-file runner does, which is what lets a hang be killed as a
+   * group) made the group real, and the race with it.
+   *
+   * A child spawned `detached` is its own group leader with exactly one member, and the reader's
+   * `ps` belongs to *this* process's group rather than to that one, so the two readings are equal
+   * because nothing is moving, not because nothing is there.
+   *
+   * What discriminates a hardcoded macOS reader from the selected one is the `inspectProcess`
+   * comparison: `processStartTime` and `commandFingerprint` are parsed from BSD `ps` output by one
+   * backend and from `/proc` by the other, and cannot agree by accident. The group assertions add
+   * that the group reader delegates to the same port and answers about a real group.
+   */
   test('delegate to the port the platform seam selected, not to a hardcoded macOS one', async () => {
     const selected = selectPlatformRuntime().process;
+    const quiescent = spawn('node', ['--import', tsxLoader, fixturePath, 'member', 'unused', 'normal'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    if (quiescent.pid === undefined) throw new Error('Expected a quiescent group PID');
+    const identity = await waitForIdentity(quiescent.pid);
+    cleanups.push(async () => {
+      const current = await inspectProcessIdentity(identity.pid);
+      if (current !== null && sameIdentity(identity, current)) hostSignalProcessGroup(identity.pgid, 'SIGKILL');
+    });
 
     expect(selectPlatformRuntime().id).toBe(process.platform as 'darwin' | 'linux');
     expect(await inspectProcess(process.pid)).toEqual(await selected.inspectProcess(process.pid));
-    expect(await inspectProcessGroup(process.pid)).toEqual(await selected.inspectProcessGroup(process.pid));
+    expect(identity.pgid).toBe(quiescent.pid);
+    expect(await inspectProcessGroup(identity.pgid)).toEqual({ status: 'present', pids: [quiescent.pid] });
+    expect(await inspectProcessGroup(identity.pgid)).toEqual(await selected.inspectProcessGroup(identity.pgid));
   });
 
   test('agree with @wtm/platform about the running process', async () => {
