@@ -128,12 +128,15 @@ release targets.
 A manual `workflow_dispatch` run can narrow that 25 minute win32 leg to a chosen group of test
 files instead of the full suite, to prove a fix green without waiting on every leg: dispatch the
 workflow with the `win32_test_filter` input set to a space-separated list of test file paths or
-patterns. The other four legs are skipped for that run, and the win32 leg itself skips its
+patterns. The other four legs still start and keep their usual `Validate <platform> <arch>` names,
+but every step after checkout is skipped, so they finish in seconds. The win32 leg itself skips its
 full-suite-only steps (e2e, build, package, binary) since a targeted `bun test` result is the only
-evidence being asked for; lint and typecheck still run.
+evidence being asked for; lint and typecheck still run, after the targeted tests so that a red lint
+cannot cost the run its evidence. On a filter run the win32 leg is not `continue-on-error`: the
+targeted tests decide the result, which is the point of dispatching one.
 
-```
-gh workflow run CI --ref <branch> -f win32_test_filter="packages/x/src/__tests__/a.test.ts ..."
+```bash
+gh workflow run CI --ref <branch> -f win32_test_filter="packages/x/src/__tests__/a.test.ts packages/y/src/__tests__/b.test.ts"
 ```
 
 Leaving the input empty (or triggering CI any other way) runs the full suite on every leg as before.
