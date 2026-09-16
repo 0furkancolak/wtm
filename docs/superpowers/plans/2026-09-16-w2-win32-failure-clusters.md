@@ -25,6 +25,34 @@ Cluster wording is taken verbatim from `docs/superpowers/plans/2026-09-15-remain
 
 These two tests alone burn ~10 minutes of every win32 run and reproduce identically in both runs.
 
+**Resolved 2026-09-16 (W2-1), with a residue that is not W2-1's.** The 300 s was never the test
+body: it failed in 1035 ms (run 1) / 1033 ms (run 2), and Bun charges the rest to the hook —
+`^ a beforeEach/afterEach hook timed out for this test`. `cleanups` drain reversed, so
+`DaemonClient.close()` runs first and that is where the 300 s sat: it awaited `'close'` after
+`destroy()` with no bound. Two sibling unbounded waits were found alongside it — `#connect()`
+listened for `connect`/`error` only, so a peer that closes without an error settled nothing, and it
+carried no connect deadline at all. All three are now bounded by `transportTimeoutMs`
+(`packages/cli/src/client.ts`). That is a production fix: on a wedged transport `wtm` could not
+exit.
+
+**Residue, owner 9b.** The ~1 s body failure is a real win32 transport defect that is still
+unexplained and is now, deliberately, uncovered on win32. State it precisely: it is **not** "a
+second connection to one named-pipe address is not served" — `readiness-transport.test.ts > scope`
+**passes** on win32 (run 1, 271 ms) and holds a second *concurrent* client on the same pipe. It is
+specifically a **re-connect after the first pipe instance was torn down mid-frame**: the reconnect's
+`connect` fires, the request is written, and no answer arrives within the client's 1 s bound. The
+client is exonerated — the same two cases pass against a scripted transport, and the merge-base
+real-transport tests pass unchanged against the new client on POSIX — so this is the transport, not
+the decoder. The real-transport reconnect tests are kept in `client.test.ts` under
+`test.skipIf(process.platform === 'win32')`, so the other four legs still prove the reconnect and
+the handoff cannot evaporate.
+
+**Warning for whoever takes 9b:** this will not reach you through 9b's file list. 9b's stated code
+area is `packages/platform/src/ipc/*`, but nothing in this failure goes through it — it is plain
+`node:net` named-pipe reconnect, exercised by the fixture server in
+`packages/cli/src/__tests__/client.test.ts` and by `packages/daemon/src/server.ts`. Add those
+explicitly, and unskip the two `reconnects over a real transport ...` tests as the acceptance check.
+
 ## 9b — named pipe IPC sunucu ve istemci
 
 - `packages/testkit/src/__tests__/ipc-address.test.ts` (run 1 only)
