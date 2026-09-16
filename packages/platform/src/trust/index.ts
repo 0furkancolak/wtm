@@ -16,5 +16,16 @@ export {
   parseWindowsPathAcl,
 } from './windows-powershell';
 export type { PowershellRunner } from './windows-powershell';
+export { closePooledPowershellSession } from './windows-powershell';
+export {
+  createPooledPowershellRunner,
+  createPowershellSession,
+} from './windows-powershell-session';
+export type {
+  PowershellChild,
+  PowershellSession,
+  PowershellSessionOptions,
+  PowershellSpawn,
+} from './windows-powershell-session';
 export { readWindowsAclBatch } from './windows-acl-batch';
 export type { WindowsAclBatch, WindowsAclBatchReader } from './windows-acl-batch';

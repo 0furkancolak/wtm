@@ -10,11 +10,8 @@
  * is set explicitly here for the same reason C3 set it on every scenario child: a call that has
  * already blown its deadline loses nothing by being denied a graceful exit.
  */
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { createPooledPowershellRunner } from './windows-powershell-session';
 import type { CurrentWindowsUserSidReader, WindowsAccessRule, WindowsAclReader, WindowsPathAcl } from './windows';
-
-const execFileAsync = promisify(execFile);
 
 // A cold `powershell.exe` genuinely costs on the order of a second to start and import
 // `Microsoft.PowerShell.Security` (measured on a real `windows-latest` runner while diagnosing
@@ -26,13 +23,26 @@ const powershellTimeoutMs = 15_000;
 
 export type PowershellRunner = (args: readonly string[]) => Promise<{ stdout: string }>;
 
-const defaultRunPowershell: PowershellRunner = async (args) =>
-  await execFileAsync('powershell.exe', [...args], {
-    encoding: 'utf8',
-    timeout: powershellTimeoutMs,
-    killSignal: 'SIGKILL',
-    maxBuffer: 1024 * 1024,
-  });
+/**
+ * One pooled session for the whole process, not one `execFile` per call.
+ *
+ * This is the 9c fix: the win32 CI leg spent more than ten minutes inside a *passing*
+ * `packages/daemon/src/__tests__/logs.test.ts` doing nothing but cold PowerShell starts, which is
+ * why 111 of 218 test files never ran. The refusal semantics are deliberately identical --
+ * `createWindowsAclReader` below still turns any rejection into `undefined`, and the policy still
+ * turns `undefined` into "not trusted" -- so a session that dies, times out or is killed denies
+ * exactly the way a failed `execFile` denied. `windows-powershell-session.ts` documents what the
+ * pool does and does not carry between calls; the deadline below is the same bounded wait C3's
+ * hang-prevention intent asked for, now applied to a request rather than to a process start.
+ */
+const pooledRunner = createPooledPowershellRunner({ requestTimeoutMs: powershellTimeoutMs });
+
+const defaultRunPowershell: PowershellRunner = pooledRunner;
+
+/** Ends the pooled process now. For a composition root shutting down; callers restart it lazily. */
+export function closePooledPowershellSession(): void {
+  pooledRunner.close();
+}
 
 /**
  * `Get-Acl` lives in the `Microsoft.PowerShell.Security` module, which Windows PowerShell 5.1
@@ -65,11 +75,17 @@ function importSecurityModuleByExplicitPath(): string {
  * has to parse should already be in the form the parser expects, not reshaped by a second layer.
  */
 function aclScript(path: string): string {
-  const escaped = path.replace(/'/g, "''");
+  // The path is base64 *data*, never script text. Doubling `'` for a single-quoted literal was
+  // correct PowerShell quoting, but it is one review away from being wrong, and a long-lived
+  // session (`windows-powershell-session.ts`) raises what a single escaping mistake would be
+  // worth to an attacker: base64 removes the interpolation instead of escaping it, the same way
+  // `windows-acl-batch.ts` already passes its path list.
+  const encoded = Buffer.from(path, 'utf8').toString('base64');
   return [
     `$ErrorActionPreference = 'Stop'`,
     importSecurityModuleByExplicitPath(),
-    `$acl = Get-Acl -LiteralPath '${escaped}'`,
+    `$target = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))`,
+    `$acl = Get-Acl -LiteralPath $target`,
     `$descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)`,
     `$daclPresent = ($null -ne $descriptor.DiscretionaryAcl) -and (($descriptor.ControlFlags -band [System.Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -ne 0)`,
     `$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value`,
