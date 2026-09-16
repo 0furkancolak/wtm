@@ -568,7 +568,7 @@ export class ManagedProcessSupervisor {
       if (!identityMatches(stopping, inspected.identity)) return this.#transition(stopping, 'STALE_IDENTITY');
 
       try { this.#signalGroup(stopping.pgid, 'SIGTERM'); }
-      catch (error) { if (!isNoSuchProcess(error)) throw error; }
+      catch (error) { if (!isSignalWithoutLiveTarget(error)) throw error; }
       const termResult = await waitForOwnedGroupChange(
         stopping, this.#inspectProcess, this.#inspectGroup, this.#gracePeriodMs, this.#pollIntervalMs,
       );
@@ -595,7 +595,7 @@ export class ManagedProcessSupervisor {
       }
       if (!identityMatches(stopping, beforeKill.identity)) return this.#transition(stopping, 'STALE_IDENTITY');
       try { this.#signalGroup(stopping.pgid, 'SIGKILL'); }
-      catch (error) { if (!isNoSuchProcess(error)) throw error; }
+      catch (error) { if (!isSignalWithoutLiveTarget(error)) throw error; }
       const killed = await waitForGroupAbsent(
         stopping.pgid, this.#inspectGroup, this.#gracePeriodMs, this.#pollIntervalMs,
       );
@@ -1032,6 +1032,26 @@ function sameIdentity(left: ProcessIdentity, right: ProcessIdentity): boolean {
 }
 function delay(milliseconds: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }
 function isNoSuchProcess(error: unknown): boolean { return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ESRCH'; }
+/**
+ * Whether a refused signal says nothing about the group still being ours and alive.
+ *
+ * `ESRCH` is the obvious one: no such process group. `EPERM` reads as "you may not signal that",
+ * but `kill(2)` also answers it for a target that is no longer the process this supervisor
+ * verified microseconds earlier — a group whose last member has been reaped and whose pid the
+ * kernel has already handed to somebody else's process, or, on Darwin, a group still holding an
+ * unreaped member owned by another uid. Neither is a stop that failed: the group this supervisor
+ * owns is gone.
+ *
+ * Swallowing it is safe because nothing here concludes anything from the signal itself. Both call
+ * sites go on to ask the kernel what is actually there — `waitForOwnedGroupChange` after the
+ * TERM, `waitForGroupAbsent` after the KILL — and only an observed-absent group becomes `STOPPED`.
+ * A group that is genuinely alive and genuinely refusing our signals still fails, as
+ * `GROUP_REMAINED_ALIVE`, on that observation rather than on the `errno`.
+ */
+function isSignalWithoutLiveTarget(error: unknown): boolean {
+  return isNoSuchProcess(error)
+    || (typeof error === 'object' && error !== null && 'code' in error && error.code === 'EPERM');
+}
 function safeErrorCode(error: unknown): string {
   if (typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string') return error.code;
   if (error instanceof Error && /^[A-Z0-9_]+$/.test(error.message)) return error.message;

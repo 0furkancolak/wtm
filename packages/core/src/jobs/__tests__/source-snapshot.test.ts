@@ -12,7 +12,9 @@ afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { rec
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'wtm-job-source-'));
   roots.push(root);
-  const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: join(root, '.git', 'isolated-global'), GIT_CONFIG_NOSYSTEM: '1' } });
+  // Bounded and `SIGKILL`-ed: a synchronous spawn blocks the thread bun's per-test timeout would
+  // fire on, so a `git` that waits stops the whole run rather than failing this test.
+  const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: join(root, '.git', 'isolated-global'), GIT_CONFIG_NOSYSTEM: '1' }, timeout: 60_000, killSignal: 'SIGKILL' });
   git('init', '-q');
   await writeFile(join(root, 'source.ts'), 'export const n = 1;\n');
   await writeFile(join(root, '.gitignore'), 'ignored-output\n');

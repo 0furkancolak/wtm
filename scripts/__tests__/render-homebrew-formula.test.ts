@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runScenario } from '../../packages/testkit/src/scenario-child';
 import {
   formulaArchiveNames,
   renderHomebrewFormula,
@@ -167,13 +167,23 @@ describe('command line input resolution', () => {
   });
 });
 
+/**
+ * `spawnSync('/usr/bin/ruby', ...)` with no `timeout` used to drive this. macOS's `/usr/bin/ruby`
+ * is a developer-tools shim, and a shim that decides to wait -- for a license prompt, for an
+ * install it cannot show anyone on a headless runner -- waits forever. `spawnSync` blocks the
+ * thread bun's own per-test timeout would have to fire on, so nothing above it could end the wait
+ * either: a darwin x64 CI leg went silent here, mid-file, and stayed silent until the 30 minute
+ * job cap (run 34897205539). `runScenario` is the repository's one bounded child spawn -- a real
+ * deadline, enforced with `SIGKILL` because `SIGTERM` is a request -- and the reason every test
+ * child goes through it rather than through options written out per call site.
+ */
 describe.skipIf(!existsSync('/usr/bin/ruby'))('ruby syntax', () => {
   test('renders a formula the Ruby parser accepts', () => {
     const path = join(root, 'artifacts/formula/wtm.rb');
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     writeFileSync(path, rendered, { mode: 0o600 });
 
-    const result = spawnSync('/usr/bin/ruby', ['-c', path], { encoding: 'utf8' });
+    const result = runScenario('/usr/bin/ruby', ['-c', path], { timeoutMs: 30_000 });
 
     expect(result.stderr).toBe('');
     expect(result.stdout.trim()).toBe('Syntax OK');

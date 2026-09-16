@@ -25,6 +25,7 @@ import { expect, test } from 'bun:test';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { defaultCoreFileTrustPolicy } from '../file-trust-policy';
 
 const repositoryRoot = fileURLToPath(new URL('../../../..', import.meta.url));
 const scannedRoot = 'packages/core/src';
@@ -198,4 +199,54 @@ test('every reviewed exception still describes something that is really there', 
     expect(`${exception.file} [${exception.rule}]: ${String(matched.length)}`)
       .toBe(`${exception.file} [${exception.rule}]: ${String(exception.occurrences)}`);
   }
+});
+
+/**
+ * `file-trust-policy.ts`'s own doc block says its POSIX answers duplicate `@wtm/platform`'s
+ * `posixFileTrustPolicy`, and calls the duplication safe because "neither has a decision to make".
+ * Nothing enforced that. The two copies did drift: `@wtm/platform`'s hard-link predicate was
+ * corrected to accept an already-unlinked inode (`nlink === 0`, what `fstat` reports for a
+ * descriptor whose last name was renamed away) and core's copy was left refusing it, which is the
+ * same false refusal, one package over, in core's own fd-stat callers.
+ *
+ * Core cannot import `@wtm/platform` -- the structural guard above is what forbids it -- so the
+ * invariant is pinned the only way it can be: by reading both sources and comparing the
+ * predicates they actually contain. `Number(...)` is normalized away because core's `CoreFileStat`
+ * is its own structural type rather than `fs.Stats`; nothing else is.
+ */
+const platformPosixPolicyFile = 'packages/platform/src/trust/posix.ts';
+
+/** Every POSIX answer both copies claim to share, sync and async alike. */
+const duplicatedPredicates = [
+  'isOwnedByCurrentUser',
+  'isWritableOnlyByOwner',
+  'isNotSharedByHardLink',
+  'currentIdentityAvailable',
+] as const;
+
+function predicateBody(source: string, name: string): string {
+  const match = new RegExp(`${name}\\s*\\([^)]*\\)\\s*:\\s*(?:Promise<boolean>|boolean)\\s*\\{([^}]*)\\}`)
+    .exec(source);
+  if (match === null) throw new Error(`no ${name} predicate found`);
+  // Core's `CoreFileStat` is its own structural type rather than `fs.Stats`, so its copy coerces
+  // each field it reads. Nothing else is normalized away.
+  return (match[1] as string).replaceAll(/Number\(([^)]*)\)/g, '$1').replaceAll(/\s+/g, '');
+}
+
+test('core\'s POSIX file-trust answers have not drifted from the platform copy they duplicate', async () => {
+  const core = await readFile(join(repositoryRoot, portFile), 'utf8');
+  const platform = await readFile(join(repositoryRoot, platformPosixPolicyFile), 'utf8');
+
+  expect(duplicatedPredicates.map((name) => `${name}: ${predicateBody(core, name)}`))
+    .toEqual(duplicatedPredicates.map((name) => `${name}: ${predicateBody(platform, name)}`));
+  // Named outright, so a drift that happens to agree on the wrong answer is still a failure.
+  expect(predicateBody(core, 'isNotSharedByHardLink')).toBe('returnstat.nlink<=1;');
+});
+
+test('the hard-link predicate refuses a second name and accepts an already-unlinked inode', () => {
+  const stat = (nlink: number) => ({ uid: 0, mode: 0o600, nlink });
+
+  expect(defaultCoreFileTrustPolicy.isNotSharedByHardLink(stat(2))).toBe(false);
+  expect(defaultCoreFileTrustPolicy.isNotSharedByHardLink(stat(1))).toBe(true);
+  expect(defaultCoreFileTrustPolicy.isNotSharedByHardLink(stat(0))).toBe(true);
 });

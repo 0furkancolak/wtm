@@ -18,6 +18,8 @@ import { execFileSync } from 'node:child_process';
  */
 export function resolveRealExecutablePath(name: string): string {
   const command = process.platform === 'win32' ? 'where' : 'which';
-  const output = execFileSync(command, [name], { encoding: 'utf8' });
+  // Bounded and `SIGKILL`-ed like every other synchronous spawn a test process makes: this runs on
+  // the test's own thread, which is the thread bun's per-test timeout would have to fire on.
+  const output = execFileSync(command, [name], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
   return (output.split(/\r?\n/)[0] ?? '').trim();
 }
