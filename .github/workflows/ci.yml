@@ -98,7 +98,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Skip (win32_test_filter run only exercises the win32 leg)
         if: env.WTM_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32'
-        run: echo "Skipping this leg: workflow_dispatch requested a win32_test_filter run, which only exercises the win32 leg."
+        # Quoted as a whole: a plain YAML scalar may not contain ": ", and the message wants a colon.
+        run: 'echo "Skipping this leg: workflow_dispatch requested a win32_test_filter run, which only exercises the win32 leg."'
       - uses: oven-sh/setup-bun@v2
         if: "!(env.WTM_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32')"
         with:
