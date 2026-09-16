@@ -1,0 +1,166 @@
+import { afterEach, describe, expect, test } from 'bun:test';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { runScenario } from '../../packages/testkit/src/scenario-child';
+import { bunTestArguments, defaultFileTimeoutMs, discoverTestFiles, parseRunnerArguments } from '../run-tests';
+
+const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
+const runnerPath = fileURLToPath(new URL('../run-tests.ts', import.meta.url));
+const temporaryRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+async function fixture(files: Record<string, string>): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), 'wtm-run-tests-'));
+  temporaryRoots.push(root);
+  for (const [path, content] of Object.entries(files)) {
+    await mkdir(dirname(join(root, path)), { recursive: true });
+    await writeFile(join(root, path), content);
+  }
+  return root;
+}
+
+describe('parseRunnerArguments', () => {
+  test('keeps the last --timeout, the way bun does when `bun run test --timeout N` appends one', () => {
+    const parsed = parseRunnerArguments(['--timeout', '30000', '--timeout', '60000']);
+    expect(parsed.testTimeoutMs).toBe(60_000);
+    expect(parsed.fileTimeoutMs).toBe(defaultFileTimeoutMs(60_000));
+    expect(parsed.patterns).toEqual([]);
+    expect(parsed.forwarded).toEqual([]);
+  });
+
+  test('accepts the = form and an explicit per-file wall-clock limit', () => {
+    const parsed = parseRunnerArguments(['--timeout=300000', '--file-timeout=90000']);
+    expect(parsed.testTimeoutMs).toBe(300_000);
+    expect(parsed.fileTimeoutMs).toBe(90_000);
+  });
+
+  test('never lets the per-file limit undercut a single test, and scales with the test bound', () => {
+    expect(defaultFileTimeoutMs(60_000)).toBe(300_000);
+    expect(defaultFileTimeoutMs(300_000)).toBe(1_500_000);
+  });
+
+  test('separates path patterns from bun flags it forwards, including flags that take a value', () => {
+    const parsed = parseRunnerArguments(['-t', 'daemon close', 'process-supervisor', '--bail', '--only-failures', 'remove']);
+    expect(parsed.patterns).toEqual(['process-supervisor', 'remove']);
+    expect(parsed.forwarded).toEqual(['-t', 'daemon close', '--bail', '--only-failures']);
+    expect(parsed.nameFilter).toBe(true);
+  });
+
+  test('refuses a non-numeric bound instead of running unbounded', () => {
+    expect(() => parseRunnerArguments(['--timeout', 'soon'])).toThrow(/--timeout/);
+    expect(() => parseRunnerArguments(['--file-timeout', '0'])).toThrow(/--file-timeout/);
+    expect(() => parseRunnerArguments(['--timeout'])).toThrow(/--timeout/);
+  });
+});
+
+describe('bunTestArguments', () => {
+  test('runs exactly one file, sequentially, with the same per-test bound', () => {
+    const parsed = parseRunnerArguments(['--timeout', '60000']);
+    expect(bunTestArguments(parsed, 'packages/a/src/__tests__/a.test.ts'))
+      .toEqual(['test', '--max-concurrency=1', '--timeout=60000', './packages/a/src/__tests__/a.test.ts']);
+  });
+
+  test('lets a name filter skip files it matches nothing in, instead of failing each of them', () => {
+    const parsed = parseRunnerArguments(['-t', 'x']);
+    expect(bunTestArguments(parsed, 'a.test.ts'))
+      .toEqual(['test', '--max-concurrency=1', '--timeout=30000', '--pass-with-no-tests', '-t', 'x', './a.test.ts']);
+  });
+});
+
+describe('discoverTestFiles', () => {
+  test('finds the file set bun test finds, sorted, and nothing under node_modules or hidden directories', async () => {
+    const root = await fixture({
+      'b/__tests__/two.test.ts': '',
+      'a/__tests__/one.test.ts': '',
+      'a/__tests__/one.scenario.ts': '',
+      'a/__tests__/helper.ts': '',
+      'c/x_test.js': '',
+      'c/y.spec.tsx': '',
+      'c/z_spec.mjs': '',
+      'node_modules/pkg/dep.test.ts': '',
+      '.worktrees/other/copy.test.ts': '',
+      'c/readme.test.md': '',
+    });
+
+    expect(await discoverTestFiles(root, [])).toEqual([
+      'a/__tests__/one.test.ts',
+      'b/__tests__/two.test.ts',
+      'c/x_test.js',
+      'c/y.spec.tsx',
+      'c/z_spec.mjs',
+    ]);
+    expect(await discoverTestFiles(root, ['two', 'spec'])).toEqual([
+      'b/__tests__/two.test.ts',
+      'c/y.spec.tsx',
+      'c/z_spec.mjs',
+    ]);
+  });
+
+  test('covers this repository, including itself', async () => {
+    const files = await discoverTestFiles(repositoryRoot, []);
+    expect(files).toContain('scripts/__tests__/run-tests.test.ts');
+    expect(files.length).toBeGreaterThan(200);
+    expect(files.every((file) => !file.includes('node_modules'))).toBe(true);
+  });
+});
+
+describe('the repository test command', () => {
+  test('goes through the per-file runner, so a hang names its file', async () => {
+    const manifest = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>;
+    };
+    expect(manifest.scripts['test']).toBe('bun scripts/run-tests.ts --timeout 30000');
+    expect(manifest.scripts['test:e2e']).toStartWith('bun scripts/run-tests.ts --timeout 30000 ');
+  });
+});
+
+describe('run-tests.ts', () => {
+  test('names and kills a file that never finishes, keeps going, and fails the run', async () => {
+    const root = await fixture({
+      // A synchronous spin cannot be interrupted by bun's own per-test timeout: exactly the class of
+      // hang that used to hold a CI leg until the job limit.
+      'a/__tests__/hang.test.ts': "import { test } from 'bun:test';\ntest('spins', () => { for (;;) {} });\n",
+      'b/__tests__/pass.test.ts': "import { expect, test } from 'bun:test';\ntest('passes', () => { expect(1).toBe(1); });\n",
+    });
+
+    const started = Date.now();
+    const result = runScenario('bun', [runnerPath, '--timeout', '1000', '--file-timeout', '3000'], {
+      cwd: root,
+      timeoutMs: 60_000,
+    });
+
+    expect(Date.now() - started).toBeLessThan(45_000);
+    expect(result.status, result.stdout + result.stderr).toBe(1);
+    expect(result.stdout).toContain('[run-tests] start 1/2 a/__tests__/hang.test.ts');
+    expect(result.stdout).toContain('[run-tests] HUNG a/__tests__/hang.test.ts: no exit within 3000ms, killed');
+    expect(result.stdout).toMatch(/\[run-tests\] end 2\/2 b\/__tests__\/pass\.test\.ts exit=0 \d+\.\d+s/);
+    expect(result.stdout).toContain('[run-tests] 1 of 2 files failed:\n  a/__tests__/hang.test.ts (hung)');
+  }, 90_000);
+
+  test('passes when every file passes, and reports a failing file by name', async () => {
+    const root = await fixture({
+      'a/__tests__/pass.test.ts': "import { expect, test } from 'bun:test';\ntest('passes', () => { expect(1).toBe(1); });\n",
+      'b/__tests__/fail.test.ts': "import { expect, test } from 'bun:test';\ntest('fails', () => { expect(1).toBe(2); });\n",
+    });
+
+    const passing = runScenario('bun', [runnerPath, 'pass'], { cwd: root, timeoutMs: 60_000 });
+    expect(passing.status, passing.stdout + passing.stderr).toBe(0);
+    expect(passing.stdout).toContain('[run-tests] 1 files passed');
+
+    const failing = runScenario('bun', [runnerPath], { cwd: root, timeoutMs: 60_000 });
+    expect(failing.status).toBe(1);
+    expect(failing.stdout).toContain('[run-tests] 1 of 2 files failed:\n  b/__tests__/fail.test.ts (exit 1)');
+  }, 90_000);
+
+  test('fails instead of passing vacuously when a pattern matches no file', async () => {
+    const root = await fixture({ 'a/__tests__/pass.test.ts': '' });
+    const result = runScenario('bun', [runnerPath, 'nothing-like-this'], { cwd: root, timeoutMs: 60_000 });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('no test files match');
+  }, 90_000);
+});
