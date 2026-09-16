@@ -164,10 +164,12 @@ jobs:
       # the same real-cost reason its job timeout is widened above: `ManagedLogStore`'s rotation
       # tests each make several real `Get-Acl`-backed trust checks, and a real leg measured one of
       # them landing at 149s and another still short of done past 180s, on nothing but that
-      # per-call cost stacked across many checks, not a hang. This is a stopgap, not the real fix
-      # -- a per-call cost this size means a pooled/long-lived powershell.exe (reusing one already-
-      # imported session instead of paying the ~1.6s cold-start module import every call) is the
-      # actual answer, tracked as its own follow-up rather than raised indefinitely here.
+      # per-call cost stacked across many checks, not a hang. The real fix -- one pooled,
+      # long-lived powershell.exe reused across calls instead of paying the ~1.6s cold-start
+      # module import every time -- landed as `packages/platform/src/trust/`
+      # `windows-powershell-session.ts` (W2-2 / cluster 9c). The bound stays at this value until a
+      # win32 leg measures what those tests now cost: lowering it on the strength of the change
+      # alone would trade a stopgap for a guess.
       - run: bun run test --timeout ${{ matrix.platform == 'win32' && 300000 || 60000 }}
         if: env.CI_WIN32_FILTER_RUN != 'true'
       # Skipped on every leg when a win32_test_filter run only needs targeted test evidence: none of

@@ -65,10 +65,11 @@ const serviceBackends = {
 } as const;
 
 /**
- * Built once, not per `selectPlatformRuntime` call, because it wires two default readers that
- * each spawn a fresh `powershell.exe`, and every existing port in this package already treats
- * "spawn per call" as the norm for the platform it actually runs commands on — this is no
- * different.
+ * Built once, not per `selectPlatformRuntime` call, because both default readers share one pooled
+ * `powershell.exe` session (`trust/windows-powershell-session.ts`) and a second policy object
+ * would be a second pool. The "spawn per call" this used to do is exactly what made a *passing*
+ * `logs.test.ts` burn ten minutes of the win32 CI budget; the pool keeps the same refusal
+ * semantics and stops paying the cold-start import per ACL question.
  */
 const windowsFileTrustPolicy: FileTrustPolicy = createWindowsFileTrustPolicy({
   readAcl: createWindowsAclReader(),

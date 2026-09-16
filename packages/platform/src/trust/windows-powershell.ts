@@ -10,11 +10,8 @@
  * is set explicitly here for the same reason C3 set it on every scenario child: a call that has
  * already blown its deadline loses nothing by being denied a graceful exit.
  */
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { createPooledPowershellRunner } from './windows-powershell-session';
 import type { CurrentWindowsUserSidReader, WindowsAccessRule, WindowsAclReader, WindowsPathAcl } from './windows';
-
-const execFileAsync = promisify(execFile);
 
 // A cold `powershell.exe` genuinely costs on the order of a second to start and import
 // `Microsoft.PowerShell.Security` (measured on a real `windows-latest` runner while diagnosing
@@ -26,13 +23,21 @@ const powershellTimeoutMs = 15_000;
 
 export type PowershellRunner = (args: readonly string[]) => Promise<{ stdout: string }>;
 
-const defaultRunPowershell: PowershellRunner = async (args) =>
-  await execFileAsync('powershell.exe', [...args], {
-    encoding: 'utf8',
-    timeout: powershellTimeoutMs,
-    killSignal: 'SIGKILL',
-    maxBuffer: 1024 * 1024,
-  });
+/**
+ * One pooled session for the whole process, not one `execFile` per call.
+ *
+ * This is the 9c fix: the win32 CI leg spent more than ten minutes inside a *passing*
+ * `packages/daemon/src/__tests__/logs.test.ts` doing nothing but cold PowerShell starts, which is
+ * why 111 of 218 test files never ran. The refusal semantics are deliberately identical --
+ * `createWindowsAclReader` below still turns any rejection into `undefined`, and the policy still
+ * turns `undefined` into "not trusted" -- so a session that dies, times out or is killed denies
+ * exactly the way a failed `execFile` denied. `windows-powershell-session.ts` documents what the
+ * pool does and does not carry between calls; the deadline below is the same bounded wait C3's
+ * hang-prevention intent asked for, now applied to a request rather than to a process start.
+ */
+const defaultRunPowershell: PowershellRunner = createPooledPowershellRunner({
+  requestTimeoutMs: powershellTimeoutMs,
+});
 
 /**
  * `Get-Acl` lives in the `Microsoft.PowerShell.Security` module, which Windows PowerShell 5.1
@@ -55,7 +60,7 @@ const defaultRunPowershell: PowershellRunner = async (args) =>
  * proved works, regardless of what else is installed on the host or how it orders `PSModulePath`.
  */
 function importSecurityModuleByExplicitPath(): string {
-  return `Import-Module -Name "$PSHOME\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1"`;
+  return `Microsoft.PowerShell.Core\\Import-Module -Name "$PSHOME\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1"`;
 }
 
 /**
@@ -65,19 +70,31 @@ function importSecurityModuleByExplicitPath(): string {
  * has to parse should already be in the form the parser expects, not reshaped by a second layer.
  */
 function aclScript(path: string): string {
-  const escaped = path.replace(/'/g, "''");
+  // The path is base64 *data*, never script text. Doubling `'` for a single-quoted literal was
+  // correct PowerShell quoting, but it is one review away from being wrong, and a long-lived
+  // session (`windows-powershell-session.ts`) raises what a single escaping mistake would be
+  // worth to an attacker: base64 removes the interpolation instead of escaping it, the same way
+  // `windows-acl-batch.ts` already passes its path list.
+  const encoded = Buffer.from(path, 'utf8').toString('base64');
   return [
     `$ErrorActionPreference = 'Stop'`,
     importSecurityModuleByExplicitPath(),
-    `$acl = Get-Acl -LiteralPath '${escaped}'`,
+    `$target = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))`,
+    // Module-qualified, like every command the pooled session's own wrapper invokes. PowerShell
+    // resolves alias before function before cmdlet, so a `function global:Get-Acl` or a global
+    // alias defined once in a long-lived session would shadow the real cmdlet for the rest of its
+    // life -- and re-importing an already-loaded module does not remove it. Nothing in this
+    // package can define one, but this is the single call whose answer *is* the trust decision,
+    // so it names the cmdlet it means rather than relying on nothing ever shadowing it.
+    `$acl = Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $target`,
     `$descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)`,
     `$daclPresent = ($null -ne $descriptor.DiscretionaryAcl) -and (($descriptor.ControlFlags -band [System.Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -ne 0)`,
     `$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value`,
-    `$rules = $acl.Access | ForEach-Object {`,
+    `$rules = $acl.Access | Microsoft.PowerShell.Core\\ForEach-Object {`,
     `  $sid = try { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { $_.IdentityReference.Value }`,
     `  [PSCustomObject]@{ Sid = $sid; Rights = $_.FileSystemRights.ToString(); ControlType = $_.AccessControlType.ToString() }`,
     `}`,
-    `[PSCustomObject]@{ DaclPresent = $daclPresent; OwnerSid = $owner; AccessRules = @($rules) } | ConvertTo-Json -Depth 5 -Compress`,
+    `[PSCustomObject]@{ DaclPresent = $daclPresent; OwnerSid = $owner; AccessRules = @($rules) } | Microsoft.PowerShell.Utility\\ConvertTo-Json -Depth 5 -Compress`,
   ].join('; ');
 }
 

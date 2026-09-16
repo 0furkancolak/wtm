@@ -67,11 +67,25 @@ test('unsafe permissions on a newly created temporary refuse all trusted marker 
   } finally { await run.close(); }
 });
 
-test('a parent swap while ACL authorization waits cannot publish into the replacement directory', async () => {
+// The swap this constructs needs the task directory to be renameable while the operation holds
+// its exclusive temporary descriptors open inside it. POSIX allows that unconditionally, which is
+// exactly the gap `LogOperation.verify` closes. Windows's own mandatory file locking refuses the
+// rename itself in that state (`EPERM`) -- `logs.test.ts` records the same finding from a real
+// windows-latest leg for the two swap races there, for the same reason. Unskipped, this test did
+// not prove anything extra on win32: `rename` threw, the body abandoned an outstanding `open()`,
+// and the rejection that surfaced was the `ANCHOR_LOG_CLOSED` its own `finally` had just caused,
+// which is the failure both W2 evidence runs reported. The Windows-reachable half of the same
+// guarantee is the stale-file test immediately below, which runs on every platform.
+test.skipIf(process.platform === 'win32')('a parent swap while ACL authorization waits cannot publish into the replacement directory', async () => {
   const allowed = deferred<WindowsAclBatch>(); let requested: readonly string[] = [];
   const run = await fixture(async (paths) => { requested = paths; return await allowed.promise; });
+  // Nothing below may leave this rejection unobserved: an abandoned `open()` settles inside the
+  // `finally`, and an unhandled rejection there reports as this test's failure and hides the real
+  // one. Observing it here costs nothing and keeps the reported error the one that happened.
+  let opened!: Promise<unknown>;
   try {
-    const opened = run.store.open(); await flush(); expect(requested.length).toBeGreaterThan(0);
+    opened = run.store.open(); void opened.catch(() => {});
+    await flush(); expect(requested.length).toBeGreaterThan(0);
     await rename(run.directory, `${run.directory}-original`); await mkdir(run.directory, { mode: 0o700 });
     await writeFile(run.spec.stdoutPath, 'external', { mode: 0o600 });
     allowed.resolve(evidence(requested));
@@ -81,11 +95,79 @@ test('a parent swap while ACL authorization waits cannot publish into the replac
   } finally { allowed.resolve(evidence(requested)); await run.close(); }
 });
 
+// The win32 half of the skip above, and the reason it is a finding rather than an assumption.
+// `LOG_DIRECTORY_CHANGED` is asserted in exactly one place in this suite, and that place is now
+// skipped on win32 -- so the claim carrying that skip ("Windows refuses the rename itself") has to
+// be measured here rather than inferred. No CI leg has ever printed the errno: the rename's
+// failure was masked by the abandoned `open()` that settled after it. This asserts the platform
+// behaviour directly, so the day Windows, NTFS or libuv's share-delete flags stop refusing, this
+// fails and names the skip that has to come back.
+test.skipIf(process.platform !== 'win32')('Windows refuses to rename a log directory whose temporaries are open', async () => {
+  const allowed = deferred<WindowsAclBatch>(); let requested: readonly string[] = [];
+  const run = await fixture(async (paths) => { requested = paths; return await allowed.promise; });
+  let opened!: Promise<unknown>;
+  try {
+    opened = run.store.open(); void opened.catch(() => {});
+    await flush();
+    expect(requested.some((path) => path.endsWith('.tmp'))).toBe(true);
+    let code = 'the rename succeeded';
+    await expect(rename(run.directory, `${run.directory}-original`)
+      .catch((error: NodeJS.ErrnoException) => { code = error.code ?? error.message; throw error; })).rejects.toThrow();
+    // Recorded, not merely non-null: the value is the measurement this test exists to publish, so
+    // a refusal with an unexpected errno fails here and prints the one the host actually gave.
+    // Only the spellings of an open-handle refusal. `ENOTEMPTY` would be renaming *onto* a
+    // populated directory and the destination does not exist here, so admitting it could only let
+    // an unrelated failure masquerade as confirmation of the claim that carries the skip above.
+    expect(['EPERM', 'EACCES', 'EBUSY']).toContain(code);
+  } finally { allowed.resolve(evidence(requested)); await run.close(); }
+});
+
+// The same authorization window, mutated the way Windows does permit: the log file the batch was
+// asked about is replaced by a different inode while the answer is outstanding. Authorization
+// evidence is bound to a path, so a path that no longer names what was inspected must refuse
+// rather than publish -- on every platform, which is what makes this the win32 half of the test
+// above.
+test('a log file replaced while ACL authorization waits is refused before anything is published', async () => {
+  const allowed = deferred<WindowsAclBatch>(); let requested: readonly string[] = [];
+  const run = await fixture(async (paths) => { requested = paths; return await allowed.promise; });
+  let opened!: Promise<unknown>;
+  try {
+    opened = run.store.open(); void opened.catch(() => {});
+    await flush(); expect(requested).toContain(run.spec.stdoutPath);
+    // Renamed over, not unlinked and rewritten: a freshly freed inode number is routinely reused
+    // by the very next create, which would hand the replacement the identity it is replacing and
+    // make this test pass for the wrong reason.
+    const external = join(run.directory, 'external.log');
+    await writeFile(external, 'external', { mode: 0o600 });
+    await rename(external, run.spec.stdoutPath);
+    allowed.resolve(evidence(requested));
+    await expect(opened).rejects.toThrow('LOG_FILE_CHANGED');
+    expect(await readFile(run.spec.stdoutPath, 'utf8')).toBe('external');
+    expect(fs.existsSync(`${run.spec.stdoutPath}.generation`)).toBe(false);
+  } finally { allowed.resolve(evidence(requested)); await run.close(); }
+});
+
+// A path the batch could not read at all is one path's refusal, not a verdict over the batch:
+// `windows-acl-batch.ts` isolates each `Get-Acl`, so the operation must still refuse -- and must
+// refuse for the missing evidence, not because the other paths came back fine.
+test('a path the ACL batch could not read refuses the operation without publishing', async () => {
+  const run = await fixture(async (paths) => {
+    const acls = new Map(evidence(paths).acls);
+    acls.delete(run.spec.stdoutPath);
+    return { currentSid, acls };
+  });
+  try {
+    await expect(run.store.open()).rejects.toThrow('UNSAFE_LOG_ACL');
+    expect(await readFile(run.spec.stdoutPath, 'utf8')).toBe('');
+    expect(fs.existsSync(`${run.spec.stdoutPath}.generation`)).toBe(false);
+  } finally { await run.close(); }
+});
+
 test('a hard link introduced while ACL authorization waits is refused before writing', async () => {
   const allowed = deferred<WindowsAclBatch>(); let requested: readonly string[] = [];
   const run = await fixture(async (paths) => { requested = paths; return await allowed.promise; });
   try {
-    const opened = run.store.open(); await flush();
+    const opened = run.store.open(); void opened.catch(() => {}); await flush();
     await link(run.spec.stdoutPath, join(run.root, 'external-link'));
     allowed.resolve(evidence(requested)); await expect(opened).rejects.toThrow('UNSAFE_LOG_TARGET');
     expect(await readFile(run.spec.stdoutPath, 'utf8')).toBe('');
