@@ -39,7 +39,11 @@ async function fakeHome(): Promise<string> {
  * quietly claiming the thing it was checking is broken.
  */
 function runRequiredTool(tool: string, args: readonly string[]): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync(tool, [...args], { encoding: 'utf8' });
+  // A deadline, and a `SIGKILL` one, for the same reason `runScenario` has one: `spawnSync` blocks
+  // the thread bun's per-test timeout would fire on, so a validator that waits -- `launchctl`
+  // against a session that will not answer, a macOS developer-tools shim waiting for a prompt
+  // nobody can see -- takes the whole run down with it, silently, until the CI job cap.
+  const result = spawnSync(tool, [...args], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
   if (result.error !== undefined) throw new Error(`${tool} is not available on this host: ${String(result.error)}`);
   if (result.status === null || result.status === undefined) {
     throw new Error(`${tool} produced no exit status (signal ${String(result.signal)})`);

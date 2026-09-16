@@ -10,6 +10,8 @@
  * - the file set is the one `bun test` discovers (same name patterns, same exclusions), sorted;
  * - each file runs as `bun test --max-concurrency=1 --timeout=<same bound> ./file`, with its output
  *   passed straight through, so a file still gets bun's own report and CI annotations;
+ * - `--parallel=1` is not forwarded because it has nothing left to say: it bounds how many test
+ *   *files* bun runs at once, and this runner hands it exactly one;
  * - each file is announced before it starts and after it ends, with its duration;
  * - a file that has not exited within `--file-timeout` is reported as hung by name and its whole
  *   process group is killed; the remaining files still run;
@@ -24,7 +26,14 @@ import { join, relative, sep } from 'node:path';
 
 export const defaultTestTimeoutMs = 30_000;
 
-/** Five times the per-test bound, never under five minutes: the slowest honest file takes ~95 s. */
+/**
+ * Five times the per-test bound, never under five minutes.
+ *
+ * This is a hang detector, not a speed limit: the slowest honest file in this repository measures
+ * an idle daemon for ~22 s and finishes well inside a minute, and the widest bound any leg asks
+ * for (win32's 300 s per test, for real per-call PowerShell costs) still lands under its own job
+ * cap. A file that reaches this has stopped making progress, and naming it is the whole point.
+ */
 export function defaultFileTimeoutMs(testTimeoutMs: number): number {
   return Math.max(300_000, testTimeoutMs * 5);
 }
