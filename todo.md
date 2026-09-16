@@ -91,7 +91,7 @@ release operation lease
 
 ---
 
-### [ ] 2. Cross-process repository operation locking ekle
+### [x] 2. Cross-process repository operation locking ekle
 
 Mevcut process-local `Map` mutex ayrı CLI process'leri veya daemon ile CLI arasında ortak değildir.
 
@@ -109,7 +109,7 @@ Mevcut process-local `Map` mutex ayrı CLI process'leri veya daemon ile CLI aras
 - [x] Lease acquisition için transactional / `BEGIN IMMEDIATE` yaklaşımı kullan.
 - [x] Expired/stale lease recovery ekle.
 - [x] PID reuse riskine karşı process identity doğrulaması yap.
-- [~] `remove`, `gc`, destructive cleanup ve ileride `repair` gibi operasyonlarda aynı mekanizmayı
+- [x] `remove`, `gc`, destructive cleanup ve ileride `repair` gibi operasyonlarda aynı mekanizmayı
       kullan. — `remove` (`remove-worktree.ts`) ve `gc --apply` (`resources/gc.ts`) ikisi de
       `withRepositoryOperationLease`'i kullanıyor ve artık **birbirlerini de** dışlıyorlar
       (aşağıdaki kabul kriterine bak); `repair` diye ayrı bir komut henüz yok, o yüzden hâlâ
@@ -117,6 +117,8 @@ Mevcut process-local `Map` mutex ayrı CLI process'leri veya daemon ile CLI aras
       `'remove' | 'gc' | 'repair'`, ve genişletilmiş conflict kontrolü satır bazlı değil
       repository bazlı olduğu için `repair` komutu yazıldığı gün ek bir değişiklik gerektirmeden
       doğru davranacak.
+      **2026-09-16 kararı (K1):** `repair` komutu v0.2.0 kapsamı dışında; madde mevcut
+      `remove`/`gc` kapsamıyla kapatıldı. `repair` yazılırsa aynı lease'i kullanması yeterli.
 - [x] Lock conflict için stable JSON error code ekle.
 
 #### Önerilen hata kodu
@@ -235,8 +237,8 @@ bağlı — ayrı bir `needs: performance` gerekmedi çünkü performance artık
 
 #### Alternatif
 
-- [ ] Performance testlerini "release gate" olarak tanımlayan dokümantasyonu değiştir.
-- [ ] Bunları yalnızca monitoring/report olarak adlandır.
+- ~~Performance testlerini "release gate" olarak tanımlayan dokümantasyonu değiştir.~~ (seçilmedi)
+- ~~Bunları yalnızca monitoring/report olarak adlandır.~~ (seçilmedi)
 
 #### Kabul kriterleri
 
@@ -1377,8 +1379,10 @@ XDG_RUNTIME_DIR
 - [x] Linux process start-time / identity verification.
 - [x] inotify/fs.watch davranış testleri.
 - [x] Linux permission / symlink semantics testleri.
-- [ ] ARM64 + x64 binary build pipeline. — x64 tamam (`binary:verify` ubuntu bacağında yeşil,
-      `dist/sea/wtm … linux-x64`); **arm64 yok**, Linux CI matrisinde arm64 runner yok.
+- [x] ARM64 + x64 binary build pipeline. — x64 tamam (`binary:verify` ubuntu bacağında yeşil,
+      `dist/sea/wtm … linux-x64`); **2026-09-16:** arm64 de CI'da (`ubuntu-24.04-arm`) derleniyor ve
+      `binary:verify` geçiyor (`360a7da` / `34947190062`). Release'te Linux arşivlerinin
+      yayınlanması madde 29'da ayrıca izleniyor.
 
 > **Linux x64 CI yeşil, 2026-09-02** (`33655596273`). Bu kutular gerçek bir çekirdekte koşan
 > testlerle işaretlendi, fixture'larla değil: süreç grubu sonlandırma ve anchor'ın platform
@@ -1609,7 +1613,8 @@ wtm-windows-arm64.exe
       **yeşil bir darwin x64 koşusu yok**; kanıt gelene kadar `[~]`.
 - [x] Linux x64 CI green. — `75a8626` / `34457543774`: test 1627/0, e2e 3/0, binary 10/0;
       lint/typecheck/build/package geçti. Takip yamalarının native kanıtı ayrıca izlenir.
-- [ ] Linux arm64 build doğrulanıyor.
+- [x] Linux arm64 build doğrulanıyor. — `360a7da` / `34947190062` `ubuntu-24.04-arm` bacağı:
+      lint, typecheck, test, e2e, build, `package:verify`, `binary:verify` ve Linux arşiv doğrulaması yeşil.
 - [ ] Windows x64 CI green. — **2026-09-10 takip yeniden başladı.** `75a8626` koşusunda
       1327 pass / 115 fail / 200 skip ve bir testler-arası error; sonraki gate'ler çalışmadı.
       Native log, anchor'da yanlış POSIX 0700 kontrolünü somut olarak gösteriyor; SID/ACL
@@ -2235,7 +2240,7 @@ block
 
 ---
 
-### [ ] 18. Port probing'i batch hale getir
+### [x] 18. Port probing'i batch hale getir
 
 **2026-09-10:** Node ve standalone tahsis yolu artık en fazla 256 adayı tek helper'a gönderir.
 SQLite transaction içindeki lease çakışma filtresi, mevcut port ve preferred port sırası korunur.
@@ -2246,7 +2251,9 @@ bulunan UDP descriptor sızıntısı gerçek private CLI testiyle giderildi. Son
 - [x] Tek process üzerinden sınırlı toplu bind/close kontrolü.
 - [x] Node ve standalone private girişleri, TCP/UDP ve transaction çakışma testleri.
 - [x] Bağımsız review; UDP descriptor bulgusu giderildi ve yeniden incelendi.
-- [ ] Son düzeltmenin native CI sonuçları; `75a8626` Linux/ARM64 başarılı, Intel iki hata.
+- [x] Son düzeltmenin native CI sonuçları; `75a8626` Linux/ARM64 başarılı, Intel iki hata.
+      **2026-09-16:** `f266b1f` / `34947174999` darwin x64 bacağı tam yeşil (port probe testleri
+      dahil); `360a7da` / `34947190062` Linux x64, Linux arm64 ve darwin arm64 yeşil.
 
 #### Hedef
 
@@ -2844,7 +2851,7 @@ dokümanda anlatıldığı gibi çalışıyor mu test edilmeli.
       kimlik karşılaştırması — önceden hiçbir testin egzersiz etmediği kod yolu. Beklenen hata:
       `WorktreeAnalysisError`, `context.initial.branchRef` / `context.current.branchRef` farklı.
 
-### [ ] Remote safety
+### [x] Remote safety
 
 - [x] stale local remote ref
 - [x] deleted remote branch after refresh
