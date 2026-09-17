@@ -2039,6 +2039,65 @@ listeli: `docs/superpowers/specs/2026-09-14-ci-watch-design.md`.
 
 ---
 
+### [ ] 55. Aynı projenin tekrar tekrar başlatılması: yeni başlatma öncekinin sonlanmasını beklesin
+
+**2026-09-17 kullanıcı ihtiyacı:** Aynı proje arka arkaya çok kez çalıştırıldığında (birden çok AI
+oturumu ya da aynı oturumun tekrarlanan denemeleri) önceki çalıştırmanın süreçleri hâlâ ayakta
+kalabiliyor; sistem kaynakları saldırganca tüketiliyor. Yeni bir başlatma yapacak ajan, öncekinin
+gerçekten sonlandığını doğrulamadan başlatmamalı ve bunu izleyen bir takip aracı olmalı.
+
+Madde 50 yalnızca **sonlanan** ağır işleri (build/test/typecheck) kuyruğa alır ve uzun ömürlü
+`wtm start` servislerini bilerek kapsam dışı bırakır ("dev server tek ağır iş slotunu süresiz
+tutmasın"). Bu madde tam o boşluğu kapatır: aynı proje için uzun ömürlü runtime başlatmalarının
+serileştirilmesi ve izlenmesi. Genel process/disk bütçeleri madde 19'da, idle suspension madde
+14'te kalsın; üçüncü bir scheduler oluşturulmasın — mevcut daemon, SQLite state, lease ve process
+identity zinciri kullanılsın.
+
+#### Yapılacaklar
+
+- [ ] "Aynı proje" anahtarı açıkça tanımlansın (repository + worktree + task adı) ve bu anahtar
+      için aynı anda en fazla bir aktif başlatma bulunsun. Anahtar seçimi belgelensin: farklı
+      worktree'lerin kasıtlı paralel çalışması engellenmemeli.
+- [ ] Yeni başlatma, aynı anahtardaki önceki sürecin sonlandığı **kanıtlanana** kadar beklesin.
+      Kanıt mevcut process identity kontrolleriyle olsun (PID + start time/identity); çıplak PID
+      varlığı yeterli sayılmasın, PID yeniden kullanımı açıkça ele alınsın.
+- [ ] Bekleme sınırlı olsun: yapılandırılabilir bir bekleme süresi, süre dolunca açık bir hata
+      kodu ve remediation. Sessiz süresiz bekleme veya sessizce ikinci kopyayı başlatma olmasın.
+- [ ] Bekleme nedeni madde 50'deki gibi görünür olsun (ör. `runtime_busy`), durum sorgusu state'i
+      değiştirmesin.
+- [ ] Takip aracı: çalışan/kapanmakta olan başlatmaları anahtar, PID/grup, başlama zamanı, sahip
+      oturum ve son gözlem zamanıyla listeleyen bir komut (JSON zarfı sürüm 1). Sır içeren
+      argv/env taşınmasın; madde 50'deki gibi yalnızca fingerprint saklansın.
+- [ ] Yetim (orphan) ve artık kayıt (stale record) durumları ele alınsın: daemon yeniden
+      başladığında kayıtlar uzlaştırılsın; sahibi gitmiş ama süreci ayakta olan runtime ve
+      süreci gitmiş ama kaydı duran runtime ayrı ayrı çözülsün.
+- [ ] Ajan akışı: skill, yeni bir başlatmadan önce takip aracına baksın ve önceki çalıştırma
+      sonlanmadan başlatmasın. Ajan kendi başlattığı süreci sonlandırmadan oturumu bırakmasın.
+- [ ] Kapatma, süreç ağacının tamamını mevcut runtime güvenlik zinciriyle sonlandırsın; slot
+      ancak süreçlerin durduğu doğrulanınca serbest kalsın (madde 50'deki iptal/timeout
+      davranışının aynısı, ayrı bir yol yazılmasın).
+
+#### Kabul kriterleri
+
+- [ ] Aynı proje/worktree için arka arkaya iki başlatma denendiğinde ikincisi, birincinin süreç
+      ağacı sonlandığı doğrulanana kadar başlamaz; iki canlı kopya aynı anda çalışmaz.
+- [ ] Bekleme süresi dolduğunda ikinci başlatma sessizce başlamaz; açık hata kodu ve nedeni döner.
+- [ ] Takip aracı, gerçek bir başlatma sırasında çalışan süreci listeler; süreç öldükten sonra
+      kaydı otomatik temizlenir veya açıkça `stale` olarak işaretlenir.
+- [ ] PID yeniden kullanımı senaryosu testli: yeni bir sürecin eski bir PID'i devralması,
+      "önceki hâlâ çalışıyor" yanlış okumasına yol açmaz.
+- [ ] Daemon restart sonrası uzlaştırma testli: kimliği doğrulanmış çalışan runtime korunur,
+      sonucu belirsiz kayıt kendiliğinden yeniden başlatılmaz.
+- [ ] Ölçüm: aynı projeyi N kez üst üste başlatan senaryoda, bu mekanizma öncesi/sonrası canlı
+      süreç sayısı ve tepe RSS karşılaştırılır. Ölçüm yapılmadan belirli bir tasarruf oranı
+      vaat edilmez (madde 50'nin ölçüm disiplini geçerli).
+
+**Açık kararlar:** komut adı ve yüzeyi (`wtm runtime ps` benzeri ayrı bir komut mu, `wtm status`
+genişletmesi mi), beklemenin varsayılan açık/kapalı olması, ve cross-host paylaşılan `HOME`
+durumunda kapsamın madde 50'deki host-local varsayımını devralıp devralmayacağı.
+
+---
+
 ## P2 — Ürünü belirgin biçimde farklılaştıracak işler
 
 ### [ ] 12. Local reverse proxy / stable feature domains
