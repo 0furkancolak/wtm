@@ -99,6 +99,12 @@ try {
       return directory;
     }) as typeof original.opendir;
   } else if (mode === 'depth-budget') {
+    // walk() checks the time budget before the depth one, so the shared 5s default puts the two in a
+    // race that the walk loses on a slow host: verifyActive() re-stats every active ancestor, so a
+    // 66-deep chain costs on the order of depth^2 metadata calls. A darwin x64 runner reported
+    // 'time-budget' here at 5544ms where darwin arm64 finished the same case in 516ms. Every other
+    // mode already narrows the budget it is pinning; this one has to widen the budgets it is not.
+    maxDurationMs = 600_000;
     let current = root;
     for (let i = 0; i < 66; i += 1) { current = join(current, 'd'); fs.mkdirSync(current); }
   } else {
