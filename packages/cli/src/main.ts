@@ -81,7 +81,7 @@ import {
   type ForegroundDaemonRuntime,
 } from './commands/daemon';
 import {
-  daemonStatusPath,
+  hostDaemonStatusPath,
   nextDaemonStatus,
   readDaemonStatus,
   servicePathsForHost,
@@ -577,8 +577,8 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
           undefined,
           undefined,
           () => {
-            const service = daemonServicePaths();
-            return service === null ? null : readDaemonStatus(daemonStatusPath(service.logRoot));
+            const statusPath = hostDaemonStatusPath(daemonServicePaths);
+            return statusPath === null ? null : readDaemonStatus(statusPath);
           },
         ),
         runtimeJson(program, options),
@@ -592,7 +592,9 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     // runs land in the same log, which is the only place an unattended process can speak.
     const service = daemonServicePaths();
     if (service !== null) await rotateDaemonServiceLogs(service, hostPlatformRuntime().fileTrust);
-    const statusPath = service === null ? null : daemonStatusPath(service.logRoot);
+    // The paths already read, not read a second time: the record's location is derived once, here
+    // and in every reader, from the `logRoot` this daemon is about to rotate its logs in.
+    const statusPath = hostDaemonStatusPath(() => service);
     const previous = statusPath === null ? null : readDaemonStatus(statusPath);
     const reportError = createDaemonErrorReporter(undefined, undefined, undefined, {
       repeatedCondition: previous?.state === 'failed' ? previous.condition : null,
@@ -1781,6 +1783,11 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
       dataSource: createStateDiagnosticDataSource(diagnosticStore, {
         cwd: dependencies.cwd ?? process.cwd(),
         globalConfigPath: defaultProductionRuntimePaths().globalConfigPath,
+        // The same seam the no-store route below reads the record through, so the two cannot
+        // report about different files (todo item 52, M4).
+        ...(dependencies.daemonServicePaths === undefined
+          ? {}
+          : { daemonServicePaths: dependencies.daemonServicePaths }),
       }),
     }),
     // No database is a machine that has never run `wtm init`. It still has a daemon that may be
@@ -1791,10 +1798,7 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
         ...emptyDiagnosticDataSource,
         readDaemonStartupFailure: createDaemonStartupDiagnostic({
           socketPath: () => (socketPathRefusal === null ? socketPath : null),
-          statusPath: () => {
-            const service = (dependencies.daemonServicePaths ?? servicePathsForHost)();
-            return service === null ? null : daemonStatusPath(service.logRoot);
-          },
+          statusPath: () => hostDaemonStatusPath(dependencies.daemonServicePaths),
         }).failureItem,
       },
     }),

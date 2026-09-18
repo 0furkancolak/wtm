@@ -13,7 +13,8 @@ import type {
 } from '@wtm/core';
 import { selectPlatformRuntime, UnsupportedPlatformError } from '@wtm/platform';
 import { daemonSocketFileName, publishedDaemonSocketPath } from '@wtm/platform/socket';
-import { nextDaemonStatus, writeDaemonStatus } from '../daemon-status';
+import type { ServicePaths } from '@wtm/daemon/service-lifecycle';
+import { daemonStatusFileName, nextDaemonStatus, writeDaemonStatus } from '../daemon-status';
 import { doctorChecks, runDoctorCommand } from '../diagnostics';
 import { createStateDiagnosticDataSource } from '../state-diagnostics';
 
@@ -368,6 +369,55 @@ describe('doctor with a database but no workspace left in it (todo item 52)', ()
       remediation: [{ kind: 'command-suggestion', argv: ['chmod', '700', '/x'] }],
     });
     expect(envelope.warnings[0]?.message).toContain('it failed to start once since 2026-09-11T10:00:00.000Z.');
+  });
+});
+
+describe('the daemon status record is read where the daemon writes it (todo item 52, M4)', () => {
+  test('doctor reads the record through the service paths, not through a second derivation', async () => {
+    // `daemon serve` records the outcome under `ServicePaths.logRoot`. `doctor` used to arrive at
+    // the same file from `PlatformRuntime.paths.logRoot` instead -- equal on this host today, and
+    // equal only for as long as the two resolvers agree. Pointing the *writer's* seam at a
+    // throwaway directory is what proves the reader follows it: nothing here touches the real
+    // `HOME`'s log root, and the record is still found.
+    const logRoot = await tempDir();
+    writeDaemonStatus(join(logRoot, daemonStatusFileName), nextDaemonStatus(null, {
+      started: false,
+      code: 'WTM_PRIVATE_DIRECTORY_UNSAFE',
+      condition: 'private directory unsafe',
+      message: 'WTM private directory is unsafe: /x is readable by others (mode 755).',
+      remediation: ['chmod', '700', '/x'],
+      permanent: true,
+    }, new Date('2026-09-11T10:00:00.000Z'), 7));
+    const emptied = { ...store, listWorkspaces: () => [] } as unknown as DaemonStateStore;
+
+    const envelope = await runDoctorCommand({ cwd: '/fresh' }, createStateDiagnosticDataSource(emptied, {
+      cwd: '/fresh',
+      globalConfigPath: '/workspace/config.toml',
+      daemonSocketPath: join(await tempDir(), 'absent.sock'),
+      // Only `logRoot` is read on this path; the rest of a real HOME's paths are not needed.
+      daemonServicePaths: () => ({ logRoot }) as unknown as ServicePaths,
+    }));
+
+    expect(envelope.warnings).toHaveLength(1);
+    expect(envelope.warnings[0]).toMatchObject({
+      code: 'WTM_PRIVATE_DIRECTORY_UNSAFE',
+      severity: 'warning',
+      remediation: [{ kind: 'command-suggestion', argv: ['chmod', '700', '/x'] }],
+    });
+  });
+
+  test('a host with no service backend has no record to read, and says nothing about one', async () => {
+    const emptied = { ...store, listWorkspaces: () => [] } as unknown as DaemonStateStore;
+
+    const envelope = await runDoctorCommand({ cwd: '/fresh' }, createStateDiagnosticDataSource(emptied, {
+      cwd: '/fresh',
+      globalConfigPath: '/workspace/config.toml',
+      daemonSocketPath: join(await tempDir(), 'absent.sock'),
+      daemonServicePaths: () => null,
+    }));
+
+    expect(envelope.errors.map(({ code }) => code)).toEqual(['WTM_NOT_INITIALIZED']);
+    expect(envelope.warnings).toEqual([]);
   });
 });
 

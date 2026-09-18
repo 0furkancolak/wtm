@@ -55,6 +55,27 @@ export function servicePathsForHost(): ServicePaths | null {
   }
 }
 
+/**
+ * Where the daemon's last startup outcome is recorded on this host, or `null` when there is no
+ * backend to derive it from.
+ *
+ * The one derivation, shared by the writer and by every reader (todo item 52, M4). `daemon serve`
+ * records the outcome under `ServicePaths.logRoot`, so a reader that arrived at the same file a
+ * second way -- `PlatformRuntime.paths.logRoot`, which `doctor` used to read it through -- agrees
+ * with the writer only for as long as the two resolvers happen to. They do agree today, which is
+ * exactly what makes the disagreement silent when it comes: `doctor` would report no record at all
+ * on a machine whose daemon is refusing to start, which is the one machine this record exists for.
+ *
+ * `servicePaths` stays an argument because every in-process test that drives `daemon serve` has to
+ * point it away from the real `HOME`, and the reader has to be pointed at the same place.
+ */
+export function hostDaemonStatusPath(
+  servicePaths: () => ServicePaths | null = servicePathsForHost,
+): string | null {
+  const service = servicePaths();
+  return service === null ? null : daemonStatusPath(service.logRoot);
+}
+
 export function readDaemonStatus(path: string): DaemonStatus | null {
   try {
     return daemonStatusSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
