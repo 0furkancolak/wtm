@@ -18,12 +18,40 @@ const failure = {
 };
 
 describe('daemon-status.json', () => {
+  /**
+   * The mode is asserted against what this host does with an owner-only request, not against the
+   * number `0o600` — and that is a statement about the assertion, not a relaxation of the rule.
+   *
+   * `writeDaemonStatus` asks for `0o600` and keeps asking for it. On win32 that request is not
+   * refused, it is *unrepresentable*: libuv maps `st_mode` from the single read-only attribute,
+   * so `fs` has exactly two answers for a file, `0o666` and `0o444`, and `mode & 0o777` can
+   * never equal `0o600` there however the file is protected. Asserting the literal was asserting
+   * that the host has POSIX permission bits, which is why this failed `Expected: 384, Received:
+   * 438` on both win32 runs.
+   *
+   * Confidentiality of the status file on Windows comes from the directory it sits in, which the
+   * daemon creates and verifies through `PlatformRuntime.fileTrust` (ACL-backed there). Giving
+   * this one file its own DACL was considered and rejected: `writeDaemonStatus` is synchronous,
+   * deliberately silent, and runs on the crash-loop path, while `@wtm/platform`'s trust port
+   * *reads* ACLs and has no writer — adding one, and a `powershell.exe` round trip, to every
+   * failed daemon launch would reintroduce exactly the cost W2-2 removed, for a file that holds
+   * an error code and a path.
+   *
+   * The reference file is written by this test with the same request, in the same directory, so
+   * the comparison stays exact wherever POSIX modes are real: changing the production request to
+   * `0o644` still turns this red on Linux and macOS.
+   */
   test('round-trips through one private file', () => {
-    const path = daemonStatusPath(root());
+    const directory = root();
+    const path = daemonStatusPath(directory);
+    const reference = join(directory, 'owner-only-reference');
+    writeFileSync(reference, '', { mode: 0o600 });
+
     const status = nextDaemonStatus(null, failure, new Date('2026-09-11T10:00:00.000Z'), 42);
     writeDaemonStatus(path, status);
+
     expect(readDaemonStatus(path)).toEqual(status);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(statSync(path).mode & 0o777).toBe(statSync(reference).mode & 0o777);
   });
 
   test('does not leave a temp file behind when the rename fails (review M2)', () => {
