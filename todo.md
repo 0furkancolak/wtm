@@ -910,9 +910,19 @@ Bağımsız final review: 0 kritik, 1 önemli, 5 küçük bulgu.
   eklendi.
 - M3: Kayıtlı uzun bir mesaj, 1024 karakter sınırında çare cümlesini kesiyordu. Kayıtlı mesaj
   600 karaktere kısaltılıyor.
-- Açık kalanlar:
-  - M4: Status yolu iki yerde türetiliyor; üretimde ikisi aynı yolu veriyor.
-  - M5: Uyarıyı tetikleyen, "workspace yok" koşulu değil hata kodunun metni. Bugün doğru çalışıyor.
+- ~~Açık kalanlar:~~
+  - **M4, düzeltildi (2026-09-18, W2-4).** Kayıt artık tek bir yerden türetiliyor:
+    `hostDaemonStatusPath`, `ServicePaths.logRoot` üzerinden. `daemon serve` kaydı zaten oraya
+    yazıyordu; `doctor` ise `PlatformRuntime.paths.logRoot`'tan ikinci bir türetmeyle okuyordu. İki
+    çözümleyici bugün aynı yolu veriyor, sessizliğin nedeni de bu: ayrıştıkları gün `doctor`,
+    daemon'ı kalkmayan makinede "kayıt yok" derdi. `createStateDiagnosticDataSource` artık
+    `daemonServicePaths` seam'ini alıyor, yani testin daemon'ı yönlendirdiği throwaway `HOME`'u
+    okuyan da aynı yer.
+  - **M5, düzeltildi (2026-09-18, W2-4).** Uyarıyı tetikleyen artık koşulun kendisi: yerel
+    `doctor`, selector yok ve registry hiçbir şey listelemedi. `collect` bunu `CollectOutcome` ile
+    dışarı veriyor; envelope'un taşıdığı `WTM_NOT_INITIALIZED` metni okunmuyor. Kayıtlı bir
+    workspace hakkında `WTM_NOT_INITIALIZED` döndüren bir veri kaynağı artık kaydı ikinci kez
+    almıyor — o makinede aynı bilgi zaten `registration` bulgusunda.
 
 ---
 

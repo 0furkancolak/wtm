@@ -14,6 +14,7 @@ import {
   type WorkspaceRecord,
   type WorktreeRecord,
 } from '@wtm/core';
+import type { ServicePaths } from '@wtm/daemon/service-lifecycle';
 import {
   adapterContext,
   execEnvironment,
@@ -26,7 +27,7 @@ import {
 } from '@wtm/daemon';
 import { planChanges } from './changes';
 import { createDaemonStartupDiagnostic } from './daemon-startup-diagnostic';
-import { daemonStatusPath, formatRemediation } from './daemon-status';
+import { formatRemediation, hostDaemonStatusPath } from './daemon-status';
 import { explainDecisions } from './decisions';
 import type {
   DiagnosticDataSource,
@@ -47,11 +48,17 @@ export interface StateDiagnosticOptions {
    */
   daemonSocketPath?: string;
   /**
-   * Where the daemon records its last startup outcome. Defaults to this host's log root; tests
+   * Where the daemon records its last startup outcome. Defaults to this host's record; tests
    * point it elsewhere. Read only when the daemon does not answer, because that is the only time
    * a person needs to know why.
    */
   daemonStatusPath?: string;
+  /**
+   * The service paths that record is derived from, when no explicit `daemonStatusPath` is given.
+   * Defaults to this host's. It is the same seam `daemon serve` writes the record through, so
+   * that a test which points the daemon at a throwaway `HOME` points `doctor` at the same one.
+   */
+  daemonServicePaths?: () => ServicePaths | null;
   /**
    * How the host platform is chosen, and the subject of the `platform` check.
    *
@@ -117,11 +124,10 @@ export function createStateDiagnosticDataSource(
    */
   const startup = createDaemonStartupDiagnostic({
     socketPath: socketPathFor,
-    statusPath: () => {
-      if (options.daemonStatusPath !== undefined) return options.daemonStatusPath;
-      const runtime = platform().runtime;
-      return runtime === null ? null : daemonStatusPath(runtime.paths.logRoot);
-    },
+    // The record's location comes from the service paths, never from `platform().runtime.paths`:
+    // that is the derivation `daemon serve` writes it through, and a reader deriving the same
+    // file a second way agrees with the writer only by coincidence (todo item 52, M4).
+    statusPath: () => options.daemonStatusPath ?? hostDaemonStatusPath(options.daemonServicePaths),
   });
   const daemonReachable = startup.reachable;
   const recordedStartupFailure = startup.recordedFailure;
