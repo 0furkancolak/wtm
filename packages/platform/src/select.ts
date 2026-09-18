@@ -20,12 +20,18 @@ import {
 import type { FileTrustPolicy, IpcServerPublisher, PlatformId, PlatformRuntime } from './ports';
 
 /**
- * The one place in WTM that decides which operating system it is running on.
+ * The one place in WTM that *selects a platform backend*.
  *
  * Everything downstream takes a `PlatformRuntime` and asks it questions. That is the whole point of
- * the seam: a second `process.platform` branch anywhere else is a second place that has to be found
- * and changed when a platform is added, and the reason this increment exists is that WTM had those
- * branches scattered through core, the daemon and the CLI.
+ * the seam: a second place that picks an implementation per operating system is a second place that
+ * has to be found and changed when a platform is added, and the reason this increment exists is
+ * that WTM had those branches scattered through core, the daemon and the CLI.
+ *
+ * It is not the only file that *reads* `process.platform` — `daemon/src/watcher.ts`,
+ * `daemon/src/main.ts` and `daemon/src/service-lifecycle.ts` each default an injectable `platform`
+ * argument from it, `core/src/plan/external-adapter.ts` carries a reviewed exception registered in
+ * `core/src/__tests__/platform-independence.test.ts`, and `@wtm/testkit` reads it freely. None of
+ * those chooses a backend; this one does.
  */
 export const supportedPlatforms: readonly PlatformId[] = ['darwin', 'linux', 'win32'];
 
@@ -105,6 +111,24 @@ const fileTrustPolicies: Readonly<Record<PlatformId, FileTrustPolicy>> = {
  *
  * Resolved on first use rather than at import, like the Windows reader pool above: a module-level
  * selection would make importing this file throw on a platform WTM has no backend for.
+ *
+ * ---
+ *
+ * **Design note, for the next reader who finds this surprising.** After this change,
+ * `runtime.id === 'linux' && runtime.fileTrust === posixFileTrustPolicy` holds on a Linux host and
+ * `runtime.id === 'linux' && runtime.fileTrust === windowsFileTrustPolicy` holds on a Windows one.
+ * A `PlatformRuntime` is therefore *not* uniformly "everything about platform X": one field is
+ * host-scoped and the rest are target-scoped, and the type does not say so. That is deliberate and
+ * it is the only tenable split — a trust policy that described a target would be describing an
+ * operating system the files are not on, and could only fail closed.
+ *
+ * The consequence is that in a running process there are only ever two `FileTrustPolicy` objects:
+ * this host's, and whatever a test injects. Threading the field through `PlatformRuntime`,
+ * `ProductionRemovalCoordinatorOptions`, `AdapterCommandBase`, `ProductionRuntimeResolver` and
+ * `prepareRuntimeResources` therefore buys injectability for tests rather than per-platform
+ * variation at runtime. Collapsing all of that to an exported `hostFileTrustPolicy()` is a real
+ * option and a larger refactor than the unit that wrote this note; it is recorded here so the
+ * choice is visible rather than inferred.
  */
 let hostFileTrust: FileTrustPolicy | null = null;
 function hostFileTrustPolicy(): FileTrustPolicy {

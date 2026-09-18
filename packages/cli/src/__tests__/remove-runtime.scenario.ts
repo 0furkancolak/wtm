@@ -11,7 +11,7 @@
  */
 import { access, chmod, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { listGitWorktrees, SQLiteStateStore } from '@wtm/core';
+import { defaultCoreFileTrustPolicy, listGitWorktrees, SQLiteStateStore } from '@wtm/core';
 import type { FileTrustPolicy } from '@wtm/platform/ports';
 import type { JsonEnvelope } from '@wtm/protocol';
 import type { RuntimeDaemonClient } from '../commands/runtime-client';
@@ -366,7 +366,13 @@ const cases: Record<string, () => Promise<unknown>> = {
    * reproduces exactly that reading here; the ACL-shaped policy injected below is the one that
    * has the real answer, and reaching it is the whole fix. Both halves are asserted, so a
    * regression that drops the plumbing turns `authorized` red and a regression that stops
-   * consulting the policy at all turns `refusedWithoutPolicy` red.
+   * consulting the policy at all turns `refusedByCoreFallback` red.
+   *
+   * The refusing arm injects `defaultCoreFileTrustPolicy` itself rather than a restatement of it,
+   * so the case demonstrates that the *actual* fallback refuses and cannot drift away from it.
+   * It is injected rather than left to the coordinator's own default on purpose: that default is
+   * the **host** policy, which on win32 is the ACL one and would accept this directory, so an
+   * arm that relied on it would go red on the very platform this case exists for.
    */
   'ephemeral-cleanup-honours-injected-trust': async () => {
     const workspaceConfig = [
@@ -387,7 +393,7 @@ const cases: Record<string, () => Promise<unknown>> = {
       currentIdentityAvailable: () => true,
     };
 
-    const cleanup = async (fileTrust: FileTrustPolicy | undefined) => {
+    const cleanup = async (fileTrust: FileTrustPolicy) => {
       const prepared = await prepare({ workspaceConfig });
       const worktreeRoot = prepared.fixture.linkedWorktreePath;
       await mkdir(join(worktreeRoot, 'node_modules'), { recursive: true });
@@ -398,7 +404,7 @@ const cases: Record<string, () => Promise<unknown>> = {
         store: prepared.store,
         globalConfigPath: prepared.globalConfigPath,
         warn: () => {},
-        ...(fileTrust === undefined ? {} : { fileTrust }),
+        fileTrust,
       });
       const subject = {
         repositoryId: prepared.repositoryId,
@@ -420,17 +426,9 @@ const cases: Record<string, () => Promise<unknown>> = {
 
     return {
       authorized: await cleanup(aclShapedPolicy),
-      refusedWithoutPolicy: await cleanup(posixShapedPolicy),
+      refusedByCoreFallback: await cleanup(defaultCoreFileTrustPolicy),
     };
   },
-};
-
-/** Core's own fallback, restated here so the contrast above does not depend on a default. */
-const posixShapedPolicy: FileTrustPolicy = {
-  isOwnedByCurrentUser: async (stat) => Number(stat.uid) === (process.getuid?.() ?? -1),
-  isWritableOnlyByOwner: async (stat, _path, mask) => (Number(stat.mode) & mask) === 0,
-  isNotSharedByHardLink: (stat) => Number(stat.nlink) <= 1,
-  currentIdentityAvailable: () => process.getuid?.() !== undefined,
 };
 
 const name = process.argv[2] ?? '';

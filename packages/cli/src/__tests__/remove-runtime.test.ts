@@ -69,7 +69,7 @@ describe('runtime-aware wtm remove', () => {
   test('authorizes the ephemeral cleanup against the injected trust policy, not core\'s POSIX fallback', () => {
     expect(runLifecycleCase('ephemeral-cleanup-honours-injected-trust')).toEqual({
       authorized: { collected: 1, code: null },
-      refusedWithoutPolicy: { collected: null, code: 'RESOURCE_PATH_DENIED' },
+      refusedByCoreFallback: { collected: null, code: 'RESOURCE_PATH_DENIED' },
     });
   }, scenarioTestTimeoutMs);
 

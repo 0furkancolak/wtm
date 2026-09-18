@@ -4,6 +4,13 @@ import { runScenario as runScenarioChild } from '../../../testkit/src/scenario-c
 
 const scenarioPath = fileURLToPath(new URL('./reconcile-fallback.scenario.ts', import.meta.url));
 
+/**
+ * Whether `chmod` can deny this process anything. False on Windows, where `getuid` does not exist,
+ * and false for root, who is not stopped by a mode.
+ */
+const currentUid = process.getuid?.();
+const isUnprivilegedPosixUser = currentUid !== undefined && currentUid !== 0;
+
 // The production CLI opens the real state store, so the scenario runs under Node, not Bun.
 function runScenario(name: string): Record<string, any> {
   const result = runScenarioChild('node', ['--import', 'tsx', scenarioPath, name]);
@@ -84,8 +91,26 @@ describe('a worktree created after `wtm init`', () => {
   });
 
   test('still ends in one coded envelope when the registry cannot be written at all', () => {
-    const { status, error } = runScenario('unwritable-registry');
+    const { status, error } = runScenario('unopenable-registry');
     expect(error).toBe('WTM_NOT_INITIALIZED');
     expect(status).toMatchObject({ exitCode: 2, ok: false, registered: false, stderr: '' });
   });
+
+  /**
+   * The same refusal reached through a read-only registry *directory*, which is the premise the
+   * case above used to carry and gave up because it holds for nobody privileged.
+   *
+   * It still holds for an ordinary POSIX user, and that is a real deployment, so the coverage is
+   * kept here under the only condition that makes it a denial at all. Skipped for root — who
+   * writes through `0o500` — and on Windows, where `chmod` touches only the read-only attribute
+   * and a directory's is meaningless, so an Administrator (which CI is) is not stopped either.
+   */
+  test.skipIf(!isUnprivilegedPosixUser)(
+    'refuses the same way when the registry directory is merely read-only',
+    () => {
+      const { status, error } = runScenario('unwritable-registry-directory');
+      expect(error).toBe('WTM_NOT_INITIALIZED');
+      expect(status).toMatchObject({ exitCode: 2, ok: false, registered: false, stderr: '' });
+    },
+  );
 });

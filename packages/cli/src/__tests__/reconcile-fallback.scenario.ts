@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -131,7 +131,8 @@ async function run(): Promise<Record<string, unknown>> {
     case 'daemon-down': return await daemonDown();
     case 'daemon-up': return await daemonUp();
     case 'unrelated-directory': return await unrelatedDirectory();
-    case 'unwritable-registry': return await unwritableRegistry();
+    case 'unopenable-registry': return await unopenableRegistry();
+    case 'unwritable-registry-directory': return await unwritableRegistryDirectory();
     default: throw new Error(`unknown scenario: ${scenario}`);
   }
 }
@@ -212,23 +213,28 @@ async function unrelatedDirectory(): Promise<Record<string, unknown>> {
 }
 
 /**
- * A registry that cannot be opened for writing at all.
+ * A registry that cannot be opened at all.
  *
- * Not the reconciling write failing — measured, and it never gets that far: opening the store
- * sets `journal_mode = WAL`, which is itself a write, so a registry that cannot take one is
- * refused at `openStateStore` and the fallback is never reached. Kept because that is the
- * question anyone reading a read command that writes will ask, and the answer is that the
- * command still ends in one coded envelope rather than a crash.
+ * Not the reconciling write failing — measured, and it never gets that far. `openStateStore`
+ * refuses first and the fallback is never reached, so the command has to end in one coded
+ * envelope rather than a crash, which is what this asserts. Kept because that is the question
+ * anyone reading a read command that writes will ask.
  *
- * The denial used to be `chmod(dataRoot, 0o500)`, and that is not a denial to everyone: an
- * Administrator on Windows and root on Linux both write straight through it, so the premise
- * simply did not hold and the case reported `Received: null` for an error that never happened —
- * on win32 after 21–24 s, because with the store opening normally the command went the whole
- * happy way round, including a daemon connection attempt that had to time out. Replacing the
- * registry file with a directory is refused by SQLite for every user on every platform, which
- * is what a premise this assertion depends on has to be.
+ * A directory sitting at the registry path is refused by SQLite before any pragma runs: it cannot
+ * open the file, so `journal_mode = WAL` never happens. That differs from the premise this case
+ * used to carry, which was `chmod(dataRoot, 0o500)` and reached the same refusal one step later,
+ * at the WAL write. The reason for the change is that `chmod` is not a denial to everyone — an
+ * Administrator on Windows and root on Linux both write straight through it, so the premise did
+ * not hold and the case reported `Received: null` for an error that never happened; on win32 it
+ * also took 21–24 s, because with the store opening normally the command went the whole happy way
+ * round, daemon connection attempt included. A premise an assertion depends on has to hold for
+ * every user on every platform.
+ *
+ * `unwritableRegistryDirectory` below keeps the old premise for the user it does work on, so the
+ * read-only-directory path is still covered rather than traded away; its caller skips it for
+ * anyone `chmod` cannot stop.
  */
-async function unwritableRegistry(): Promise<Record<string, unknown>> {
+async function unopenableRegistry(): Promise<Record<string, unknown>> {
   await rm(databasePath, { force: true });
   await mkdir(databasePath, { recursive: true, mode: 0o700 });
   const status = await statusIn(linked);
@@ -236,4 +242,24 @@ async function unwritableRegistry(): Promise<Record<string, unknown>> {
     status: identityOf(status),
     error: status.envelope.errors[0]?.code ?? null,
   };
+}
+
+/**
+ * The same refusal reached the other way: a registry directory this user may not write to, so the
+ * store's `journal_mode = WAL` fails and `openStateStore` returns null.
+ *
+ * Only meaningful for a user `chmod` actually constrains. The test that runs it skips anyone else,
+ * because for root and for an Administrator this fixture denies nothing at all.
+ */
+async function unwritableRegistryDirectory(): Promise<Record<string, unknown>> {
+  await chmod(dataRoot, 0o500);
+  try {
+    const status = await statusIn(linked);
+    return {
+      status: identityOf(status),
+      error: status.envelope.errors[0]?.code ?? null,
+    };
+  } finally {
+    await chmod(dataRoot, 0o700);
+  }
 }
