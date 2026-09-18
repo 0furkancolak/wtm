@@ -1648,6 +1648,56 @@ wtm-windows-arm64.exe
       artık script metnine değil base64 veriye gidiyor, ve istek/kuyruk/ömür/boşta/çıktı sınırları
       açık. `ci.yml`'deki 300000 ms win32 test timeout'u bu maddeyle birlikte tekrar
       değerlendirilebilir. `logs.test.ts`'in win32 süresi CI kanıtı bekliyor.
+      **2026-09-18 (W2-3 / 9f):** `docs/superpowers/plans/2026-09-16-w2-win32-failure-clusters.md`
+      §9f'te tarif edilen beş kök nedene de birer düzeltme yazıldı; hepsi mevcut
+      port/enjeksiyon dikişinden geçerek ve
+      hiçbiri `@wtm/core`'a ya da testlere bir `process.platform` dalı eklemeden. Tek istisna
+      `select.ts`: madde (3) bu dosyaya ikinci bir `process.platform` okuması ekliyor
+      (`hostFileTrustPolicy` içinde), yani backend seçen tek yerin içine — dışına değil.
+      (1) `@wtm/core`'un POSIX-only
+      `defaultCoreFileTrustPolicy`'sine düşen üç çağrı yeri — `removal-coordinator.ts`'in
+      ephemeral temizliği, `prepareRuntimeResources` ve `gc.test.ts`'in kendi fixture'ı —
+      composition root'un zaten seçtiği politikayı alıyor; Windows'ta o fallback hem
+      `currentIdentityAvailable()` hem de dizinlerin uydurma `0o777` modu yüzünden her şeyi
+      reddediyordu. (2) `runAdapterCommand` seçilen politikayı `trustRepositoryAdapter`'a
+      taşımıyordu; `adapter.scenario.ts` hiç seçmiyordu. (3) `selectPlatformRuntime`
+      `fileTrust`'ı artık **host'tan** seçiyor: diğer bütün port'lar bir hedef platformu
+      tarif eder, `fileTrust` ise bu sürecin gerçekten baktığı dosya sistemini okur.
+      (4) `daemon-status.json` 0o600 iddiası POSIX'e özgüydü; üretim kodu değişmedi, karar ve
+      reddedilen ACL alternatifi commit mesajında yazılı. (5) `reconcile-fallback`'in
+      `chmod 0o500` öncülü Administrator'a da root'a da bir şey yasaklamıyordu.
+      **Windows kanıtı (PR #24, run `35340823569`, win32 job `105586076666`): 9f kapanmadı.**
+      Bacak 25 dakikalık sınıra takılmadan önce 239 test dosyasının 158'ine ulaştı — kümeleme
+      dokümanının yazıldığı iki koşu 107 ve 63'te kesilmişti — ve W2-3 listesindeki bütün CLI ve
+      `core/resources` dosyalarını ölçtü. Ölçülmeyenler: `daemon/resource-preparation-trust`
+      (174), `daemon/runtime-factory` (177), `platform/select` (190) hiç sıraya gelmedi,
+      `cli/daemon-status` (20) ise okunabilen log penceresinden önce koştu.
+      Windows'ta kapanan: `remove-runtime`'ın `deletes the ephemeral resources it materialized`
+      testi ve bu dalın eklediği `authorizes the ephemeral cleanup against the injected trust
+      policy` testi geçiyor (dosyadaki kalan iki hata kümeleme dokümanının 9g'ye yazdığı shim
+      testleri); `reconcile-fallback` tamamen yeşil; `gc.test.ts`'in üç `RESOURCE_PATH_DENIED`
+      hatası gitti; `adapter.test.ts`'in `creates the missing private WTM state parent` testi
+      geçiyor.
+      Kapanmayan: adapter trust dörtlüsü — `adapter.test.ts`'in iki SQLite testi,
+      `main.test.ts`'in `wires adapter trust through the CLI` testi ve bu dalın eklediği
+      `trusts an adapter executable through the injected policy` testi. **Kök neden enjeksiyon
+      tesisatı değil**: `plan/adapter-trust.ts`'in `assertSafeAdapterFile` fonksiyonu, üç
+      `fileTrust` sorusunun altında ham bir `(stat.mode & 0o111) === 0` kontrolü tutuyor.
+      Windows'ta çalıştırma biti yok ve Node normal bir dosyanın `mode`'unu `0o666` uyduruyor
+      (aynı mekanizma (4)'teki `0o600` beklentisine `0o666` döndüren mekanizmadır), yani bu
+      kontrol hangi politika enjekte edilirse edilsin her adapter yürütülebilirini reddediyor.
+      `verifyTrustedRepositoryAdapter` ve `openTrustedAdapterDescriptor` de aynı fonksiyondan
+      geçiyor. Çalıştırılabilirlik bir platform sorusudur ve `FileTrustPolicy`'nin taşımadığı
+      tek platform sorusudur; düzeltmesi port'a bir predicate eklemektir.
+      Ayrıca `gc.test.ts`'in `dry-run by default` testi hâlâ kırmızı ama artık başka bir hatayla:
+      `resources/gc.ts`'in `assertSandboxIdentity`'sinden gelen `RESOURCE_CLEANUP_FAILED`.
+      `core/resources`'ın `guard.test.ts` (3) ve `materializer.test.ts` (2) hataları regresyon
+      değil: kümeleme dokümanı hiçbir `core/src/*/__tests__` dizininin win32'de çıktı
+      üretmediğini kaydediyor, bunlar ilk kez ölçüldü.
+      Kalan iş ayrı bir birimde toplanır; `win32_test_filter` değeri plan dosyasındaki W2-3
+      listesidir. Bu dalın eklediği `trusts an adapter executable through the injected policy`
+      testinin kabul eden yarısı hiçbir politika enjekte etmiyor, o yarı da o birimde
+      `adapter.scenario.ts` gibi host politikasını almalı.
 - [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
 - [ ] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
       `plistPath` macOS'a özel bir ek alan olarak bilerek duruyor (D11), kaldırılması daemon JSON

@@ -5,7 +5,7 @@ import { ciCommandNames, jobCommandNames } from '@wtm/protocol';
 import { basename as posixBasename, dirname as posixDirname, join as posixJoin, resolve as posixResolve } from 'node:path/posix';
 import { basename as win32Basename, dirname as win32Dirname, join as win32Join, resolve as win32Resolve } from 'node:path/win32';
 import { readHeavyJobScope, selectPlatformRuntime, windowsNamedPipeRootFor } from '@wtm/platform';
-import type { PlatformId, PlatformRuntime } from '@wtm/platform/ports';
+import type { FileTrustPolicy, PlatformId, PlatformRuntime } from '@wtm/platform/ports';
 import {
   assertDaemonSocketPathFits,
   daemonSocketFileName,
@@ -245,6 +245,10 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     store: stateStore as DaemonStateStore & LifecycleEventStore,
     globalConfigPath: paths.globalConfigPath,
     start: async (input) => await supervisor.start(input),
+    // The same policy the resolver below is handed. The event path and the task path prepare the
+    // same worktree's resources through the same core call; the two answering from differently
+    // selected policies is a divergence nothing would report until one of them refused.
+    fileTrust: platformRuntime.fileTrust,
     onError,
   });
   const resolver = new ProductionRuntimeResolver(stateStore, paths.globalConfigPath, (worktreeId) => {
@@ -252,7 +256,7 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     // here, before the first task. Dispatched without being awaited so that an event's own
     // task cannot be waiting on the start that is waiting on it.
     void events.dispatchForWorktree('worktree.ready', worktreeId).catch(onError);
-  });
+  }, platformRuntime.fileTrust);
   const controller = new DaemonRuntimeController({
     supervisor,
     logs,
@@ -362,6 +366,16 @@ class ProductionRuntimeResolver implements DaemonRuntimeResolver {
     private readonly store: DaemonStateStore,
     private readonly globalConfigPath: string,
     private readonly onPrepared: (worktreeId: string) => void = () => {},
+    /**
+     * The policy resource preparation is authorized against.
+     *
+     * Required, not optional: this class is private to this file and has exactly one construction
+     * site, the factory above, which is the composition root that has already chosen a platform.
+     * Making the parameter optional would let a future second call site silently fall back to a
+     * policy selected somewhere else, which is the drift this seam exists to remove; a type error
+     * is the cheaper way to find that out.
+     */
+    private readonly fileTrust: FileTrustPolicy,
   ) {}
 
   async resolveTask(cwd: string, taskName: string) {
@@ -369,7 +383,7 @@ class ProductionRuntimeResolver implements DaemonRuntimeResolver {
     // A task that reads `.env` needs `.env` to be there. Under `[prepare] mode = "lazy"`, the
     // default, this is the moment the worktree is prepared; `eager` will already have done it
     // at discovery, and preparing again creates nothing that is already there.
-    await prepareRuntimeResources(runtime);
+    await prepareRuntimeResources(runtime, this.fileTrust);
     this.onPrepared(runtime.registration.worktree.id);
     return {
       workspaceId: runtime.registration.workspace.id,
@@ -393,7 +407,7 @@ class ProductionRuntimeResolver implements DaemonRuntimeResolver {
   async resolveExec(cwd: string) {
     const runtime = await this.#runtime(cwd);
     // Raw argv runs in the same worktree a task would, so it finds the same resources.
-    await prepareRuntimeResources(runtime);
+    await prepareRuntimeResources(runtime, this.fileTrust);
     this.onPrepared(runtime.registration.worktree.id);
     return {
       cwd: runtime.registration.worktree.path,

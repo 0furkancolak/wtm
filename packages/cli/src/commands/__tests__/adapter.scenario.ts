@@ -1,8 +1,22 @@
 import { chmod, lstat, mkdir, mkdtemp, rename, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { selectPlatformRuntime } from '@wtm/platform';
+import type { FileTrustPolicy } from '@wtm/platform/ports';
 import { createFakeAdapter } from '../../../../testkit/src/fake-adapter';
 import { runAdapterCommand } from '../adapter';
+
+/**
+ * The policy production picks, picked here for the same reason.
+ *
+ * `runAdapterCommand`'s own fallback is `@wtm/core`'s POSIX-only default, whose
+ * `currentIdentityAvailable()` is `process.getuid?.() !== undefined` -- always false on win32.
+ * Every case below refused there before the private state parent was ever created, which is why
+ * `creates-missing-private-parent` reported `ENOENT lstat ...\\missing\\WTM\\state.db`: the
+ * command had failed, so there was no database to stat. `main.ts` selects the host's policy at
+ * the composition root; a scenario standing in for `main.ts` selects it too.
+ */
+const fileTrust: FileTrustPolicy = selectPlatformRuntime().fileTrust;
 
 async function sqlitePersistence() {
   const root = await mkdtemp(join(tmpdir(), 'wtm-adapter-command-'));
@@ -10,9 +24,9 @@ async function sqlitePersistence() {
   try {
     const databasePath = join(root, 'state.db');
     const trusted = await runAdapterCommand({
-      action: 'trust', adapterId: 'fake', executablePath: adapter.executablePath, databasePath,
+      action: 'trust', adapterId: 'fake', executablePath: adapter.executablePath, databasePath, fileTrust,
     });
-    const listed = await runAdapterCommand({ action: 'list', databasePath });
+    const listed = await runAdapterCommand({ action: 'list', databasePath, fileTrust });
     if (!trusted.ok || trusted.data === null || !('adapterId' in trusted.data) || !listed.ok || listed.data === null) {
       throw new Error('Adapter trust command unexpectedly failed');
     }
@@ -36,10 +50,14 @@ async function concurrentTrust() {
   try {
     const databasePath = join(root, 'state.db');
     const results = await Promise.all([
-      runAdapterCommand({ action: 'trust', adapterId: 'first', executablePath: first.executablePath, databasePath }),
-      runAdapterCommand({ action: 'trust', adapterId: 'second', executablePath: second.executablePath, databasePath }),
+      runAdapterCommand({
+        action: 'trust', adapterId: 'first', executablePath: first.executablePath, databasePath, fileTrust,
+      }),
+      runAdapterCommand({
+        action: 'trust', adapterId: 'second', executablePath: second.executablePath, databasePath, fileTrust,
+      }),
     ]);
-    const listed = await runAdapterCommand({ action: 'list', databasePath });
+    const listed = await runAdapterCommand({ action: 'list', databasePath, fileTrust });
     if (!results.every(({ ok }) => ok) || !listed.ok || listed.data === null || !('adapters' in listed.data)) {
       throw new Error('Concurrent adapter trust commands unexpectedly failed');
     }
@@ -54,7 +72,7 @@ async function createsMissingPrivateParent() {
   const root = await mkdtemp(join(tmpdir(), 'wtm-adapter-command-'));
   try {
     const databasePath = join(root, 'missing', 'WTM', 'state.db');
-    const listed = await runAdapterCommand({ action: 'list', databasePath });
+    const listed = await runAdapterCommand({ action: 'list', databasePath, fileTrust });
     return {
       ok: listed.ok,
       databaseCreated: (await lstat(databasePath)).isFile(),
@@ -75,8 +93,8 @@ async function rejectsUnsafePrivateParents() {
     const aliased = join(root, 'aliased');
     await symlink(actual, aliased);
     const [insecureMode, symlinkParent] = await Promise.all([
-      runAdapterCommand({ action: 'list', databasePath: join(insecure, 'state.db') }),
-      runAdapterCommand({ action: 'list', databasePath: join(aliased, 'state.db') }),
+      runAdapterCommand({ action: 'list', databasePath: join(insecure, 'state.db'), fileTrust }),
+      runAdapterCommand({ action: 'list', databasePath: join(aliased, 'state.db'), fileTrust }),
     ]);
     return {
       insecureMode: { ok: insecureMode.ok, code: insecureMode.errors[0]?.code },
@@ -98,9 +116,9 @@ async function rejectsNestedSymlinkAndParentReplacement() {
     const parent = join(root, 'replacement-parent');
     await mkdir(parent, { mode: 0o700 });
     const [nestedSymlink, replacedParent] = await Promise.all([
-      runAdapterCommand({ action: 'list', databasePath: join(alias, 'nested', 'state.db') }),
+      runAdapterCommand({ action: 'list', databasePath: join(alias, 'nested', 'state.db'), fileTrust }),
       runAdapterCommand({
-        action: 'list', databasePath: join(parent, 'state.db'),
+        action: 'list', databasePath: join(parent, 'state.db'), fileTrust,
         async beforeDatabaseOpen() {
           await rename(parent, `${parent}.original`);
           await mkdir(parent, { mode: 0o700 });

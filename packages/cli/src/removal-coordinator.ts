@@ -28,11 +28,33 @@ import {
   type TemplateContext,
 } from '@wtm/core';
 import { resolveWorktreeRuntime } from '@wtm/daemon';
+import { selectPlatformRuntime } from '@wtm/platform';
+import type { FileTrustPolicy } from '@wtm/platform/ports';
 import type { Remediation, WtmError, WtmErrorCode } from '@wtm/protocol';
 import type { RuntimeDaemonClient } from './commands/runtime-client';
 
 /** The states in which a managed process record still stands between WTM and a deletion. */
 const liveManagedProcessStates: readonly ManagedProcessState[] = ['STARTING', 'RUNNING', 'STOPPING'];
+
+/**
+ * The trust policy the deletion is authorized against, for a caller who did not inject one.
+ *
+ * `@wtm/core`'s own fallback (`defaultCoreFileTrustPolicy`) is POSIX-only by construction -- core
+ * may not import `@wtm/platform` at all -- and on win32 it answers every ancestor directory
+ * "group- or world-writable", because Node synthesises a Windows directory's `mode` as `0o777`
+ * and `0o777 & 0o022` is never zero. So `wtm remove` refused `RESOURCE_PATH_DENIED` over the very
+ * `node_modules` it had materialized, on every Windows run. The CLI is a composition root: the
+ * policy has to be selected here and handed across the package boundary, exactly as
+ * `runProductionGcCommand` and `runAdapterCommand` already receive one.
+ *
+ * Resolved on first use rather than at import, mirroring `main.ts`'s own `hostPlatformRuntime`: a
+ * module-level `selectPlatformRuntime()` would make merely importing this file throw on a platform
+ * WTM has no backend for, a refusal a caller could no longer catch and report as an envelope.
+ */
+let selectedFileTrust: FileTrustPolicy | null = null;
+function hostFileTrustPolicy(): FileTrustPolicy {
+  return (selectedFileTrust ??= selectPlatformRuntime().fileTrust);
+}
 
 export interface ProductionRemovalCoordinatorOptions {
   store: SQLiteStateStore;
@@ -46,6 +68,12 @@ export interface ProductionRemovalCoordinatorOptions {
    * registration ends up pointing at a directory that is gone.
    */
   warn: (warning: WtmError) => void;
+  /**
+   * Which file-trust policy authorizes the ephemeral-resource deletion. Defaults to the host
+   * platform's own -- see `hostFileTrustPolicy` above for why core's POSIX-only fallback is the
+   * wrong answer on win32.
+   */
+  fileTrust?: FileTrustPolicy | undefined;
   now?: (() => string) | undefined;
 }
 
@@ -104,6 +132,7 @@ export function createProductionRemovalCoordinator(
 ): RemovalRuntimeCoordinator {
   const now = options.now ?? (() => new Date().toISOString());
   const store = options.store;
+  const fileTrust = options.fileTrust ?? hostFileTrustPolicy();
 
   const residueOf = (worktreeId: string): ManagedProcessResidue => {
     const records = store.listManagedProcesses({ worktreeId });
@@ -197,7 +226,7 @@ export function createProductionRemovalCoordinator(
         });
       });
       if (resolved === null) return { collected: 0, retained: [] };
-      const result = await cleanupWorktreeEphemeralResources(resolved);
+      const result = await cleanupWorktreeEphemeralResources({ ...resolved, fileTrust });
       return { collected: result.collected, retained: result.retained };
     },
 
