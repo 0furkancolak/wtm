@@ -1648,6 +1648,22 @@ wtm-windows-arm64.exe
       artık script metnine değil base64 veriye gidiyor, ve istek/kuyruk/ömür/boşta/çıktı sınırları
       açık. `ci.yml`'deki 300000 ms win32 test timeout'u bu maddeyle birlikte tekrar
       değerlendirilebilir. `logs.test.ts`'in win32 süresi CI kanıtı bekliyor.
+      **2026-09-18 (W2-3 / 9f):** `docs/superpowers/plans/2026-09-16-w2-win32-failure-clusters.md`
+      §9f'teki beş kök neden de kapatıldı; hiçbiri `process.platform` dalı eklemeden, hepsi
+      mevcut port/enjeksiyon dikişinden geçerek. (1) `@wtm/core`'un POSIX-only
+      `defaultCoreFileTrustPolicy`'sine düşen üç çağrı yeri — `removal-coordinator.ts`'in
+      ephemeral temizliği, `prepareRuntimeResources` ve `gc.test.ts`'in kendi fixture'ı —
+      composition root'un zaten seçtiği politikayı alıyor; Windows'ta o fallback hem
+      `currentIdentityAvailable()` hem de dizinlerin uydurma `0o777` modu yüzünden her şeyi
+      reddediyordu. (2) `runAdapterCommand` seçilen politikayı `trustRepositoryAdapter`'a
+      taşımıyordu; `adapter.scenario.ts` hiç seçmiyordu. (3) `selectPlatformRuntime`
+      `fileTrust`'ı artık **host'tan** seçiyor: diğer bütün port'lar bir hedef platformu
+      tarif eder, `fileTrust` ise bu sürecin gerçekten baktığı dosya sistemini okur.
+      (4) `daemon-status.json` 0o600 iddiası POSIX'e özgüydü; üretim kodu değişmedi, karar ve
+      reddedilen ACL alternatifi commit mesajında yazılı. (5) `reconcile-fallback`'in
+      `chmod 0o500` öncülü Administrator'a da root'a da bir şey yasaklamıyordu.
+      **Win32 bacağı bu oturumdan tetiklenemedi (403), dolayısıyla "Windows'ta yeşil" kanıtı
+      yok**; `win32_test_filter` değeri plan dosyasındaki W2-3 listesidir.
 - [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
 - [ ] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
       `plistPath` macOS'a özel bir ek alan olarak bilerek duruyor (D11), kaldırılması daemon JSON
