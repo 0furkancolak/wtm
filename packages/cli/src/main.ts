@@ -1197,6 +1197,10 @@ function bindRemovalRuntime(options: {
       store,
       globalConfigPath: options.globalConfigPath,
       warn: options.warn,
+      // The same composition-root choice `runProductionGcCommand` below is handed: the ephemeral
+      // cleanup authorizes deletions against a file-trust policy, and core's own fallback for one
+      // it was not given is POSIX-only.
+      fileTrust: hostPlatformRuntime().fileTrust,
       ...(options.client === undefined ? {} : { client: options.client }),
     }),
     leaseStore: store,

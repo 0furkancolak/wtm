@@ -9,13 +9,15 @@
  * Each case is selected by name so one Node start can be spent on one behaviour and the failure
  * message names it.
  */
-import { access, mkdir, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { listGitWorktrees, SQLiteStateStore } from '@wtm/core';
+import type { FileTrustPolicy } from '@wtm/platform/ports';
 import type { JsonEnvelope } from '@wtm/protocol';
 import type { RuntimeDaemonClient } from '../commands/runtime-client';
 import type { GitSafetyFixture } from '../../../testkit/src/git-fixture';
 import { createGitSafetyFixture } from '../../../testkit/src/git-fixture';
+import { createProductionRemovalCoordinator } from '../removal-coordinator';
 import { runCli } from '../main';
 
 interface Prepared {
@@ -352,6 +354,83 @@ const cases: Record<string, () => Promise<unknown>> = {
       worktreeExists: await pathExists(prepared.fixture.linkedWorktreePath),
     };
   },
+
+  /**
+   * The ephemeral cleanup authorizes its deletions against the *injected* file-trust policy, not
+   * against `@wtm/core`'s POSIX-only fallback.
+   *
+   * This is the win32 defect written so a Linux run can fail on it. On Windows, Node synthesises
+   * every directory's `mode` as `0o777`, so core's fallback answers `isWritableOnlyByOwner(...,
+   * 0o022)` with `false` for the worktree root and `wtm remove` refused `RESOURCE_PATH_DENIED`
+   * over the very `node_modules` it had materialized. `chmod 0o777` on the worktree root
+   * reproduces exactly that reading here; the ACL-shaped policy injected below is the one that
+   * has the real answer, and reaching it is the whole fix. Both halves are asserted, so a
+   * regression that drops the plumbing turns `authorized` red and a regression that stops
+   * consulting the policy at all turns `refusedWithoutPolicy` red.
+   */
+  'ephemeral-cleanup-honours-injected-trust': async () => {
+    const workspaceConfig = [
+      'version = 1', '', '[workspace]', 'name = "removal"', '',
+      '[resources.node_modules]',
+      'path = "{worktree.root}/node_modules"',
+      'policy = "ephemeral"', '',
+    ].join('\n');
+
+    /**
+     * What a Windows ACL policy answers for a directory this user owns: mode bits are not
+     * consulted at all, because on that platform they carry no access information.
+     */
+    const aclShapedPolicy: FileTrustPolicy = {
+      isOwnedByCurrentUser: async () => true,
+      isWritableOnlyByOwner: async () => true,
+      isNotSharedByHardLink: () => true,
+      currentIdentityAvailable: () => true,
+    };
+
+    const cleanup = async (fileTrust: FileTrustPolicy | undefined) => {
+      const prepared = await prepare({ workspaceConfig });
+      const worktreeRoot = prepared.fixture.linkedWorktreePath;
+      await mkdir(join(worktreeRoot, 'node_modules'), { recursive: true });
+      await writeFile(join(worktreeRoot, 'node_modules', '.package-lock.json'), '{}\n');
+      // The Windows reading of an ordinary directory, produced on a POSIX filesystem.
+      await chmod(worktreeRoot, 0o777);
+      const coordinator = createProductionRemovalCoordinator({
+        store: prepared.store,
+        globalConfigPath: prepared.globalConfigPath,
+        warn: () => {},
+        ...(fileTrust === undefined ? {} : { fileTrust }),
+      });
+      const subject = {
+        repositoryId: prepared.repositoryId,
+        worktreeId: prepared.worktreeId,
+        worktreePath: worktreeRoot,
+      };
+      try {
+        const report = await coordinator.cleanupEphemeralResources(subject);
+        return { collected: report.collected, code: null as string | null };
+      } catch (error) {
+        return {
+          collected: null as number | null,
+          code: (error as { code?: string }).code ?? 'UNCODED',
+        };
+      } finally {
+        await chmod(worktreeRoot, 0o700).catch(() => {});
+      }
+    };
+
+    return {
+      authorized: await cleanup(aclShapedPolicy),
+      refusedWithoutPolicy: await cleanup(posixShapedPolicy),
+    };
+  },
+};
+
+/** Core's own fallback, restated here so the contrast above does not depend on a default. */
+const posixShapedPolicy: FileTrustPolicy = {
+  isOwnedByCurrentUser: async (stat) => Number(stat.uid) === (process.getuid?.() ?? -1),
+  isWritableOnlyByOwner: async (stat, _path, mask) => (Number(stat.mode) & mask) === 0,
+  isNotSharedByHardLink: (stat) => Number(stat.nlink) <= 1,
+  currentIdentityAvailable: () => process.getuid?.() !== undefined,
 };
 
 const name = process.argv[2] ?? '';

@@ -60,6 +60,19 @@ describe('runtime-aware wtm remove', () => {
     });
   }, scenarioTestTimeoutMs);
 
+  /**
+   * The Windows failure this file carried, expressed so a POSIX run can fail on it: core's own
+   * fallback policy reads a Windows directory's synthesised `0o777` mode as group- and
+   * world-writable, so `wtm remove` refused over the `node_modules` it had itself materialized.
+   * `chmod 0o777` reproduces that reading here; reaching the injected policy instead is the fix.
+   */
+  test('authorizes the ephemeral cleanup against the injected trust policy, not core\'s POSIX fallback', () => {
+    expect(runLifecycleCase('ephemeral-cleanup-honours-injected-trust')).toEqual({
+      authorized: { collected: 1, code: null },
+      refusedWithoutPolicy: { collected: null, code: 'RESOURCE_PATH_DENIED' },
+    });
+  }, scenarioTestTimeoutMs);
+
   test('reports the cleanup it performed and releases the worktree endpoint leases before Git runs', () => {
     expect(runLifecycleCase('cleanup-envelope')).toEqual({
       exitCode: 0,
