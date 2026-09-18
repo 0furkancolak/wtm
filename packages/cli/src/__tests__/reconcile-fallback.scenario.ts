@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -212,23 +212,28 @@ async function unrelatedDirectory(): Promise<Record<string, unknown>> {
 }
 
 /**
- * A registry nobody may write to.
+ * A registry that cannot be opened for writing at all.
  *
  * Not the reconciling write failing — measured, and it never gets that far: opening the store
- * sets `journal_mode = WAL`, which is itself a write, so an unwritable registry directory is
+ * sets `journal_mode = WAL`, which is itself a write, so a registry that cannot take one is
  * refused at `openStateStore` and the fallback is never reached. Kept because that is the
  * question anyone reading a read command that writes will ask, and the answer is that the
  * command still ends in one coded envelope rather than a crash.
+ *
+ * The denial used to be `chmod(dataRoot, 0o500)`, and that is not a denial to everyone: an
+ * Administrator on Windows and root on Linux both write straight through it, so the premise
+ * simply did not hold and the case reported `Received: null` for an error that never happened —
+ * on win32 after 21–24 s, because with the store opening normally the command went the whole
+ * happy way round, including a daemon connection attempt that had to time out. Replacing the
+ * registry file with a directory is refused by SQLite for every user on every platform, which
+ * is what a premise this assertion depends on has to be.
  */
 async function unwritableRegistry(): Promise<Record<string, unknown>> {
-  await chmod(dataRoot, 0o500);
-  try {
-    const status = await statusIn(linked);
-    return {
-      status: identityOf(status),
-      error: status.envelope.errors[0]?.code ?? null,
-    };
-  } finally {
-    await chmod(dataRoot, 0o700);
-  }
+  await rm(databasePath, { force: true });
+  await mkdir(databasePath, { recursive: true, mode: 0o700 });
+  const status = await statusIn(linked);
+  return {
+    status: identityOf(status),
+    error: status.envelope.errors[0]?.code ?? null,
+  };
 }
