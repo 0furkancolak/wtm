@@ -170,7 +170,18 @@ jobs:
       # `windows-powershell-session.ts` (W2-2 / cluster 9c). The bound stays at this value until a
       # win32 leg measures what those tests now cost: lowering it on the strength of the change
       # alone would trade a stopgap for a guess.
-      - run: bun run test --timeout ${{ matrix.platform == 'win32' && 300000 || 60000 }}
+      #
+      # win32 also gets a whole-run budget, and it is what keeps this leg informational in fact
+      # rather than only in intent. `continue-on-error` above absorbs a job that *failed*; a job
+      # that reaches its own `timeout-minutes` is *cancelled*, which it does not absorb. The leg
+      # reached the cap on every run, so every CI run on this repository reported `cancelled` --
+      # `main` included, with all four deciding legs green. The budget ends the run inside the cap
+      # instead: the runner stops starting files, names what it never measured, and exits non-zero
+      # like any other failing step, which `continue-on-error` then absorbs. It also keeps the
+      # evidence the Windows units need, because a leg killed by the platform mid-file loses its
+      # summary. 20 of the 25 minutes, leaving room for the install/lint/typecheck ahead of it and
+      # the teardown behind it.
+      - run: bun run test --timeout ${{ matrix.platform == 'win32' && 300000 || 60000 }}${{ matrix.platform == 'win32' && ' --budget 1200000' || '' }}
         if: env.CI_WIN32_FILTER_RUN != 'true'
       # Skipped on every leg when a win32_test_filter run only needs targeted test evidence: none of
       # e2e/build/package/binary add anything a targeted `bun test` run doesn't already show, and the

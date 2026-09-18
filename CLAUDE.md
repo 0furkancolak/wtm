@@ -94,7 +94,11 @@ Commit messages use a conventional prefix (`fix(platform):`, `docs:`, `ci:`) and
 
 - **A change may merge when every non-`win32` job is green on the head commit.**
 - The `win32` leg is **informational** (`continue-on-error`) until todo item 9 lands: roughly 80
-  tests fail natively there today, so it reports without deciding the run, and stops at 25 minutes.
+  tests fail natively there today, so it reports without deciding the run. It is capped at 25
+  minutes and given a 20-minute whole-run `--budget`, and the budget is what makes it
+  informational in fact: `continue-on-error` absorbs a job that *failed*, but a job that reaches
+  its own `timeout-minutes` is *cancelled*, which it does not absorb. Keep the budget below the
+  cap so the leg ends itself.
 - **Windows work needs its own evidence.** Dispatch CI with the `win32_test_filter` input
   (`workflow_dispatch`) to run a named group of test files on the win32 leg alone; a filter run is
   not informational, so its result decides. The other four legs skip their steps on such a run.
