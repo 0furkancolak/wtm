@@ -52,6 +52,10 @@ area is `packages/platform/src/ipc/*`, but nothing in this failure goes through 
 `node:net` named-pipe reconnect, exercised by the fixture server in
 `packages/cli/src/__tests__/client.test.ts` and by `packages/daemon/src/server.ts`. Add those
 explicitly, and unskip the two `reconnects over a real transport ...` tests as the acceptance check.
+One more pointer, offered as a lead and not as a diagnosis: `server.ts:309`'s `socket.end()` was
+examined during 9a and deliberately left alone. Nothing in these logs measures whether the bytes
+written immediately before it are delivered on win32, so if the reconnect turns out to lose the tail
+of a frame, that call is where to look first — but no evidence gathered here implicates it.
 
 ## 9b — named pipe IPC sunucu ve istemci
 
