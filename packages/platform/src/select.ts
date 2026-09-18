@@ -82,6 +82,39 @@ const fileTrustPolicies: Readonly<Record<PlatformId, FileTrustPolicy>> = {
   win32: windowsFileTrustPolicy,
 };
 
+/**
+ * The one port keyed on the **host**, not on the platform the caller asked for.
+ *
+ * Every other field of a `PlatformRuntime` describes a *target*: `paths` computes where macOS
+ * would keep its state, `socket` states Linux's `sun_path` limit, `service` renders a systemd
+ * unit. None of them touch the machine running the call, which is exactly why a Linux runtime can
+ * be constructed and asserted from a macOS laptop. `fileTrust` is not like them. It answers "does
+ * the current user own this directory, and can anyone else write it?" about a real path on the
+ * real filesystem this process is looking at, through `fs.Stats` and, on Windows, a real
+ * `powershell.exe`. Picking the implementation by the requested platform picks an implementation
+ * of the *host's* APIs: ask a Windows runner for a `linux` runtime and it hands back
+ * `posixFileTrustPolicy`, whose every answer is derived from `process.getuid()` — which does not
+ * exist there. It cannot answer, so it fails closed, and the caller sees
+ * `PrivateDirectoryError: WTM private directory is unavailable.` for a directory that is
+ * perfectly fine.
+ *
+ * That is what turned `runtime-factory.test.ts`'s `a path only macOS refuses is accepted under
+ * the Linux runtime` red on win32: a test about a 106-byte socket path could not get as far as
+ * measuring one, because creating its own temporary data root was refused by a policy chosen for
+ * an operating system the files are not on.
+ *
+ * Resolved on first use rather than at import, like the Windows reader pool above: a module-level
+ * selection would make importing this file throw on a platform WTM has no backend for.
+ */
+let hostFileTrust: FileTrustPolicy | null = null;
+function hostFileTrustPolicy(): FileTrustPolicy {
+  if (hostFileTrust === null) {
+    const host = process.platform;
+    hostFileTrust = isSupported(host) ? fileTrustPolicies[host] : posixFileTrustPolicy;
+  }
+  return hostFileTrust;
+}
+
 /** Stateless, like `posixFileTrustPolicy` above — one instance is shared across every call. */
 const unixSocketPublisher: IpcServerPublisher = createUnixSocketPublisher();
 const windowsIpcPublisher: IpcServerPublisher = createWindowsIpcPublisher();
@@ -133,7 +166,8 @@ export function selectPlatformRuntime(options: SelectPlatformRuntimeOptions = {}
     socket: socketAddressPolicyFor(platform),
     process: processPlatforms[platform](),
     service: serviceBackends[platform],
-    fileTrust: fileTrustPolicies[platform],
+    // The host's, deliberately -- see `hostFileTrustPolicy`.
+    fileTrust: hostFileTrustPolicy(),
     ipc: ipcPublishers[platform],
   };
 }

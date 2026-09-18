@@ -26,6 +26,26 @@ describe('selectPlatformRuntime', () => {
     }
   });
 
+  /**
+   * `fileTrust` is the one port a simulated runtime may not simulate.
+   *
+   * It reads the filesystem this process is actually on, so its implementation follows the host
+   * rather than the requested platform. Asking a win32 host for a `linux` runtime used to hand
+   * back `posixFileTrustPolicy`, whose answers all come from `process.getuid()` — absent there —
+   * so it refused every directory it was shown and `createProductionDaemon` could not create its
+   * own data root under an injected runtime. On a POSIX host the same defect is visible from the
+   * other side: a `win32` runtime built here would carry the ACL policy, which has no
+   * `powershell.exe` to ask.
+   */
+  test('hands every requested platform the host\'s own file-trust policy, not the target\'s', () => {
+    const host = selectPlatformRuntime({ env, home: '/Users/x' });
+    for (const id of supportedPlatforms) {
+      expect(selectPlatformRuntime({ platform: id, env, home: '/Users/x' }).fileTrust)
+        .toBe(host.fileTrust);
+    }
+    expect(host.fileTrust.currentIdentityAvailable()).toBe(true);
+  });
+
   test('the two platforms disagree about every path, which is why the seam exists', () => {
     const darwin = selectPlatformRuntime({ platform: 'darwin', env, home: '/Users/x' });
     const linux = selectPlatformRuntime({ platform: 'linux', env, home: '/Users/x' });
