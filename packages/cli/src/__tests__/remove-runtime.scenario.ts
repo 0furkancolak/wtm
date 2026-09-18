@@ -11,7 +11,10 @@
  */
 import { access, chmod, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { defaultCoreFileTrustPolicy, listGitWorktrees, SQLiteStateStore } from '@wtm/core';
+import { listGitWorktrees, SQLiteStateStore } from '@wtm/core';
+// A subpath, not the barrel: `defaultCoreFileTrustPolicy` is deliberately not part of `@wtm/core`'s
+// main surface. See its own doc comment for why.
+import { defaultCoreFileTrustPolicy } from '@wtm/core/file-trust-policy';
 import type { FileTrustPolicy } from '@wtm/platform/ports';
 import type { JsonEnvelope } from '@wtm/protocol';
 import type { RuntimeDaemonClient } from '../commands/runtime-client';

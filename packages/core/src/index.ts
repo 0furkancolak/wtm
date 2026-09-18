@@ -233,16 +233,6 @@ export type {
   MaterializationRequest,
   MaterializationResult,
 } from './resources/materializer';
-/**
- * The POSIX fallback every `FileTrustPolicy` parameter in this package defaults to.
- *
- * Exported so a test can name the thing that actually answers when nobody injects, rather than
- * hand-writing a lookalike that would keep passing if this changed. Production code has no reason
- * to import it: a composition root that reaches for it is a composition root that should be
- * selecting `PlatformRuntime.fileTrust` instead.
- */
-export { defaultCoreFileTrustPolicy } from './file-trust-policy';
-export type { CoreFileStat, FileTrustPolicy, OwnerOnlyMask } from './file-trust-policy';
 export { inspectResources, prepareResources } from './resources/preparation';
 export type { PreparedResource, ResourcePreparationInput, ResourceState } from './resources/preparation';
 export {

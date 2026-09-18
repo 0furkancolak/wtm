@@ -1651,8 +1651,9 @@ wtm-windows-arm64.exe
       **2026-09-18 (W2-3 / 9f):** `docs/superpowers/plans/2026-09-16-w2-win32-failure-clusters.md`
       §9f'teki beş kök neden de kapatıldı; hepsi mevcut port/enjeksiyon dikişinden geçerek ve
       hiçbiri `@wtm/core`'a ya da testlere bir `process.platform` dalı eklemeden. Tek istisna
-      `select.ts`: madde (3) bu dosyaya ikinci bir `process.platform` okuması ekliyor (satır 112),
-      yani backend seçen tek yerin içine — dışına değil. (1) `@wtm/core`'un POSIX-only
+      `select.ts`: madde (3) bu dosyaya ikinci bir `process.platform` okuması ekliyor
+      (`hostFileTrustPolicy` içinde), yani backend seçen tek yerin içine — dışına değil.
+      (1) `@wtm/core`'un POSIX-only
       `defaultCoreFileTrustPolicy`'sine düşen üç çağrı yeri — `removal-coordinator.ts`'in
       ephemeral temizliği, `prepareRuntimeResources` ve `gc.test.ts`'in kendi fixture'ı —
       composition root'un zaten seçtiği politikayı alıyor; Windows'ta o fallback hem

@@ -90,7 +90,7 @@ describe('a worktree created after `wtm init`', () => {
     });
   });
 
-  test('still ends in one coded envelope when the registry cannot be written at all', () => {
+  test('still ends in one coded envelope when the registry cannot be opened at all', () => {
     const { status, error } = runScenario('unopenable-registry');
     expect(error).toBe('WTM_NOT_INITIALIZED');
     expect(status).toMatchObject({ exitCode: 2, ok: false, registered: false, stderr: '' });

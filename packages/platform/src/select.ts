@@ -27,11 +27,13 @@ import type { FileTrustPolicy, IpcServerPublisher, PlatformId, PlatformRuntime }
  * has to be found and changed when a platform is added, and the reason this increment exists is
  * that WTM had those branches scattered through core, the daemon and the CLI.
  *
- * It is not the only file that *reads* `process.platform` — `daemon/src/watcher.ts`,
- * `daemon/src/main.ts` and `daemon/src/service-lifecycle.ts` each default an injectable `platform`
- * argument from it, `core/src/plan/external-adapter.ts` carries a reviewed exception registered in
- * `core/src/__tests__/platform-independence.test.ts`, and `@wtm/testkit` reads it freely. None of
- * those chooses a backend; this one does.
+ * It is not the only file that *reads* `process.platform`. In the shipped packages,
+ * `daemon/src/watcher.ts`, `daemon/src/main.ts` and `daemon/src/service-lifecycle.ts` each default
+ * an injectable `platform` argument from it, `core/src/plan/external-adapter.ts` carries a reviewed
+ * exception registered in `core/src/__tests__/platform-independence.test.ts`, and `@wtm/testkit`
+ * reads it freely. None of those chooses a backend; this one does. The repository's build and test
+ * scripts under `scripts/` branch on it directly and are outside that rule, because they are not
+ * shipped and compose nothing.
  */
 export const supportedPlatforms: readonly PlatformId[] = ['darwin', 'linux', 'win32'];
 

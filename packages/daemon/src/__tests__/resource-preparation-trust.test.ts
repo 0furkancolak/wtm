@@ -83,7 +83,7 @@ const refusingPolicy: FileTrustPolicy = {
   currentIdentityAvailable: () => true,
 };
 
-async function prepareWith(fileTrust: FileTrustPolicy | undefined) {
+async function prepareWith(fileTrust: FileTrustPolicy) {
   const fixture = await createGitSafetyFixture();
   fixtures.push(fixture);
   const worktreeRoot = fixture.linkedWorktreePath;
