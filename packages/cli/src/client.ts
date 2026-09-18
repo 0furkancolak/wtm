@@ -13,10 +13,25 @@ import {
   type JsonEnvelope,
 } from '@wtm/protocol';
 
+const defaultTransportTimeoutMs = 5_000;
+
 export interface DaemonClientOptions {
   socketPath: string;
   requestTimeoutMs?: number;
   maxFrameBytes?: number;
+  /**
+   * Bounds every wait this client places on a transport event rather than on a peer's answer: the
+   * connect handshake and the close acknowledgement. Neither is guaranteed to arrive. A Windows
+   * named pipe in particular can stop producing events entirely -- no `connect`, no `error`, no
+   * `close` -- and an unbounded wait on one is a process that never finishes, not a slow one.
+   *
+   * Deliberately not derived from `requestTimeoutMs`: a caller that wants a short answer from the
+   * daemon is not asking for a short connect, and deriving it would turn a tight request bound into
+   * a connect deadline a loaded machine could miss.
+   */
+  transportTimeoutMs?: number;
+  /** Fault injection stays at the socket boundary; ordinary callers use a real connection. */
+  connect?: (address: string) => Socket;
 }
 
 export interface FollowLogsOptions {
@@ -43,7 +58,9 @@ export class DaemonClient {
   static readonly #maxTimedOutRequestTombstones = 256;
   readonly #socketPath: string;
   readonly #requestTimeoutMs: number;
+  readonly #transportTimeoutMs: number;
   readonly #maxFrameBytes: number;
+  readonly #openSocket: (address: string) => Socket;
   readonly #pending = new Map<string, PendingRequest>();
   readonly #timedOutRequestTombstones = new Set<string>();
   #socket: Socket | null = null;
@@ -54,8 +71,13 @@ export class DaemonClient {
     this.#socketPath = options.socketPath;
     this.#requestTimeoutMs = options.requestTimeoutMs ?? 5_000;
     this.#maxFrameBytes = options.maxFrameBytes ?? defaultMaxIpcFrameBytes;
+    this.#transportTimeoutMs = options.transportTimeoutMs ?? defaultTransportTimeoutMs;
+    this.#openSocket = options.connect ?? ((address) => createConnection(address));
     if (!Number.isInteger(this.#requestTimeoutMs) || this.#requestTimeoutMs < 1) {
       throw new RangeError('Daemon request timeout must be a positive integer');
+    }
+    if (!Number.isInteger(this.#transportTimeoutMs) || this.#transportTimeoutMs < 1) {
+      throw new RangeError('Daemon transport timeout must be a positive integer');
     }
   }
 
@@ -201,14 +223,24 @@ export class DaemonClient {
     const socket = this.#socket;
     this.#socket = null;
     if (socket === null || socket.closed) return;
+    // The handle is released either way; this wait only exists so a caller that closes the client
+    // before touching the address knows the transport let go of it. A transport that never reports
+    // the close it was asked for must not be able to hold the process open for it.
     await new Promise<void>((resolve) => {
-      socket.once('close', () => resolve());
+      const done = (): void => {
+        clearTimeout(timer);
+        socket.off('close', done);
+        resolve();
+      };
+      const timer = setTimeout(done, this.#transportTimeoutMs);
+      timer.unref();
+      socket.once('close', done);
       socket.destroy();
     });
   }
 
   async #connect(): Promise<void> {
-    const socket = createConnection(this.#socketPath);
+    const socket = this.#openSocket(this.#socketPath);
     const decoder = new FrameDecoder({ maxFrameBytes: this.#maxFrameBytes });
     this.#socket = socket;
     socket.on('data', (chunk) => this.#receive(decoder, typeof chunk === 'string' ? Buffer.from(chunk) : chunk));
@@ -223,16 +255,29 @@ export class DaemonClient {
     });
     try {
       await new Promise<void>((resolve, reject) => {
-        const onConnect = () => {
-          socket.off('error', onStartupError);
-          resolve();
-        };
-        const onStartupError = () => {
+        const settle = (error: Error | null): void => {
+          clearTimeout(timer);
           socket.off('connect', onConnect);
-          reject(new Error('Daemon connection failed'));
+          socket.off('error', onStartupError);
+          socket.off('close', onStartupClose);
+          if (error === null) resolve();
+          else reject(error);
         };
+        const onConnect = (): void => settle(null);
+        const onStartupError = (): void => settle(new Error('Daemon connection failed'));
+        // A peer that closes the connection instead of refusing it emits no `error` at all. Without
+        // this listener that outcome settles nothing and startup waits for an event already spent.
+        const onStartupClose = (): void => settle(new Error('Daemon connection closed'));
+        // And a transport can report none of the three: a named pipe whose peer instance is wedged
+        // accepts the connect and then goes silent. Startup is the client's own deadline to keep.
+        const timer = setTimeout(
+          () => settle(new Error('Daemon connection timed out')),
+          this.#transportTimeoutMs,
+        );
+        timer.unref();
         socket.once('connect', onConnect);
         socket.once('error', onStartupError);
+        socket.once('close', onStartupClose);
       });
     } catch (error) {
       if (this.#socket === socket) this.#socket = null;
