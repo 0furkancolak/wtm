@@ -49,6 +49,22 @@ What W2-1 fixed stands on its own evidence and is not affected by this: three un
 `DaemonClient`, each with a regression test that fails with its own fix reverted. It is a
 correctness fix, not a CI-cost fix, and the cost claim should not be repeated without a measurement.
 
+**A false completion, 2026-09-18, and how to recognise the next one.** Run 35339824982's win32 leg
+*finished* in 13m39s and reported `154 of 238 files failed`. It is not an inventory and the leg is
+not fixed. That job's `bun install --frozen-lockfile` took **15 s** where the win32 baseline is
+32-70 s, reported success, and produced a `zod@4.4.3` tree missing `v4/locales/*`: the log carries
+241 `ERR_MODULE_NOT_FOUND` lines, 221 of them naming zod, and 46 of the 51 visible failing files
+abort in under a second on that import before running anything. The control is
+`daemon/__tests__/anchor-log-trust.test.ts`, the one file in the overlap that still did real work:
+**1.90 s here against 1.80 s in the cancelled run**. The runner was not faster; the suite simply did
+not run. All four non-Windows legs of the same run passed on the same lockfile.
+
+So: a win32 leg that finishes well inside the cap is a reason to check `bun install`'s duration and
+grep the log for `ERR_MODULE_NOT_FOUND` before reading anything else into it. Treat a sub-20-second
+win32 install as suspect. That the install can report success while leaving a package incomplete is
+its own defect and belongs to whoever owns CI reliability next; it is not 9f's, 9j's or any other
+failure cluster's, and it will poison any win32 measurement taken while it is happening.
+
 **A separate consequence for 9j (W5-1).** The win32 leg does not merely run slowly -- it does not
 finish. It reached 67.6-69.7 % of the files in 23 minutes in all three runs above, so the full suite
 needs roughly 35 minutes on that runner. Dropping `continue-on-error` and the 25-minute cap, which
