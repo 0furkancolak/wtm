@@ -25,6 +25,36 @@ Cluster wording is taken verbatim from `docs/superpowers/plans/2026-09-15-remain
 
 These two tests alone burn ~10 minutes of every win32 run and reproduce identically in both runs.
 
+**Measured 2026-09-18, and the sentence above does not survive it.** `c62e67b` is the direct
+ancestor of this branch, on the same 238-file set, the same discovery order, the same 25-minute cap
+and the same `--timeout 300000`; the only material difference is W2-1. The interval from the test
+step's start to the start of file #39 brackets `client.test.ts` (file #12) and is computable in
+every run:
+
+| commit | W2-1 | step start -> start of file #39 |
+|---|---|---|
+| `c62e67b` | absent | 791.6 s |
+| `14a821f` | present | 782.8 s |
+| `e5e7aaf` | present | 793.0 s |
+
+Run-to-run spread over the 122 files all three runs share is about +-5 %, i.e. +-30 s on a 600 s
+block, so both W2-1 deltas (-8.8 s, +1.4 s) are noise. The leg's progress agrees: 166/238 before,
+166/238 and 161/238 after. **W2-1 did not remove ~10 minutes from the win32 leg.** Whether the two
+hooks still time out, or never cost ~600 s once `scripts/run-tests.ts` began running each file in
+its own process (it landed in `5ba0aa6`, after the two runs this section was written from), is
+unmeasured: GitHub's log API truncates to the last 5000 lines and the block for file #12 is outside
+that window in every one of these jobs.
+
+What W2-1 fixed stands on its own evidence and is not affected by this: three unbounded waits in
+`DaemonClient`, each with a regression test that fails with its own fix reverted. It is a
+correctness fix, not a CI-cost fix, and the cost claim should not be repeated without a measurement.
+
+**A separate consequence for 9j (W5-1).** The win32 leg does not merely run slowly -- it does not
+finish. It reached 67.6-69.7 % of the files in 23 minutes in all three runs above, so the full suite
+needs roughly 35 minutes on that runner. Dropping `continue-on-error` and the 25-minute cap, which
+is 9j's job, therefore needs the cap raised or the suite split; the other win32 units cannot make a
+leg green that never reaches its last file.
+
 **Resolved 2026-09-16 (W2-1), with a residue that is not W2-1's.** The 300 s was never the test
 body: it failed in 1035 ms (run 1) / 1033 ms (run 2), and Bun charges the rest to the hook —
 `^ a beforeEach/afterEach hook timed out for this test`. `cleanups` drain reversed, so
