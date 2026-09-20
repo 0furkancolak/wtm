@@ -13,7 +13,7 @@
  * every call site in `guard.ts`, `preparation.ts`, `removal.ts`, `materializer.ts`, `gc.ts`,
  * `adapter-trust.ts` and `private-directory.ts`. Migrating a call site to this port is a
  * substitution of the same comparison, not a redesign — see `FileTrustPolicy`'s own doc comment in
- * `@wtm/platform` for why the interface has exactly these four methods and no others.
+ * `@wtm/platform` for why the interface has exactly these five methods and no others.
  */
 /**
  * `number | bigint` because `fs.Stats`'s sibling type `fs.BigIntStats` (returned when a caller
@@ -45,6 +45,12 @@ export interface FileTrustPolicy {
   isNotSharedByHardLink(stat: CoreFileStat): boolean;
   /** `false` on any platform where per-user file ownership cannot be read at all. */
   currentIdentityAvailable(): boolean;
+  /**
+   * Whether the filesystem marks this path runnable. `true` on a platform that records no
+   * executable bit, where the filesystem does not decide runnability and the caller's own format
+   * check does — `@wtm/platform`'s `FileTrustPolicy` carries the full reasoning.
+   */
+  isExecutable(stat: CoreFileStat, path: string): Promise<boolean>;
 }
 
 /**
@@ -91,5 +97,14 @@ export const defaultCoreFileTrustPolicy: FileTrustPolicy = {
   },
   currentIdentityAvailable(): boolean {
     return process.getuid?.() !== undefined;
+  },
+  /**
+   * POSIX's own answer, kept byte-equivalent to `@wtm/platform`'s `posixFileTrustPolicy` like
+   * every predicate above it. A caller who reaches this fallback on Windows gets a refusal, which
+   * is the same fail-closed behaviour the other four give there and the reason a composition root
+   * is expected to inject `PlatformRuntime.fileTrust` instead.
+   */
+  isExecutable(stat: CoreFileStat, _path: string): Promise<boolean> {
+    return Promise.resolve((Number(stat.mode) & 0o111) !== 0);
   },
 };

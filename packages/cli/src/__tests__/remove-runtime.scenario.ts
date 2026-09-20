@@ -394,6 +394,9 @@ const cases: Record<string, () => Promise<unknown>> = {
       isWritableOnlyByOwner: async () => true,
       isNotSharedByHardLink: () => true,
       currentIdentityAvailable: () => true,
+      // True for the same reason the mode bits are not consulted above: Windows records no
+      // executable bit, so the filesystem does not answer this there.
+      isExecutable: async () => true,
     };
 
     const cleanup = async (fileTrust: FileTrustPolicy) => {

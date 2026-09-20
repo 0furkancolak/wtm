@@ -327,9 +327,12 @@ function assertTrusted(store: AdapterTrustStore, adapterId: string, identity: Ad
 }
 
 /**
- * `(stat.mode & 0o111) === 0`, "not executable by anyone", stays a raw POSIX check: it is the
- * opposite kind of question from `assertPrivateExecutionFile`'s owner-execute check above (this
- * file *must* be runnable), still not one the port answers, and still without a Windows analogue.
+ * "Executable by anyone" now goes through the port, unlike `assertPrivateExecutionFile`'s
+ * owner-execute check above. The two are opposite questions and only this one needed moving: the
+ * inline execute-bit test this replaces refused *every* adapter executable on Windows, because
+ * Node synthesises a Windows file's mode from the read-only attribute and never sets an execute
+ * bit. The check above refuses a file for being runnable, so the same synthesised mode makes it
+ * correct there by accident rather than broken, and it stays raw.
  */
 async function assertSafeAdapterFile(stat: Stats, path: string, fileTrust: FileTrustPolicy): Promise<void> {
   if (!stat.isFile()) throw new AdapterTrustError('External adapter executable is invalid.');
@@ -339,7 +342,7 @@ async function assertSafeAdapterFile(stat: Stats, path: string, fileTrust: FileT
   if (!fileTrust.isNotSharedByHardLink(stat) || !(await fileTrust.isWritableOnlyByOwner(stat, path, 0o022))) {
     throw new AdapterTrustError('External adapter executable has unsafe permissions.');
   }
-  if ((Number(stat.mode) & 0o111) === 0) {
+  if (!(await fileTrust.isExecutable(stat, path))) {
     throw new AdapterTrustError('External adapter executable is not executable.');
   }
 }

@@ -32,4 +32,13 @@ export const posixFileTrustPolicy: FileTrustPolicy = {
   currentIdentityAvailable(): boolean {
     return process.getuid?.() !== undefined;
   },
+
+  /**
+   * `(stat.mode & 0o111) !== 0` — the check `adapter-trust.ts` made inline, moved here unchanged
+   * like the three above it. "Executable by anyone", not by the owner specifically: an adapter
+   * run through a group- or other-execute bit is still one the kernel will run.
+   */
+  isExecutable(stat: NodeJsStats, _path: string): Promise<boolean> {
+    return Promise.resolve((stat.mode & 0o111) !== 0);
+  },
 };

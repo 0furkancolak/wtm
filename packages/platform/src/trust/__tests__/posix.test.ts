@@ -43,4 +43,18 @@ describe('posixFileTrustPolicy', () => {
   test('currentIdentityAvailable reflects whether process.getuid() answers at all', () => {
     expect(posixFileTrustPolicy.currentIdentityAvailable()).toBe(process.getuid?.() !== undefined);
   });
+
+  test('isExecutable accepts any execute bit, not the owner\'s alone', async () => {
+    await expect(posixFileTrustPolicy.isExecutable(stat({ mode: 0o700 }), '/x')).resolves.toBe(true);
+    // Group- and other-execute count: the kernel will run the file for someone, which is the
+    // question this predicate asks. The narrower owner-only reading belongs to
+    // `assertPrivateExecutionFile`, which is a different check and stays out of this port.
+    await expect(posixFileTrustPolicy.isExecutable(stat({ mode: 0o610 }), '/x')).resolves.toBe(true);
+    await expect(posixFileTrustPolicy.isExecutable(stat({ mode: 0o601 }), '/x')).resolves.toBe(true);
+    await expect(posixFileTrustPolicy.isExecutable(stat({ mode: 0o600 }), '/x')).resolves.toBe(false);
+    // The mode Node synthesises for an ordinary file on Windows. The POSIX backend says no, which
+    // is exactly why the Windows backend must answer this question itself rather than share this
+    // implementation -- and why core's fallback refuses everything there.
+    await expect(posixFileTrustPolicy.isExecutable(stat({ mode: 0o666 }), '/x')).resolves.toBe(false);
+  });
 });

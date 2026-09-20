@@ -131,5 +131,17 @@ export function createWindowsFileTrustPolicy(options: WindowsFileTrustPolicyOpti
     // always has *a* current-user SID) and lets `isOwnedByCurrentUser`/`isWritableOnlyByOwner`'s
     // own `currentSid === null` branch carry the real, per-call failure.
     currentIdentityAvailable: () => true,
+    /**
+     * NTFS records no executable bit, and Node does not invent one: a file's `mode` comes from the
+     * read-only attribute alone, so it is `0o666` (or `0o444`) and `& 0o111` is always zero. There
+     * is nothing here to read, which is why this answers `true` rather than consulting the ACL.
+     *
+     * The ACL's `ExecuteFile` right is deliberately *not* what this asks. That right governs who
+     * may run a file that is runnable, not whether it is; every ordinary file under a user's
+     * profile carries it through inheritance, so reading it would answer `true` for every file
+     * while costing a `powershell.exe` round trip per call. The caller's own format check is what
+     * decides runnability here — see the port's comment on `isExecutable`.
+     */
+    isExecutable: () => Promise.resolve(true),
   };
 }

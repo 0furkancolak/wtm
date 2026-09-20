@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
 import { fileURLToPath } from 'node:url';
 import { createAdapterTrustStore } from '@wtm/core';
+import { selectPlatformRuntime } from '@wtm/platform';
 import type { FileTrustPolicy } from '@wtm/platform/ports';
 import { createFakeAdapter } from '../../../../testkit/src/fake-adapter';
 import { runScenario as runScenarioChild } from '../../../../testkit/src/scenario-child';
@@ -62,6 +63,8 @@ const refusingPolicy: FileTrustPolicy = {
   isWritableOnlyByOwner: async () => true,
   isNotSharedByHardLink: () => true,
   currentIdentityAvailable: () => true,
+  // True, so the refusal below is attributable to ownership alone and not to two reasons at once.
+  isExecutable: async () => true,
 };
 
 test('trusts an adapter executable through the injected policy rather than core\'s POSIX fallback', async () => {
@@ -73,6 +76,11 @@ test('trusts an adapter executable through the injected policy rather than core\
       executablePath: adapter.executablePath,
       databasePath: 'unused-because-the-store-is-injected',
       trust: createAdapterTrustStore(),
+      // The host's, like `adapter.scenario.ts` and both of `main.ts`'s call sites. Injecting
+      // nothing here left this half falling through to core's POSIX fallback, which is the very
+      // thing the test's name says it is avoiding -- and on win32 that fallback refuses, so the
+      // accepting case could not pass there however the command behaved.
+      fileTrust: selectPlatformRuntime().fileTrust,
     });
     expect(accepted.ok).toBe(true);
 

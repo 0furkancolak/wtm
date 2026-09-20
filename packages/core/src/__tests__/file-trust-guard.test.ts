@@ -11,10 +11,18 @@
  * inline check that reappears is not merely undoing a refactor — it is a place a `WindowsPlatformRuntime`
  * cannot answer for.
  *
- * Two rules, not the broader "no `stat.mode`/`.nlink`/`.uid` at all" D4 first considered: this
+ * Three rules, not the broader "no `stat.mode`/`.nlink`/`.uid` at all" D4 first considered: this
  * migration also left a wide, legitimate residue behind — `(dev, ino, uid)` TOCTOU identity tuples
  * compared against a *previously observed* value (never `process.getuid()`), and POSIX-only checks
  * with no Windows analogue at all (an owner-execute bit, an exact `0o700`/`0o600` mode equality).
+ *
+ * The third rule was added later. When this guard was written, "an executable-bit check has no
+ * port method to call, and stays raw" was true of both of `adapter-trust.ts`'s; it is now true of
+ * only one. `assertSafeAdapterFile`'s `& 0o111` asked whether a *user-supplied* file is runnable
+ * and refused every one of them on Windows, so the port gained `isExecutable` and that call site
+ * migrated like the rest. `assertPrivateExecutionFile`'s `& 0o100` asks the opposite question
+ * about a file this process just wrote and stays raw, which is why the rule names one and not
+ * the other.
  * A guard broad enough to catch those too would need a reviewed exception on nearly every line of
  * `gc.ts` and `materializer.ts`, which is exactly the noise D8's own reviewed-exception discipline
  * exists to avoid manufacturing. `process.getuid()` and the two denial masks are what a
@@ -54,6 +62,18 @@ const rules: readonly StructuralRule[] = [
       + 'migrated call sites actually asked with, not every mode-bit expression (an exact `0o700`/'
       + '`0o600` equality or an executable-bit check has no port method to call, and stays raw).',
     pattern: /mode\)?\s*&\s*0o0(?:22|77)\b/,
+  },
+  {
+    name: 'raw-executable-bit',
+    why:
+      'A `mode & 0o111` ("runnable by anyone") compared directly rather than through '
+      + 'FileTrustPolicy.isExecutable. Node synthesises a Windows file\'s mode from the read-only '
+      + 'attribute and never sets an execute bit, so an inline test here refuses every executable '
+      + 'on that platform -- which is what `adapter-trust.ts` did until the port gained the '
+      + 'predicate. `& 0o100` is deliberately not matched: `assertPrivateExecutionFile` refuses a '
+      + 'file for *being* runnable, so the same never-set bit makes it correct on Windows rather '
+      + 'than broken, and it has no port method to call.',
+    pattern: /mode\)?\s*&\s*0o111\b/,
   },
 ];
 
@@ -169,6 +189,7 @@ test('every rule matches the thing it was written to catch, and nothing it shoul
   const positiveSamples: Record<string, string> = {
     'process.getuid': '  const currentUid = process.getuid?.();',
     'raw-owner-only-mask': '  if ((stat.mode & 0o022) !== 0) deny(\'writable\', {});',
+    'raw-executable-bit': '  if ((Number(stat.mode) & 0o111) === 0) throw new AdapterTrustError(\'x\');',
   };
 
   expect(Object.keys(positiveSamples).sort()).toEqual(rules.map(({ name }) => name).sort());
@@ -184,6 +205,12 @@ test('every rule matches the thing it was written to catch, and nothing it shoul
   expect(maskRule.pattern.test('if (stat.uid !== candidate.uid) throw x;')).toBe(false);
   expect(maskRule.pattern.test('if ((Number(stat.mode) & 0o700) !== 0o700) throw x;')).toBe(false);
   expect(maskRule.pattern.test('await fileTrust.isWritableOnlyByOwner(stat, path, 0o022)')).toBe(false);
+
+  // What `raw-executable-bit` must not catch: `assertPrivateExecutionFile`'s owner-execute check,
+  // which is the opposite question and has no port method, and calling the port itself.
+  const executableRule = rules.find(({ name }) => name === 'raw-executable-bit') as StructuralRule;
+  expect(executableRule.pattern.test('|| (Number(stat.mode) & 0o100) !== 0')).toBe(false);
+  expect(executableRule.pattern.test('await fileTrust.isExecutable(stat, path)')).toBe(false);
 });
 
 test('every reviewed exception still describes something that is really there', async () => {

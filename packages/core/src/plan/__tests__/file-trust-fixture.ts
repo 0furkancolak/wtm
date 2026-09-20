@@ -40,5 +40,12 @@ export function trustedFileTrustPolicy(): FileTrustPolicy {
       : true),
     isNotSharedByHardLink: () => true,
     currentIdentityAvailable: () => true,
+    // Delegated for the same reason as the two above: these tests create real adapter files and
+    // chmod them, so the real answer is the honest one and a blanket `true` would hide a fixture
+    // that forgot to. The no-identity substitution is the same Windows failure mode, where the
+    // synthesised mode carries no execute bit for the real policy to find.
+    isExecutable: async (stat, path) => (defaultCoreFileTrustPolicy.currentIdentityAvailable()
+      ? defaultCoreFileTrustPolicy.isExecutable(stat, path)
+      : true),
   };
 }

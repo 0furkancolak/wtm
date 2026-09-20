@@ -73,6 +73,8 @@ const aclShapedPolicy: FileTrustPolicy = {
   isWritableOnlyByOwner: async () => true,
   isNotSharedByHardLink: () => true,
   currentIdentityAvailable: () => true,
+  // True for the same reason the mode bits go unread: Windows records no executable bit.
+  isExecutable: async () => true,
 };
 
 /** A policy that refuses for a reason nothing about the filesystem can produce on its own. */
@@ -81,6 +83,8 @@ const refusingPolicy: FileTrustPolicy = {
   isWritableOnlyByOwner: async () => false,
   isNotSharedByHardLink: () => true,
   currentIdentityAvailable: () => true,
+  // True, so the refusal stays attributable to the owner-only write answer alone.
+  isExecutable: async () => true,
 };
 
 async function prepareWith(fileTrust: FileTrustPolicy) {
