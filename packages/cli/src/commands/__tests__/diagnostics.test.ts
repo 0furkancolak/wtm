@@ -637,6 +637,43 @@ describe('doctor on a machine with no registered workspace (todo item 52)', () =
     expect(envelope.warnings).toEqual([]);
   });
 
+  test('the record is offered for the condition, not for a code a registered machine can also carry', async () => {
+    // A data source that refuses a *registered* workspace with `WTM_NOT_INITIALIZED` used to be
+    // handed the daemon's record, because the trigger read the code off the envelope rather than
+    // asking whether anything was registered (todo item 52, M5). That machine already carries the
+    // same record in its `registration` finding, and this is the reading that can drift: the code
+    // is one refusal's spelling, the empty registry is the condition itself.
+    let asked = 0;
+    const envelope = await runDoctorCommand({ cwd: '/registered/demo' }, source({
+      readDoctor: async () => {
+        throw new DiagnosticSourceError({
+          code: 'WTM_NOT_INITIALIZED',
+          message: 'No registered WTM workspace is available.',
+          severity: 'error',
+        });
+      },
+      readDaemonStartupFailure: async () => { asked += 1; return recorded; },
+    }));
+
+    expect(envelope.errors.map(({ code }) => code)).toEqual(['WTM_NOT_INITIALIZED']);
+    expect(asked).toBe(0);
+    expect(envelope.warnings).toEqual([]);
+  });
+
+  test('a registry that cannot be read at all is its own answer', async () => {
+    // Nothing is known about what is registered, so "nothing is registered" is not the condition
+    // observed; the listing failure is the whole answer.
+    let asked = 0;
+    const envelope = await runDoctorCommand({ cwd: '/fresh' }, source({
+      listRegisteredWorkspaces: async () => { throw new Error('state database unreadable'); },
+      readDaemonStartupFailure: async () => { asked += 1; return recorded; },
+    }));
+
+    expect(envelope.ok).toBe(false);
+    expect(asked).toBe(0);
+    expect(envelope.warnings).toEqual([]);
+  });
+
   test('is asked only by doctor, and only when no workspace answered', async () => {
     let asked = 0;
     const readDaemonStartupFailure = async () => { asked += 1; return recorded; };
@@ -646,6 +683,8 @@ describe('doctor on a machine with no registered workspace (todo item 52)', () =
     await runDoctorCommand({ cwd: '/registered/demo' }, source({ readDaemonStartupFailure }));
     // An unknown selector is a different mistake, with its own remedy.
     await runDoctorCommand({ cwd: '/fresh', selector: 'nope' }, unregistered({ readDaemonStartupFailure }));
+    // `--global` answers for every workspace at once, and an empty global run is a success.
+    await runDoctorCommand({ cwd: '/fresh', global: true }, unregistered({ readDaemonStartupFailure }));
 
     expect(asked).toBe(0);
   });
