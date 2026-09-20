@@ -36,6 +36,9 @@ const policy: FileTrustPolicy = {
     accessChecks.push({ path, mask });
     return hasAcl(path) && !(openedTarget && mode === 'access-denied');
   },
+  // Private-directory checks never ask this; it is here to satisfy the port, and answering from
+  // `hasAcl` would imply this fixture models an executability decision it does not.
+  isExecutable: () => Promise.resolve(true),
 };
 
 try {

@@ -126,6 +126,29 @@ describe('createWindowsFileTrustPolicy', () => {
   test('the trusted-principal allowlist names exactly SYSTEM and Administrators', () => {
     expect(windowsTrustedPrincipalSids).toEqual(['S-1-5-18', 'S-1-5-32-544']);
   });
+
+  test('isExecutable answers without reading the mode or the ACL', async () => {
+    // The mode Node synthesises for an ordinary Windows file, and for a read-only one. Neither
+    // carries an execute bit, so a POSIX-shaped test refuses both -- which is what refused every
+    // adapter executable on Windows before this predicate existed.
+    const policy = policyWith({ ownerSid, accessRules: [] });
+    await expect(policy.isExecutable(stat({ mode: 0o666 }), 'C:\\x')).resolves.toBe(true);
+    await expect(policy.isExecutable(stat({ mode: 0o444 }), 'C:\\x')).resolves.toBe(true);
+
+    // And no ACL read: an unreadable ACL is what every other predicate fails closed on, so
+    // answering from one would make executability fail closed for the same reasons and put the
+    // cost of a powershell.exe round trip behind a question NTFS does not record.
+    let aclReads = 0;
+    const counting = createWindowsFileTrustPolicy({
+      readAcl: async () => {
+        aclReads += 1;
+        return undefined;
+      },
+      currentUserSid: async () => ownerSid,
+    });
+    await expect(counting.isExecutable(stat(), 'C:\\x')).resolves.toBe(true);
+    expect(aclReads).toBe(0);
+  });
 });
 
 

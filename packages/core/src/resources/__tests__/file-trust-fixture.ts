@@ -56,6 +56,12 @@ export function createFakeFileTrust(): FakeFileTrust {
     currentIdentityAvailable(): boolean {
       return identityAvailable;
     },
+    // No resource call site asks this — only `adapter-trust.ts` does — so there is no
+    // `denyExecutable` beside the other two denials. Add one when a caller needs it rather than
+    // now, so the fixture keeps naming only what its tests actually vary.
+    isExecutable(): Promise<boolean> {
+      return Promise.resolve(true);
+    },
     async denyOwnership(path: string): Promise<void> {
       deniedOwnership.add(await canonicalize(path));
     },

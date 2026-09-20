@@ -322,6 +322,7 @@ describe('Agent Skill command', () => {
       isWritableOnlyByOwner: async () => false,
       isNotSharedByHardLink: () => false,
       currentIdentityAvailable: () => false,
+      isExecutable: async () => false,
     };
     const installer = createFilesystemSkillInstaller({
       localAnchor: root,

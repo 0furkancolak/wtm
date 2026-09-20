@@ -32,10 +32,11 @@ afterEach(async () => {
   await Promise.all(adapters.splice(0).map((adapter) => adapter.cleanup()));
 });
 
-// External adapter execution is a real OS process running a real executable file, gated by
-// checks (`assertSafeAdapterFile`'s `(stat.mode & 0o111) === 0`, `adapter-trust.ts`) that are
-// raw POSIX permission-bit reads with no Windows analogue by design (see that file's own doc
-// comments) -- and `external-adapter.ts`'s own `assertDescriptorExecutionSupported` already
+// External adapter execution is a real OS process running a real executable file. Its safety
+// gate in `adapter-trust.ts` no longer reads a permission bit inline -- `assertSafeAdapterFile`
+// asks `FileTrustPolicy.isExecutable`, and `assertPrivateExecutionFile`'s opposite owner-execute
+// check is correct on Windows precisely because the bit is never set there
+// -- and `external-adapter.ts`'s own `assertDescriptorExecutionSupported` already
 // refuses to run an adapter descriptor on win32 unconditionally, before any of this suite's
 // fixtures matter. This whole suite is a POSIX-execution-semantics suite, the same way
 // `posix.test.ts`'s uid comparison or `inode-reuse-measurement.test.ts`'s NTFS question are.

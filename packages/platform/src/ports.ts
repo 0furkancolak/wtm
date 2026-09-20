@@ -109,9 +109,10 @@ export interface ProcessPlatform {
 /**
  * Answers the one question `@wtm/core` asked itself, inline, 151 times across 11 files before
  * Increment D1 (spec `2026-09-03-windows-trust-and-transport-seam.md`, D2): does this path belong
- * only to the current user, and can nobody else write to it? The three predicates are exactly the
- * three things those call sites checked — no more, no less — so migrating a call site is a
- * substitution, not a redesign.
+ * only to the current user, and can nobody else write to it? The first three predicates are
+ * exactly the three things those call sites checked — no more, no less — so migrating a call site
+ * is a substitution, not a redesign. `isExecutable` came later, from a call site that had been
+ * left behind rather than migrated; its own comment says why it belongs here.
  *
  * The POSIX implementation is that inline logic, moved rather than rewritten: `stat.uid`, a
  * caller-chosen mode mask (`0o022` and `0o077` are both real, distinct questions in the code this
@@ -134,6 +135,27 @@ export interface FileTrustPolicy {
   isNotSharedByHardLink(stat: NodeJsStats): boolean;
   /** `false` on any platform where per-user file ownership cannot be read at all. */
   currentIdentityAvailable(): boolean;
+  /**
+   * Whether the filesystem marks this path runnable — the fourth question, added after the first
+   * three because a raw `(stat.mode & 0o111) === 0` left in `@wtm/core`'s `adapter-trust.ts`
+   * refused every adapter executable on Windows, whatever policy was injected. Node synthesises a
+   * Windows file's `mode` from the read-only attribute alone (`0o666`, or `0o444`), so the
+   * execute bits are never set there and a POSIX-shaped test can only fail closed. That is the
+   * same failure mode as the other three predicates, which is why this belongs beside them.
+   *
+   * It is deliberately *not* the mirror of `assertPrivateExecutionFile`'s owner-execute check.
+   * That one refuses a file for being independently runnable, is specific to a file this process
+   * just wrote, and is already correct on Windows precisely because the bit is never set there —
+   * so it stays raw. This predicate asks the opposite question about a file the *user* supplied.
+   *
+   * `true` on a platform that records no executable bit at all. That is not a permissive default
+   * standing in for an unanswerable question: on such a platform the filesystem genuinely does
+   * not decide runnability, and the caller's own format check is what does. `adapter-trust.ts`'s
+   * `assertExactV1AdapterDeclaration` requires the `#!/usr/bin/env node` hashbang and the
+   * `// wtm-adapter-v1: self-contained` line before the bytes are ever run, and they are run
+   * through an inherited descriptor rather than by the filesystem's say-so.
+   */
+  isExecutable(stat: NodeJsStats, path: string): Promise<boolean>;
 }
 
 /**
