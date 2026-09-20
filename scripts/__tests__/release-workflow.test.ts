@@ -216,6 +216,19 @@ describe('release workflow', () => {
     );
     expect(job['timeout-minutes']).toBe("${{ matrix.platform == 'win32' && 25 || 30 }}");
     expect(job.strategy?.matrix?.include).toContainEqual({ platform: 'win32', arch: 'x64', runner: 'windows-latest' });
+
+    // `continue-on-error` is only half of "informational". It absorbs a job that failed; a job that
+    // reaches `timeout-minutes` is cancelled, and a cancelled job reported every run on this
+    // repository as `cancelled` however green the four deciding legs were. The whole-run budget is
+    // the other half: the leg has to end itself, inside the cap, so its failure is one
+    // `continue-on-error` can absorb. Pinned as an inequality rather than a literal so the two
+    // numbers cannot drift apart silently -- raising the cap is fine, a budget at or above it is
+    // the bug coming back.
+    const testStep = (job.steps ?? []).find((step) => step.run?.startsWith('bun run test --timeout'));
+    const budgetMs = Number(/--budget (\d+)/u.exec(testStep?.run ?? '')?.[1]);
+    expect(testStep?.run, 'the budget must apply to win32 only').toContain("matrix.platform == 'win32' && ' --budget");
+    expect(budgetMs).toBeGreaterThan(0);
+    expect(budgetMs).toBeLessThan(25 * 60 * 1000);
   });
 
   test('accepts an optional win32_test_filter input, defaulting to the full suite on every leg', () => {
