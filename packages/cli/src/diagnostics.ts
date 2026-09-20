@@ -201,7 +201,7 @@ export async function runDoctorCommand(
   input: DiagnosticCommandInput,
   source: DiagnosticDataSource,
 ): Promise<DiagnosticCommandEnvelope<DoctorDiagnostic>> {
-  return withDaemonStartupFailure(await collectDoctor(input, source), source);
+  return withDaemonStartupFailure(await collectDoctor(input, source), input, source);
 }
 
 /**
@@ -212,12 +212,26 @@ export async function runDoctorCommand(
  * for a daemon that refuses its own data directory (todo item 52). A warning, as on a registered
  * machine, where the same record is a finding and does not move the exit code either: an envelope
  * exits with its worst error's class, so an extra error would have turned 2 into 4 here.
+ *
+ * The trigger is the condition itself -- a local `doctor`, no selector, and a registry that listed
+ * nothing -- and not the `WTM_NOT_INITIALIZED` code the envelope happens to carry when that holds
+ * (todo item 52, M5). Reading the condition back off a code asks the wrong question twice over: a
+ * data source that reports `WTM_NOT_INITIALIZED` about a *registered* workspace would be offered
+ * the record it already carries in its `registration` finding, and a future spelling of the "no
+ * registry" refusal would silently stop offering it to the machine this exists for.
  */
 async function withDaemonStartupFailure(
-  envelope: DiagnosticCommandEnvelope<DoctorDiagnostic>,
+  outcome: CollectOutcome<DoctorDiagnostic>,
+  input: DiagnosticCommandInput,
   source: DiagnosticDataSource,
 ): Promise<DiagnosticCommandEnvelope<DoctorDiagnostic>> {
-  if (envelope.ok || envelope.errors[0]?.code !== 'WTM_NOT_INITIALIZED') return envelope;
+  const envelope = outcome.envelope;
+  // `--global` answers for every workspace at once, so "the one this directory is in" has no
+  // meaning there and an empty global run is a success, not the refusal this rides beside. A
+  // selector that resolved to nothing is a different mistake with its own remedy.
+  if (input.global === true || input.selector !== undefined) return envelope;
+  // `null` is a registry that could not be asked at all; that failure is its own answer.
+  if (outcome.registered === null || outcome.registered.length > 0) return envelope;
   if (source.readDaemonStartupFailure === undefined) return envelope;
   let failure: WtmError | null;
   try {
@@ -233,8 +247,8 @@ async function withDaemonStartupFailure(
 async function collectDoctor(
   input: DiagnosticCommandInput,
   source: DiagnosticDataSource,
-): Promise<DiagnosticCommandEnvelope<DoctorDiagnostic>> {
-  return collect('doctor', input, source, (workspace) => source.readDoctor(workspace), doctorSchema, (value) => ({
+): Promise<CollectOutcome<DoctorDiagnostic>> {
+  return collectOutcome('doctor', input, source, (workspace) => source.readDoctor(workspace), doctorSchema, (value) => ({
     ...value,
     findings: [
       ...value.findings,
@@ -291,6 +305,19 @@ export async function runPortsCommand(
   }));
 }
 
+/**
+ * An envelope together with what the registry actually said, so that a caller which has to act on
+ * the *condition* -- `doctor`'s "nothing is registered on this machine" (todo item 52) -- can read
+ * it here rather than infer it from the error code the condition happens to produce.
+ *
+ * `registered` is `null` when the registry could not be asked or could not be understood: the
+ * envelope then carries that failure, and no condition about its contents is knowable.
+ */
+interface CollectOutcome<T extends { workspace: RegisteredWorkspace }> {
+  envelope: DiagnosticCommandEnvelope<T>;
+  registered: readonly RegisteredWorkspace[] | null;
+}
+
 async function collect<T extends { workspace: RegisteredWorkspace }>(
   command: string,
   input: DiagnosticCommandInput,
@@ -299,6 +326,19 @@ async function collect<T extends { workspace: RegisteredWorkspace }>(
   schema: z.ZodType<T>,
   normalize: (value: T) => T,
 ): Promise<DiagnosticCommandEnvelope<T>> {
+  return (await collectOutcome(command, input, source, read, schema, normalize)).envelope;
+}
+
+async function collectOutcome<T extends { workspace: RegisteredWorkspace }>(
+  command: string,
+  input: DiagnosticCommandInput,
+  source: DiagnosticDataSource,
+  read: (workspace: RegisteredWorkspace) => Promise<T>,
+  schema: z.ZodType<T>,
+  normalize: (value: T) => T,
+): Promise<CollectOutcome<T>> {
+  const unlisted = (envelope: DiagnosticCommandEnvelope<T>): CollectOutcome<T> =>
+    ({ envelope, registered: null });
   const mode = input.global === true ? 'global' as const : 'local' as const;
   if (mode === 'global' && input.selector !== undefined) {
     const error = diagnosticError(
@@ -306,13 +346,13 @@ async function collect<T extends { workspace: RegisteredWorkspace }>(
       'A workspace selector cannot be combined with global scope.',
       { selector: input.selector },
     );
-    return failure(command, { mode }, [], [toDiagnosticError(error, command)]);
+    return unlisted(failure(command, { mode }, [], [toDiagnosticError(error, command)]));
   }
   let rawWorkspaces: unknown;
   try {
     rawWorkspaces = await source.listRegisteredWorkspaces();
   } catch (error) {
-    return failure(command, { mode }, [], [toDiagnosticError(error, command)]);
+    return unlisted(failure(command, { mode }, [], [toDiagnosticError(error, command)]));
   }
   let workspaces: RegisteredWorkspace[];
   try {
@@ -321,15 +361,17 @@ async function collect<T extends { workspace: RegisteredWorkspace }>(
     workspaces = parsed.data.sort((left, right) => codeUnitCompare(left.id, right.id));
   } catch (error) {
     const invalid = error instanceof DiagnosticSourceError ? error : invalidResponse(1);
-    return failure(command, { mode }, [], [toDiagnosticError(invalid, command)]);
+    return unlisted(failure(command, { mode }, [], [toDiagnosticError(invalid, command)]));
   }
+  const registered = (envelope: DiagnosticCommandEnvelope<T>): CollectOutcome<T> =>
+    ({ envelope, registered: workspaces });
 
   let selected: RegisteredWorkspace[];
   try {
     const lookups = workspaces.map(createWorkspaceLookup);
     selected = mode === 'global' ? workspaces : [selectLocalWorkspace(lookups, input)];
   } catch (error) {
-    return failure(command, { mode }, [], [toDiagnosticError(error, command)]);
+    return registered(failure(command, { mode }, [], [toDiagnosticError(error, command)]));
   }
 
   const data: T[] = [];
@@ -357,8 +399,8 @@ async function collect<T extends { workspace: RegisteredWorkspace }>(
   const scope = mode === 'global'
     ? { mode } as const
     : { mode, workspaceId: (selected[0] as RegisteredWorkspace).id } as const;
-  if (errors.length > 0) return failure(command, scope, data, errors);
-  return {
+  if (errors.length > 0) return registered(failure(command, scope, data, errors));
+  return registered({
     schemaVersion: 1,
     ok: true,
     command,
@@ -366,7 +408,7 @@ async function collect<T extends { workspace: RegisteredWorkspace }>(
     data: { workspaces: data },
     warnings: [],
     errors: [],
-  };
+  });
 }
 
 function selectLocalWorkspace(
