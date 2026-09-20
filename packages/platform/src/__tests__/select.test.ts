@@ -4,9 +4,16 @@ import { UnsupportedPlatformError, selectPlatformRuntime, supportedPlatforms } f
 
 /**
  * These tests are about the composition root itself, not about any port's behaviour — each port has
- * its own suite. What is checked here is that a runtime is *complete and self-consistent*: that
- * every field comes from the same platform, and that constructing the Linux one from this macOS
- * host works at all, which is the property the entire increment's Linux half rests on.
+ * its own suite. What is checked here is that a runtime is *complete and self-consistent*, and that
+ * constructing the Linux one from this macOS host works at all, which is the property the entire
+ * increment's Linux half rests on.
+ *
+ * "Self-consistent" means every field comes from the requested platform **except `fileTrust`**,
+ * which comes from the host. That is one deliberate exception, not a gap: `paths`, `socket` and
+ * `service` describe a target and touch nothing, while `fileTrust` reads the filesystem this
+ * process is actually looking at. See `select.ts`'s `hostFileTrustPolicy` for the whole argument;
+ * the case below pins the exception so it cannot be undone by accident, and the case above it
+ * deliberately does not assert agreement for that field.
  */
 describe('selectPlatformRuntime', () => {
   const env = { HOME: '/Users/x' } as const;
@@ -17,13 +24,34 @@ describe('selectPlatformRuntime', () => {
 
       expect(runtime.id).toBe(id);
       // A runtime that mixed a macOS path policy with a Linux service backend would still
-      // typecheck, so the agreement is asserted rather than assumed.
+      // typecheck, so the agreement is asserted rather than assumed — for the ports that describe
+      // a target. `fileTrust` is excluded on purpose and has its own case below.
       expect(runtime.service.id).toBe(id);
       expect(runtime.paths.dataRoot.length).toBeGreaterThan(0);
       expect(runtime.paths.serviceRoot.length).toBeGreaterThan(0);
       expect(runtime.socket.limitBytes).toBeGreaterThan(0);
       expect(typeof runtime.process.readStartTime).toBe('function');
     }
+  });
+
+  /**
+   * `fileTrust` is the one port a simulated runtime may not simulate.
+   *
+   * It reads the filesystem this process is actually on, so its implementation follows the host
+   * rather than the requested platform. Asking a win32 host for a `linux` runtime used to hand
+   * back `posixFileTrustPolicy`, whose answers all come from `process.getuid()` — absent there —
+   * so it refused every directory it was shown and `createProductionDaemon` could not create its
+   * own data root under an injected runtime. On a POSIX host the same defect is visible from the
+   * other side: a `win32` runtime built here would carry the ACL policy, which has no
+   * `powershell.exe` to ask.
+   */
+  test('hands every requested platform the host\'s own file-trust policy, not the target\'s', () => {
+    const host = selectPlatformRuntime({ env, home: '/Users/x' });
+    for (const id of supportedPlatforms) {
+      expect(selectPlatformRuntime({ platform: id, env, home: '/Users/x' }).fileTrust)
+        .toBe(host.fileTrust);
+    }
+    expect(host.fileTrust.currentIdentityAvailable()).toBe(true);
   });
 
   test('the two platforms disagree about every path, which is why the seam exists', () => {

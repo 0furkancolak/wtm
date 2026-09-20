@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jsonEnvelopeSchema } from '@wtm/protocol';
 import { buildGcPlan, createResourceGuard, type GcEvidence, type ResourceSandboxIdentity } from '@wtm/core';
+import { selectPlatformRuntime } from '@wtm/platform';
 import { runDiskCommand } from '../disk';
 import { runGcCommand } from '../gc';
 import { runCli } from '../../main';
@@ -32,6 +33,12 @@ async function fixture() {
   const guard = await createResourceGuard({
     sandboxRoot, workspaceRoot, repositoryRoots: [workspaceRoot],
     git: { async isTracked() { return false; } },
+    // The host's policy, not `@wtm/core`'s POSIX-only fallback. Omitting it made every case in
+    // this file throw `RESOURCE_PATH_DENIED: The current user identity is unavailable.` on win32
+    // before the fixture had built anything, because that fallback's `currentIdentityAvailable()`
+    // is `process.getuid?.() !== undefined`. Production picks the policy in `main.ts`; a fixture
+    // that stands in for production has to pick it too.
+    fileTrust: selectPlatformRuntime().fileTrust,
   });
   guards.push(guard);
   const target = join(sandboxRoot, 'stale');

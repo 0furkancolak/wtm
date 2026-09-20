@@ -23,6 +23,8 @@ import {
   type WorktreeRecord,
   type WtmConfig,
 } from '@wtm/core';
+import { selectPlatformRuntime } from '@wtm/platform';
+import type { FileTrustPolicy } from '@wtm/platform/ports';
 import type { AdapterContext } from '@wtm/protocol';
 import { withAdapterTasks } from './adapter-tasks';
 import { DaemonRegistrationError } from './runtime-controller';
@@ -125,10 +127,28 @@ export async function resolveWorktreeRuntime(input: WorktreeRuntimeInput): Promi
 }
 
 /**
+ * The trust policy resource preparation is authorized against, for a caller who injects none.
+ *
+ * Identical in intent to `logs.ts`'s `hostFileTrustPolicy` and resolved on the same first use, for
+ * the same reason: a module-level `selectPlatformRuntime()` would make merely importing the
+ * daemon's barrel throw on a platform WTM has no backend for. It matters here because
+ * `prepareResources` otherwise falls back to `@wtm/core`'s POSIX-only policy, which reads a
+ * Windows directory's synthesised `0o777` mode as "group- or world-writable" and refuses to
+ * materialize anything at all.
+ */
+let selectedFileTrust: FileTrustPolicy | null = null;
+function hostFileTrustPolicy(): FileTrustPolicy {
+  return (selectedFileTrust ??= selectPlatformRuntime().fileTrust);
+}
+
+/**
  * Create whatever the workspace's `[resources]` table says this worktree should have and does
  * not. Called before a task runs, so that a task which reads `.env` finds one.
  */
-export async function prepareRuntimeResources(runtime: WorktreeRuntime): Promise<PreparedResource[]> {
+export async function prepareRuntimeResources(
+  runtime: WorktreeRuntime,
+  fileTrust: FileTrustPolicy = hostFileTrustPolicy(),
+): Promise<PreparedResource[]> {
   const resources = runtime.config.resources;
   if (resources === undefined) return [];
   return await prepareResources({
@@ -136,6 +156,7 @@ export async function prepareRuntimeResources(runtime: WorktreeRuntime): Promise
     context: runtime.context,
     worktreeRoot: runtime.registration.worktree.path,
     workspaceRoot: runtime.registration.workspace.root,
+    fileTrust,
   });
 }
 

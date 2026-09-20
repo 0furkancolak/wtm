@@ -1,7 +1,12 @@
 .DS_Store
-.worktrees/
+# No trailing slash on these two: a pattern ending in `/` matches only a directory, and a
+# `node_modules` (or `.worktrees`) that is a *symbolic link* to one is a file as far as git is
+# concerned, so it is staged by `git add -A`. That is not hypothetical -- one was committed to a
+# branch and had to be removed by rewriting it. Linking `node_modules` into a shared install is
+# the ordinary way to set up a second worktree of this repository, so the pattern has to cover it.
+.worktrees
 .superpowers/
-node_modules/
+node_modules
 dist/
 coverage/
 artifacts/

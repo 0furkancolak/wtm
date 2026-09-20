@@ -20,12 +20,20 @@ import {
 import type { FileTrustPolicy, IpcServerPublisher, PlatformId, PlatformRuntime } from './ports';
 
 /**
- * The one place in WTM that decides which operating system it is running on.
+ * The one place in WTM that *selects a platform backend*.
  *
  * Everything downstream takes a `PlatformRuntime` and asks it questions. That is the whole point of
- * the seam: a second `process.platform` branch anywhere else is a second place that has to be found
- * and changed when a platform is added, and the reason this increment exists is that WTM had those
- * branches scattered through core, the daemon and the CLI.
+ * the seam: a second place that picks an implementation per operating system is a second place that
+ * has to be found and changed when a platform is added, and the reason this increment exists is
+ * that WTM had those branches scattered through core, the daemon and the CLI.
+ *
+ * It is not the only file that *reads* `process.platform`. In the shipped packages,
+ * `daemon/src/watcher.ts`, `daemon/src/main.ts` and `daemon/src/service-lifecycle.ts` each default
+ * an injectable `platform` argument from it, `core/src/plan/external-adapter.ts` carries a reviewed
+ * exception registered in `core/src/__tests__/platform-independence.test.ts`, and `@wtm/testkit`
+ * reads it freely. None of those chooses a backend; this one does. The repository's build and test
+ * scripts under `scripts/` branch on it directly and are outside that rule, because they are not
+ * shipped and compose nothing.
  */
 export const supportedPlatforms: readonly PlatformId[] = ['darwin', 'linux', 'win32'];
 
@@ -82,6 +90,57 @@ const fileTrustPolicies: Readonly<Record<PlatformId, FileTrustPolicy>> = {
   win32: windowsFileTrustPolicy,
 };
 
+/**
+ * The one port keyed on the **host**, not on the platform the caller asked for.
+ *
+ * Every other field of a `PlatformRuntime` describes a *target*: `paths` computes where macOS
+ * would keep its state, `socket` states Linux's `sun_path` limit, `service` renders a systemd
+ * unit. None of them touch the machine running the call, which is exactly why a Linux runtime can
+ * be constructed and asserted from a macOS laptop. `fileTrust` is not like them. It answers "does
+ * the current user own this directory, and can anyone else write it?" about a real path on the
+ * real filesystem this process is looking at, through `fs.Stats` and, on Windows, a real
+ * `powershell.exe`. Picking the implementation by the requested platform picks an implementation
+ * of the *host's* APIs: ask a Windows runner for a `linux` runtime and it hands back
+ * `posixFileTrustPolicy`, whose every answer is derived from `process.getuid()` — which does not
+ * exist there. It cannot answer, so it fails closed, and the caller sees
+ * `PrivateDirectoryError: WTM private directory is unavailable.` for a directory that is
+ * perfectly fine.
+ *
+ * That is what turned `runtime-factory.test.ts`'s `a path only macOS refuses is accepted under
+ * the Linux runtime` red on win32: a test about a 106-byte socket path could not get as far as
+ * measuring one, because creating its own temporary data root was refused by a policy chosen for
+ * an operating system the files are not on.
+ *
+ * Resolved on first use rather than at import, like the Windows reader pool above: a module-level
+ * selection would make importing this file throw on a platform WTM has no backend for.
+ *
+ * ---
+ *
+ * **Design note, for the next reader who finds this surprising.** After this change,
+ * `runtime.id === 'linux' && runtime.fileTrust === posixFileTrustPolicy` holds on a Linux host and
+ * `runtime.id === 'linux' && runtime.fileTrust === windowsFileTrustPolicy` holds on a Windows one.
+ * A `PlatformRuntime` is therefore *not* uniformly "everything about platform X": one field is
+ * host-scoped and the rest are target-scoped, and the type does not say so. That is deliberate and
+ * it is the only tenable split — a trust policy that described a target would be describing an
+ * operating system the files are not on, and could only fail closed.
+ *
+ * The consequence is that in a running process there are only ever two `FileTrustPolicy` objects:
+ * this host's, and whatever a test injects. Threading the field through `PlatformRuntime`,
+ * `ProductionRemovalCoordinatorOptions`, `AdapterCommandBase`, `ProductionRuntimeResolver` and
+ * `prepareRuntimeResources` therefore buys injectability for tests rather than per-platform
+ * variation at runtime. Collapsing all of that to an exported `hostFileTrustPolicy()` is a real
+ * option and a larger refactor than the unit that wrote this note; it is recorded here so the
+ * choice is visible rather than inferred.
+ */
+let hostFileTrust: FileTrustPolicy | null = null;
+function hostFileTrustPolicy(): FileTrustPolicy {
+  if (hostFileTrust === null) {
+    const host = process.platform;
+    hostFileTrust = isSupported(host) ? fileTrustPolicies[host] : posixFileTrustPolicy;
+  }
+  return hostFileTrust;
+}
+
 /** Stateless, like `posixFileTrustPolicy` above — one instance is shared across every call. */
 const unixSocketPublisher: IpcServerPublisher = createUnixSocketPublisher();
 const windowsIpcPublisher: IpcServerPublisher = createWindowsIpcPublisher();
@@ -133,7 +192,8 @@ export function selectPlatformRuntime(options: SelectPlatformRuntimeOptions = {}
     socket: socketAddressPolicyFor(platform),
     process: processPlatforms[platform](),
     service: serviceBackends[platform],
-    fileTrust: fileTrustPolicies[platform],
+    // The host's, deliberately -- see `hostFileTrustPolicy`.
+    fileTrust: hostFileTrustPolicy(),
     ipc: ipcPublishers[platform],
   };
 }

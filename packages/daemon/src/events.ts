@@ -7,6 +7,7 @@ import {
   type RepositoryRecord,
   type WorktreeRecord,
 } from '@wtm/core';
+import type { FileTrustPolicy } from '@wtm/platform/ports';
 import type { ManagedProcessStartInput } from './process-supervisor';
 import {
   prepareRuntimeResources,
@@ -58,6 +59,13 @@ export interface LifecycleEventDispatcherOptions {
   /** How a configured task is run. In production this is the supervisor's own `start`. */
   start(input: ManagedProcessStartInput): Promise<unknown>;
   onError?(error: unknown): void;
+  /**
+   * Which policy this dispatcher's resource preparation is authorized against. Defaults, like
+   * every other `prepareRuntimeResources` caller that injects none, to the host platform's own.
+   * `createProductionDaemon` passes the runtime it was composed for, so the event path and the
+   * task path cannot answer the same worktree's directory-safety questions differently.
+   */
+  fileTrust?: FileTrustPolicy | undefined;
   /** Test seam: the resolved runtime for a worktree, allocating endpoints only when asked. */
   runtimeFor?(worktreePath: string, allocate: boolean): Promise<WorktreeRuntime>;
 }
@@ -95,6 +103,7 @@ export class LifecycleEventDispatcher {
   readonly #globalConfigPath: string;
   readonly #start: LifecycleEventDispatcherOptions['start'];
   readonly #onError: (error: unknown) => void;
+  readonly #fileTrust: FileTrustPolicy | undefined;
   readonly #runtimeFor: (worktreePath: string, allocate: boolean) => Promise<WorktreeRuntime>;
 
   constructor(options: LifecycleEventDispatcherOptions) {
@@ -102,6 +111,7 @@ export class LifecycleEventDispatcher {
     this.#globalConfigPath = options.globalConfigPath;
     this.#start = options.start;
     this.#onError = options.onError ?? (() => {});
+    this.#fileTrust = options.fileTrust;
     this.#runtimeFor = options.runtimeFor ?? (async (worktreePath, allocate) => await resolveWorktreeRuntime({
       store: options.store,
       cwd: worktreePath,
@@ -144,7 +154,7 @@ export class LifecycleEventDispatcher {
     // There is something to run, so it gets the ports and resources a task is owed.
     try {
       runtime = await this.#runtimeFor(input.worktree.path, true);
-      await prepareRuntimeResources(runtime);
+      await prepareRuntimeResources(runtime, this.#fileTrust);
     } catch (error) {
       withdraw();
       this.#onError(error);
@@ -219,7 +229,7 @@ export class LifecycleEventDispatcher {
       // Reading which mode is in force is a read, so it allocates nothing. Only `eager` then
       // resolves for real, because preparing is what needs the ports the templates may name.
       if ((await this.#runtimeFor(worktree.path, false)).config.prepare?.mode !== 'eager') return;
-      await prepareRuntimeResources(await this.#runtimeFor(worktree.path, true));
+      await prepareRuntimeResources(await this.#runtimeFor(worktree.path, true), this.#fileTrust);
     } catch (error) {
       this.#onError(error);
       return;
