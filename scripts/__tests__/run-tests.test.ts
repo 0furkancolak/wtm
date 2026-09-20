@@ -69,6 +69,12 @@ describe('parseRunnerArguments', () => {
     expect(parsed.nameFilter).toBe(true);
   });
 
+  test('takes a whole-run budget, and leaves it unset when nobody asks for one', () => {
+    expect(parseRunnerArguments(['--budget', '1200000']).budgetMs).toBe(1_200_000);
+    expect(parseRunnerArguments(['--budget=1200000']).budgetMs).toBe(1_200_000);
+    expect(parseRunnerArguments(['--timeout', '60000']).budgetMs).toBeUndefined();
+  });
+
   test('refuses a non-numeric bound instead of running unbounded', () => {
     expect(() => parseRunnerArguments(['--timeout', 'soon'])).toThrow(/--timeout/);
     expect(() => parseRunnerArguments(['--file-timeout', '0'])).toThrow(/--file-timeout/);
@@ -187,6 +193,49 @@ describe('run-tests.ts', () => {
     const failing = runScenario('bun', [runnerPath], { cwd: root, timeoutMs: 60_000 });
     expect(failing.status).toBe(1);
     expect(failing.stdout).toContain('[run-tests] 1 of 2 files failed:\n  b/__tests__/fail.test.ts (exit 1)');
+  }, 90_000);
+
+  test('stops on its own when the whole-run budget is spent, and says what it never measured', async () => {
+    // The failure this exists for: the win32 leg reached ci.yml's `timeout-minutes` and GitHub
+    // *cancelled* the job. `continue-on-error` absorbs a job that failed, not one that was
+    // cancelled, so every CI run on the repository reported `cancelled` however green the four
+    // deciding legs were. A run that ends itself fails normally, which is absorbed -- and unlike a
+    // platform kill, it still gets to say what it did and did not measure.
+    const root = await fixture({
+      'a/__tests__/slow.test.ts':
+        "import { test } from 'bun:test';\ntest('spins', () => { for (;;) {} });\n",
+      'b/__tests__/pass.test.ts':
+        "import { expect, test } from 'bun:test';\ntest('passes', () => { expect(1).toBe(1); });\n",
+    });
+
+    const started = Date.now();
+    const result = runScenario('bun', [runnerPath, '--timeout', '1000', '--file-timeout', '30000', '--budget', '6000'], {
+      cwd: root,
+      timeoutMs: 60_000,
+    });
+
+    // The point of the budget: back inside its own bound, not at the file bound behind it.
+    expect(Date.now() - started).toBeLessThan(25_000);
+    expect(result.status, result.stdout + result.stderr).toBe(1);
+    expect(result.stdout).toContain('[run-tests] BUDGET stopped a/__tests__/slow.test.ts');
+    // The file that outran the clock is not slandered as a hang: it never got the wall clock a
+    // hang is judged against.
+    expect(result.stdout).not.toContain('HUNG');
+    expect(result.stdout).toContain('2 of 2 files not measured, from a/__tests__/slow.test.ts');
+    expect(result.stdout).not.toContain('files passed');
+  }, 90_000);
+
+  test('runs to completion when the budget is never reached, and stays silent about it', async () => {
+    const root = await fixture({
+      'a/__tests__/pass.test.ts':
+        "import { expect, test } from 'bun:test';\ntest('passes', () => { expect(1).toBe(1); });\n",
+    });
+
+    const result = runScenario('bun', [runnerPath, '--budget', '120000'], { cwd: root, timeoutMs: 60_000 });
+
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout).toContain('[run-tests] 1 files passed');
+    expect(result.stdout).not.toContain('BUDGET');
   }, 90_000);
 
   test('fails instead of passing vacuously when a pattern matches no file', async () => {
