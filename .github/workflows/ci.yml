@@ -123,13 +123,32 @@ jobs:
       # cache/rename handling under that nested concurrency, not our code or generic CI noise, and
       # not something this repo can fix at its source; `shell: bash` (Git Bash ships on
       # windows-latest) keeps one retry loop working the same on every leg.
+      #
+      # A non-zero exit is not the only way this step can fail. On 2026-09-18 a win32 install
+      # exited 0 in 15s (the baseline is 32-70s) having written `zod` without its `v4/locales/`
+      # directory. Nothing retried, because nothing had reported a failure; 154 of 238 test files
+      # then aborted at import in under a second each, and the leg published that count as though
+      # it were an inventory of Windows failures. `verify:install` loads every external dependency
+      # under both bun and node -- the two runtimes the suite uses, which resolve different entry
+      # points of the same package -- so the loop retries on a tree that cannot be loaded, not only
+      # on an installer that admitted defeat. `node_modules` goes before every retry, because the
+      # installer believes that tree is already correct and would otherwise leave it as it is.
+      # bun's package cache is cleared only when the install reported success and the tree still
+      # would not load, since that is the case where the cache is the suspect; the failed-install
+      # case above is a race *against* cache writes, which an empty cache would only lengthen.
+      # Both clears tolerate failure: a locked file on Windows is a reason to try the install
+      # again, not to end the job.
       - name: bun install --frozen-lockfile
         if: "!(env.CI_WIN32_FILTER_RUN == 'true' && matrix.platform != 'win32')"
         shell: bash
         run: |
           for attempt in 1 2 3; do
-            bun install --frozen-lockfile && exit 0
-            echo "bun install failed (attempt $attempt/3), retrying..." >&2
+            if bun install --frozen-lockfile; then
+              bun run verify:install && exit 0
+              bun pm cache rm || true
+            fi
+            echo "bun install failed or left an unloadable tree (attempt $attempt/3), retrying..." >&2
+            rm -rf node_modules || true
             sleep 5
           done
           exit 1

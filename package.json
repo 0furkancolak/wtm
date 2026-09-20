@@ -74,6 +74,7 @@
   ],
   "scripts": {
     "lint": "bun scripts/lint.ts",
+    "verify:install": "bun scripts/verify-install.ts && node --import tsx scripts/verify-install.ts",
     "test": "bun scripts/run-tests.ts --timeout 30000",
     "test:e2e": "bun scripts/run-tests.ts --timeout 30000 packages/cli/src/__tests__/full-workflow.test.ts packages/cli/src/__tests__/jobs-workflow.test.ts packages/cli/src/__tests__/readiness-workflow.test.ts",
     "test:perf": "WTM_PERFORMANCE_SUITE=1 bun test packages/core/src/state/__tests__/workspace-scale.test.ts packages/daemon/src/__tests__/idle-daemon.test.ts packages/daemon/src/__tests__/source-edit-storm.test.ts packages/daemon/src/__tests__/watcher.test.ts scripts/__tests__/performance-report.test.ts --timeout 45000 && node --import tsx scripts/performance-report.ts",

@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { constants } from 'node:fs';
 import { chmod, link, lstat, mkdtemp, mkdir, open, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -2182,16 +2181,21 @@ describe('launchd commands', () => {
       () => ({ kind: 'resolved' as const, error: null }),
       (error: unknown) => ({ kind: 'rejected' as const, error }),
     );
+    // What this bound is for: production opens this FIFO with O_NONBLOCK (service-lifecycle.ts), so
+    // install() has to settle even though no reader ever attaches. It is not a performance
+    // assertion, so it is generous. The previous 50ms raced ordinary scheduling on a loaded runner,
+    // and its timeout branch could not pass either way: open(fifo, O_WRONLY|O_NONBLOCK) with no
+    // reader is specified to fail ENXIO, and `outcome` was never reassigned after the unblock, so
+    // the final assertion still saw 'blocked'. Missing the deadline was an unconditional failure.
+    const blocked = Symbol('blocked');
     const outcome = await Promise.race([
       install,
-      new Promise<{ kind: 'blocked'; error: null }>((resolvePromise) => {
-        setTimeout(() => resolvePromise({ kind: 'blocked', error: null }), 50);
+      new Promise<typeof blocked>((resolvePromise) => {
+        setTimeout(() => resolvePromise(blocked), 10_000).unref();
       }),
     ]);
-    if (outcome.kind === 'blocked') {
-      const writer = await open(lockPath, constants.O_WRONLY | constants.O_NONBLOCK);
-      await writer.close();
-      await install;
+    if (outcome === blocked) {
+      throw new Error('install() did not settle within 10s: it blocked on the metadata FIFO');
     }
     expect(outcome).toMatchObject({ kind: 'rejected', error: { code: 'UNSAFE_LAUNCHD_PATH' } });
   });

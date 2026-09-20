@@ -1658,6 +1658,29 @@ wtm-windows-arm64.exe
       artık script metnine değil base64 veriye gidiyor, ve istek/kuyruk/ömür/boşta/çıktı sınırları
       açık. `ci.yml`'deki 300000 ms win32 test timeout'u bu maddeyle birlikte tekrar
       değerlendirilebilir. `logs.test.ts`'in win32 süresi CI kanıtı bekliyor.
+      **2026-09-16 (W2-1 / 9a):** `client.test.ts`'in iki testinin win32'de 300 sn beklemesi
+      kaldırıldı. Kanıt (`34873813789` / `34947190062` logları): test gövdesi ~1.03 sn'de
+      başarısız oluyordu; 300 sn'yi `afterEach` kancası yakıyordu (Bun'ın kendi satırı:
+      "a beforeEach/afterEach hook timed out for this test"). Kök neden `DaemonClient`'ın taşıma
+      katmanı üzerindeki sınırsız beklemeleriydi: `#connect()` yalnızca `connect`/`error`
+      dinliyordu (hatasız `close` hiçbir şeyi çözmüyordu, ve hiç bağlanma süresi sınırı yoktu) ve
+      `close()` `destroy()` sonrası `'close'`'u sonsuza kadar bekliyordu. Üçü de sınırlandı
+      (`transportTimeoutMs`, varsayılan 5000 ms, `requestTimeoutMs`'ten türetilmiyor); ayrıca
+      hata enjeksiyonu için soket sınırında `connect` dikişi eklendi. Sınırsız bekleme üretim
+      hatasıydı: wedge olmuş bir named pipe'ta `wtm` hiç çıkamazdı.
+      **Kalıntı (9a kapanmadı, sahibi 9b):** o ~1 sn'lik gövde hatası gerçek bir win32 taşıma
+      hatasıdır, hâlâ açıklanmış değildir ve win32'de artık bilerek kapsam dışıdır. Kesin ifadesi:
+      "aynı named pipe adresine ikinci bağlantı hiç karşılanmıyor" **değil** —
+      `readiness-transport.test.ts > scope` win32'de geçiyor (koşu 1, 271 ms) ve aynı pipe'ta ikinci
+      bir *eşzamanlı* istemci tutuyor. Hata özellikle **ilk pipe örneği frame'in ortasında
+      yıkıldıktan sonra yeniden bağlanma** durumudur: `connect` geliyor, istek yazılıyor, 1 sn
+      içinde cevap gelmiyor. İstemci aklandı (aynı iki vaka betiklenmiş taşımada geçiyor; merge
+      base'in gerçek soket testleri yeni istemciye karşı POSIX'te değişmeden geçiyor). Gerçek soket
+      reconnect testleri `client.test.ts`'de `test.skipIf(process.platform === 'win32')` ile
+      duruyor, yani diğer dört bacak reconnect'i kanıtlamaya devam ediyor. 9b'nin bildirilen kod
+      alanı `packages/platform/src/ipc/*` olduğu için bu kalıntı 9b'nin dosya listesinden
+      kendiliğinden gelmez; ayrıntı ve devralma notu
+      `docs/superpowers/plans/2026-09-16-w2-win32-failure-clusters.md`'nin 9a bölümünde.
       **2026-09-18 (W2-3 / 9f):** `docs/superpowers/plans/2026-09-16-w2-win32-failure-clusters.md`
       §9f'te tarif edilen beş kök nedene de birer düzeltme yazıldı; hepsi mevcut
       port/enjeksiyon dikişinden geçerek ve
