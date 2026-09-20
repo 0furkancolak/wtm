@@ -1,6 +1,8 @@
 import { lstat } from 'node:fs/promises';
+import { isAbsolute, resolve } from 'node:path';
 import {
   containsPath,
+  samePath,
   type RepositoryRecord,
   type StateRegistrationReader,
   type StateRegistrationWriter,
@@ -144,8 +146,9 @@ function select(
   // A path that names a repository exactly retires that repository — but never when it is also
   // the workspace root, where retiring the repository alone would leave the workspace empty
   // and every other command answering about nothing.
-  if (path === workspace.workspace.root) return workspace;
-  const repository = store.listRepositories(workspace.workspace.id).find(({ mainRoot }) => mainRoot === path);
+  if (samePath(path, workspace.workspace.root)) return workspace;
+  const repository = store.listRepositories(workspace.workspace.id)
+    .find(({ mainRoot }) => samePath(mainRoot, path));
   return repository === undefined ? workspace : { workspace: workspace.workspace, repository };
 }
 
@@ -159,8 +162,21 @@ function containingWorkspace(
   return workspace === undefined ? undefined : { workspace };
 }
 
+/**
+ * `node:path`, not a leading-slash test and a `/` of its own.
+ *
+ * `C:\\projects\\repo` does not start with `/`, so the previous spelling read every absolute
+ * Windows selector as relative and glued it onto the working directory — `C:\\work/C:\\projects\\repo`,
+ * which names nothing. `wtm forget <an absolute path>` therefore could not reach the repository
+ * branch at all on Windows; it fell through to retiring the containing workspace, which is a
+ * larger action than the one asked for.
+ *
+ * `resolve` also normalizes `.` and `..` segments that the concatenation preserved. That is not a
+ * behaviour change anyone can observe: `containsPath` and `samePath` both resolve their arguments
+ * anyway, so the unnormalized form never survived a comparison.
+ */
 function resolveAgainst(cwd: string, selector: string): string {
-  return selector.startsWith('/') ? selector : `${cwd}/${selector}`;
+  return isAbsolute(selector) ? resolve(selector) : resolve(cwd, selector);
 }
 
 async function isDirectory(path: string): Promise<boolean> {
