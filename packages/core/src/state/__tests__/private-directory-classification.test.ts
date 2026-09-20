@@ -45,6 +45,30 @@ function expectPermanent(error: PrivateDirectoryError, path: string): void {
   expect(error.context.path).toBe(path);
 }
 
+/**
+ * A policy that answers "somebody else's" for `root`, every ancestor above it, and any extra path
+ * named here.
+ *
+ * `assertNoSymlinkComponents` turns its private-anchor rules on at the first component this user
+ * owns at mode 0700, and below that anchor it refuses a file component as "is not a directory"
+ * and a link as "is a symbolic link" — both before the `lstat` that would report ENOTDIR or
+ * ELOOP. Whether `tmpdir()` already sits below such an anchor is a property of the host, not of
+ * the case under test: macOS puts `$TMPDIR` in a per-user 0700 directory, and a shared `/tmp` is
+ * nobody's private anchor. A fixture for those two errno branches therefore states that it is
+ * outside any private anchor instead of inheriting the answer from wherever the host keeps
+ * temporary files.
+ */
+function outsidePrivateAnchor(root: string, ...alsoForeign: readonly string[]): FileTrustPolicy {
+  const foreign = (path: string): boolean => path === root
+    || alsoForeign.includes(path)
+    || root.startsWith(path.endsWith(sep) ? path : `${path}${sep}`);
+  return {
+    ...defaultCoreFileTrustPolicy,
+    isOwnedByCurrentUser: async (stat, path) => !foreign(path)
+      && await defaultCoreFileTrustPolicy.isOwnedByCurrentUser(stat, path),
+  };
+}
+
 // Real POSIX modes and links. Windows answers the same questions through ACLs, which these
 // fixtures cannot set up.
 describe.skipIf(isWindowsTestHost)('private directory refusals', () => {
@@ -104,16 +128,9 @@ describe.skipIf(isWindowsTestHost)('private directory refusals', () => {
   test("a missing target under another user's directory is retried, as for a volume not mounted yet", async () => {
     const root = await privateRoot();
     // `root` stands in for a root-owned `/home` whose user directory has not been mounted. Its
-    // ancestors must be foreign too, as `/` is: the real `$TMPDIR` is this user's own 0700
-    // directory, and a foreign directory *below* one of those is permanent (no volume mounts
-    // there), which is a different case from the one this test is about.
-    const foreign = (path: string) => path === root || root.startsWith(path.endsWith(sep) ? path : `${path}${sep}`);
-    const fileTrust: FileTrustPolicy = {
-      ...defaultCoreFileTrustPolicy,
-      isOwnedByCurrentUser: async (stat, path) => !foreign(path) && await defaultCoreFileTrustPolicy.isOwnedByCurrentUser(stat, path),
-    };
-
-    const error = await refusal(join(root, 'me', '.local', 'state', 'wtm'), fileTrust);
+    // ancestors must be foreign too, as `/` is: a foreign directory *below* this user's own 0700
+    // anchor is permanent (no volume mounts there), which is a different case from this one.
+    const error = await refusal(join(root, 'me', '.local', 'state', 'wtm'), outsidePrivateAnchor(root));
 
     expect(error.code).toBe('WTM_PRIVATE_DIRECTORY_UNAVAILABLE');
     expect(error.context.path).toBe(root);
@@ -146,16 +163,12 @@ describe.skipIf(isWindowsTestHost)('private directory refusals', () => {
  */
 describe.skipIf(isWindowsTestHost)('private directory refusal classification', () => {
   test('a path component that is a file is permanent, not retried forever', async () => {
-    // `0o755` on purpose: a private 0700 ancestor makes the walk refuse the component itself with
-    // "is not a directory" before any `lstat` below it can return ENOTDIR, so the errno branch
-    // this test is about is only reachable outside one.
     const root = await mkdtemp(join(tmpdir(), 'wtm-private-notdir-'));
     cleanups.push(() => rm(root, { recursive: true, force: true }));
-    await chmod(root, 0o755);
     const file = join(root, 'file');
     await writeFile(file, 'not a directory');
 
-    const error = await refusal(join(file, 'state'));
+    const error = await refusal(join(file, 'state'), outsidePrivateAnchor(root));
 
     expectPermanent(error, join(file, 'state'));
     expect(error.context.reason).toBe('has a path component that is not a directory');
@@ -164,18 +177,12 @@ describe.skipIf(isWindowsTestHost)('private directory refusal classification', (
   test('a symbolic link loop on the path is permanent, not retried forever', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wtm-private-eloop-'));
     cleanups.push(() => rm(root, { recursive: true, force: true }));
-    await chmod(root, 0o755);
     const loop = join(root, 'loop');
     await symlink(loop, loop);
-    // Another user's link: without this the walk refuses it as "is a symbolic link" first, and the
-    // resolution that returns ELOOP never happens.
-    const fileTrust: FileTrustPolicy = {
-      ...defaultCoreFileTrustPolicy,
-      isOwnedByCurrentUser: async (stat, path) => path !== loop
-        && await defaultCoreFileTrustPolicy.isOwnedByCurrentUser(stat, path),
-    };
 
-    const error = await refusal(join(loop, 'state'), fileTrust);
+    // The link is another user's too: an owned link is refused as "is a symbolic link" first, and
+    // the resolution that reports ELOOP never happens.
+    const error = await refusal(join(loop, 'state'), outsidePrivateAnchor(root, loop));
 
     expectPermanent(error, join(loop, 'state'));
     expect(error.context.reason).toBe('is reached through a symbolic link loop');
