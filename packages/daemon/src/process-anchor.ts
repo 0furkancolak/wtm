@@ -37,6 +37,18 @@ export interface AnchorReaderSpec {
   /** The platform id the supervisor selected, never one the anchor observed — see D1. */
   platform: string;
   /**
+   * How long one identity observation may take, in milliseconds — selected by the supervisor from
+   * `@wtm/platform`'s `processObservationBudgetFor`, never written here.
+   *
+   * This reader is a copy of the port's, and the copy's own bound is exactly what drifted: it
+   * stayed at a 5 s literal through both of the corrections that moved the real one to 15 s, so on
+   * Windows a cold `powershell.exe` on a contended runner could exceed it, the anchor could not
+   * identify itself, and the supervisor read that as `ANCHOR_HANDSHAKE_INVALID`. Telling the
+   * anchor the number is the same discipline `platform` already follows: one decision, made on the
+   * side that also does the checking.
+   */
+  observationTimeoutMs?: number;
+  /**
    * Only the compiled-in-a-test path sets this. The anchor passes the platform and nothing else, so
    * `WTM_ANCHOR_SPEC` cannot redirect a running anchor's `/proc`; a test points the same text at a
    * captured one, which is the only way the Linux reader can be exercised from a macOS machine.
@@ -91,6 +103,12 @@ function createAnchorReaders(spec) {
   const crypto = require('node:crypto');
   const nodeFs = require('node:fs');
   const procRoot = typeof spec.procRoot === 'string' ? spec.procRoot : '/proc';
+  // The supervisor names it. The fallback is only for a spec that predates the field; it is the
+  // POSIX bound, so a Windows anchor reaching it would fail loudly rather than quietly drift back
+  // to the 5 s literal this field replaced.
+  const observationTimeoutMs = Number.isSafeInteger(spec.observationTimeoutMs) && spec.observationTimeoutMs > 0
+    ? spec.observationTimeoutMs
+    : 1000;
 
   // observedCommandFingerprint, from platform/src/process/identity.ts. The trailing-marker collapse
   // is why the fingerprint survives the anchor's own transition: its command line stops being
@@ -291,7 +309,7 @@ function createAnchorReaders(spec) {
   function runWindowsQuery(script, callback) {
     if (typeof spec.windowsQueryRunner === 'function') return spec.windowsQueryRunner(script, callback);
     const child = childProcess.execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-      encoding: 'utf8', timeout: 5000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024
+      encoding: 'utf8', timeout: observationTimeoutMs, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024
     }, function (error, stdout) {
       callback(error, error ? null : stdout, child.pid);
     });
@@ -381,7 +399,10 @@ const spec = JSON.parse(process.env.WTM_ANCHOR_SPEC || '{}');
 delete process.env.WTM_ANCHOR_SPEC;
 // The platform, and only the platform: a 'procRoot' arriving through the environment would let the
 // spec redirect a running anchor's '/proc', which nothing in the product needs.
-const readers = createAnchorReaders({ platform: spec.platform });
+const readers = createAnchorReaders({
+  platform: spec.platform,
+  observationTimeoutMs: spec.observationTimeoutMs
+});
 let taskExit = { code: 1, signal: null };
 let taskExited = false;
 const anchorReadyAt = Date.now() + 250;
@@ -414,7 +435,10 @@ function signalOwnedGroup(signal) {
   // This code is executing inside the verified ownership anchor itself: its PID cannot
   // have been recycled while it is making this call.
   if (spec.platform === 'win32') {
-    require('node:child_process').execFile('taskkill.exe', ['/PID', String(process.pid), '/T', '/F'], { timeout: 5000 }, () => {});
+    require('node:child_process').execFile(
+      'taskkill.exe', ['/PID', String(process.pid), '/T', '/F'],
+      { timeout: spec.observationTimeoutMs || 15000 }, () => {}
+    );
   } else {
     try { process.kill(-process.pid, signal); }
     catch (error) { if (error.code !== 'ESRCH') setTimeout(() => signalOwnedGroup(signal), 1000).unref(); }

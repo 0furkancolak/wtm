@@ -1731,6 +1731,40 @@ wtm-windows-arm64.exe
       listesidir. Bu dalın eklediği `trusts an adapter executable through the injected policy`
       testinin kabul eden yarısı hiçbir politika enjekte etmiyor, o yarı da o birimde
       `adapter.scenario.ts` gibi host politikasını almalı.
+      **2026-09-20 (W3-2 / 9d):** 9d'nin en büyük kümesi — `process-supervisor.test.ts`'in
+      24 testi, hepsi `ManagedProcessError: Managed task could not be started.` — için tek bir
+      kök neden adayı bulundu ve düzeltildi; iddia bir Windows ölçümüne değil, deponun kendi
+      sayılarının birbiriyle çelişmesine dayanıyor. Anchor'ın kimlik okuması Windows'ta bir
+      `powershell.exe` başlatmaktır ve anchor'daki kopyası **5000 ms** ile sınırlıydı. Bu sayı
+      `trust/windows-powershell.ts`'te 5 sn'den 15 sn'ye çıkarılmıştı (soğuk powershell ~1.6 sn
+      artı gerçek CI yükü) ve `process/windows.ts`'te gerçek bir windows-latest bacağı 5 sn'de
+      `taskkill.exe ETIMEDOUT` ürettiği için 15 sn'ydi; anchor bu iki düzeltmenin ikisini de
+      kaçıran üçüncü kopyaydı. Kendi sınırını aşan bir anchor `READY` bildiremez, supervisor
+      bunu `ANCHOR_HANDSHAKE_INVALID` okur, çağıran ise `RUNTIME_START_FAILED` görür.
+      Sayı artık tek bir yerde: `platform/src/process/observation-budget.ts`'in
+      `processObservationBudgetFor`. Anchor onu `WTM_ANCHOR_SPEC` üzerinden **söylenir**,
+      `platform` alanıyla aynı disiplinde — anchor hiçbir zaman kendi gözlemine sormaz.
+      İkinci ve bağlı kusur: supervisor'ın `anchorProtocolTimeoutMs`'i düz **10 sn**'ydi, yani
+      içerdiği 15 sn'lik gözlemden *kısa*. Artık platformdan türüyor
+      (`gözlem bütçesi + 9 sn`), bu da darwin ve linux'u tam olarak eski 10 sn'de bırakıyor —
+      yeşil bacaklar yeniden ayarlanmadı — ve win32'ye kendi işini tutabilecek bir sınır veriyor.
+      Eşitsizlik `process-anchor.test.ts`'te teste bağlandı.
+      Ayrıca 9d listesindeki üç fixture kusuru: (a) `captureAnchorSpec` anchor yerine
+      `/bin/sh -c` koyuyordu, Windows'ta kabuk yok, çocuk hiç koşmuyor ve test var olmayan
+      `spec.json`'ı okuyordu — artık `node -e`. (b) `treats a /proc entry it may not read as not
+      a member` testinin öncülü ne Windows'ta ne de root'ta kuruluyor; `reconcile-fallback`'in
+      zaten kullandığı `isUnprivilegedPosixUser` yüklemi `@wtm/testkit`'e taşındı ve iki dosya da
+      onu kullanıyor. Bu, sandbox'ta root altında düşen dört dosyadan birini de kapatıyor.
+      (c) `scenario-child.test.ts`'in "SIGTERM'i yok sayan çocuk" fixture'ı Windows'ta var
+      olamaz: Node `subprocess.kill()`'i orada hangi sinyal verilirse verilsin koşulsuz
+      sonlandırıyor. Beklenti artık platformu söylüyor ve Windows dalında **ters** sonucu
+      doğruluyor, yani zayıflatma değil.
+      Kapanmayan, Windows ölçümü isteyen üç kalem: `completion-path-identity`'nin
+      `generation-churn` modu Windows'ta 3 yerine 5 değiştirme sayıyor (üç denemeli sınırın
+      kendisi değil, deneme başına açılış sayısı farklı); `process-supervisor.test.ts`'in
+      `delegate to the port the platform seam selected` testinin `toEqual` farkı; ve
+      `daemon-restart-recovery`'nin 30 sn'de öldürülen senaryosu. Üçü de tahmine dayalı bir
+      düzeltme yazmak yerine kanıt bekliyor.
 - [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
 - [ ] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
       `plistPath` macOS'a özel bir ek alan olarak bilerek duruyor (D11), kaldırılması daemon JSON

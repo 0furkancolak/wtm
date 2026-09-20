@@ -22,6 +22,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { ProcessGroupInspection, ProcessInspection, ProcessPlatform } from '../ports';
 import { observedCommandFingerprint, safeErrorCode } from './identity';
+import { processObservationBudgetFor } from './observation-budget';
 
 const execFileAsync = promisify(execFile);
 
@@ -69,7 +70,7 @@ export function createDarwinProcessPlatform(
         encoding: 'utf8',
         env: { PATH: '/usr/bin:/bin', LC_ALL: 'C', LANG: 'C' },
         maxBuffer: 64 * 1024,
-        timeout: 1_000,
+        timeout: processObservationBudgetFor('darwin'),
       }));
     } catch (error) {
       if (isPsAbsent(error)) return null;
@@ -89,7 +90,7 @@ export function createDarwinProcessPlatform(
     try {
       stdout = (await run('ps', [
         '-ww', '-p', String(pid), '-o', 'pgid=', '-o', 'state=', '-o', 'lstart=', '-o', 'comm=', '-o', 'command=',
-      ], { encoding: 'utf8', env: stableEnvironment(), maxBuffer: 64 * 1024, timeout: 1_000 })).stdout;
+      ], { encoding: 'utf8', env: stableEnvironment(), maxBuffer: 64 * 1024, timeout: processObservationBudgetFor('darwin') })).stdout;
     } catch (error) {
       return isPsAbsent(error) ? { status: 'absent' } : { status: 'failed', reason: safeErrorCode(error) };
     }
@@ -115,7 +116,7 @@ export function createDarwinProcessPlatform(
     let stdout: string;
     try {
       stdout = (await run('ps', ['-axo', 'pid=', '-o', 'pgid=', '-o', 'state='], {
-        encoding: 'utf8', env: stableEnvironment(), maxBuffer: 4 * 1024 * 1024, timeout: 1_000,
+        encoding: 'utf8', env: stableEnvironment(), maxBuffer: 4 * 1024 * 1024, timeout: processObservationBudgetFor('darwin'),
       })).stdout;
     } catch (error) { return { status: 'failed', reason: safeErrorCode(error) }; }
     const pids: number[] = [];

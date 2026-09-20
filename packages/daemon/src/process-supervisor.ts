@@ -7,6 +7,7 @@ import type {
   ManagedProcessUpdate, ManagedProcessCreateOptions, ManagedProcessReservationOptions,
 } from '@wtm/core';
 import { selectPlatformRuntime, selfRuntimeInvocation } from '@wtm/platform';
+import { processObservationBudgetFor } from '@wtm/platform/process';
 import type {
   ObservedProcessIdentity, PlatformId, PlatformRuntime, ProcessPlatform,
   ProcessInspection as PlatformProcessInspection,
@@ -50,7 +51,30 @@ function hostProcessPlatform(): ProcessPlatform { return hostPlatformRuntime().p
 function hostPlatformId(): PlatformId { return hostPlatformRuntime().id; }
 
 const activeStates = ['STARTING', 'RUNNING', 'STOPPING'] as const;
-const anchorProtocolTimeoutMs = 10_000;
+
+/**
+ * How long the supervisor waits on one step of the anchor protocol — READY, the launch
+ * acknowledgement, a control write, and the identity recheck between them.
+ *
+ * It used to be a flat 10 s, which was the number for a platform whose identity read is a `ps`
+ * invocation. It is not a number that can be flat: the anchor's first act is to observe its own
+ * identity in the dialect this supervisor selected, and on Windows that observation is bounded at
+ * 15 s (`processObservationBudgetFor`) because a cold `powershell.exe` on a contended runner costs
+ * seconds. A protocol step bounded at 10 s cannot contain an operation bounded at 15 s: the
+ * supervisor gave up while the anchor was still legally working, tore the anchor down, and
+ * reported `ANCHOR_HANDSHAKE_INVALID` — which reaches the caller as `RUNTIME_START_FAILED`,
+ * "Managed task could not be started", whatever the task actually was.
+ *
+ * So the bound is the observation's own budget plus the slack the POSIX number already carried
+ * over its 1 s read: spawning a runtime, loading the anchor and writing a line. That keeps darwin
+ * and linux at exactly 10 s — this is not a re-tuning of the platforms that were already green —
+ * and gives win32 a bound that can hold its own work.
+ */
+const anchorProtocolSlackMs = 9_000;
+
+export function anchorProtocolTimeoutMs(platform: PlatformId): number {
+  return processObservationBudgetFor(platform) + anchorProtocolSlackMs;
+}
 
 /** The port's identity, re-exported under the name the daemon and its consumers already use. */
 export type ProcessIdentity = ObservedProcessIdentity;
@@ -403,6 +427,19 @@ export class ManagedProcessSupervisor {
     });
   }
 
+  /**
+   * The platform whose dialect the anchor is told to speak, resolved on use rather than in the
+   * constructor — constructing a supervisor on an unsupported platform is not itself the error.
+   */
+  #selectedPlatform(): PlatformId {
+    return this.#platform ?? hostPlatformId();
+  }
+
+  /** One protocol step's bound, sized to what that platform's identity observation may cost. */
+  #protocolTimeoutMs(): number {
+    return anchorProtocolTimeoutMs(this.#selectedPlatform());
+  }
+
   async #spawn(input: ManagedProcessStartInput, reservationToken: string): Promise<ManagedProcessStartResult> {
     if (input.argv[0] === undefined || input.argv[0].length === 0) throw startFailure(input, new Error('EMPTY_COMMAND'), 'not-started');
     let logs: PreparedManagedLogs;
@@ -417,7 +454,7 @@ export class ManagedProcessSupervisor {
         logs,
         ignoreAbort: this.#anchorIgnoresAbort,
         runtimeInvocation: this.#runtimeInvocation,
-        platform: this.#platform ?? hostPlatformId(),
+        platform: this.#selectedPlatform(),
       });
     } catch (error) {
       throw startFailure(input, error, 'not-started');
@@ -445,7 +482,9 @@ export class ManagedProcessSupervisor {
 
     const handshake = child.stdout;
     const control = child.stdin;
-    const readyIdentity = await waitForAnchorHandshake(handshake, child, () => pendingExit !== null);
+    const readyIdentity = await waitForAnchorHandshake(
+      handshake, child, () => pendingExit !== null, this.#protocolTimeoutMs(),
+    );
     if (readyIdentity === null || readyIdentity.pid !== pid || readyIdentity.pgid !== pid) {
       child.off('exit', exitListener);
       await this.#rollbackSpawn(child, pid, control, null, logs);
@@ -464,13 +503,17 @@ export class ManagedProcessSupervisor {
       recordId = record.id;
       input.onRecorded?.(record);
       this.#owned.set(record.id, { child, exitListener });
-      const inspection = await waitForIdentity(pid, this.#inspectProcess, this.#pollIntervalMs, () => pendingExit !== null);
+      const inspection = await waitForIdentity(
+        pid, this.#inspectProcess, this.#pollIntervalMs, () => pendingExit !== null, this.#protocolTimeoutMs(),
+      );
       if (inspection.status !== 'present') {
         throw new Error(inspection.status === 'failed' ? inspection.reason : 'ANCHOR_EXITED');
       }
       if (!sameIdentity(identity, inspection.identity)) throw new Error('ANCHOR_IDENTITY_MISMATCH');
-      await sendAnchorCommand(control, 'GO');
-      const launch = await waitForLaunchAck(child.stderr, child, () => pendingExit !== null);
+      await sendAnchorCommand(control, 'GO', this.#protocolTimeoutMs());
+      const launch = await waitForLaunchAck(
+        child.stderr, child, () => pendingExit !== null, this.#protocolTimeoutMs(),
+      );
       if (!launch.ok) throw new Error(launch.reason);
       record = this.#stateStore.updateManagedProcess(record.id, {
         expectedStates: ['STARTING'], state: 'RUNNING', stoppedAt: null,
@@ -528,10 +571,10 @@ export class ManagedProcessSupervisor {
     _logs: PreparedManagedLogs,
   ): Promise<void> {
     try {
-      await sendAnchorCommand(control, 'ABORT').catch(() => {});
+      await sendAnchorCommand(control, 'ABORT', this.#protocolTimeoutMs()).catch(() => {});
       if (await waitForChildExit(
         child,
-        expectedIdentity === null ? anchorProtocolTimeoutMs : this.#gracePeriodMs,
+        expectedIdentity === null ? this.#protocolTimeoutMs() : this.#gracePeriodMs,
       )) return;
       if (expectedIdentity === null) throw new Error('ROLLBACK_IDENTITY_UNAVAILABLE');
       const inspected = await this.#inspectProcess(pgid);
@@ -720,9 +763,9 @@ function identityMatches(record: ManagedProcessRecord, identity: ProcessIdentity
 
 async function waitForIdentity(
   pid: number, inspect: (pid: number) => Promise<ProcessInspection>, pollIntervalMs: number,
-  hasExited: () => boolean,
+  hasExited: () => boolean, protocolTimeoutMs: number,
 ): Promise<ProcessInspection> {
-  const deadline = Date.now() + anchorProtocolTimeoutMs;
+  const deadline = Date.now() + protocolTimeoutMs;
   let previous: ProcessIdentity | null = null;
   while (true) {
     const result = await inspect(pid);
@@ -795,6 +838,7 @@ function waitForAnchorHandshake(
   stream: Readable | null,
   child: ChildProcess,
   hasExited: () => boolean,
+  protocolTimeoutMs: number,
 ): Promise<ProcessIdentity | null> {
   if (stream === null) return Promise.resolve(null);
   return new Promise((resolve) => {
@@ -814,7 +858,7 @@ function waitForAnchorHandshake(
       }
     };
     const onExit = () => finish(null);
-    const timer = setTimeout(() => finish(null), anchorProtocolTimeoutMs);
+    const timer = setTimeout(() => finish(null), protocolTimeoutMs);
     stream.setEncoding('utf8');
     stream.on('data', (chunk: string) => {
       content += chunk;
@@ -848,6 +892,7 @@ function waitForLaunchAck(
   stream: Readable | null,
   child: ChildProcess,
   hasExited: () => boolean,
+  protocolTimeoutMs: number,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   if (stream === null) return Promise.resolve({ ok: false, reason: 'ANCHOR_STATUS_UNAVAILABLE' });
   return new Promise((resolve) => {
@@ -864,7 +909,7 @@ function waitForLaunchAck(
       resolve(value);
     };
     const onExit = () => finish({ ok: false, reason: 'ANCHOR_EXITED_BEFORE_LAUNCH' });
-    const timer = setTimeout(() => finish({ ok: false, reason: 'ANCHOR_LAUNCH_TIMEOUT' }), anchorProtocolTimeoutMs);
+    const timer = setTimeout(() => finish({ ok: false, reason: 'ANCHOR_LAUNCH_TIMEOUT' }), protocolTimeoutMs);
     timer.unref();
     stream.setEncoding('utf8');
     stream.on('data', (chunk: string) => {
@@ -882,7 +927,7 @@ function waitForLaunchAck(
   });
 }
 
-function sendAnchorCommand(stream: Writable | null, command: 'GO' | 'ABORT'): Promise<void> {
+function sendAnchorCommand(stream: Writable | null, command: 'GO' | 'ABORT', protocolTimeoutMs: number): Promise<void> {
   if (stream === null || stream.destroyed) return Promise.reject(new Error('ANCHOR_CONTROL_UNAVAILABLE'));
   return new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -896,7 +941,7 @@ function sendAnchorCommand(stream: Writable | null, command: 'GO' | 'ABORT'): Pr
       else reject(error);
     };
     const onError = (error: Error) => finish(error);
-    const timer = setTimeout(() => finish(new Error('ANCHOR_CONTROL_TIMEOUT')), anchorProtocolTimeoutMs);
+    const timer = setTimeout(() => finish(new Error('ANCHOR_CONTROL_TIMEOUT')), protocolTimeoutMs);
     timer.unref();
     stream.once('error', onError);
     stream.end(`${command}\n`, () => finish());
@@ -947,6 +992,11 @@ async function spawnAnchor(options: {
             // consulted its own `process.platform` could disagree with the supervisor that spawned
             // it, and the disagreement would reach the user as a process that changed identity.
             platform: options.platform,
+            // Told, never observed, for the same reason the platform is: the anchor's copy of this
+            // reader used to carry its own 5 s literal, written before the two corrections that
+            // moved the real one to 15 s, so every Windows identity read raced a bound nothing had
+            // revisited. One number, named by the side that selected the dialect.
+            observationTimeoutMs: processObservationBudgetFor(options.platform),
             argv: options.input.argv,
             shell: options.input.shell ?? false,
             ignoreAbort: options.ignoreAbort,

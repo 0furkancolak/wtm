@@ -35,6 +35,7 @@ import { execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { ProcessGroupInspection, ProcessInspection, ProcessPlatform } from '../ports';
 import { observedCommandFingerprint, safeErrorCode } from './identity';
+import { processObservationBudgetFor } from './observation-budget';
 
 const execFileAsync = promisify(execFile);
 // `defaultRunQuery` shells to the same cold `powershell.exe` `windows-powershell.ts`'s own
@@ -42,8 +43,9 @@ const execFileAsync = promisify(execFile);
 // exactly that reason); a real windows-latest leg's `ManagedProcessSupervisor` suite -- which spawns
 // and reaps many real processes across many sequential tests -- hit `taskkill.exe ETIMEDOUT` here at
 // the same 5s bound, the identical class of "measuring the bug's absence, not the platform's real
-// cost" this project already corrected once.
-const commandTimeoutMs = 15_000;
+// cost" this project already corrected once. The number itself now lives in one place, because the
+// anchor's inlined copy of this reader stayed at 5s through both of those corrections.
+const commandTimeoutMs = processObservationBudgetFor('win32');
 
 export interface WindowsProcessRecord {
   readonly processId: number;
