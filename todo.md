@@ -854,8 +854,21 @@ olarak raporluyor. Bu değişmedi, kapsam dışı.
 - **M4, düzeltildi.** Geçici hataların mesajı artık "unsafe" değil "unavailable" diyor.
 - **M6, düzeltildi.** docs/18 artık grup/diğer izin bitlerinin hepsini sayıyor.
 - **M5, kısmen.** I1 ve kırık link için testler eklendi.
-- **Açık kalan:** M2 (`ENOTDIR`/`ELOOP` kodsuz) ve M3 (Windows'ta ACL okuma hatasının kalıcı
-  sayılması). Windows daemon'ı dağıtılmadan önce M3 ele alınmalı.
+- **M2, düzeltildi (2026-09-20, W3-4).** `private-directory.ts`'teki her `lstat`/`realpath`/`open`
+  `ENOENT` dışındaki her şeyi kodsuz sınıfa yazıyordu, yani supervised bir daemon on saniyede bir
+  yeniden deniyordu. `ENOTDIR` (yolun bir bileşeni dizin değil, dosya) ve `ELOOP` (yol bir symlink
+  döngüsünden geçiyor) o sınıfa ait değil: ikisi de bir insan bir şeyi değiştirene kadar doğru
+  kalır — dosyanın symlink ya da başkasının olması için bu dosyanın zaten kullandığı ölçüt. Artık
+  `WTM_PRIVATE_DIRECTORY_UNSAFE` taşıyorlar; diğer bütün errno'lar kodsuz kalıyor, yani geç mount
+  edilen bir birim hâlâ yeniden deneniyor.
+- **M3, düzeltildi (2026-09-20, W3-4).** Port'un yüklemleri fail-closed, yani `false` hem "cevap
+  hayır" hem "okunacak bir cevap yoktu" demek. POSIX'te yalnızca birincisi var; Windows'ta cevaplar
+  `powershell.exe`'den geliyor, yani ölen, zaman aşımına uğrayan ya da yüklü bir koşucuyu kaybeden
+  bir sorgu ikincisini üretiyor — ve `assertPrivateDirectory` bunu "belongs to another user" diye
+  okuyup supervised daemon'ı kalıcı olarak durduruyordu. `FileTrustPolicy`'ye isteğe bağlı
+  `ownershipReadable(path)` eklendi; yalnızca *zaten üretilmiş* bir reddi sınıflandırmak için
+  soruluyor, güvenlik kararı vermiyor. Yokluğu POSIX cevabı, dolayısıyla iki yeşil platformda
+  hiçbir şey değişmiyor. `docs/18` her iki sınıf değişikliğini de yazıyor.
 
 **Doğrulama (throwaway HOME'da, supervised `daemon serve`):**
 
