@@ -59,6 +59,15 @@ export interface FileTrustPolicy {
  * exactly what it looks like: two copies of three comparisons, not two designs that could drift on
  * what a "current user" or a "group/other write" check means — both read `process.getuid()` and a
  * `fs.Stats`, and neither has a decision to make.
+ *
+ * Reachable from outside this package as `@wtm/core/file-trust-policy` — a subpath rather than the
+ * main barrel, deliberately. The one caller is a test that needs to name the thing which actually
+ * answers when nobody injects, instead of hand-writing a lookalike that would keep passing if this
+ * changed. Production code has no reason to import it: a composition root reaching for this is one
+ * that should be selecting `PlatformRuntime.fileTrust` instead, and keeping it off the barrel keeps
+ * it out of everyone's auto-import suggestions. The types beside it stay unexported for a sharper
+ * reason — a second exported `FileTrustPolicy` declaration, structurally identical to
+ * `@wtm/platform/ports`'s but a distinct one, is exactly the confusion this seam exists to avoid.
  */
 export const defaultCoreFileTrustPolicy: FileTrustPolicy = {
   isOwnedByCurrentUser(stat: CoreFileStat, _path: string): Promise<boolean> {

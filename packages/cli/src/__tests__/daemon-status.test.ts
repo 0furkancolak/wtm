@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isWindowsTestHost } from '../../../testkit/src/platform';
 import { daemonStatusPath, formatRemediation, nextDaemonStatus, readDaemonStatus, writeDaemonStatus } from '../daemon-status';
 
 const roots: string[] = [];
@@ -23,6 +24,30 @@ describe('daemon-status.json', () => {
     const status = nextDaemonStatus(null, failure, new Date('2026-09-11T10:00:00.000Z'), 42);
     writeDaemonStatus(path, status);
     expect(readDaemonStatus(path)).toEqual(status);
+  });
+
+  /**
+   * Skipped on Windows rather than softened, so the gap is declared where a reader will see it.
+   *
+   * `writeDaemonStatus` asks for `0o600` there too and keeps asking for it — the request is not
+   * refused, it is *unrepresentable*. libuv derives `st_mode` from the single read-only attribute,
+   * so `fs` has exactly two answers for a file, `0o666` and `0o444`, and `mode & 0o777` can never
+   * equal `0o600` however the file is protected. Asserting the literal was asserting that the host
+   * has POSIX permission bits, which is why this read `Expected: 384, Received: 438` on both win32
+   * runs.
+   *
+   * Confidentiality of the status file on Windows comes from the directory it sits in, which the
+   * daemon creates and verifies through `PlatformRuntime.fileTrust` (ACL-backed there). Giving
+   * this one file its own DACL was considered and rejected: `writeDaemonStatus` is synchronous,
+   * deliberately silent, and runs on the crash-loop path, while `@wtm/platform`'s trust port
+   * *reads* ACLs and has no writer — adding one, and a `powershell.exe` round trip, to every
+   * failed daemon launch would reintroduce exactly the cost W2-2 removed, for a file that holds
+   * an error code and a path. When that changes, this is the test to un-skip.
+   */
+  test.skipIf(isWindowsTestHost)('is written owner-only where a file mode means something', () => {
+    const path = daemonStatusPath(root());
+    writeDaemonStatus(path, nextDaemonStatus(null, failure, new Date('2026-09-11T10:00:00.000Z'), 42));
+
     expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 

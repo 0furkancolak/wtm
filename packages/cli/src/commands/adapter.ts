@@ -38,10 +38,16 @@ export async function runAdapterCommand(input: AdapterCommandInput): Promise<Ada
     try {
       const data: AdapterCommandResult = input.action === 'list'
         ? { adapters: opened.trust.list() }
+        // The selected policy has to reach the executable's own safety checks too, not just the
+        // private directory above the database. `trustRepositoryAdapter` defaults to core's
+        // POSIX-only fallback, which answers `currentIdentityAvailable()` false on win32 and
+        // refuses every `wtm adapter trust` there before reading a byte -- the reason
+        // `main.test.ts`'s CLI-level case failed on Windows while its own trust store was
+        // injected and no private directory was ever involved.
         : await trustRepositoryAdapter(opened.trust, {
           adapterId: input.adapterId,
           executablePath: input.executablePath,
-        });
+        }, input.fileTrust);
       return {
         schemaVersion: 1,
         ok: true,
