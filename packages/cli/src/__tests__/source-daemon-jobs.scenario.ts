@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { lstat, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stringify } from 'smol-toml';
 import { defaultProductionRuntimePaths } from '../../../daemon/src/runtime-factory';
+import { ipcEndpointReachable } from '../../../testkit/src/ipc-address';
 import { createWorkspaceFixture } from '../../../testkit/src/workspace-fixture';
 import { DaemonClient } from '../client';
 import { runCli } from '../main';
@@ -46,7 +47,8 @@ let connected = false;
 try {
   await until('daemon socket', async () => {
     if (daemon.exitCode !== null) throw new Error(`source daemon exited early: ${daemonOutput}`);
-    return await lstat(paths.socketPath).then((stat) => stat.isSocket(), () => false);
+    // A connection rather than an `lstat`: a named pipe has no filesystem entry to stat.
+    return await ipcEndpointReachable(paths.socketPath);
   });
   await client.start();
   connected = true;

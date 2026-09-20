@@ -1731,6 +1731,35 @@ wtm-windows-arm64.exe
       listesidir. Bu dalın eklediği `trusts an adapter executable through the injected policy`
       testinin kabul eden yarısı hiçbir politika enjekte etmiyor, o yarı da o birimde
       `adapter.scenario.ts` gibi host politikasını almalı.
+      **2026-09-20 (W3-1 / 9b):** kümeleme dokümanının 9b bölümündeki üç somut kusur kapatıldı,
+      hiçbiri bir Windows ölçümüne değil Node'un kendi belgelenmiş semantiğine dayanarak.
+      (1) `net.Server.close()` mevcut bağlantıları *korur* ve geri çağrısı ancak hepsi
+      sonlandığında koşar; POSIX'te bu iki kez maskeleniyor (`UnixIpcServer` kendi soketlerini
+      önce yok ediyor, ve yayımlanan ad dinleyiciden bağımsız silinebilen bir dosya girdisi),
+      Windows'ta ise hiçbiri yok — named pipe'ın silinecek girdisi olmadığı için `unpublish`
+      *kapanmanın kendisidir*. `createWindowsIpcPublisher` artık yayımladığı sunucunun kabul
+      ettiği bağlantıları kendisi kaydediyor ve `unpublish`'te yok ediyor. Aynı boşluk
+      `ipc-address.test.ts`'in 300 sn'lik `a real fixture endpoint answers, closes, and can be
+      bound again at the same address` testinin de şekli: çıplak `createServer` hiçbir şey
+      izlemiyordu. `@wtm/testkit`'e `createTrackedIpcServer` eklendi. İki düzeltmenin de
+      ayırt edici regresyon testi var (düzeltme geri alındığında Linux'ta zaman aşımına uğruyor),
+      ve publisher testi `fixtureIpcAddress` üzerinden bağlandığı için win32 bacağında gerçek bir
+      named pipe'a bağlanıyor.
+      (2) `lstat(socketPath).isSocket()` ile "daemon ayağa kalktı mı" beklemesi Windows'ta
+      hiçbir zaman doğru olamaz: named pipe bir dosya sistemi girdisi değil. `daemon.test.ts`'in
+      `wires serve to the production runtime factory...` testi ve
+      `source-daemon-jobs.scenario.ts` artık `@wtm/testkit`'in yeni `ipcEndpointReachable`
+      yoklamasını kullanıyor. Bağlantı, dosya girdisinden güçlü bir gözlem de: bağlanmış bir
+      soket dosyası kabul eden bir dinleyiciden önce de var olabilir.
+      (3) `an over-long HOME refuses serve...` testinin `fixture did not land one byte past the
+      socket path limit` hatası bir üretim kusuru değil: `windowsPlatformPaths` pipe adını
+      `dataRoot`'un özetinden türetiyor, yani her HOME aynı uzunlukta bir ad yayımlıyor ve
+      256 karakterlik sınır HOME üzerinden erişilemez. Fixture artık bunu platform adıyla değil
+      türetmenin kendisiyle (`addressGrowsWithHome`) karara bağlıyor ve erişilemez olduğu
+      hostlarda sınırın neden erişilemez olduğunu ölçüyor.
+      9b'nin geri kalanı (`runtime-factory`, `create-daemon-running`, `readiness-workflow`,
+      `full-workflow` senaryoları) 9d ve 9e'ye bağlı; kümeleme dokümanı da bunları 9b'nin tek
+      başına kanıtı saymıyor. Windows kanıtı `win32_test_filter` ile ayrıca alınacak.
 - [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
 - [ ] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
       `plistPath` macOS'a özel bir ek alan olarak bilerek duruyor (D11), kaldırılması daemon JSON

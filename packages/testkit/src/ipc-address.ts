@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { createConnection, type Socket } from 'node:net';
+import { createConnection, createServer, type Server, type Socket } from 'node:net';
 import { join as posixJoin } from 'node:path/posix';
 import { resolve as win32Resolve } from 'node:path/win32';
 
@@ -48,4 +48,69 @@ export async function ipcEndpointAbsent(address: string, options: IpcAbsenceOpti
       else finish(false, error);
     });
   });
+}
+
+/**
+ * A fixture endpoint whose close is finite.
+ *
+ * `Server.close()` alone is not that: Node documents it as keeping existing connections and
+ * finishing only "when all connections are ended", so its callback is hostage to every peer that
+ * still holds a handle. The daemon's own server destroys the sockets it tracks before it closes
+ * for exactly this reason, and it can only do that because it has tracked them since it was
+ * created — `net.Server` offers no way to enumerate connections after the fact (`getConnections`
+ * counts them). A fixture that calls `createServer` directly therefore has to opt into the same
+ * bookkeeping at creation, which is what this does.
+ */
+export function createTrackedIpcServer(handler: (socket: Socket) => void): TrackedIpcServer {
+  const live = new Set<Socket>();
+  const server = createServer((socket) => {
+    live.add(socket);
+    socket.once('close', () => live.delete(socket));
+    handler(socket);
+  });
+  return {
+    server,
+    listen: (address: string) => new Promise<void>((resolve, reject) => {
+      const failed = (error: Error): void => { server.off('listening', ready); reject(error); };
+      const ready = (): void => { server.off('error', failed); resolve(); };
+      server.once('error', failed);
+      server.once('listening', ready);
+      server.listen(address);
+    }),
+    close: async () => {
+      for (const socket of live) socket.destroy();
+      live.clear();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => { if (error === undefined) resolve(); else reject(error); });
+      });
+    },
+  };
+}
+
+export interface TrackedIpcServer {
+  readonly server: Server;
+  /** Resolves once the endpoint is bound, rejects with the `listen` error otherwise. */
+  listen(address: string): Promise<void>;
+  /** Destroys every live connection, then closes. Never waits on a peer to let go. */
+  close(): Promise<void>;
+}
+
+/**
+ * Whether something is answering at `address` right now — the platform-neutral replacement for
+ * `lstat(socketPath).isSocket()` in a startup wait.
+ *
+ * That check cannot be written on Windows at all: a named pipe is not a filesystem entry, so the
+ * `lstat` a POSIX fixture polls on never succeeds there however healthy the daemon is, and the
+ * wait can only end in its own timeout. A connection is the one observation both transports share,
+ * and it is also the stronger one — a bound socket file can exist before anything accepts on it.
+ *
+ * Anything inconclusive, a refusal and an unresponsive endpoint alike, reads as "not yet": a poll
+ * wants a boolean per attempt, and the caller's own deadline is what decides the wait.
+ */
+export async function ipcEndpointReachable(address: string, options: IpcAbsenceOptions = {}): Promise<boolean> {
+  try {
+    return !(await ipcEndpointAbsent(address, options));
+  } catch {
+    return false;
+  }
 }
