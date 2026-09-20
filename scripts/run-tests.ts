@@ -15,7 +15,16 @@
  * - each file is announced before it starts and after it ends, with its duration;
  * - a file that has not exited within `--file-timeout` is reported as hung by name and its whole
  *   process group is killed; the remaining files still run;
- * - any failing or hung file makes the run exit 1, and the summary lists them.
+ * - any failing or hung file makes the run exit 1, and the summary lists them;
+ * - `--budget` bounds the whole run, not one file. Without it the run takes as long as it takes.
+ *
+ * Why a whole-run budget: a job killed by its own `timeout-minutes` is *cancelled*, and GitHub's
+ * `continue-on-error` only absorbs a job that *failed*. The win32 leg is meant to be informational
+ * -- it reports without deciding the run -- but reaching its cap cancelled it, and a cancelled job
+ * made every CI run on this repository report `cancelled`, however green the four deciding legs
+ * were. A run that ends itself inside the cap fails normally instead, which `continue-on-error`
+ * does absorb. The budget also keeps the evidence: a leg cut off by the platform loses the summary,
+ * while a leg that stops on its own still names what ran, what failed and what was never measured.
  *
  * Two semantic differences from one `bun test` over everything, both accepted:
  * - isolation is stronger, not weaker. Each file gets its own module registry, its own globals and
@@ -24,7 +33,8 @@
  * - `--bail` bails that file, not the run. The remaining files still run, which is what makes a
  *   hung file survivable in the first place, and the summary still names everything that failed.
  *
- * Usage: bun scripts/run-tests.ts [--timeout ms] [--file-timeout ms] [bun test flags] [path patterns]
+ * Usage: bun scripts/run-tests.ts [--timeout ms] [--file-timeout ms] [--budget ms]
+ *                                  [bun test flags] [path patterns]
  * `--timeout` may repeat; the last one wins, which is what `bun run test --timeout N` relies on.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
@@ -58,6 +68,8 @@ export interface RunnerArguments {
   forwarded: string[];
   /** A `-t` filter matches nothing in most files; those files must not count as failures. */
   nameFilter: boolean;
+  /** Wall clock for the whole run, or `undefined` to run to completion however long that takes. */
+  budgetMs: number | undefined;
 }
 
 /** bun test flags that consume the following argument when not written as `--flag=value`. */
@@ -70,6 +82,7 @@ const valueFlags = new Set([
 export function parseRunnerArguments(argv: readonly string[]): RunnerArguments {
   let testTimeoutMs = defaultTestTimeoutMs;
   let fileTimeoutMs: number | undefined;
+  let budgetMs: number | undefined;
   const patterns: string[] = [];
   const forwarded: string[] = [];
   let nameFilter = false;
@@ -78,14 +91,15 @@ export function parseRunnerArguments(argv: readonly string[]): RunnerArguments {
     const [flag, inline] = argument.startsWith('--') && argument.includes('=')
       ? [argument.slice(0, argument.indexOf('=')), argument.slice(argument.indexOf('=') + 1)]
       : [argument, undefined];
-    if (flag === '--timeout' || flag === '--file-timeout') {
+    if (flag === '--timeout' || flag === '--file-timeout' || flag === '--budget') {
       const raw = inline ?? argv[(index += 1)];
       const value = Number(raw);
       if (raw === undefined || !Number.isInteger(value) || value <= 0) {
         throw new Error(`${flag} needs a positive whole number of milliseconds, got ${JSON.stringify(raw)}`);
       }
       if (flag === '--timeout') testTimeoutMs = value;
-      else fileTimeoutMs = value;
+      else if (flag === '--file-timeout') fileTimeoutMs = value;
+      else budgetMs = value;
       continue;
     }
     if (flag === '-t' || flag === '--test-name-pattern') nameFilter = true;
@@ -106,6 +120,7 @@ export function parseRunnerArguments(argv: readonly string[]): RunnerArguments {
     patterns,
     forwarded,
     nameFilter,
+    budgetMs,
   };
 }
 
@@ -189,7 +204,7 @@ function forwardTerminationSignals(): void {
 /** How long a killed group is given to actually die before the next file's output starts. */
 const reapGraceMs = 10_000;
 
-function runFile(parsed: RunnerArguments, file: string): Promise<FileOutcome> {
+function runFile(parsed: RunnerArguments, file: string, fileTimeoutMs: number): Promise<FileOutcome> {
   return new Promise((resolve) => {
     // stdio is inherited, never piped: a leaked grandchild holding a pipe open must not be able to
     // keep this runner waiting for an end-of-file, and the 'exit' event does not wait for one.
@@ -218,7 +233,7 @@ function runFile(parsed: RunnerArguments, file: string): Promise<FileOutcome> {
       // start line and blame the wrong file.
       const reap = setTimeout(() => { settle({ kind: 'hung' }); }, reapGraceMs);
       child.once('exit', () => { clearTimeout(reap); settle({ kind: 'hung' }); });
-    }, parsed.fileTimeoutMs);
+    }, fileTimeoutMs);
     child.once('error', (error) => {
       if (settled) return;
       clearTimeout(timer);
@@ -257,14 +272,34 @@ async function main(): Promise<number> {
   }
   const failures: string[] = [];
   const runStarted = Date.now();
+  const deadline = parsed.budgetMs === undefined ? undefined : runStarted + parsed.budgetMs;
+  /** Files the budget stopped the run from measuring, which is not the same as files that passed. */
+  let unmeasured: string[] = [];
   for (const [index, file] of files.entries()) {
     const position = `${String(index + 1)}/${String(files.length)}`;
+    const remaining = deadline === undefined ? Infinity : deadline - Date.now();
+    if (remaining <= 0) {
+      unmeasured = files.slice(index);
+      break;
+    }
+    // A file the budget can no longer afford in full still runs: most files finish in seconds, and
+    // stopping on the arithmetic would throw away the evidence. What changes is who is blamed if it
+    // does not finish -- see the `cutShort` branch below.
+    const fileTimeoutMs = Math.min(parsed.fileTimeoutMs, remaining);
+    const cutShort = fileTimeoutMs < parsed.fileTimeoutMs;
     process.stdout.write(`[run-tests] start ${position} ${file}\n`);
     const started = Date.now();
-    const outcome = await runFile(parsed, file);
+    const outcome = await runFile(parsed, file, fileTimeoutMs);
     const seconds = ((Date.now() - started) / 1000).toFixed(1);
     if (outcome.kind === 'hung') {
-      const message = `${file}: no exit within ${String(parsed.fileTimeoutMs)}ms, killed`;
+      if (cutShort) {
+        // The clock ran out mid-file. The file is not a hang and must not be reported as one: it
+        // was never given the wall clock a hang is judged against.
+        process.stdout.write(`[run-tests] BUDGET stopped ${file} after ${seconds}s, killed\n`);
+        unmeasured = files.slice(index);
+        break;
+      }
+      const message = `${file}: no exit within ${String(fileTimeoutMs)}ms, killed`;
       process.stdout.write(`[run-tests] HUNG ${message}\n`);
       if (process.env['GITHUB_ACTIONS'] === 'true') process.stdout.write(`::error title=Test file hung::${message}\n`);
       failures.push(`${file} (hung)`);
@@ -281,8 +316,19 @@ async function main(): Promise<number> {
     process.stdout.write(
       `[run-tests] ${String(failures.length)} of ${String(files.length)} files failed:\n${failures.map((line) => `  ${line}`).join('\n')}\n`,
     );
-    return 1;
   }
+  if (unmeasured.length > 0) {
+    // Said whatever else happened, and said with the names: half a suite is the one result that
+    // looks like the other half passed.
+    const message
+      = `budget of ${String(parsed.budgetMs)}ms spent after ${total}s; `
+      + `${String(unmeasured.length)} of ${String(files.length)} files not measured, from ${unmeasured[0] ?? ''}`;
+    process.stdout.write(`[run-tests] BUDGET SPENT ${message}\n`);
+    if (process.env['GITHUB_ACTIONS'] === 'true') {
+      process.stdout.write(`::error title=Test run budget spent::${message}\n`);
+    }
+  }
+  if (failures.length > 0 || unmeasured.length > 0) return 1;
   process.stdout.write(`[run-tests] ${String(files.length)} files passed in ${total}s\n`);
   return 0;
 }

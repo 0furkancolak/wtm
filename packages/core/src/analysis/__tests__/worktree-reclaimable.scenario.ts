@@ -99,11 +99,19 @@ try {
       return directory;
     }) as typeof original.opendir;
   } else if (mode === 'depth-budget') {
-    // walk() checks the time budget before the depth one, so the shared 5s default puts the two in a
-    // race that the walk loses on a slow host: verifyActive() re-stats every active ancestor, so a
-    // 66-deep chain costs on the order of depth^2 metadata calls. A darwin x64 runner reported
-    // 'time-budget' here at 5544ms where darwin arm64 finished the same case in 516ms. Every other
-    // mode already narrows the budget it is pinning; this one has to widen the budgets it is not.
+    // Every other budget mode makes its own budget the binding one by construction --
+    // `entry-budget` allows one entry, `time-budget` allows no time. This one relied on 66
+    // directories being walked inside the 5s default clock, which is a property of the machine,
+    // not of the code under test: walk() checks the time budget before the depth one, and
+    // verifyActive() re-stats every active ancestor, so a 66-deep chain costs on the order of
+    // depth^2 metadata calls. A darwin x64 CI runner reported 'time-budget' at 5544ms where
+    // darwin arm64 finished the same case in 516ms. The clock is put out of reach so that depth
+    // is the only budget that can bind; the assertion itself is unchanged, and the test's own
+    // `runScenario` bound still fails the case if the walk ever really does hang.
+    //
+    // The figure has to stay clear of that `runScenario` bound, which is 60s for this mode alone
+    // (see worktree-reclaimable.test.ts). A budget equal to it would put the two in the same race
+    // this line exists to end, so it is an order of magnitude above instead.
     maxDurationMs = 600_000;
     let current = root;
     for (let i = 0; i < 66; i += 1) { current = join(current, 'd'); fs.mkdirSync(current); }
