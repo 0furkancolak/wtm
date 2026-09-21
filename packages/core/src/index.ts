@@ -12,7 +12,7 @@ export {
 } from './git/git-runner';
 export type { GitCommandOptions, GitCommandResult, GitRepositoryIdentity } from './git/git-runner';
 export { parseGitWorktreePorcelain } from './git/worktree-parser';
-export { containsPath } from './paths/contains';
+export { containsPath, samePath } from './paths/contains';
 export type { GitWorktreeRecord } from './git/worktree-parser';
 export {
   analyzeWorktree,

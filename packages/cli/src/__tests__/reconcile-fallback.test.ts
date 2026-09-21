@@ -1,15 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { fileURLToPath } from 'node:url';
+import { isUnprivilegedPosixUser } from '../../../testkit/src/platform';
 import { runScenario as runScenarioChild } from '../../../testkit/src/scenario-child';
 
 const scenarioPath = fileURLToPath(new URL('./reconcile-fallback.scenario.ts', import.meta.url));
-
-/**
- * Whether `chmod` can deny this process anything. False on Windows, where `getuid` does not exist,
- * and false for root, who is not stopped by a mode.
- */
-const currentUid = process.getuid?.();
-const isUnprivilegedPosixUser = currentUid !== undefined && currentUid !== 0;
 
 // The production CLI opens the real state store, so the scenario runs under Node, not Bun.
 function runScenario(name: string): Record<string, any> {

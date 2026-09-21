@@ -30,3 +30,18 @@ export const isWindowsTestHost: boolean = process.platform === 'win32';
 export function shortTmpRoot(): string {
   return isWindowsTestHost ? tmpdir() : '/tmp';
 }
+
+/**
+ * Whether `chmod` can deny this process anything.
+ *
+ * False on Windows, where `getuid` does not exist and a mode touches only the read-only attribute,
+ * and false for root, whom a mode does not stop either. A test whose premise is "this file cannot
+ * be read" has no premise on either, and running it anyway does not produce a stricter test — it
+ * produces one that measures the opposite of what it says and reports the difference as a failure
+ * of the code under test.
+ *
+ * Written here rather than at each call site so the two kinds of host are ruled out by one
+ * predicate: `reconcile-fallback.test.ts` had it for root while `process-anchor.test.ts` threw on
+ * root and quietly measured the wrong thing on Windows.
+ */
+export const isUnprivilegedPosixUser: boolean = process.getuid?.() !== undefined && process.getuid?.() !== 0;

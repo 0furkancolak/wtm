@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { join as posixJoin } from 'node:path/posix';
+import { join as win32Join } from 'node:path/win32';
 import type { RepositoryRecord, WorkspaceRecord, WorktreeRecord } from '@wtm/core';
 import { runForgetCommand } from '../commands/forget';
 
@@ -13,17 +14,29 @@ function workspace(name: string, root: string): WorkspaceRecord {
   };
 }
 
+/**
+ * Most roots in this file are POSIX-shaped fixtures injected regardless of the host, so they have
+ * to join with `path/posix` — the default `join` follows the host and produced a `mainRoot` no
+ * POSIX selector below could match on a real windows-latest leg. One root is not a fixture: the
+ * "still on disk" test needs a directory that exists, so it gets a real `mkdtemp` path in the
+ * host's own spelling. Joining *that* with `path/posix` was the other half of the same mistake,
+ * and is what made the Windows leg compare `…\wtm-forget-x/repo` against `…\wtm-forget-x\repo`.
+ *
+ * So the flavour follows the root rather than the file.
+ */
+const win32Rooted = /^[a-zA-Z]:[\\/]|^\\\\/;
+
+function joinBeneath(root: string, ...segments: string[]): string {
+  return win32Rooted.test(root) ? win32Join(root, ...segments) : posixJoin(root, ...segments);
+}
+
 function createStore(workspaces: WorkspaceRecord[]) {
   const forgotten: string[] = [];
-  // `item.root` is this file's own POSIX-shaped fixture, injected regardless of the host running
-  // the test, so it always joins with `path/posix` -- the default `join` above follows the host
-  // and produced a mainRoot no POSIX selector fixture below could ever match on a real
-  // windows-latest leg.
   const repositories: RepositoryRecord[] = workspaces.map((item) => ({
     id: `repository-${item.name}`,
     workspaceId: item.id,
-    commonGitDir: posixJoin(item.root, 'repo/.git'),
-    mainRoot: posixJoin(item.root, 'repo'),
+    commonGitDir: joinBeneath(item.root, 'repo', '.git'),
+    mainRoot: joinBeneath(item.root, 'repo'),
     remoteIdentity: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     lastReconciledAt: null,
@@ -177,6 +190,48 @@ describe('wtm forget', () => {
       expect(envelope.errors[0]?.remediation)
         .toEqual([{ kind: 'command-suggestion', argv: ['wtm', 'forget', join(root, 'repo'), '--force'] }]);
       expect(forgotten).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * The selector used to be read as absolute only when it began with `/`, and joined onto the
+   * working directory with a `/` of its own otherwise. An absolute path in the host's own spelling
+   * is the case that breaks: on Windows it begins with a drive letter, so it was read as relative
+   * and glued onto the cwd, naming nothing — and `forget` silently widened to the containing
+   * workspace, which retires more than the caller asked for.
+   *
+   * Written in the host's spelling rather than a POSIX literal, so it is the *host* that decides
+   * what an absolute path looks like here.
+   */
+  it('reaches the repository through an absolute selector in the spelling this host uses', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wtm-forget-absolute-'));
+    try {
+      const { store, forgotten } = createStore([workspace('live', root)]);
+
+      const envelope = await runForgetCommand({
+        store, cwd: tmpdir(), selector: join(root, 'repo'), force: true,
+      });
+
+      expect(envelope.errors).toEqual([]);
+      expect(envelope.data?.target).toBe('repository');
+      expect(forgotten).toEqual(['repository-live']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reaches the same repository through a relative selector', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wtm-forget-relative-'));
+    try {
+      const { store, forgotten } = createStore([workspace('live', root)]);
+
+      const envelope = await runForgetCommand({ store, cwd: root, selector: 'repo', force: true });
+
+      expect(envelope.errors).toEqual([]);
+      expect(envelope.data?.target).toBe('repository');
+      expect(forgotten).toEqual(['repository-live']);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

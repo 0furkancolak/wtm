@@ -4,14 +4,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { selectPlatformRuntime } from '@wtm/platform';
 import type { ObservedProcessIdentity, PlatformId, ProcessInspection } from '@wtm/platform/ports';
-import { createLinuxProcessPlatform, createWindowsProcessPlatform } from '@wtm/platform/process';
+import {
+  createLinuxProcessPlatform, createWindowsProcessPlatform, processObservationBudgetFor,
+} from '@wtm/platform/process';
+import { isUnprivilegedPosixUser } from '../../../testkit/src/platform';
 import { developmentRuntimeInvocation } from '../../../testkit/src/runtime-invocation';
 import {
   bootTime, groupStats, initStat, parenthesisedCommCmdline, parenthesisedCommComm,
   parenthesisedCommStat, procListing, procStat,
 } from '../../../platform/src/process/__tests__/proc-fixtures';
 import { ManagedLogStore } from '../logs';
-import { ManagedProcessError, ManagedProcessSupervisor } from '../process-supervisor';
+import { anchorProtocolTimeoutMs, ManagedProcessError, ManagedProcessSupervisor } from '../process-supervisor';
 import {
   anchorSource, compileAnchorReaders, type AnchorObservedIdentity, type AnchorReaders,
 } from '../process-anchor';
@@ -171,17 +174,19 @@ describe('the anchor reads a process exactly as the platform port reads it', () 
    * poll retrying every 25 ms forever and the anchor would never exit, which is a leaked process
    * tree rather than a wrong number.
    */
-  test('treats a /proc entry it may not read as not a member, rather than failing the scan', async () => {
-    if (process.getuid?.() === 0) throw new Error('this test needs a uid that permissions apply to');
-    const procRoot = await groupFixture();
-    const foreign = join(procRoot, '13', 'stat');
-    await mkdir(join(procRoot, '13'), { recursive: true });
-    await writeFile(foreign, '13 (secret) S 1 6 6 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 2807663 0\n');
-    await chmod(foreign, 0o000);
+  test.skipIf(!isUnprivilegedPosixUser)(
+    'treats a /proc entry it may not read as not a member, rather than failing the scan',
+    async () => {
+      const procRoot = await groupFixture();
+      const foreign = join(procRoot, '13', 'stat');
+      await mkdir(join(procRoot, '13'), { recursive: true });
+      await writeFile(foreign, '13 (secret) S 1 6 6 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 2807663 0\n');
+      await chmod(foreign, 0o000);
 
-    expect(await readGroupMembers(compileAnchorReaders({ platform: 'linux', procRoot }), 6))
-      .toEqual([6, 8, 9, 10]);
-  });
+      expect(await readGroupMembers(compileAnchorReaders({ platform: 'linux', procRoot }), 6))
+        .toEqual([6, 8, 9, 10]);
+    },
+  );
 });
 
 /**
@@ -312,6 +317,34 @@ describe('the supervisor tells the anchor the platform it selected', () => {
     expect((await captureAnchorSpec('linux')).platform).toBe('linux');
     expect((await captureAnchorSpec('darwin')).platform).toBe('darwin');
   });
+
+  /**
+   * The observation budget travels the same channel and for the same reason. The anchor's readers
+   * are a copy of the port's, and the copy's own bound is what drifted: a 5 s literal that survived
+   * both corrections moving the real one to 15 s. A Windows anchor that cannot finish its identity
+   * read inside its bound never reports READY, and the supervisor reads that as
+   * `ANCHOR_HANDSHAKE_INVALID`.
+   */
+  test('names the observation budget of the platform it selected, not a literal of its own', async () => {
+    expect((await captureAnchorSpec()).observationTimeoutMs)
+      .toBe(processObservationBudgetFor(selectPlatformRuntime().id));
+    expect((await captureAnchorSpec('win32')).observationTimeoutMs).toBe(15_000);
+    expect((await captureAnchorSpec('linux')).observationTimeoutMs).toBe(1_000);
+  });
+
+  /**
+   * The inequality the two numbers have to keep. A protocol step cannot be bounded more tightly
+   * than the observation it contains, or the supervisor gives up while the anchor is still working
+   * — which is what a flat 10 s did on win32 against a 15 s read.
+   */
+  test('waits longer on a protocol step than the observation inside it can take', () => {
+    for (const platform of ['darwin', 'linux', 'win32'] as const) {
+      expect(anchorProtocolTimeoutMs(platform)).toBeGreaterThan(processObservationBudgetFor(platform));
+    }
+    // The platforms that were already green keep exactly the bound they had.
+    expect(anchorProtocolTimeoutMs('darwin')).toBe(10_000);
+    expect(anchorProtocolTimeoutMs('linux')).toBe(10_000);
+  });
 });
 
 /**
@@ -327,9 +360,15 @@ async function captureAnchorSpec(platform?: PlatformId): Promise<Record<string, 
     logs: new ManagedLogStore({ root: join(root, 'logs') }),
     gracePeriodMs: 100,
     pollIntervalMs: 10,
+    // `node -e`, not `/bin/sh -c`: the shell does not exist on a Windows runner, so the stand-in
+    // never ran, never wrote the spec, and the test failed reading a file nothing had created.
     runtimeInvocation: {
-      executable: '/bin/sh',
-      prefixArgs: ['-c', `printf '%s' "$WTM_ANCHOR_SPEC" > '${specPath}'; exit 1`],
+      executable: process.execPath,
+      prefixArgs: [
+        '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(specPath)}, process.env.WTM_ANCHOR_SPEC ?? '');`
+        + ' process.exit(1);',
+      ],
     },
     ...(platform === undefined ? {} : { platform }),
   });
@@ -338,7 +377,9 @@ async function captureAnchorSpec(platform?: PlatformId): Promise<Record<string, 
   let failure: unknown;
   try {
     await supervisor.start({
-      worktreeId: 'worktree-1', taskName: 'spec', argv: ['/bin/true'], cwd: root, env: process.env,
+      // Never executed — the stand-in above exits before GO — but it still has to be a command
+      // that exists on the host reading this file.
+      worktreeId: 'worktree-1', taskName: 'spec', argv: [process.execPath, '-e', ''], cwd: root, env: process.env,
     });
   } catch (error) { failure = error; }
 

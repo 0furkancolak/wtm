@@ -82,7 +82,11 @@ test('trusts an adapter executable through the injected policy rather than core\
       // accepting case could not pass there however the command behaved.
       fileTrust: selectPlatformRuntime().fileTrust,
     });
-    expect(accepted.ok).toBe(true);
+    // The envelope's own errors as the failure message: a bare `toBe(true)` here reported that
+    // the command refused without ever saying why, which cost two win32 rounds to a refusal the
+    // log could have named the first time. Every refusal this command can reach carries a
+    // message, so there is nothing to guess at once the assertion prints them.
+    expect(accepted.ok, JSON.stringify(accepted.errors)).toBe(true);
 
     const refused = await runAdapterCommand({
       action: 'trust',
