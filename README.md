@@ -109,10 +109,11 @@ is verified.
 
 ### macOS: published prerelease binary
 
-The published `v0.1.0-rc.1` archives are macOS-only — `wtm-darwin-arm64` and `wtm-darwin-x64`. There is no Linux
-download yet: the release workflow now builds and publishes `wtm-linux-x64` and `wtm-linux-arm64`
-alongside them, but no tag has been cut since that landed, so nothing is published for Linux
-today. Install on Linux from source until a release carries those archives.
+The published `v0.1.0-rc.1` archives are macOS-only — `wtm-darwin-arm64` and `wtm-darwin-x64`. There
+is no Linux or Windows download yet: the release workflow now builds and publishes
+`wtm-linux-x64`, `wtm-linux-arm64` and `wtm-windows-x64.zip` alongside them, but no tag has been
+cut since that landed, so nothing is published for either platform today. Install on Linux from
+source, or use the Windows contributor build below, until a release carries those archives.
 
 Select the archive matching your architecture, verify it against `SHA256SUMS`, then extract:
 
@@ -166,9 +167,12 @@ every gate. See [Platform support](#platform-support), especially the Windows li
 
 ### Windows: experimental contributor build
 
-There is no published Windows archive, PowerShell installer, Scoop manifest or WinGet package.
-The source includes a Windows backend and a native CI leg, which still has failures. To inspect
-that work from PowerShell after cloning this repository and installing its development prerequisites:
+There is no published Windows archive, PowerShell installer, Scoop manifest or WinGet package. The
+release workflow now builds and gates a `wtm-windows-x64.zip` the same way it does for macOS and
+Linux, but no tag has shipped one yet, and its job is informational rather than release-blocking:
+see [Platform support](#platform-support). The source includes a Windows backend and a native CI
+leg, which still has failures. To inspect that work from PowerShell after cloning this repository
+and installing its development prerequisites:
 
 ```powershell
 bun install --frozen-lockfile
@@ -772,13 +776,19 @@ WTM is pre-release and honest about its edges. Every command carries a real payl
 
 ## Platform support
 
-| Platform | State |
-| --- | --- |
-| **macOS** (Apple silicon and Intel) | Native CLI, launchd and process supervision backends; both architectures have published prerelease archives and native CI legs. Current regressions and signing/notarization requirements remain release gates. |
-| **Linux x64** (glibc) | Native CLI, Unix IPC and POSIX process supervision have passing CI evidence. The systemd user-service lifecycle needs a real user session for full validation. No published Linux archive; build from source. |
-| **Linux arm64** (glibc) | Native CI is configured on `ubuntu-24.04-arm`, with local ELF archive support; a passing ARM64 run is still required. No published Linux archive. |
-| **Linux musl/Alpine** | No native CI or supported standalone build. |
-| **Windows x64** | Experimental implementation: CLI, Named Pipe IPC, SID/ACL checks, Scheduled Task service backend and process-tree supervision. The native CI leg still has failures; no released binary or complete platform-support claim. |
+| Platform | CI | State |
+| --- | --- | --- |
+| **macOS** (Apple silicon and Intel) | Decides the run | Native CLI, launchd and process supervision backends; both architectures have published prerelease archives and native CI legs. Current regressions and signing/notarization requirements remain release gates. |
+| **Linux x64** (glibc) | Decides the run | Native CLI, Unix IPC and POSIX process supervision have passing CI evidence. The systemd user-service lifecycle needs a real user session for full validation. The release workflow builds and publishes a Linux archive on a tag; no tag has shipped one yet, so build from source until one does. |
+| **Linux arm64** (glibc) | Decides the run | Native CI is configured on `ubuntu-24.04-arm`, with local ELF archive support; a passing ARM64 run is still required. Same release-archive status as Linux x64: buildable, not yet shipped in a tag. |
+| **Linux musl/Alpine** | Not run | No native CI or supported standalone build. |
+| **Windows x64** | **Informational only** | Experimental implementation: CLI, Named Pipe IPC, SID/ACL checks, Scheduled Task service backend and process-tree supervision. The release workflow now builds, zips and gates a `wtm-windows-x64.zip`, but its job does not block a release the way the macOS/Linux jobs do — no tag has shipped one, and native acceptance is still incomplete. |
+
+**Only macOS and Linux decide a CI run today.** The single `ci.yml` matrix workflow also runs a
+Windows job on every push and pull request, but it reports without deciding the result: real
+native failures remain there, so a red Windows leg neither blocks a merge nor (via the same
+`continue-on-error` mechanism) blocks a release. Dispatch the workflow with its `win32_test_filter`
+input to get a Windows leg whose result *does* decide, scoped to the files you are checking.
 
 WTM's operating system is a parameter rather than an assumption: one `PlatformRuntime` answers
 where files go, how long a socket address may be, how to recognise a process, and how to register a

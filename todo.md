@@ -3116,7 +3116,7 @@ npm tüm platformlarda ortak kanal olarak kalabilir.
 
 ---
 
-### [ ] 31. GitHub Actions badge ve platform CI görünürlüğü
+### [x] 31. GitHub Actions badge ve platform CI görünürlüğü
 
 README'de platformların gerçekten test edildiğini görünür yap.
 
@@ -3134,8 +3134,22 @@ Ayrıca:
 
 - [x] `CONTRIBUTING.md` platform test komutlarını içersin.
 - [x] `SECURITY.md` platform-specific security concerns içersin.
-- [~] `SUPPORT.md` backend/native/distribution tablosunu içeriyor; minimum OS sürümleri bütün
-      hedeflerde kanıtlanmadığı için bu bölüm açıkça bilinmiyor, destek garantisi üretilmedi.
+- [x] `SUPPORT.md` backend/native/distribution tablosunu içeriyor; minimum OS sürümleri artık
+      açık — CI'ın gerçekten çalıştığı imajlar (`macos-15`/`-intel`, `ubuntu-24.04`/`-arm`,
+      `windows-latest`) doğrulanmış taban olarak yazıldı, bunun altındaki hiçbir şey denenmedi
+      diye belirtildi. Bu bir destek garantisi değil, ölçülenin dürüst sınırı.
+
+**2026-09-21 tamamlandı (W6-4):** Tek matrix workflow (`ci.yml`) kullanıldığından madde metninin
+kendi kuralı gereği ("tek matrix workflow kullanılıyorsa tek CI badge yeterli") ayrı canlı
+badge'ler eklenmedi — GitHub'ın native workflow badge'i zaten tek bir job'a değil, workflow'un
+genel sonucuna bakıyor, bu yüzden "CI macOS / CI Linux / CI Windows" üç ayrı canlı badge olarak
+teknik olarak mümkün değil tek workflow'da. Bunun yerine `README.md`'nin "Platform support"
+tablosuna ve `SUPPORT.md`'nin tablosuna bir "CI" kolonu eklendi — her satır "Decides the run" /
+"Informational only" / "Not run" ile işaretli, `ci.yml`'in win32 job'ının `continue-on-error`
+olduğu ve bir release'i bloklamadığı gerçeğini (CLAUDE.md'nin merge şartı) README seviyesinde de
+görünür kılıyor. Ayrıca W5-2/W6-1 ile bayatlamış iddialar düzeltildi: "No Linux/Windows release
+archive" yerine "release workflow üretiyor ve yayımlıyor ama henüz hiçbir tag bunu taşımadı" —
+`README.md`'nin Linux için zaten kullandığı kesin ifade Windows'a da uygulandı.
 
 ---
 
