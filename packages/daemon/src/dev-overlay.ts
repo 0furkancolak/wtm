@@ -1,5 +1,7 @@
+import type { IncomingMessage } from 'node:http';
 import { basename } from 'node:path';
-import type { ManagedProcessRecord, ManagedProcessState, RepositoryRecord } from '@wtm/core';
+import type { ChecklistItemRecord, ChecklistStore, ManagedProcessRecord, ManagedProcessState, RepositoryRecord } from '@wtm/core';
+import { checklistToggleRequestSchema } from '@wtm/protocol';
 import { buildProxyRoutes, type ProxyRoute, type ProxyRouteSource } from './proxy-routes';
 
 /**
@@ -23,11 +25,16 @@ import { buildProxyRoutes, type ProxyRoute, type ProxyRouteSource } from './prox
  * (`wtm status`'s own `processes` section reads the same store method), so it is included; no new
  * plumbing was added for it.
  *
- * Out of scope for this slice, and NOT implemented here: the agent-writes/user-checks test-step
- * checklist todo item 46 also describes. That needs its own persisted record and a two-way wire
- * protocol comparable in size to the task-record surface todo item 49 defines, and item 46's own
- * text says the checklist should live there rather than invent a second store — so it stays
- * future work. See todo.md item 46's own note for the deferral.
+ * **2026-09-21, W11-1 (item 46b):** the agent-writes/user-checks test-step checklist this module's
+ * header used to defer is implemented here too. `gatherDevOverlayData`/`renderDevOverlayFragment`
+ * now also carry the checklist itself (real `<input type="checkbox">` markup, not the decorative
+ * `<li>`s the sibling/task lists use), and `checklistApiHandler` below is the *other* half: the
+ * proxy's own reserved-path HTTP API (`/__wtm/checklist`, wired in `proxy.ts`'s `overlayApi`
+ * option) that the checkbox's own inline `<script>` POSTs to when the user toggles one, so the
+ * state round-trips back into `ChecklistStore` without ever touching the Unix socket a browser
+ * cannot reach. The checklist's own persisted record follows item 49's `task_overrides` pattern
+ * (`packages/core/src/state/checklist.ts`/`checklist-store.ts`) rather than inventing a second
+ * storage model, per item 46's own note.
  */
 
 /**
@@ -45,6 +52,13 @@ export interface DevOverlaySource extends ProxyRouteSource {
     worktreeId?: string;
     states?: readonly ManagedProcessState[];
   }): ManagedProcessRecord[];
+  /**
+   * Optional, for the same reason `listManagedProcesses` above is: nothing else in this module
+   * requires a store to carry checklist items to be a valid `DevOverlaySource`, so a narrower test
+   * double never has to implement it. Named distinctly from `ChecklistStore.list` (which this
+   * simply forwards to) to avoid confusion between the store's own method and this source's.
+   */
+  listChecklistItems?(worktreeId: string): ChecklistItemRecord[];
 }
 
 /** One other endpoint reachable through the same proxy, for the same feature. */
@@ -62,6 +76,13 @@ export interface DevOverlayRunningTask {
   state: ManagedProcessState;
 }
 
+/** One agent-written checklist step, shown as a real checkbox the user can toggle. */
+export interface DevOverlayChecklistItem {
+  position: number;
+  text: string;
+  checked: boolean;
+}
+
 export interface DevOverlayData {
   repoName: string;
   branch: string | null;
@@ -72,6 +93,8 @@ export interface DevOverlayData {
   /** Every active proxy endpoint for the same workspace, including this one (`current: true`). */
   siblings: DevOverlaySibling[];
   runningTasks: DevOverlayRunningTask[];
+  /** The worktree's dev-overlay checklist (todo item 46b, W11-1), in `position` order. */
+  checklist: DevOverlayChecklistItem[];
 }
 
 const runningProcessStates: readonly ManagedProcessState[] = ['STARTING', 'RUNNING'];
@@ -125,6 +148,9 @@ export function gatherDevOverlayData(store: DevOverlaySource, route: ProxyRoute)
   }).map((entry) => ({ taskName: entry.taskName, state: entry.state }))
     .sort((left, right) => left.taskName.localeCompare(right.taskName));
 
+  const checklist = store.listChecklistItems === undefined ? [] : store.listChecklistItems(worktree.id)
+    .map((entry) => ({ position: entry.position, text: entry.text, checked: entry.checked }));
+
   return {
     repoName,
     branch: worktree.branch,
@@ -134,6 +160,7 @@ export function gatherDevOverlayData(store: DevOverlaySource, route: ProxyRoute)
     hostname: route.hostname,
     siblings,
     runningTasks,
+    checklist,
   };
 }
 
@@ -188,6 +215,38 @@ export function renderDevOverlayFragment(data: DevOverlayData): string {
     data.runningTasks.map((task) =>
       `<li>${escapeHtml(task.taskName)} · ${escapeHtml(task.state.toLowerCase())}</li>`).join('')
   }</ul>`;
+  // Real checkboxes, not the decorative `<li>`s the sibling/task lists use above: this is the one
+  // part of the fragment the user actually acts on, so it needs a genuine `<input>` the toggle
+  // script below can listen to and the browser can render as an interactive control. A route with
+  // no checklist items renders neither this markup nor the script — zero added JS, same as before
+  // this feature, matching the same "byte-identical when disabled" discipline the overlay's own
+  // prod-non-leak test already established for the fragment as a whole.
+  const checklistHtml = data.checklist.length === 0 ? '' : `<ul class="wtm-dev-overlay__list wtm-dev-overlay__checklist">${
+    data.checklist.map((item) => `<li><label><input type="checkbox" data-position="${item.position}"${
+      item.checked ? ' checked' : ''
+    }> ${escapeHtml(item.text)}</label></li>`).join('')
+  }</ul>
+<script>
+(function () {
+  var root = document.getElementById('wtm-dev-overlay');
+  if (!root) return;
+  root.addEventListener('change', function (event) {
+    var box = event.target;
+    if (!box || box.tagName !== 'INPUT' || box.type !== 'checkbox' || !box.hasAttribute('data-position')) return;
+    var position = Number(box.getAttribute('data-position'));
+    var checked = box.checked;
+    fetch('/__wtm/checklist', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ position: position, checked: checked }),
+    }).then(function (response) {
+      if (!response.ok) box.checked = !checked;
+    }).catch(function () {
+      box.checked = !checked;
+    });
+  });
+})();
+</script>`;
   return `
 <div id="wtm-dev-overlay">
 <style>
@@ -200,6 +259,7 @@ export function renderDevOverlayFragment(data: DevOverlayData): string {
 #wtm-dev-overlay a{color:#7ab8ff;text-decoration:none}
 #wtm-dev-overlay a:hover{text-decoration:underline}
 #wtm-dev-overlay .wtm-dev-overlay__current{color:#8f8f8f}
+#wtm-dev-overlay .wtm-dev-overlay__checklist label{cursor:pointer;display:flex;gap:4px;align-items:flex-start}
 </style>
 <details>
 <summary title="${escapeHtml(data.worktreePath)}">WTM · ${escapeHtml(data.repoName)} · ${escapeHtml(branchLabel)}</summary>
@@ -207,6 +267,7 @@ export function renderDevOverlayFragment(data: DevOverlayData): string {
 <div>worktree #${data.worktreeNumber} · ${escapeHtml(data.service)}</div>
 ${siblingsHtml}
 ${tasksHtml}
+${checklistHtml}
 </div>
 </details>
 </div>`;
@@ -222,5 +283,67 @@ export function devOverlayHtmlInjector(store: DevOverlaySource): (route: ProxyRo
   return (route) => {
     const data = gatherDevOverlayData(store, route);
     return data === null ? null : renderDevOverlayFragment(data);
+  };
+}
+
+/** The exact reserved path the checklist toggle API answers on — see `proxy.ts`'s `overlayApi`. */
+const checklistApiPath = '/__wtm/checklist';
+
+/** The request path with any `?query` stripped, the same normalization `proxy.ts`'s own copy does. */
+function pathnameOf(url: string | undefined): string {
+  if (url === undefined) return '';
+  const question = url.indexOf('?');
+  return question === -1 ? url : url.slice(0, question);
+}
+
+/** Buffers a small request body whole and returns it as a UTF-8 string. */
+function readRequestBody(request: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    request.on('error', reject);
+  });
+}
+
+/**
+ * Builds the `ProxyServer` `overlayApi` hook: the checklist's browser-facing toggle API (todo
+ * item 46b, W11-1), served at the reserved path `/__wtm/checklist` and never forwarded to any
+ * backend (see `proxy.ts`'s own doc comment on `overlayApi` for why this exists at all — the
+ * browser can only ever reach this loopback proxy, never the daemon's Unix socket).
+ *
+ * - `GET` returns the worktree's stored checklist.
+ * - `POST` with a `checklistToggleRequestSchema` body toggles one item by `position`; a position
+ *   that no longer exists is a `404`, not a crash.
+ * - A malformed or schema-invalid body is a `400`.
+ * - Any other method, or any path under the prefix other than the bare `/__wtm/checklist` route
+ *   itself, is a `405`.
+ */
+export function checklistApiHandler(store: ChecklistStore): (route: ProxyRoute, request: IncomingMessage) => Promise<{ status: number; body: unknown }> {
+  return async (route, request) => {
+    if (pathnameOf(request.url) !== checklistApiPath) {
+      return { status: 405, body: { error: 'Unrecognized path under /__wtm/checklist.' } };
+    }
+    if (request.method === 'GET') {
+      return { status: 200, body: { items: store.list(route.worktreeId) } };
+    }
+    if (request.method !== 'POST') {
+      return { status: 405, body: { error: 'Only GET and POST are supported on /__wtm/checklist.' } };
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await readRequestBody(request));
+    } catch {
+      return { status: 400, body: { error: 'Request body is not valid JSON.' } };
+    }
+    const parsed = checklistToggleRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      return { status: 400, body: { error: 'Request body must be { position: number, checked: boolean }.' } };
+    }
+    const record = store.setChecked(route.worktreeId, parsed.data.position, parsed.data.checked, new Date().toISOString());
+    if (record === null) {
+      return { status: 404, body: { error: 'No checklist item at that position.' } };
+    }
+    return { status: 200, body: { item: record } };
   };
 }

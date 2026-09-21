@@ -50,7 +50,25 @@ export interface ProxyServerOptions {
    * corrupt it, and dev servers overwhelmingly serve HTML uncompressed in practice.
    */
   htmlInjector?(route: ProxyRoute): string | null;
+
+  /**
+   * The dev overlay's checklist toggle API (todo item 46b, W11-1): a small JSON API the proxy
+   * serves directly, at the reserved path prefix `/__wtm/checklist`, never forwarded to any
+   * backend — the browser can only ever reach this loopback proxy, never the daemon's Unix
+   * socket, so this is the only way a checked box in the page can reach WTM's state DB. The
+   * double-underscore prefix matches how other dev tooling reserves paths (Vite's `/@vite/`,
+   * Astro's `/_astro/`); a real backend route that happens to collide with this exact path is a
+   * known, out-of-scope-for-this-MVP limitation (see `docs/07`'s "Dev overlay" section).
+   *
+   * Left unset (the default, matching `[dev-overlay] enabled = false`), a request under
+   * `/__wtm/checklist` falls through to the ordinary proxy path completely untouched, exactly as
+   * before this hook existed — same gating discipline `htmlInjector` above already established.
+   */
+  overlayApi?(route: ProxyRoute, request: IncomingMessage): Promise<{ status: number; body: unknown }>;
 }
+
+/** The reserved path prefix the checklist toggle API is served under. See `overlayApi` above. */
+const overlayApiPathPrefix = '/__wtm/checklist';
 
 /** Why a request was refused before any backend was contacted. */
 interface RouteRejection {
@@ -70,6 +88,7 @@ export class ProxyServer {
   readonly #hosts: readonly string[];
   readonly #onError: (error: unknown) => void;
   readonly #htmlInjector: ProxyServerOptions['htmlInjector'];
+  readonly #overlayApi: ProxyServerOptions['overlayApi'];
   readonly #servers: Server[] = [];
   #started = false;
 
@@ -79,6 +98,7 @@ export class ProxyServer {
     this.#hosts = options.hosts ?? defaultProxyHosts;
     this.#onError = options.onError ?? (() => {});
     this.#htmlInjector = options.htmlInjector;
+    this.#overlayApi = options.overlayApi;
   }
 
   /**
@@ -171,7 +191,40 @@ export class ProxyServer {
       response.end(outcome.rejection.message);
       return;
     }
+    if (this.#overlayApi !== undefined && pathnameOf(request.url).startsWith(overlayApiPathPrefix)) {
+      this.#handleOverlayApi(request, response, outcome.route, this.#overlayApi);
+      return;
+    }
     this.#proxyRequest(request, response, outcome.route);
+  }
+
+  /**
+   * Serves the dev overlay's checklist toggle API directly — never `#proxyRequest`, so a backend
+   * never sees a request under this reserved prefix. `request` is handed to `overlayApi`
+   * unconsumed: the hook itself reads whatever body it needs straight off the stream (the request
+   * is always small — a `{position, checked}` JSON object at most — so buffering it whole there is
+   * the same reasoning `#proxyHtmlResponse`'s own body-buffering comment already gives for
+   * response bodies), which keeps this method a plain dispatch with no body-format opinion of its
+   * own.
+   */
+  #handleOverlayApi(
+    request: IncomingMessage,
+    response: ServerResponse,
+    route: ProxyRoute,
+    overlayApi: (route: ProxyRoute, request: IncomingMessage) => Promise<{ status: number; body: unknown }>,
+  ): void {
+    overlayApi(route, request).then((result) => {
+      response.writeHead(result.status, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(result.body));
+    }).catch((error: unknown) => {
+      this.#onError(error);
+      if (!response.headersSent) {
+        response.writeHead(500, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: 'WTM proxy overlay API failed.' }));
+      } else {
+        response.destroy();
+      }
+    });
   }
 
   #proxyRequest(request: IncomingMessage, response: ServerResponse, route: ProxyRoute): void {
@@ -270,6 +323,13 @@ export class ProxyServer {
     backend.on('error', (error) => { this.#onError(error); socket.destroy(); });
     socket.on('error', () => backend.destroy());
   }
+}
+
+/** The request path with any `?query` stripped, for matching the reserved overlay API prefix. */
+function pathnameOf(url: string | undefined): string {
+  if (url === undefined) return '';
+  const question = url.indexOf('?');
+  return question === -1 ? url : url.slice(0, question);
 }
 
 /** Strips a trailing `:<port>` and lowercases, the way every canonical hostname is compared. */

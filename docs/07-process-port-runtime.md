@@ -178,11 +178,22 @@ inject into.
   read-only "currently supervised" task list — there is no new contract parallel to `wtm status
   --json`'s shape, and no new SQLite table. See `packages/daemon/src/dev-overlay.ts`.
 
-**What this slice does not implement:** the two-way test-step checklist todo item 46 also
-describes — an agent writing a checklist through `wtm` that the overlay shows and the user checks
-off, persisted back into WTM's state. That checklist's own text says it belongs on the persisted
-task-record surface todo item 49 defines rather than a separate store, which is real, separate
-schema and protocol work; it stays future work. The overlay in this slice is read-only.
+**The agent-writes/user-checks checklist (todo item 46b, W11-1):** an agent leaves test/review
+steps with `wtm checklist set --item "..." --json` (see [`docs/04`](04-cli-reference.md#dev-overlay-checklist)),
+scoped to one worktree and persisted with the same replace-not-merge convention `wtm task set`
+uses — the whole list is replaced on every `set`, never merged item-by-item. The overlay renders
+each item as a real `<input type="checkbox">`, and the user checking one in the browser writes
+`checked` back into `ChecklistStore` through a small JSON API the proxy serves directly, at the
+reserved path prefix `/__wtm/checklist` (`ProxyServerOptions.overlayApi` in `proxy.ts`) — never
+forwarded to any backend, exactly like the injection path above. This is the only way the toggle
+can reach WTM's state DB at all: the browser can only ever reach this loopback proxy, never the
+daemon's Unix socket the CLI itself talks to. The double-underscore prefix follows the same
+convention other dev tooling uses to reserve paths (Vite's `/@vite/`, Astro's `/_astro/`); a real
+backend route that happens to collide with this exact path is a known, out-of-scope limitation of
+this MVP. There is no push notification when a box is checked — no SSE, no WebSocket — an agent
+that wants to know later polls with `wtm checklist list --json`. The checklist's own persisted
+record follows item 49's `task_overrides` pattern (`packages/core/src/state/checklist.ts`), not a
+new storage model, per item 46's own note.
 
 ## Process ownership
 

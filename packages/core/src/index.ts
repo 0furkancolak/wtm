@@ -305,4 +305,5 @@ export { memoryEstimateError, memoryCapacity, type JobMemoryAdmission, type JobM
 export { CiWatchError } from './state/ci';
 export type { CiWatchRecord, CiWatchStartInput, CiWatchStore, CiWatchUpdate } from './state/ci';
 export type { TaskOverrideRecord, TaskOverrideSetInput, TaskOverrideStore } from './state/task-overrides';
+export type { ChecklistItemRecord, ChecklistStore } from './state/checklist';
 export * from './ci';

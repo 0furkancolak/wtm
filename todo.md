@@ -2696,8 +2696,13 @@ etkinleştirme/kapatma da aynı nedenle bu slice'a girmedi (yalnızca global aç
       **(2026-09-21, W10-4: `packages/daemon/src/__tests__/proxy-dev-overlay.test.ts`.)**
 - [x] Overlay veri ucu: `wtm status --json` şemasının bir alt kümesi, ayrı contract değil.
       **(2026-09-21, W10-4.)**
-- [ ] Ajanın kontrol listesi yazması ve kullanıcının işaretlemesi için iki yönlü uç. **Ertelendi —
-      madde 49'un task-kaydı yüzeyini bekliyor, yukarıdaki nota bakın.**
+- [x] Ajanın kontrol listesi yazması ve kullanıcının işaretlemesi için iki yönlü uç. **(2026-09-21,
+      W11-1: `wtm checklist set/list/clear` (`packages/cli/src/commands/checklist.ts`), madde 49'un
+      `task_overrides` deseniyle (`packages/core/src/state/checklist.ts`/`checklist-store.ts`, ayrı
+      depolama icat edilmedi), proxy'nin `/__wtm/checklist` uç noktası
+      (`packages/daemon/src/proxy.ts`'nin `overlayApi` seçeneği) tarayıcının işaretlemesini
+      `ChecklistStore`'a yazıyor — tarayıcı Unix socket'e hiç erişmiyor. Overlay artık gerçek
+      `<input type="checkbox">` render ediyor.)**
 - [x] Kardeş repoların endpoint'leri feature identity üzerinden çözülsün, port taramasıyla değil.
       **(2026-09-21, W10-4: aynı workspace + aynı branch eşleşmesi.)**
 - [ ] Konfigürasyon: global ve repo bazında etkinleştirme/kapatma. **Kısmen — yalnızca global
@@ -2708,14 +2713,17 @@ etkinleştirme/kapatma da aynı nedenle bu slice'a girmedi (yalnızca global aç
       bölümünün hemen altına), parity uygulanacak bir komut yok.**
 - [ ] Adapter yolu seçilirse `docs/06-adapter-protocol.md`'ye enjeksiyon sözleşmesi. **Adapter yolu
       seçilmedi (bkz. K10 kararı yukarıda), bu yüzden uygulanmadı.**
-- [ ] `docs/11-ai-first-skill-integration.md` ve `skills/wtm/SKILL.md`'ye ajanın kontrol listesi
-      yazma akışı. **Kontrol listesiyle birlikte ertelendi.**
+- [x] `docs/11-ai-first-skill-integration.md` ve `skills/wtm/SKILL.md`'ye ajanın kontrol listesi
+      yazma akışı. **(2026-09-21, W11-1: her ikisine de bir kural satırı ve komut haritası satırı
+      eklendi — implementasyon bitince `wtm checklist set --item "..." --json`, işaretleme asenkron
+      olduğu için sonradan `wtm checklist list --json` ile poll edilir.)**
 
 #### Kabul kriterleri
 
 - [ ] Üç feature'ın `web`'i aynı anda ayaktayken her sekme kendi worktree'sini sayfadan söylüyor.
 - [ ] Overlay hiçbir prod build'de yer almıyor ve loopback dışı bir bind'de enjekte edilmiyor.
-- [ ] Ajanın yazdığı kontrol listesi kullanıcı tarafından işaretleniyor ve durum WTM'de kalıcı.
+- [x] Ajanın yazdığı kontrol listesi kullanıcı tarafından işaretleniyor ve durum WTM'de kalıcı.
+      **(2026-09-21, W11-1.)**
 - [ ] Overlay kapatıldığında dev server davranışı WTM'siz haline birebir eşit.
 
 ---
