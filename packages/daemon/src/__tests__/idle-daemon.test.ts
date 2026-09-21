@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { fileURLToPath } from 'node:url';
-import { runScenario } from '../../../testkit/src/scenario-child';
+import { runScenario, scenarioTestTimeoutMs } from '../../../testkit/src/scenario-child';
 
 const scenarioPath = fileURLToPath(new URL('./idle-daemon.scenario.ts', import.meta.url));
 
@@ -24,5 +24,5 @@ describe('idle daemon release budget', () => {
     expect(report.cpuP95.status).toBe(report.cpuP95.measured < 0.2 ? 'pass' : 'blocker');
     expect(report.rss.status)
       .toBe(report.rss.measured <= 85 ? 'pass' : report.rss.measured <= 110 ? 'warning' : 'blocker');
-  }, 30_000);
+  }, scenarioTestTimeoutMs());
 });

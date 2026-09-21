@@ -1855,6 +1855,35 @@ wtm-windows-arm64.exe
       windows-latest koşucusu onu kaybediyor. Paylaşılan varsayılan kullanılıyor artık.
       9h'nin başlığındaki junction ve reparse point güvenliği için win32 bacağından ölçüm yok:
       iki koşu da `core`'un ilgili dosyalarına hiç ulaşmamıştı. Tahminle kod yazılmadı.
+      **2026-09-21 (W4-1 / 9e):** 9e kümesinin yedi hatasının tamamı tek bir şekildeydi —
+      senaryo çocuğu 30 000 ms'de öldürüldü (`heavy-job-native-lifecycle` 4,
+      `jobs-workflow` 2, `idle-daemon` 1). Öldüren sınır senaryonun kendi sınırı değildi:
+      `runScenario`'nun varsayılanı 120 sn ve kendi dokümanı bunu "bir askıyı bitirmek için,
+      bir şey ölçmek için değil" diye tanımlıyor. Üç dosya da bunun altında bir test-başı
+      sınır taşıyordu, biri ayrıca `timeoutMs`'i 30 sn'ye indiriyordu. Test-başı sınır
+      bloke eden bir `spawnSync`'i kesemez; yalnızca sonradan rapor eder — ve komutu
+      adlandırmaz. Yani üçü de POSIX ölçüsünde bir sayıyı, tek bir süreç gözleminin 15 sn
+      bütçelendiği bir platformda ölçüm olarak kullanıyordu. `@wtm/testkit` artık
+      `scenarioTestTimeoutMs()` veriyor ve üç dosya da onu kullanıyor; eşitsizliği kendi
+      testi sabitliyor.
+      İkinci yarısı ürün kodunda: `waitForGroupAbsent`'in tabanı düz `2_000` ms'ti — yazıldığı
+      platformlarda bir `ps` artı pay, win32'de *tek* bir gözlemden az. Çağıran 500 ms sabır
+      istediğinde döngü ilk gözlemini yapar, o gözlemin maliyetiyle süresi çoktan dolmuş olur
+      ve daha yeni bakmaya başladığı bir grup için `alive` der; durdurma
+      `GROUP_REMAINED_ALIVE`, iş `PROCESS_TREE_STILL_RUNNING` olur ve hiç terminale geçmez.
+      Taban artık `groupAbsenceTimeoutMs(platform)` = gözlem bütçesi + 1 000 ms: darwin ve
+      linux tam olarak 2 000 ms'de kalıyor (yeşil bacaklar yeniden ayarlanmadı), win32
+      16 000 ms alıyor. Bu, W3-2'nin `anchorProtocolTimeoutMs`'inin bir katman altındaki
+      aynı eşitsizliği.
+      Kanıt durumu: yedi test Linux'ta geçiyor (45 sn). Windows kanıtı yok — bu dosyalar
+      informational bacağın bütçe kesiğinin ötesinde kalıyor ve hedefli bir
+      `win32_test_filter` koşusu gerekiyor.
+      Kapanmayan iki şey yazıya geçti: (a) `waitForOwnedGroupChange`'in tabanı yok ve ona
+      bir taban koymak POSIX'i yeniden ayarlıyor (`runtime-factory.test.ts`'in 150 ms'lik
+      grace ile tek tur dönen replay testi buna dayanıyor), o yüzden dokunulmadı; (b) aynı
+      ters sınır kalıbı `runScenario` çağıran ~18 test dosyasında daha var — süpürme kendi
+      birimini hak ediyor, çünkü her askıyı 30 sn yerine 120 sn'ye çıkarmak win32
+      bacağının 20 dakikalık `--budget`'ını etkiler ve o etki ölçülmeden yapılmamalı.
 - [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
 - [ ] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
       `plistPath` macOS'a özel bir ek alan olarak bilerek duruyor (D11), kaldırılması daemon JSON

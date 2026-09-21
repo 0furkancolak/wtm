@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'bun:test';
 import { isWindowsTestHost } from '../platform';
+import { scenarioTestSlackMs, scenarioTestTimeoutMs, scenarioTimeoutMs } from '../scenario-child';
 
 const childPath = fileURLToPath(new URL('./scenario-bound.child.ts', import.meta.url));
 
@@ -77,5 +78,28 @@ describe('a scenario child that will not die on SIGTERM', () => {
     }
     expect(report.sigtermAttempt.returned).toBe(false);
     expect(report.sigtermAttempt.killedByOuterBound).toBe(true);
+  });
+});
+
+/**
+ * Which of a scenario test's two deadlines is allowed to fire.
+ *
+ * Only the scenario bound can end the child, and only it names what it killed; the per-test bound
+ * blocks on the same `spawnSync` and can do nothing but report afterwards. A per-test bound set
+ * below the scenario bound therefore reports a bare timeout for a run that took the scenario's
+ * full bound anyway — which is what the win32 leg printed for the 9e scenario files, at POSIX
+ * numbers on a platform whose process observation is budgeted at fifteen times the POSIX one.
+ */
+describe('the per-test bound that pairs with a scenario bound', () => {
+  test('leaves the scenario deadline the one that can fire', () => {
+    expect(scenarioTestTimeoutMs()).toBeGreaterThan(scenarioTimeoutMs);
+    for (const bound of [1_000, 30_000, scenarioTimeoutMs]) {
+      expect(scenarioTestTimeoutMs(bound)).toBeGreaterThan(bound);
+    }
+  });
+
+  test('is that bound plus one fixed slack, not a number per call site', () => {
+    expect(scenarioTestTimeoutMs(30_000)).toBe(30_000 + scenarioTestSlackMs);
+    expect(scenarioTestTimeoutMs()).toBe(scenarioTimeoutMs + scenarioTestSlackMs);
   });
 });
