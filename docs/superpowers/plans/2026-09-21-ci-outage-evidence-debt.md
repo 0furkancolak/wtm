@@ -182,6 +182,15 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/adapter-sdk/src/__tests__/index.test.ts packages/adapter-sdk/src/testing/__tests__/invoke-adapter.test.ts
   ```
 
+### #59 — fix(core): strip refs/heads/ before slugging a worktree's proxy hostname
+- Commit: `1223d1b` (öncesi) → merge sonrası güncel head · #57'nin (W9-4) düzeltmesi
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası). Yalnızca yerel gate ile doğrulandı.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/core/src/runtime/__tests__/proxy-hostname.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
