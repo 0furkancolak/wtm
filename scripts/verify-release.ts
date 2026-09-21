@@ -2,10 +2,13 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { publishedReleaseTargets } from './artifact-targets';
+import { publishedReleaseTargets, requiredReleaseTargets } from './artifact-targets';
 
-/** A release publishes exactly these archives; anything else is an unverified artifact. */
+/** The full catalog. Anything outside it, in a SHA256SUMS the gate reads, is an unverified artifact. */
 export const releaseArchiveNames: readonly string[] = publishedReleaseTargets.map(({ archiveName }) => archiveName);
+
+/** What the whole-release gate refuses to publish without. See `requiredReleaseTargets`. */
+export const requiredReleaseArchiveNames: readonly string[] = requiredReleaseTargets.map(({ archiveName }) => archiveName);
 
 /**
  * The platform family whose executables Apple signs and notarizes. Signing, the notary service and
@@ -134,33 +137,45 @@ export function verifyReleaseArtifacts(request: ReleaseVerification): ReleaseMan
   }
   verifySmoke(request.smoke);
 
-  // The selection is settled before the signing evidence is judged, because which archives are
-  // being gated is what decides whether Apple evidence applies to them at all.
-  const expected = request.archives ?? releaseArchiveNames;
-  if (!Array.isArray(expected) || expected.length === 0 || new Set(expected).size !== expected.length
-    || expected.some((name) => !(releaseArchiveNames as readonly string[]).includes(name))) {
+  // An explicit selection (a single leg's own gate) stays exactly as strict as before: precisely
+  // that set, all of it present, nothing else listed. Omitting it (the whole-release gate) is the
+  // one case `requiredReleaseTargets` softens: every required archive must still be present, but
+  // an optional one (Windows, until todo item 9 lands) is verified fully when present and simply
+  // skipped when it is not — its absence must not block macOS or Linux from shipping.
+  const strictSelection = request.archives;
+  if (strictSelection !== undefined
+    && (!Array.isArray(strictSelection) || strictSelection.length === 0
+      || new Set(strictSelection).size !== strictSelection.length
+      || strictSelection.some((name) => !(releaseArchiveNames as readonly string[]).includes(name)))) {
     throw new Error('Release archive selection must be a non-empty, unique subset of the published release targets');
   }
-  verifySigning(release, request.signing, expected);
-  verifyNotarization(release, request.notarization, expected);
+  // The selection is settled before the signing evidence is judged, because which archives are
+  // being gated is what decides whether Apple evidence applies to them at all.
+  const required = strictSelection ?? requiredReleaseArchiveNames;
+  verifySigning(release, request.signing, required);
+  verifyNotarization(release, request.notarization, required);
   verifyPerformance(release, request.performance);
 
   const listed = parseChecksums(directory);
+  const allowed = strictSelection ?? releaseArchiveNames;
   for (const name of listed.keys()) {
-    if (!expected.includes(name)) throw new Error(`SHA256SUMS lists unexpected entry ${name}`);
+    if (!allowed.includes(name)) throw new Error(`SHA256SUMS lists unexpected entry ${name}`);
   }
+  // Every required archive, plus whatever optional one actually got listed — an optional archive
+  // that never built simply never appears here, rather than being demanded and refused.
+  const toVerify = strictSelection ?? [...new Set([...required, ...listed.keys()])];
   const archives: ReleaseArchive[] = [];
-  for (const name of expected) {
-    const expected = listed.get(name);
-    if (expected === undefined) throw new Error(`SHA256SUMS does not list ${name}`);
+  for (const name of toVerify) {
+    const digest = listed.get(name);
+    if (digest === undefined) throw new Error(`SHA256SUMS does not list ${name}`);
     const path = join(directory, name);
     if (!existsSync(path)) {
       throw new Error(`Release archive ${name} is listed in SHA256SUMS but missing from ${directory}`);
     }
     const contents = readFileSync(path);
     const sha256 = createHash('sha256').update(contents).digest('hex');
-    if (sha256 !== expected) {
-      throw new Error(`${name} has SHA-256 ${sha256} but SHA256SUMS lists ${expected}`);
+    if (sha256 !== digest) {
+      throw new Error(`${name} has SHA-256 ${sha256} but SHA256SUMS lists ${digest}`);
     }
     archives.push({ name, bytes: statSync(path).size, sha256 });
   }
@@ -396,7 +411,10 @@ if (import.meta.main) {
     signing: process.env['WTM_RELEASE_SIGNING'],
     notarization: process.env['WTM_RELEASE_NOTARIZATION'],
     performance: readPerformanceResults(process.env['WTM_RELEASE_PERFORMANCE']),
-    archives: wholeRelease ? releaseArchiveNames : [releaseArchiveFor(platform, arch)],
+    // Omitted rather than set to `releaseArchiveNames`: the whole-release gate now treats an
+    // absent selection as "every required archive, plus whatever optional one is present" (see
+    // `verifyReleaseArtifacts`), not "exactly this fixed list".
+    ...(wholeRelease ? {} : { archives: [releaseArchiveFor(platform, arch)] }),
   });
   process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
 }

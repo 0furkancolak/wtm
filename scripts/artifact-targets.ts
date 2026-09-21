@@ -23,6 +23,16 @@ export const publishedReleaseTargets = [
   localArtifactTargets[4],
 ] as const;
 
+/**
+ * The subset of {@link publishedReleaseTargets} a release cannot ship without. CLAUDE.md states
+ * win32 CI as informational until todo item 9 lands, and item 9 has not landed: a real tag whose
+ * Windows leg hits one of that item's still-open native failures must still let macOS and Linux
+ * ship, exactly as an informational win32 CI leg does not block an ordinary merge. Windows moves
+ * into this list the day item 9 does; until then a present, correct Windows archive is still
+ * fully verified (see `verify-release.ts`), it is simply not required for the gate to pass.
+ */
+export const requiredReleaseTargets = publishedReleaseTargets.filter((target) => target.platform !== 'win32');
+
 export function artifactTargetFor(platform: string, arch: string): ArtifactTarget {
   const target = localArtifactTargets.find((candidate) => candidate.platform === platform && candidate.arch === arch);
   if (target === undefined) throw new Error(`Unsupported local archive target ${platform}/${arch}`);

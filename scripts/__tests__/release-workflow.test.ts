@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { publishedReleaseTargets } from '../artifact-targets';
+import { publishedReleaseTargets, requiredReleaseTargets } from '../artifact-targets';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const tagGuard = "startsWith(github.ref, 'refs/tags/v')";
@@ -27,6 +27,7 @@ interface WorkflowJob {
   env?: Record<string, string>;
   permissions?: Record<string, string>;
   steps?: WorkflowStep[];
+  'continue-on-error'?: boolean | string;
 }
 
 interface Workflow {
@@ -145,19 +146,42 @@ describe('release workflow', () => {
     }
   });
 
-  test('attaches every published archive to the release and attests all of them', () => {
+  test('attaches every required archive by name, and the optional Windows one when it exists', () => {
     const steps = workflow('release.yml').jobs?.publish?.steps ?? [];
     const create = steps.find((step) => (step.run ?? '').includes('gh release create'))?.run ?? '';
 
-    for (const { archiveName } of publishedReleaseTargets) {
+    for (const { archiveName } of requiredReleaseTargets) {
       expect(create, archiveName).toContain(`dist/release/${archiveName}`);
     }
+    // The one target outside `requiredReleaseTargets` must not be a literal, always-attached path
+    // -- that would fail the whole release the moment its optional archive does not exist -- so
+    // it is attached through a glob expansion instead (`nullglob`'d to drop out cleanly when
+    // there is nothing to attach).
+    const optional = publishedReleaseTargets.filter(
+      (target) => !requiredReleaseTargets.includes(target),
+    );
+    for (const { archiveName } of optional) {
+      expect(create, archiveName).not.toContain(`dist/release/${archiveName}`);
+    }
+    expect(create).toContain('shopt -s nullglob');
+    expect(create).toContain('dist/release/*.zip');
     expect(create).toContain('dist/release/SHA256SUMS');
     // Globbed rather than listed, so provenance covers a new archive the moment a leg produces one.
     const attest = steps.find((step) => (step.uses ?? '').startsWith('actions/attest-build-provenance'));
     expect((attest?.with?.['subject-path'] ?? '').trim().split('\n').map((line) => line.trim())).toEqual([
       'dist/release/*.tar.gz', 'dist/release/*.zip',
     ]);
+  });
+
+  test('keeps the Windows leg optional: continue-on-error, and outside requiredReleaseTargets', () => {
+    // Both halves of the fix matter: `continue-on-error` (below) is what stops a failed win32 leg
+    // from reading as a cancelled workflow; `requiredReleaseTargets` (verify-release.ts) is what
+    // actually lets `publish`'s combined gate succeed without a Windows archive. Neither alone is
+    // enough -- see the "Windows archive is optional" describe block in verify-release.test.ts.
+    const windows = workflow('release.yml').jobs?.['verify-windows'];
+    expect(windows?.['continue-on-error']).toBe(true);
+    expect(requiredReleaseTargets.some((target) => target.platform === 'win32')).toBe(false);
+    expect(publishedReleaseTargets.some((target) => target.platform === 'win32')).toBe(true);
   });
 
   test('keeps Apple signing, notarization and Gatekeeper on the legs that have them', () => {
