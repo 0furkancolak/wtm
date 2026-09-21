@@ -38,6 +38,7 @@ export {
 } from './linux';
 export type { SystemdUnitOptions } from './linux';
 export {
+  createWindowsProcessInspector,
   isSchedulerUnreachable,
   renderScheduledTaskXml,
   runSchtasks,
