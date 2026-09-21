@@ -87,8 +87,19 @@ export function assignProxySlugs(worktrees: readonly ProxyHostnameWorktree[]): R
   return slugs;
 }
 
+/**
+ * `WorktreeRecord.branch` (as `worktree-parser.ts` reads it straight from
+ * `git worktree list --porcelain`'s `branch` field) is the full ref, `refs/heads/<name>`, not
+ * the short name — the same fact `create-worktree.ts` already strips this same prefix for. A
+ * short branch label is what a person recognizes in a hostname, so this strips it before
+ * slugifying rather than leaving `refs-heads-` baked into every worktree's slug.
+ */
+function shortBranchName(ref: string): string {
+  return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
+}
+
 function baseSlug(worktree: ProxyHostnameWorktree): string {
-  const fromBranch = worktree.branch === null ? '' : slugifyBranchLabel(worktree.branch);
+  const fromBranch = worktree.branch === null ? '' : slugifyBranchLabel(shortBranchName(worktree.branch));
   if (fromBranch !== '') return fromBranch;
   const fromId = slugifyBranchLabel(worktree.id);
   return fromId !== '' ? fromId : 'worktree';
