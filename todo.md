@@ -1724,6 +1724,32 @@ wtm-windows-arm64.exe
       testleri); `reconcile-fallback` tamamen yeşil; `gc.test.ts`'in üç `RESOURCE_PATH_DENIED`
       hatası gitti; `adapter.test.ts`'in `creates the missing private WTM state parent` testi
       geçiyor.
+      **2026-09-21 (W4-2 / 9g):** kümenin dört hatasının tamamı tek bir kök nedene sahip:
+      `refresh-remotes.test.ts`, `main.test.ts`'in seçicisiz analiz testi, `remove-runtime.test.ts`
+      ve `ci-watch-scenario.test.ts` hepsi bir sahte `git`/`gh`'yi `PATH`'e ekleyip çıplak adla
+      (`spawn('git')`) çağrılmasını bekliyor. `writeExecutableFixture` win32'de `git.cjs` artı bir
+      `git.cmd` trambolini yazıyor — ama libuv'nin `search_path`'i çıplak bir ada yalnızca
+      `.com`/`.exe` ekliyor, `PATHEXT` ne derse desin `.cmd` asla değil. Yani `spawn('git')`
+      `git.cmd`'yi hiç görmüyor; `PATH`'te daha ileride duran gerçek `git.exe`'yi buluyor ya da
+      `ENOENT` veriyor — testlerin sıfır sayaç raporlamasının nedeni bu, hata değil.
+      `packages/testkit/src/executable-fixture.ts`'in kendi doküman yorumu bunu zaten söylüyor;
+      fixture'lar Windows-doğru yapılmıştı, `PATH` gölgelemesine dayanan çağıranlar değil.
+      Düzeltme gerçek bir Windows doğruluk kusuru olarak ele alındı, yalnızca testler için değil:
+      `@wtm/platform`'a `executablePathResolverFor(platform)` eklendi — win32'de `PATH` içinde
+      sırayla, her girişte `PATHEXT` sırasıyla arayan, darwin/linux'ta kimlik (`execvp` zaten
+      yapıyor) dönen bir çözücü. `@wtm/core`'un `git-runner.ts`'i artık `git`'i sabit
+      yazmıyor: `useGitExecutableResolver` adında enjekte edilebilir bir modül-seviyesi çözücü
+      var (core kendi platformunu bilemez, spec D1), varsayılanı kimlik. `cli`'nin
+      `hostPlatformRuntime()`'ı ve `daemon`'ın `createProductionDaemon`'ı platformu seçtikleri
+      anda bunu kuruyor; `createGhRunner`'ın `executable`'ı da aynı çözücüden geçiyor.
+      POSIX'te çözücü kimlik olduğu için darwin/linux'ta hiçbir davranış değişmedi — dört test
+      dosyası da Linux'ta hâlâ yeşil, tam kapı temiz.
+      Kanıt durumu: kök neden libuv'nin belgelenmiş arama sırasından ve gözlemlenen hataların tam
+      şeklinden çıkarıldı, Windows'ta doğrulanmadı. Hedefli bir `win32_test_filter` koşusu
+      gerekiyor.
+      Kapanmayan: `ci-watch-scenario.test.ts`, dosyadaki kalan `daemon/main.test.ts`'in ACL/izin
+      kümesiyle paylaştığı hata (9c/9g belirsizliği, kümeleme dokümanında zaten düşük güvenle
+      işaretli) bu değişikliğin kapsamı dışında.
       Kapanmayan: adapter trust dörtlüsü — `adapter.test.ts`'in iki SQLite testi,
       `main.test.ts`'in `wires adapter trust through the CLI` testi ve bu dalın eklediği
       `trusts an adapter executable through the injected policy` testi. **Kök neden enjeksiyon

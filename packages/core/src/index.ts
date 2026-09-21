@@ -8,9 +8,12 @@ export {
   remoteFetchTimeoutMs,
   readWorktreeHead,
   retriedWorktreeListTimeoutMs,
+  useGitExecutableResolver,
   worktreeListTimeoutMs,
 } from './git/git-runner';
-export type { GitCommandOptions, GitCommandResult, GitRepositoryIdentity } from './git/git-runner';
+export type {
+  GitCommandOptions, GitCommandResult, GitExecutableResolver, GitRepositoryIdentity,
+} from './git/git-runner';
 export { parseGitWorktreePorcelain } from './git/worktree-parser';
 export { containsPath, samePath } from './paths/contains';
 export type { GitWorktreeRecord } from './git/worktree-parser';

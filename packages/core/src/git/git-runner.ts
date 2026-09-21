@@ -24,6 +24,40 @@ interface GitCommandFailure {
  * involved as a daemon that silently died.
  */
 export const defaultGitTimeoutMs = 30_000;
+
+/**
+ * How the name `git` becomes something `spawn` can start on this host.
+ *
+ * On darwin and linux the answer is `git`: the kernel's own `PATH` search runs whatever it finds,
+ * which is what this module has always relied on, and the default below keeps that byte for byte.
+ * It is a seam because one platform's search is narrower than its `PATH` -- Windows starts only
+ * `.com` and `.exe` from a bare name, so a `git` installed as a `.cmd` wrapper is invisible to a
+ * `spawn('git')` that goes looking for it -- and because *which* search a host needs is a platform
+ * fact, which core is structurally forbidden from knowing (spec D1,
+ * `__tests__/platform-independence.test.ts`).
+ *
+ * So core declares the question and the composition root answers it, once, at startup:
+ * `@wtm/platform`'s `executablePathResolverFor(runtime.id)` is the answer `cli` and `daemon`
+ * install. A process that never installs one behaves exactly as this module did before the seam
+ * existed, which is what keeps every core test that spawns a real `git` unchanged.
+ *
+ * It is resolved per call rather than cached because a caller may legitimately change `PATH`
+ * between calls -- every scenario that shadows `git` with a counting fixture does precisely that,
+ * after this module is imported and before the command under test runs.
+ */
+export type GitExecutableResolver = (name: string) => string;
+
+let resolveGitExecutable: GitExecutableResolver = (name) => name;
+
+/**
+ * Installs the host's resolution. Called by a composition root (`cli`, `daemon`), never by core.
+ * Passing nothing restores the identity resolution, which is what a test that installed one for a
+ * single case uses to put the module back.
+ */
+export function useGitExecutableResolver(resolver?: GitExecutableResolver): void {
+  resolveGitExecutable = resolver ?? ((name) => name);
+}
+
 /** How long a timed-out git is given to die politely before it is killed outright. */
 const terminationGraceMs = 2_000;
 
@@ -213,7 +247,7 @@ export function runGit(
   const argv = gitArgv(repoPath, args);
   const timeoutMs = options.timeoutMs ?? defaultGitTimeoutMs;
   return new Promise((resolve, reject) => {
-    const child = spawn(argv[0] ?? 'git', argv.slice(1), {
+    const child = spawn(resolveGitExecutable(argv[0] ?? 'git'), argv.slice(1), {
       env: createGitEnvironment(process.env),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
