@@ -3039,6 +3039,14 @@ cross-platform
 - [x] Website/homepage alanını kontrol et.
 - [x] Release/installation linklerini görünür hale getir.
 
+**Not (2026-09-21):** kalan iki alt madde (description, topics) repo ayarları — Settings sekmesi,
+`git push`/PR ile değişmiyor. Bu ortamdaki GitHub MCP araç setinde repo metadata'sını yazan bir
+araç yok (yalnızca issue/PR/dosya/Actions araçları var), yani bu bir kod değil, bir yetki sınırı.
+Kaptan doğrudan GitHub Settings'ten değiştirebilir — önerilen açıklama ve topics listesi yukarıda
+zaten yazılı, kopyalamak yeterli. README'nin kendisi (hero, badge'ler, Install bölümü) zaten
+cross-platform konumlandırmayı doğru anlatıyor; madde 23 (hero) ve madde 24 (install) o kısmı
+kapsıyor.
+
 ---
 
 ### [ ] 23. README hero bölümünü yeniden yaz
@@ -3092,7 +3100,7 @@ README her zaman gerçek durumu göstermeli.
 
 ---
 
-### [ ] 24. README install bölümünü platform bazlı düzenle
+### [x] 24. README install bölümünü platform bazlı düzenle
 
 Önerilen yapı:
 
@@ -3189,6 +3197,11 @@ kanıtsız; (2) `install.ps1` hiç çalıştırılmadı — bu sandbox'ta `pwsh`
 (`which pwsh powershell` doğrulandı), o yüzden yalnızca yapısal kontroller var (dosya var/boş
 değil, süslü parantez/tırnak sayıları eşleşiyor, gerekli parametreler/env değişkenleri mevcut).
 Her iki boşluk da gerçek kanıt geldiğinde kapanacak; README ve docs/12 aynı dille işaretlendi.
+
+**Not (2026-09-21):** madde başlığı işaretsiz kalmıştı, alt maddelerin ve yukarıdaki W8-2/24
+notunun hepsi zaten [x] — `README.md`'nin `## Install` bölümü macOS/Linux/npm/Windows başlıklarına
+bölünmüş durumda, taslaktaki ağaç yapısının karşılığı. Kod değişikliği yok, yalnızca durum
+düzeltmesi.
 
 ---
 
