@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'bun:test';
-import type { EndpointLease, ManagedProcessRecord, RepositoryRecord, WorktreeRecord } from '@wtm/core';
+import { Readable } from 'node:stream';
+import type { IncomingMessage } from 'node:http';
+import type { ChecklistItemRecord, EndpointLease, ManagedProcessRecord, RepositoryRecord, WorktreeRecord } from '@wtm/core';
 import {
+  checklistApiHandler,
   devOverlayHtmlInjector,
   gatherDevOverlayData,
   injectBeforeBodyClose,
@@ -75,11 +78,20 @@ function managedProcess(overrides: Partial<ManagedProcessRecord> = {}): ManagedP
   };
 }
 
+function checklistItem(overrides: Partial<ChecklistItemRecord> = {}): ChecklistItemRecord {
+  return {
+    worktreeId: 'worktree-1', position: 0, text: 'Check the login flow', checked: false,
+    createdAt: '2026-09-21T09:00:00.000Z', updatedAt: '2026-09-21T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
 function source(input: {
   worktrees: WorktreeRecord[];
   repositories?: RepositoryRecord[];
   leases: EndpointLease[];
   processes?: ManagedProcessRecord[];
+  checklistItems?: ChecklistItemRecord[];
 }): DevOverlaySource {
   return {
     listWorktrees: () => input.worktrees,
@@ -90,6 +102,9 @@ function source(input: {
       listManagedProcesses: (query) => input.processes!.filter((entry) =>
         (query?.worktreeId === undefined || entry.worktreeId === query.worktreeId)
         && (query?.states === undefined || query.states.includes(entry.state))),
+    }),
+    ...(input.checklistItems === undefined ? {} : {
+      listChecklistItems: (worktreeId) => input.checklistItems!.filter((entry) => entry.worktreeId === worktreeId),
     }),
   };
 }
@@ -278,6 +293,34 @@ describe('gatherDevOverlayData', () => {
     );
     expect(data?.runningTasks).toEqual([{ taskName: 'dev', state: 'RUNNING' }]);
   });
+
+  it('omits the checklist when the store does not offer listChecklistItems', () => {
+    const data = gatherDevOverlayData(
+      source({ worktrees: [worktree()], repositories: [repository()], leases: [lease()] }),
+      currentRoute(),
+    );
+    expect(data?.checklist).toEqual([]);
+  });
+
+  it('lists this worktree\'s checklist items (as the store returns them) when the store offers them', () => {
+    const data = gatherDevOverlayData(
+      source({
+        worktrees: [worktree()],
+        repositories: [repository()],
+        leases: [lease()],
+        checklistItems: [
+          checklistItem({ position: 0, text: 'Check the login flow', checked: false }),
+          checklistItem({ position: 1, text: 'Run the migration', checked: true }),
+          checklistItem({ position: 0, text: 'Other worktree item', worktreeId: 'some-other-worktree' }),
+        ],
+      }),
+      currentRoute(),
+    );
+    expect(data?.checklist).toEqual([
+      { position: 0, text: 'Check the login flow', checked: false },
+      { position: 1, text: 'Run the migration', checked: true },
+    ]);
+  });
 });
 
 describe('renderDevOverlayFragment', () => {
@@ -290,6 +333,7 @@ describe('renderDevOverlayFragment', () => {
     hostname: 'web.feature-auth.wtm.localhost',
     siblings: [],
     runningTasks: [],
+    checklist: [],
   };
 
   it('renders the repo name, branch and worktree number', () => {
@@ -320,6 +364,117 @@ describe('renderDevOverlayFragment', () => {
     });
     expect(html).toContain('http://api.feature-auth.wtm.localhost');
     expect(html).toContain('this page');
+  });
+
+  it('renders no checkbox markup and no toggle script when the checklist is empty', () => {
+    const html = renderDevOverlayFragment(baseData);
+    expect(html).not.toContain('type="checkbox"');
+    expect(html).not.toContain('/__wtm/checklist');
+    expect(html).not.toContain('<script>');
+  });
+
+  it('renders real checkboxes and the toggle script when the checklist has items', () => {
+    const html = renderDevOverlayFragment({
+      ...baseData,
+      checklist: [
+        { position: 0, text: 'Check the login flow', checked: false },
+        { position: 1, text: 'Run the migration', checked: true },
+      ],
+    });
+    expect(html).toContain('type="checkbox" data-position="0"');
+    expect(html).not.toContain('type="checkbox" data-position="0" checked');
+    expect(html).toContain('type="checkbox" data-position="1" checked');
+    expect(html).toContain('Check the login flow');
+    expect(html).toContain('Run the migration');
+    expect(html).toContain('/__wtm/checklist');
+    expect(html).toContain('<script>');
+  });
+
+  it('HTML-escapes checklist item text', () => {
+    const html = renderDevOverlayFragment({
+      ...baseData,
+      checklist: [{ position: 0, text: '<script>alert(1)</script>', checked: false }],
+    });
+    expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+});
+
+describe('checklistApiHandler', () => {
+  function store(initial: ChecklistItemRecord[] = []) {
+    const rows = new Map<string, ChecklistItemRecord>();
+    for (const row of initial) rows.set(`${row.worktreeId}\u0000${row.position}`, row);
+    return {
+      list: (worktreeId: string) => [...rows.values()].filter((row) => row.worktreeId === worktreeId).sort((a, b) => a.position - b.position),
+      set: () => { throw new Error('not used in these tests'); },
+      clear: () => { throw new Error('not used in these tests'); },
+      deleteForWorktree: () => { throw new Error('not used in these tests'); },
+      setChecked: (worktreeId: string, position: number, checked: boolean, now: string) => {
+        const key = `${worktreeId}\u0000${position}`;
+        const row = rows.get(key);
+        if (row === undefined) return null;
+        const updated = { ...row, checked, updatedAt: now };
+        rows.set(key, updated);
+        return updated;
+      },
+    };
+  }
+
+  function fakeRequest(options: { method: string; url: string; body?: string }): IncomingMessage {
+    const request = new Readable({
+      read() {
+        if (options.body !== undefined) this.push(options.body);
+        this.push(null);
+      },
+    }) as unknown as IncomingMessage;
+    request.method = options.method;
+    request.url = options.url;
+    return request;
+  }
+
+  it('GET returns the stored list', async () => {
+    const handler = checklistApiHandler(store([checklistItem({ position: 0, text: 'Check it', checked: false })]));
+    const result = await handler(currentRoute(), fakeRequest({ method: 'GET', url: '/__wtm/checklist' }));
+    expect(result).toEqual({ status: 200, body: { items: [checklistItem({ position: 0, text: 'Check it', checked: false })] } });
+  });
+
+  it('POST toggles an item', async () => {
+    const handler = checklistApiHandler(store([checklistItem({ position: 0, checked: false })]));
+    const result = await handler(currentRoute(), fakeRequest({
+      method: 'POST', url: '/__wtm/checklist', body: JSON.stringify({ position: 0, checked: true }),
+    }));
+    expect(result.status).toBe(200);
+    expect((result.body as { item: ChecklistItemRecord }).item.checked).toBe(true);
+  });
+
+  it('POST with a malformed body is a 400', async () => {
+    const handler = checklistApiHandler(store());
+    const malformed = await handler(currentRoute(), fakeRequest({ method: 'POST', url: '/__wtm/checklist', body: 'not json' }));
+    expect(malformed.status).toBe(400);
+    const invalidShape = await handler(currentRoute(), fakeRequest({
+      method: 'POST', url: '/__wtm/checklist', body: JSON.stringify({ position: 'zero', checked: true }),
+    }));
+    expect(invalidShape.status).toBe(400);
+  });
+
+  it('POST toggling a nonexistent position is a 404', async () => {
+    const handler = checklistApiHandler(store());
+    const result = await handler(currentRoute(), fakeRequest({
+      method: 'POST', url: '/__wtm/checklist', body: JSON.stringify({ position: 5, checked: true }),
+    }));
+    expect(result).toEqual({ status: 404, body: { error: 'No checklist item at that position.' } });
+  });
+
+  it('any other method is a 405', async () => {
+    const handler = checklistApiHandler(store());
+    const result = await handler(currentRoute(), fakeRequest({ method: 'DELETE', url: '/__wtm/checklist' }));
+    expect(result.status).toBe(405);
+  });
+
+  it('an unrecognized path under the prefix is a 405', async () => {
+    const handler = checklistApiHandler(store());
+    const result = await handler(currentRoute(), fakeRequest({ method: 'GET', url: '/__wtm/checklist/extra' }));
+    expect(result.status).toBe(405);
   });
 });
 
