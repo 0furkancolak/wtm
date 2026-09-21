@@ -968,8 +968,8 @@ every active endpoint lease is reachable at `http://<service>.<slug>.wtm.localho
 in place of the dynamic port `wtm ports` shows for it — see
 [`docs/07`](07-process-port-runtime.md#local-reverse-proxy) for the exact hostname format, the
 collision rule, and the honest limitation that binding a fixed port rather than port 80 leaves a
-port number in the URL. There is no separate `wtm proxy` command: the proxy is a daemon-level
-listener, not something a single command starts or stops.
+port number in the URL. There is no separate CLI command for it: the proxy is a daemon-level
+listener, started and stopped only by the daemon itself, not by any single `wtm` invocation.
 
 ## Skill
 
