@@ -116,6 +116,15 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   yapısal testlerle doğrulandı, gerçek bir Windows leg'in başarısız olup release'in geri kalanını
   bloklamadığı bir tag'de hiç görülmedi.
 
+### #51 — feat(daemon,core): automatic idle runtime suspension for managed tasks (W8-3 / 14)
+- Commit: `b2771f1` · Unit: W8-3 / 14
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  hiç çalışmadı (`get_check_runs` 0 döndü, runner atanmadı). Yalnızca yerel gate ile doğrulandı.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/daemon/src/__tests__/idle-runtime.test.ts packages/core/src/config/__tests__/idle-config.test.ts packages/daemon/src/__tests__/runtime-controller.test.ts packages/daemon/src/__tests__/logs.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
