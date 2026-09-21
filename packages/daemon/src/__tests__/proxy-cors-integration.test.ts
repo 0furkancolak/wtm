@@ -6,13 +6,13 @@ import { runScenario } from '../../../testkit/src/scenario-child';
 const scenarioPath = fileURLToPath(new URL('./proxy-cors-integration.scenario.ts', import.meta.url));
 
 /**
- * The scenario's fixture worktree is on `feature/existing`, alone in its collision group. The
- * slug is derived from `WorktreeRecord.branch` as the state store actually holds it — the full
- * ref `git worktree list --porcelain` reports (`worktree-parser.ts` does not strip
- * `refs/heads/`, and nothing downstream of it does either) — not the short name `docs/07`'s own
- * prose example uses. See this file's own note below on that gap.
+ * The scenario's fixture worktree is on `feature/existing`, alone in its collision group.
+ * `WorktreeRecord.branch` carries the full ref `git worktree list --porcelain` reports
+ * (`refs/heads/feature/existing`), but `proxy-hostname.ts`'s `baseSlug` strips that prefix
+ * before slugifying (see its `shortBranchName` helper), so the short branch name is what ends
+ * up in the hostname, matching `docs/07`'s own prose example.
  */
-const slug = slugifyBranchLabel('refs/heads/feature/existing');
+const slug = slugifyBranchLabel('feature/existing');
 
 interface ScenarioOutput {
   origins: string[];
