@@ -237,7 +237,8 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   ```
 
 ### #65 — feat(daemon,core): inject dev overlay into proxied HTML responses (W10-4 / 46)
-- Commit: `e47b4ef` · Unit: W10-4 / 46 (MVP slice — kontrol listesi hariç)
+- Commit: `e47b4ef` (öncesi) → merge sonrası güncel head · Unit: W10-4 / 46 (MVP slice —
+  kontrol listesi hariç)
 - Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
   de hiç çalışmadı (aynı kesinti imzası). Yalnızca yerel gate ile doğrulandı.
 - Bu PR'a özgü ayrı bir kanıt boşluğu: enjeksiyon `ProxyServer`'ın kendi response akışına
