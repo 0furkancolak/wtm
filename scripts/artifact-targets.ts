@@ -8,8 +8,18 @@ const localArtifactTargets = [
 
 export type ArtifactTarget = (typeof localArtifactTargets)[number];
 
-/** Enabling local Linux packaging does not add a target to a tagged release. */
-export const publishedReleaseTargets = [localArtifactTargets[0], localArtifactTargets[1]] as const;
+/**
+ * What a tagged release actually carries (todo item 29). Every entry here is a selection from the
+ * catalog above, never a name beside it: a published target the build cannot produce is an archive
+ * no job knows how to make. Publication stays the narrower list — a Windows archive is neither
+ * built nor published — and a target only joins it once a release job builds, smokes and gates it.
+ */
+export const publishedReleaseTargets = [
+  localArtifactTargets[0],
+  localArtifactTargets[1],
+  localArtifactTargets[2],
+  localArtifactTargets[3],
+] as const;
 
 export function artifactTargetFor(platform: string, arch: string): ArtifactTarget {
   const target = localArtifactTargets.find((candidate) => candidate.platform === platform && candidate.arch === arch);

@@ -16,11 +16,25 @@ test('local archive targets keep exact platform and architecture names', () => {
   });
 });
 
-test('making Linux archives locally does not expand the published release target set', () => {
+test('a tagged release publishes both macOS and both Linux archives', () => {
+  // Item 29's Linux half. Publication is still narrower than the catalog -- Windows archives are
+  // buildable by nothing here and published by nothing -- so the two lists stay separate.
   expect(publishedReleaseTargets).toEqual([
     { platform: 'darwin', arch: 'arm64', archiveName: 'wtm-darwin-arm64.tar.gz', executableName: 'wtm' },
     { platform: 'darwin', arch: 'x64', archiveName: 'wtm-darwin-x64.tar.gz', executableName: 'wtm' },
+    { platform: 'linux', arch: 'x64', archiveName: 'wtm-linux-x64.tar.gz', executableName: 'wtm' },
+    { platform: 'linux', arch: 'arm64', archiveName: 'wtm-linux-arm64.tar.gz', executableName: 'wtm' },
   ]);
+});
+
+test('every published target is a local archive target the build can actually produce', () => {
+  // The published list is a selection from the catalog, never a name invented beside it: a
+  // published target `artifactTargetFor` cannot resolve is an archive no job knows how to build.
+  for (const target of publishedReleaseTargets) {
+    expect(artifactTargetFor(target.platform, target.arch)).toEqual(target);
+  }
+  expect(new Set(publishedReleaseTargets.map(({ archiveName }) => archiveName)).size)
+    .toBe(publishedReleaseTargets.length);
 });
 
 test('the target resolver refuses unsupported platforms, architectures and aliases', () => {

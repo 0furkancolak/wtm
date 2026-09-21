@@ -110,9 +110,9 @@ is verified.
 ### macOS: published prerelease binary
 
 The published `v0.1.0-rc.1` archives are macOS-only — `wtm-darwin-arm64` and `wtm-darwin-x64`. There is no Linux
-download: nothing is published for Linux yet, and adding it means changing the release workflow,
-the artifact names, the signing rule and the Homebrew formula together, which is a later
-increment. Install on Linux from source.
+download yet: the release workflow now builds and publishes `wtm-linux-x64` and `wtm-linux-arm64`
+alongside them, but no tag has been cut since that landed, so nothing is published for Linux
+today. Install on Linux from source until a release carries those archives.
 
 Select the archive matching your architecture, verify it against `SHA256SUMS`, then extract:
 

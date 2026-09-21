@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   verify:
-    name: Verify ${{ matrix.arch }}
+    name: Verify ${{ matrix.platform }} ${{ matrix.arch }}
     # A verify takes about eight minutes. Twice a hung scenario child held one past forty,
     # because `spawnSync` blocks and no per-test timeout can interrupt a blocking call. The
     # children have their own bound now; this one makes a hang anywhere else end visibly.
@@ -27,9 +27,11 @@ jobs:
       matrix:
         include:
           # Each executable is built natively; the SEA embeds a host-architecture Node runtime.
-          - arch: arm64
+          - platform: darwin
+            arch: arm64
             runner: macos-15
-          - arch: x64
+          - platform: darwin
+            arch: x64
             runner: macos-15-intel
     steps:
       - uses: actions/checkout@v4
@@ -192,14 +194,116 @@ jobs:
         env:
           WTM_RELEASE_SIGNING: ${{ steps.sign.outputs.signing }}
           WTM_RELEASE_NOTARIZATION: ${{ steps.notarize.outputs.notarization }}
-          # This job built one architecture, so it gates one archive. The whole release is gated
-          # again by the job that collects both.
+          # This leg built one target, so it gates one archive. The whole release is gated again by
+          # the job that collects every leg. Platform *and* architecture, because two published
+          # targets share each architecture: an arch alone no longer names an archive.
+          WTM_RELEASE_PLATFORM: ${{ matrix.platform }}
           WTM_RELEASE_ARCH: ${{ matrix.arch }}
         run: bun run release:gate
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wtm-darwin-${{ matrix.arch }}
+          name: wtm-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/release/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Linux archives are published assets, not only something `bun run release:artifacts` can build
+  # on a contributor's own machine (todo item 29). A separate job rather than two more legs of the
+  # matrix above: signing, notarization and Gatekeeper are three steps that would each need a
+  # `matrix.platform == 'darwin'` guard, and the evidence they produce would have to be read
+  # through a conditional expression whose falsy branch silently reads as "not applicable" -- on
+  # the one job where getting that wrong publishes an unsigned macOS binary.
+  verify-linux:
+    name: Verify ${{ matrix.platform }} ${{ matrix.arch }}
+    timeout-minutes: 30
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Built natively for the same reason the macOS legs are: the SEA embeds a
+          # host-architecture Node runtime, and the archive step checks the ELF header against the
+          # architecture it claims to be.
+          - platform: linux
+            arch: x64
+            runner: ubuntu-24.04
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - run: bun install --frozen-lockfile
+
+      # The same whole-release gate the macOS legs run, ending in `release:artifacts`, which writes
+      # this architecture's tarball and its own one-line SHA256SUMS.
+      - name: Verify the whole release
+        run: bun run release:verify
+
+      - name: Measure performance budgets
+        run: |
+          set -uo pipefail
+          # The gate decides what a blocker means for a release, exactly as on macOS: test:perf's
+          # own exit code would end this job before the gate ever saw the number. The budgets
+          # themselves are not an Apple matter -- `scripts/performance-report.ts` records the host
+          # platform alongside the counters and applies the same thresholds everywhere.
+          bun run test:perf || true
+
+      - name: Verify the executable
+        run: |
+          set -uo pipefail
+          # `release:verify` already ran this suite, but as an exit code that ended the step. The
+          # gate refuses a release with no smoke evidence, and evidence is a verdict it can read.
+          if bun test scripts/__tests__/sea-smoke.test.ts --timeout 60000; then
+            smoke='[{"name":"standalone executable smoke suite","passed":true}]'
+          else
+            smoke='[{"name":"standalone executable smoke suite","passed":false,'
+            smoke="$smoke"'"detail":"scripts/__tests__/sea-smoke.test.ts failed"}]'
+          fi
+          # The gate, not this step, decides what a failed smoke result means for a release.
+          echo "WTM_RELEASE_SMOKE=$smoke" >> "$GITHUB_ENV"
+
+      - name: Record the release evidence
+        run: |
+          set -euo pipefail
+          # Nothing signs or notarizes an ELF executable here, and there is no Gatekeeper to clear:
+          # `not-applicable` is that stated outright, which is the only answer the gate accepts for
+          # a selection with no macOS archive in it. Writing an Apple status here -- or leaving the
+          # file empty -- is refused rather than quietly believed.
+          echo 'not-applicable' > dist/release/SIGNING
+          echo 'not-applicable' > dist/release/NOTARIZATION
+          printf '%s' "$WTM_RELEASE_SMOKE" > dist/release/SMOKE.json
+          # One element per leg, concatenated by the combined gate the same way SHA256SUMS is.
+          bun -e "const {readFileSync,writeFileSync}=require('node:fs');
+            const r=JSON.parse(readFileSync('artifacts/performance.json','utf8')).release;
+            writeFileSync('dist/release/PERFORMANCE.json', JSON.stringify([r]));"
+          {
+            echo 'WTM_RELEASE_PERFORMANCE<<WTM_PERFORMANCE_EOF'
+            cat dist/release/PERFORMANCE.json
+            echo
+            echo 'WTM_PERFORMANCE_EOF'
+          } >> "$GITHUB_ENV"
+
+      - name: Gate the release artifacts
+        env:
+          WTM_RELEASE_SIGNING: not-applicable
+          WTM_RELEASE_NOTARIZATION: not-applicable
+          WTM_RELEASE_PLATFORM: ${{ matrix.platform }}
+          WTM_RELEASE_ARCH: ${{ matrix.arch }}
+        run: bun run release:gate
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wtm-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/release/
           if-no-files-found: error
           retention-days: 7
@@ -207,7 +311,7 @@ jobs:
   publish:
     name: Publish
     timeout-minutes: 20
-    needs: verify
+    needs: [verify, verify-linux]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-15
     permissions:
@@ -225,29 +329,37 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: bun install --frozen-lockfile
 
+      # Every verify leg uploads as `wtm-<platform>-<arch>`, and they are the only artifacts this
+      # workflow uploads before this job runs -- `homebrew-formula` comes from `formula`, which
+      # needs `publish` and so cannot exist yet.
       - uses: actions/download-artifact@v4
         with:
-          pattern: wtm-darwin-*
+          pattern: wtm-*
           path: staged/
 
-      - name: Collect both architectures
+      - name: Collect every architecture
         id: collect
         run: |
           set -euo pipefail
           mkdir -p dist/release
           find staged -name '*.tar.gz' -exec cp {} dist/release/ ';'
-          # Each matrix job wrote its own SHA256SUMS; the release carries the union of both.
+          # Each leg wrote its own one-line SHA256SUMS; the release carries the union of all of them.
           cat staged/*/SHA256SUMS | sort -k2 > dist/release/SHA256SUMS
-          # Both architectures must agree on the evidence, or the release does not describe one build.
-          signing="$(cat staged/*/SIGNING | sort -u)"
+          # Signing and notarization describe macOS archives, so they are read from the macOS legs
+          # alone. Those two must agree, or the release does not describe one build.
+          signing="$(cat staged/wtm-darwin-*/SIGNING | sort -u)"
           test "$(printf '%s\n' "$signing" | wc -l | tr -d ' ')" -eq 1
           echo "signing=$signing" >> "$GITHUB_OUTPUT"
-          # Notarization is one value across both architectures for the same reason signing is:
-          # a release where one architecture is notarized and the other is not does not describe
+          # Notarization is one value across both macOS architectures for the same reason signing
+          # is: a release where one architecture is notarized and the other is not does not describe
           # one build, and the gate would otherwise be handed whichever value sorted first.
-          notarization="$(cat staged/*/NOTARIZATION | sort -u)"
+          notarization="$(cat staged/wtm-darwin-*/NOTARIZATION | sort -u)"
           test "$(printf '%s\n' "$notarization" | wc -l | tr -d ' ')" -eq 1
           echo "notarization=$notarization" >> "$GITHUB_OUTPUT"
+          # A Linux leg claiming an Apple status signed nothing: the evidence would have reached
+          # this job from some other build. The gate refuses that too, but it never sees these
+          # files -- it is handed the macOS values above -- so the claim is refused here.
+          test "$(cat staged/wtm-linux-*/SIGNING staged/wtm-linux-*/NOTARIZATION | sort -u)" = 'not-applicable'
           # The name the gate reads. Exporting it as anything else leaves the gate with no smoke
           # evidence at all, which it refuses.
           {
@@ -299,6 +411,8 @@ jobs:
             --verify-tag $prerelease \
             dist/release/wtm-darwin-arm64.tar.gz \
             dist/release/wtm-darwin-x64.tar.gz \
+            dist/release/wtm-linux-x64.tar.gz \
+            dist/release/wtm-linux-arm64.tar.gz \
             dist/release/SHA256SUMS
 
       - name: Publish to npm with provenance

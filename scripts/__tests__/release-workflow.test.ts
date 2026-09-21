@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { publishedReleaseTargets } from '../artifact-targets';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const tagGuard = "startsWith(github.ref, 'refs/tags/v')";
+/** The jobs that build one published target each and upload it for `publish` to collect. */
+const verifyJobs = ['verify', 'verify-linux'];
 
 interface WorkflowStep {
   name?: string;
@@ -12,10 +15,12 @@ interface WorkflowStep {
   uses?: string;
   env?: Record<string, string>;
   shell?: string;
+  with?: Record<string, string>;
 }
 
 interface WorkflowJob {
   strategy?: { matrix?: { include?: { platform: string; arch: string; runner: string }[] } };
+  needs?: string | string[];
   if?: string;
   env?: Record<string, string>;
   permissions?: Record<string, string>;
@@ -98,6 +103,100 @@ describe('release workflow', () => {
     }
 
     expect(gaps).toEqual([]);
+  });
+
+  test('builds every published release target, and only targets the catalog can build', () => {
+    // The published target table and the workflow are one contract in two files. A target added to
+    // `publishedReleaseTargets` with no leg to build it fails every tag at the gate -- which at
+    // least is loud -- but a leg building an archive nothing publishes is silent, and that is how
+    // a Linux tarball was built by CI for weeks without ever reaching a release.
+    const jobs = workflow('release.yml').jobs ?? {};
+    const legs = verifyJobs.flatMap((name) => jobs[name]?.strategy?.matrix?.include ?? [])
+      .map(({ platform, arch }) => `${platform}/${arch}`);
+
+    expect([...legs].sort()).toEqual(
+      publishedReleaseTargets.map(({ platform, arch }) => `${platform}/${arch}`).sort(),
+    );
+    expect(new Set(legs).size, 'two legs building the same target').toBe(legs.length);
+  });
+
+  test('uploads one artifact per leg under a name the publishing job actually downloads', () => {
+    // Renaming an upload without its download is the failure this pins: `pattern: wtm-darwin-*`
+    // silently matched nothing for a Linux leg, and `publish` would have created a release missing
+    // those assets rather than failing.
+    const jobs = workflow('release.yml').jobs ?? {};
+    const pattern = (jobs.publish?.steps ?? [])
+      .find((step) => step.uses?.startsWith('actions/download-artifact'))?.with?.pattern ?? '';
+    const glob = new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/gu, '\\$&').replaceAll('*', '.*')}$`, 'u');
+
+    for (const name of verifyJobs) {
+      const job = jobs[name];
+      const upload = (job?.steps ?? []).find((step) => step.uses?.startsWith('actions/upload-artifact'));
+      expect(upload?.with?.['if-no-files-found'], name).toBe('error');
+      for (const leg of job?.strategy?.matrix?.include ?? []) {
+        const rendered = (upload?.with?.name ?? '')
+          .replaceAll('${{ matrix.platform }}', leg.platform)
+          .replaceAll('${{ matrix.arch }}', leg.arch);
+        expect(rendered, name).toBe(`wtm-${leg.platform}-${leg.arch}`);
+        expect(glob.test(rendered), `${rendered} is not downloaded by ${pattern}`).toBe(true);
+      }
+    }
+  });
+
+  test('attaches every published archive to the release and attests all of them', () => {
+    const steps = workflow('release.yml').jobs?.publish?.steps ?? [];
+    const create = steps.find((step) => (step.run ?? '').includes('gh release create'))?.run ?? '';
+
+    for (const { archiveName } of publishedReleaseTargets) {
+      expect(create, archiveName).toContain(`dist/release/${archiveName}`);
+    }
+    expect(create).toContain('dist/release/SHA256SUMS');
+    // Globbed rather than listed, so provenance covers a new archive the moment a leg produces one.
+    const attest = steps.find((step) => (step.uses ?? '').startsWith('actions/attest-build-provenance'));
+    expect(attest?.with?.['subject-path']).toBe('dist/release/*.tar.gz');
+  });
+
+  test('keeps Apple signing, notarization and Gatekeeper on the legs that have them', () => {
+    // Signing a Linux ELF executable is not a step that could work; it is a step that means the
+    // workflow no longer knows what it is building. The gate refuses the claim (verify-release.ts),
+    // and this refuses the attempt.
+    const jobs = workflow('release.yml').jobs ?? {};
+    const linux = (jobs['verify-linux']?.steps ?? [])
+      .map((step) => `${step.run ?? ''} ${Object.values(step.env ?? {}).join(' ')}`).join('\n');
+
+    for (const apple of ['codesign', 'notarytool', 'spctl', 'security ', 'MACOS_', 'xcrun']) {
+      expect(linux, `the Linux legs must not run ${apple}`).not.toContain(apple);
+    }
+    // And it says so to the gate rather than leaving the evidence absent, which is refused.
+    const gate = (jobs['verify-linux']?.steps ?? []).find((step) => (step.run ?? '').includes('release:gate'));
+    expect(gate?.env?.WTM_RELEASE_SIGNING).toBe('not-applicable');
+    expect(gate?.env?.WTM_RELEASE_NOTARIZATION).toBe('not-applicable');
+    // The macOS legs still report a real status, which the stable-release rules then decide on.
+    const darwinGate = (jobs.verify?.steps ?? []).find((step) => (step.run ?? '').includes('release:gate'));
+    expect(darwinGate?.env?.WTM_RELEASE_SIGNING).toBe('${{ steps.sign.outputs.signing }}');
+    expect(darwinGate?.env?.WTM_RELEASE_NOTARIZATION).toBe('${{ steps.notarize.outputs.notarization }}');
+  });
+
+  test('gates each leg against its own archive by platform and architecture', () => {
+    // Two published targets share each architecture, so an arch-only `WTM_RELEASE_ARCH` would
+    // resolve a Linux leg to the darwin archive name and fail a build that did nothing wrong.
+    const jobs = workflow('release.yml').jobs ?? {};
+    for (const name of verifyJobs) {
+      const gate = (jobs[name]?.steps ?? []).find((step) => (step.run ?? '').includes('release:gate'));
+      expect(gate?.env?.WTM_RELEASE_PLATFORM, name).toBe('${{ matrix.platform }}');
+      expect(gate?.env?.WTM_RELEASE_ARCH, name).toBe('${{ matrix.arch }}');
+    }
+    // The combined gate names neither, which is how it asks for the whole release.
+    const combined = (jobs.publish?.steps ?? []).find((step) => (step.run ?? '').includes('release:gate'));
+    expect(combined?.env?.WTM_RELEASE_PLATFORM).toBeUndefined();
+    expect(combined?.env?.WTM_RELEASE_ARCH).toBeUndefined();
+  });
+
+  test('waits for every verify job before publishing', () => {
+    const jobs = workflow('release.yml').jobs ?? {};
+    const needs = jobs.publish?.needs ?? [];
+
+    expect([...(typeof needs === 'string' ? [needs] : needs)].sort()).toEqual([...verifyJobs].sort());
   });
 
   test('publishes only for version tags', () => {

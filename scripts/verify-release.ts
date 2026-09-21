@@ -7,6 +7,23 @@ import { publishedReleaseTargets } from './artifact-targets';
 /** A release publishes exactly these archives; anything else is an unverified artifact. */
 export const releaseArchiveNames: readonly string[] = publishedReleaseTargets.map(({ archiveName }) => archiveName);
 
+/**
+ * The platform family whose executables Apple signs and notarizes. Signing, the notary service and
+ * Gatekeeper are facts about Mach-O executables on macOS; every other published target has none of
+ * them, and no equivalent of its own to satisfy.
+ */
+const applePlatform = 'darwin';
+
+/**
+ * What an archive outside {@link applePlatform} reports for signing and for notarization (todo item
+ * 29, the Linux half). It is a status the workflow states rather than an absent value, for exactly
+ * the reason `skipped` is one below: "this platform has no such notion" and "the evidence went
+ * missing on the way to the gate" must not be the same input. It is accepted only for a selection
+ * that contains no macOS archive — otherwise it would be the cheapest possible way to publish an
+ * unsigned, unnotarized macOS binary through a stable tag.
+ */
+export const releaseNotApplicable = 'not-applicable';
+
 /** Ad-hoc and unsigned executables are tolerable for prereleases only. */
 export const releaseSigningStatuses = ['signed', 'adhoc', 'unsigned'] as const;
 
@@ -21,11 +38,17 @@ export const releaseNotarizationStatuses = ['notarized', 'skipped'] as const;
 
 export type ReleaseNotarizationStatus = (typeof releaseNotarizationStatuses)[number];
 
-/** The one archive a single-architecture build produces. */
-export function releaseArchiveFor(arch: string): string {
-  const target = publishedReleaseTargets.find((candidate) => candidate.arch === arch);
+/**
+ * The one archive a single build job produces. Keyed by platform *and* architecture: two published
+ * targets share each architecture now, so an arch-only lookup would hand a Linux job the darwin
+ * archive name and fail a build that did nothing wrong.
+ */
+export function releaseArchiveFor(platform: string, arch: string): string {
+  const target = publishedReleaseTargets.find(
+    (candidate) => candidate.platform === platform && candidate.arch === arch,
+  );
   if (target === undefined) {
-    throw new Error(`No release archive is defined for architecture ${arch}`);
+    throw new Error(`No release archive is defined for ${platform}/${arch}`);
   }
   return target.archiveName;
 }
@@ -110,15 +133,18 @@ export function verifyReleaseArtifacts(request: ReleaseVerification): ReleaseMan
     throw new Error(`Released version ${release.version} does not match package version ${packageVersion}`);
   }
   verifySmoke(request.smoke);
-  verifySigning(release, request.signing);
-  verifyNotarization(release, request.notarization);
-  verifyPerformance(release, request.performance);
 
+  // The selection is settled before the signing evidence is judged, because which archives are
+  // being gated is what decides whether Apple evidence applies to them at all.
   const expected = request.archives ?? releaseArchiveNames;
   if (!Array.isArray(expected) || expected.length === 0 || new Set(expected).size !== expected.length
     || expected.some((name) => !(releaseArchiveNames as readonly string[]).includes(name))) {
     throw new Error('Release archive selection must be a non-empty, unique subset of the published release targets');
   }
+  verifySigning(release, request.signing, expected);
+  verifyNotarization(release, request.notarization, expected);
+  verifyPerformance(release, request.performance);
+
   const listed = parseChecksums(directory);
   for (const name of listed.keys()) {
     if (!expected.includes(name)) throw new Error(`SHA256SUMS lists unexpected entry ${name}`);
@@ -185,7 +211,42 @@ function verifySmoke(smoke: readonly ReleaseSmokeCheck[] | undefined): void {
   }
 }
 
-function verifySigning(release: ReleaseVersion, signing: string | undefined): void {
+/** Whether this selection contains an archive Apple signing and notarization can describe at all. */
+function containsAppleArchive(expected: readonly string[]): boolean {
+  return publishedReleaseTargets.some(
+    (target) => target.platform === applePlatform && expected.includes(target.archiveName),
+  );
+}
+
+/**
+ * The gate for a selection with no macOS archive in it. The status is required to say so outright:
+ * an Apple status here was produced by some other build, which is the same wiring bug an absent
+ * status is refused for, and claiming one must never be cheaper than admitting it does not apply.
+ */
+function verifyNotApplicable(kind: string, value: string | undefined, expected: readonly string[]): void {
+  if (value === releaseNotApplicable) return;
+  const found = value === undefined ? 'no status at all' : `"${value}"`;
+  throw new Error(
+    `Release archives ${expected.join(', ')} are not signed or notarized by Apple, so their `
+    + `${kind} status must be "${releaseNotApplicable}", found ${found}`,
+  );
+}
+
+/** The inverse: a macOS archive cannot opt out of the evidence that makes it runnable. */
+function rejectNotApplicable(release: ReleaseVersion, kind: string, value: string | undefined): void {
+  if (value !== releaseNotApplicable) return;
+  throw new Error(
+    `Release ${release.tag} publishes macOS archives, so "${releaseNotApplicable}" is not a `
+    + `${kind} status it can have`,
+  );
+}
+
+function verifySigning(release: ReleaseVersion, signing: string | undefined, expected: readonly string[]): void {
+  if (!containsAppleArchive(expected)) {
+    verifyNotApplicable('signing', signing, expected);
+    return;
+  }
+  rejectNotApplicable(release, 'signing', signing);
   const known = releaseSigningStatuses.join(', ').replace(/, (?=[^,]*$)/, ', or ');
   if (signing === undefined) {
     throw new Error(`Release verification requires a signing status of ${known}`);
@@ -211,8 +272,21 @@ function verifySigning(release: ReleaseVersion, signing: string | undefined): vo
  * `skipped` is that state named explicitly rather than left as an absent value, so "nobody asked
  * the notary service" and "the evidence went missing on the way to the gate" cannot be confused
  * for one another — the second is a wiring bug and is refused outright.
+ *
+ * None of this describes an archive outside {@link applePlatform}: there is no ticket to fetch and
+ * no Gatekeeper to clear, so such a selection reports {@link releaseNotApplicable} instead. What a
+ * stable release still may not do is publish a *macOS* archive under that answer.
  */
-function verifyNotarization(release: ReleaseVersion, notarization: string | undefined): void {
+function verifyNotarization(
+  release: ReleaseVersion,
+  notarization: string | undefined,
+  expected: readonly string[],
+): void {
+  if (!containsAppleArchive(expected)) {
+    verifyNotApplicable('notarization', notarization, expected);
+    return;
+  }
+  rejectNotApplicable(release, 'notarization', notarization);
   const known = releaseNotarizationStatuses.join(' or ');
   if (notarization === undefined) {
     throw new Error(`Release verification requires a notarization status of ${known}`);
@@ -308,8 +382,12 @@ if (import.meta.main) {
   const root = resolve(fileURLToPath(import.meta.url), '../..');
   const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version: string };
   const release = verifyReleaseTag(process.argv[2] ?? process.env['GITHUB_REF'] ?? '', version);
-  // Unset means the whole release, which is what the job that collects both architectures gates.
-  const arch = process.env['WTM_RELEASE_ARCH']?.trim();
+  // Both unset means the whole release, which is what the job collecting every leg gates. One set
+  // without the other resolves no target and throws, rather than silently gating all four archives
+  // in a job that built exactly one of them.
+  const platform = process.env['WTM_RELEASE_PLATFORM']?.trim() ?? '';
+  const arch = process.env['WTM_RELEASE_ARCH']?.trim() ?? '';
+  const wholeRelease = platform === '' && arch === '';
   const manifest = verifyReleaseArtifacts({
     directory: join(root, 'dist/release'),
     release,
@@ -318,7 +396,7 @@ if (import.meta.main) {
     signing: process.env['WTM_RELEASE_SIGNING'],
     notarization: process.env['WTM_RELEASE_NOTARIZATION'],
     performance: readPerformanceResults(process.env['WTM_RELEASE_PERFORMANCE']),
-    archives: arch === undefined || arch === '' ? releaseArchiveNames : [releaseArchiveFor(arch)],
+    archives: wholeRelease ? releaseArchiveNames : [releaseArchiveFor(platform, arch)],
   });
   process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
 }
