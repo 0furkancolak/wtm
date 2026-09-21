@@ -15,6 +15,28 @@ Resolved configuration follows this precedence, from lowest to highest:
 
 **Adapter suggestions never override explicit user configuration.**
 
+## File encoding
+
+Configuration files are UTF-8. A file that begins with a UTF-8 byte order mark is read as though
+it did not: the mark is removed before the document is parsed, and the file on disk is left exactly
+as its author saved it. Several editors write the mark by default and none of them display it, so
+rejecting such a file would mean a syntax error pointing at a line that is visibly correct.
+
+The mark is only removed from the *beginning* of a file. Anywhere else it is a character inside the
+document, and TOML rejects it there — removing it would change what the configuration says in order
+to make it parse.
+
+Line endings make no difference. LF and CRLF are both accepted, and a value, a table or a
+provenance line number is the same under either, so the same `wtm.toml` behaves identically whether
+it was last saved on Windows or on a Unix-like system.
+
+The single exception is a line ending **inside** a multi-line basic string (`"""…"""`), where it is
+part of the value rather than a separator and travels with the file: a configuration saved with
+CRLF gives such a value a `\r\n` where an LF-saved copy gives it a `\n`. WTM does not normalise it,
+because rewriting the inside of a quoted value would change what the configuration says. A value
+that needs one exact ending should use the `\n` escape in a single-line string, which means the
+same thing on every platform.
+
 ## Local vs global configuration
 
 ### Global user configuration
