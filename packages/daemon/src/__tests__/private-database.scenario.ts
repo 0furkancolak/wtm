@@ -1,6 +1,7 @@
-import { chmod, lstat, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { grantForeignDirectoryAccess } from '../../../testkit/src/directory-access';
 import { createProductionDaemon } from '../runtime-factory';
 
 const root = await mkdtemp(join(tmpdir(), 'wtm-private-database-'));
@@ -19,7 +20,7 @@ try {
 
   const unsafeParent = join(root, 'unsafe');
   await mkdir(unsafeParent, { mode: 0o700 });
-  await chmod(unsafeParent, 0o755);
+  await grantForeignDirectoryAccess(unsafeParent);
   let unsafeParentRejected = false;
   try {
     const runtime = await createProductionDaemon({ dataRoot, databasePath: join(unsafeParent, 'state.db') });
