@@ -361,6 +361,106 @@ binaries are Developer ID signed and notarized.
   supervisor stops restarting it; anything else is still retried. Re-run `wtm daemon install` to
   pick up the new definition.
 
+### Added
+
+- `wtm task set/list/show/unset/export`: a worktree-scoped task record that overrides the same
+  task name in `wtm.toml` and any adapter-derived task. It wins over file configuration, `wtm
+  explain` always names the database as the source of an overridden field, and `wtm task export`
+  round-trips a record back to a `[tasks.<name>]` block. There is no separate trust ledger for
+  this: the write already goes through the access-controlled local daemon socket, which is itself
+  the trust decision. Migration 016 stores the override as the same validated task object
+  `wtm.toml` would produce.
+- `[tasks.<name>.idle]`: a `wtm start`-managed long-running task can opt into being stopped after
+  a configurable period with no WTM interaction (`enabled = true`, `timeout = "30m"`). WTM
+  observes only its own interactions with a task — a start, a readiness wait, `wtm ps`, `wtm
+  logs` — never traffic at the task's own port, so this is deliberately narrow: a task serving a
+  browser for an hour with nobody touching WTM reads as idle and is suspended. Suspension is an
+  ordinary stop (the same SIGTERM/grace/SIGKILL path, the same `STOPPED` state, the same
+  `[events."runtime.stopped"]`), and resume is free — the next `wtm start` starts it again like
+  any other non-running singleton task. Per-task opt-in rather than a root `[runtime.idle]` table,
+  since a root `[runtime]` table does not exist and a workspace-wide switch would need a
+  heuristic for which tasks are safe to interrupt.
+- `wtm init --preset <name>` seeds a brand-new `wtm.toml` from one of seven starters (`nextjs`,
+  `nextjs-hono`, `bun-monorepo`, `docker-compose`, `python-uv`, `rust`, `go`), copied verbatim
+  from `examples/<name>/wtm.toml` except for the workspace name. It never overrides repository
+  detection: detection still runs first and the preset only seeds where detection found nothing
+  to write; an unknown preset name is refused naming the known list.
+- `wtm status --pr`: an optional section reporting the current worktree's pull request (number,
+  URL, state, mergeability, rolled-up CI check status), gated behind the flag so `status` never
+  touches the network otherwise. A branch with no open PR reports `null` rather than an error, and
+  when the lookup itself cannot run (no CI provider for the remote, `gh` missing or
+  unauthenticated) the command still succeeds, with the reason carried alongside a `null` result.
+- `install.sh` (POSIX `sh`, macOS + Linux) and `install.ps1` (PowerShell 5.1+, Windows) at the
+  repository root: a one-line `curl -fsSL .../install.sh | sh` / `irm .../install.ps1 | iex`
+  install of a released standalone binary. Both resolve CPU architecture and the release tag,
+  download the matching archive plus `SHA256SUMS`, refuse to extract anything on a checksum
+  mismatch, and install into a user-owned prefix (`$HOME/.local/bin`, or
+  `$env:LOCALAPPDATA\wtm\bin` on Windows). Re-running either script overwrites an existing install
+  in place — that is the upgrade path. Neither registers the daemon; that stays `make install`'s
+  job.
+- `wtm adapter untrust <adapter-id>` revokes every trust record for an adapter ID and reports `{
+  removed: boolean }`, never erroring when nothing was trusted. Until now, ending trust
+  deliberately (an adapter being retired, a repository-local decision reversed) had no CLI path
+  even though the underlying binary never changed — only re-trusting under a new binary, or
+  editing the state database by hand, could clear a record.
+- A local reverse proxy backend (`[proxy]`, off by default): every active endpoint lease becomes
+  reachable at `http://<service>.<slug>.wtm.localhost:<port>`, where `<slug>` is derived from the
+  worktree's branch with deterministic collision disambiguation. The routing table is rebuilt from
+  existing endpoint-lease/worktree state on every request rather than cached, the listener binds
+  loopback-only, and every `Host` header is validated against an active route before anything is
+  proxied. HTTPS/certificates and dev-overlay injection stay out of scope for this slice. When
+  `[proxy]` is enabled, a leased endpoint's proxy hostname is also joined into that worktree's CORS
+  allowlist alongside its dynamic-port origin.
+- `[budgets]`: an optional, daemon-wide admission gate on `start`/`restart`. `max_processes` caps
+  how many processes the daemon will supervise at once, host-wide; `min_available_memory_mib` is a
+  floor on host *available* memory (not a cap on WTM's own usage — WTM does not sum RSS across a
+  process tree, for the same cost/accuracy reasons the heavy-job queue's own memory admission
+  already avoids it), reusing that same host-memory reading rather than a second accounting.
+  Replacing an already-running instance of a task never counts against either limit — only a
+  `start`/`restart` that would create a net-new process can be refused, with
+  `RUNTIME_PROCESS_BUDGET_EXCEEDED` or `RUNTIME_MEMORY_BUDGET_EXCEEDED`. Disk budgets and
+  OS-enforced hard limits (cgroups, Job Objects, `rlimit`) are explicitly out of scope: neither has
+  a single admission choke point or platform verification behind it yet.
+- `@wtm/adapter-sdk`, an internal package for writing external adapters: `defineAdapter` and
+  `runAdapter` implement docs/06's stdin/stdout request loop so an adapter author does not
+  hand-roll it, and its `./testing` subpath exports `invokeAdapter`, a development-time harness
+  that runs a candidate adapter file and validates its response against the same protocol schemas
+  WTM's daemon uses. A new `docs/19-adapter-authoring-guide.md` walks through writing, packaging
+  and testing an adapter with it.
+- Linux x64 and arm64 release archives, and a Windows x64 zip, join the existing macOS archives in
+  the release workflow, each verified natively on its own platform before publishing
+  (`verify-linux` on `ubuntu-24.04`/`ubuntu-24.04-arm`, `verify-windows` on `windows-latest`). No
+  tag has shipped either yet — see [Platform support](README.md#platform-support) for what is
+  actually published today.
+
+### Fixed
+
+- A command name that relies on `PATHEXT` (a `.cmd`/`.bat`/`.exe` resolved by extension rather
+  than spelled out) now resolves on Windows the way a shell would resolve it, instead of only ever
+  matching a literal, extensionless name.
+- The Windows service lifecycle no longer assumes a POSIX uid anywhere in its construction.
+- `wtm forget` resolves a selector with `node:path` instead of testing for a leading `/`, so an
+  absolute Windows path (`C:\projects\repo`) is recognized as absolute instead of being glued onto
+  the working directory into a path that names nothing and falls through to retiring the whole
+  containing workspace.
+- A private-directory refusal is now filed in the class it belongs to: `ENOTDIR` and `ELOOP` join
+  the already-coded, human-fixable class instead of the uncoded, endlessly-retried one, so a
+  supervised daemon stops on a condition only a person can clear instead of retrying it forever.
+- The Windows release archive is now genuinely optional in the whole-release gate, matching
+  `CLAUDE.md`'s "win32 CI is informational until todo item 9 lands" rule: a real tag whose Windows
+  leg hit a still-open native failure no longer blocks the macOS and Linux archives it has nothing
+  to do with. `release.yml`'s `verify-windows` job is `continue-on-error`, matching `ci.yml`'s own
+  win32 leg.
+- A worktree's local-reverse-proxy hostname no longer bakes in a literal `refs-heads-` segment —
+  `WorktreeRecord.branch` carries the full ref from `git worktree list --porcelain`, not the short
+  name, and the hostname slug now strips `refs/heads/` before it before slugifying.
+
+Windows native test-parity work continued across this range beyond the fixes above (anchor
+handshake timing budgets, ACL-based test fixtures, scenario timeout bounds, lifecycle-parity
+coverage): internal test-infrastructure corrections that make the win32 CI leg measure the real
+platform accurately, not new user-facing behavior on their own. See `CLAUDE.md`'s CI section for
+the win32 leg's current (informational) status.
+
 ## [0.1.0-rc.1] - 2026-08-30
 
 ### Added
