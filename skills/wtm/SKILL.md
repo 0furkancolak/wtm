@@ -60,6 +60,8 @@ failure, `2` usage or configuration, `3` safety refusal or conflict, `4` daemon 
 | `wtm task list --json` / `wtm task show <name> --json` | Read this worktree's task overrides. |
 | `wtm task unset <name> --json` | Remove a worktree's override; `wtm.toml`/an adapter decides the task again. |
 | `wtm task export <name>` | Print a worktree's override as a `[tasks.<name>]` block, to paste into `wtm.toml` if it should apply everywhere. |
+| `wtm checklist set --item <text>... --json` | Leave review/test steps for the user; the dev overlay shows them as checkboxes. Replaces the whole checklist. |
+| `wtm checklist list --json` / `wtm checklist clear --json` | Read or remove this worktree's checklist. Checking is async — poll `list`, there is no push. |
 | `wtm jobs list --json` | List recent queued jobs (`--limit <count>`). |
 | `wtm jobs status <job-id> --json` | Read a job's state and cleanup status. |
 | `wtm jobs result <job-id> --json` | Read a finished job's result and verify its source evidence. |
@@ -266,6 +268,8 @@ pointing at another repository into `wtm.toml`.
 - To fix one worktree's `cwd`, port template or argv for a task, use `wtm task set`
   (`--task-json` for full fidelity), not a hand edit to `wtm.toml`. Edit `wtm.toml` only when the
   fix should apply to every worktree of the workspace, not just this one.
+- After finishing implementation work, leave review/test steps with `wtm checklist set --item
+  "..." --json` instead of listing them in chat; the dev overlay shows them as checkboxes.
 
 ## Worktree analysis
 

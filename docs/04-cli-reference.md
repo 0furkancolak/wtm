@@ -421,6 +421,37 @@ nested/repository variants) and over an adapter-derived task of the same name �
 task's source as `db`. `wtm remove` deletes a removed worktree's overrides immediately, the same
 way it deletes the worktree's CI watches.
 
+## Dev-overlay checklist
+
+```bash
+wtm checklist list --json
+wtm checklist set --item <text> [--item <text> ...] --json
+wtm checklist clear --json
+```
+
+| Command | Data and behavior |
+| --- | --- |
+| `wtm checklist list` | `{ items: [{ position, text, checked, createdAt, updatedAt }] }`; this worktree's checklist, in position order. |
+| `wtm checklist set` | `{ items }`, the list just written. Replaces the whole checklist (see below), scoped to the worktree containing `cwd`; requires at least one `--item`. |
+| `wtm checklist clear` | `{ removed }`; the count of items removed. |
+
+All three take `--worktree <selector>` and `--repo <name>`, resolved the same way as the task
+override commands above. `--item <text>` is repeatable, one per checklist step, in the order given.
+
+`wtm checklist set` always replaces the entire list, never adds or removes a single item by id —
+the same replace-not-merge convention `wtm task set` uses. There is no per-item show or unset
+command: `position` (0-based) is stable only within one `set`'s list, since the next `set` throws
+the whole prior list away.
+
+An agent leaves review/test steps for the user with `wtm checklist set --item "..." --json` after
+finishing implementation work; the dev overlay (`[dev-overlay] enabled = true`, see
+[`docs/03`](03-configuration-spec.md#dev-overlay)) then shows them as checkboxes the user can check
+off in the browser, writing `checked` back into WTM's state DB through the local reverse proxy's
+own `/__wtm/checklist` endpoint — not through this CLI. See
+[`docs/07`](07-process-port-runtime.md#dev-overlay) for that endpoint. There is no push
+notification when a box is checked: an agent that wants to know later polls with
+`wtm checklist list --json`.
+
 ### `wtm exec <argv...>`
 
 Executes raw argv in the foreground with the same resolved environment/context. The argument is a command line, not a configured task name; use `wtm run <task>` for tasks.

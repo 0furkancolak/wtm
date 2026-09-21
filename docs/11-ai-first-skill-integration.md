@@ -80,6 +80,10 @@ wtm analyze --json
     full fidelity), never hand-edit `wtm.toml` for a one-worktree fix — the override is scoped to
     the worktree it is run in and `wtm task unset` reverts it cleanly. Reserve editing `wtm.toml`
     for a change that should apply to every worktree of the workspace.
+11. After finishing implementation work, leave review/test steps for the user with
+    `wtm checklist set --item "..." --json` (repeat `--item` for more); the dev overlay shows them
+    as checkboxes in the running app. Checking one is async — there is no push notification — so an
+    agent that wants to know later reads `wtm checklist list --json`.
 
 ## Skill installation
 

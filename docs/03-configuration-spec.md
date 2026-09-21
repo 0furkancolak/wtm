@@ -584,10 +584,11 @@ this is not a per-workspace setting.
 `[dev-overlay]` only has anything to act on wherever `[proxy]` is actually running — the fragment
 is injected by the proxy's own response handling, not by a separate listener. `[dev-overlay]
 enabled = true` with `[proxy]` disabled or unset is not a configuration error: it is simply inert,
-since there is no proxied response left for it to inject into. See
-[`docs/07`](07-process-port-runtime.md#dev-overlay) for what the injected fragment shows, exactly
-what response types it never touches, and what part of todo item 46 this slice does not
-implement.
+since there is no proxied response left for it to inject into. The agent-writes/user-checks
+checklist (`wtm checklist set`, todo item 46b) is gated by this same `enabled` flag — there is no
+second config flag for its browser-facing toggle endpoint. See
+[`docs/07`](07-process-port-runtime.md#dev-overlay) for what the injected fragment shows and
+exactly what response types it never touches.
 
 ## Resource budgets
 
