@@ -1001,6 +1001,24 @@ The canonical source is `skills/wtm/SKILL.md`.
 
 `skill install --global` installs into `~/.agents/skills` instead of the current workspace.
 
+## Shell completion
+
+### `wtm completion <shell>`
+
+Prints a shell completion script to stdout for `bash`, `zsh` or `fish`:
+
+```bash
+wtm completion bash > /etc/bash_completion.d/wtm
+wtm completion zsh > "${fpath[1]}/_wtm"
+wtm completion fish > ~/.config/fish/completions/wtm.fish
+```
+
+The script's suggestions are the CLI's own top-level command names, read from the program at
+generation time rather than hand-maintained, plus a dynamic candidate lookup (task names for the
+worktree containing the current directory) for the commands that take one. Not a JSON command —
+this prints a script, not the stable envelope — and not machine-readable output for anything but a
+shell's own completion loader.
+
 ## JSON guarantee
 
 All operational commands support `--json` unless their purpose is raw stream output (`logs --follow`) or fixed canonical text (`skill print`). Stable fields are versioned with `schemaVersion`.
