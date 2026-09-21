@@ -2861,8 +2861,38 @@ oluyor, yeni bir kod protokole eklenmiyor.
 
 ### [ ] 21. Plugin / adapter ecosystem geliştirme
 
-- [ ] Adapter SDK package.
-- [ ] Adapter authoring guide.
+- [x] Adapter SDK package. — **Not (2026-09-21, W10-2):** `packages/adapter-sdk`
+      (`@wtm/adapter-sdk`), `@wtm/protocol`'a bağımlı, katmanlamada `adapters` ile aynı seviyede
+      (yalnızca protocol'e bağlı, OS'a özel hiçbir şey yok). İki dışa aktarım: `.` —
+      `defineAdapter` (yazar handler nesnesini `AdapterHandlers`'a karşı tip kontrolünden geçiren
+      identity fonksiyonu) ve `runAdapter` (docs/06'daki tam stdin/stdout döngüsü: stdin'i
+      tüketir, `adapterRequestSchema`'ya karşı doğrular, protokol sürümünü kontrol eder, ilgili
+      handler'ı çağırır, `metadata`'yı `{protocol, adapter}` zarfına, `doctor`'ı `{findings}`'e
+      sarar, stdout'a yazar). `runAdapter` `process.exitCode`'a asla dokunmuyor — bir
+      `Promise<boolean>` döndürüyor, çağıran `process.exitCode = (await runAdapter(...)) ? 0 : 1`
+      yazıyor; bunun nedeni test edilebilirlik (global süreç durumuna gizli yan etki yerine açık
+      dönüş değeri) ve bunu testler sırasında `process.exitCode`'un test dosyaları arasında
+      sızdığını (bun'ın genel exit kodunu "kirletmesi") gözlemleyerek keşfettim. `./testing`
+      alt-yolu — `invokeAdapter`: gerçek bir dosyayı `node <dosya>` ile çalıştırıp bir istek
+      gönderen, yanıtı aynı protokol şemalarına karşı doğrulayan geliştirme-zamanı test aracı;
+      WTM'nin gerçek doğrulayıp-tanımlayıcıyla-çalıştır güven mekanizmasının (`external-adapter.ts`)
+      yerini tutmadığı açıkça belirtiliyor. **Karar:** paket şimdilik dahili (`private: true`,
+      diğer tüm workspace paketleri gibi) kalıyor — npm'e yayımlamak ayrı, riskli, paylaşılan
+      release altyapısını etkileyen bir karar (kökteki `wtm` paketinin ilk npm 2FA + `@next`
+      yayımı zaten madde 38a'da Kaptan'ın eli bekleyen bir kapı; ikinci bir paketi yayımlamak aynı
+      sınıftan, ayrı bir takip konusu). Yazım rehberi bunu açıkça belirtip yayımlanana kadar
+      `packages/adapter-sdk/src`'in vendor edilmesini öneriyor. `bun run typecheck`'e
+      `packages/adapter-sdk/tsconfig.json` eklendi; `build` betiğine eklenmedi çünkü yayımlanan
+      `wtm` CLI'sinin hiçbir yeri bu paketi içe aktarmıyor (test kit gibi, yalnızca geliştirme
+      zamanı paketi).
+- [x] Adapter authoring guide. — **Not (2026-09-21, W10-2):** `docs/19-adapter-authoring-guide.md`
+      (ilk boş numara), `docs/README.md`'nin belge indeksine eklendi. SDK'nın ne olduğunu/olmadığını
+      (derleme-zamanı bağımlılığı, tek dosya paketleme zorunluluğu), `defineAdapter`/`runAdapter`
+      kullanımını, `wtm-adapter-v1: self-contained` başlığıyla paketleme adımını, `invokeAdapter` ile
+      yerel test etmeyi ve `wtm adapter trust`'a geçişi anlatıyor. `doctor` bulgularının `code`
+      alanının serbest metin olmadığını, `@wtm/protocol`'ün paylaşılan `WtmErrorCode` enum'undan
+      geldiğini de not ediyor (kod yazarken teste yansıyan gerçek bir kısıt, SDK'nın kendi
+      sınırlaması değil). `docs/06-adapter-protocol.md`'ye SDK'ya işaret eden bir paragraf eklendi.
 - [x] Adapter contract versioning. — **Not (2026-09-21, W9-3 / K9):** zaten uygulanmış:
       `packages/protocol/src/adapter.ts`'te `protocolVersionSchema` (`{ major, minor }`) ve
       `isProtocolVersionCompatible`; gerçek yürütme yollarında zorunlu kılınıyor
@@ -2875,7 +2905,12 @@ oluyor, yeni bir kod protokole eklenmiyor.
       basitleştirilmesi değil, kuralın v1.0'da eşitliğe indirgenmiş hâli (yorum satırı bunu
       açıkça söylüyor); ikinci bir minor tanımlandığında eşitlik kontrolü genişletilmeli. Yeni kod
       yazılmadı, yalnızca bu madde işaretlendi.
-- [ ] Adapter test harness.
+- [x] Adapter test harness. — **Not (2026-09-21, W10-2):** `@wtm/adapter-sdk/testing`'in
+      `invokeAdapter`'ı olarak teslim edildi (yukarıdaki "Adapter SDK package" notuna bakın) —
+      ayrı bir paket/araç olarak değil, SDK'nın bir alt-yolu olarak, çünkü ikisi aynı protokol
+      şemalarını paylaşıyor ve ayrı bir paket gereksiz dolaylama olurdu. `packages/testkit/src/
+      fake-adapter.ts`'in aksine (WTM'nin kendi spawn/trust/timeout makinesini bozan senaryolar
+      için bir çift), bu gerçek bir aday adapter dosyasını çalıştırıp yanıtını doğrulamak için var.
 - [x] Trust UX iyileştirmesi. — **Not (2026-09-21, W10-3):** kapsam plan belgesinde
       detaylandırılmamıştı, bu yüzden gerçek boşluk mevcut kod okunarak belirlendi: `assertTrusted`
       zaten adapterId+SHA-256 eşleşmesiyle çalışıyor, yani değişen/bozulmuş bir binary zaten
