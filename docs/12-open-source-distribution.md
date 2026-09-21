@@ -196,6 +196,51 @@ wtm daemon install
 The source Makefile is different: `make install` registers the service by default on macOS and
 Linux. `make install WITH_DAEMON=0` installs only the executable.
 
+### Install scripts
+
+`install.sh` (POSIX `sh`, macOS + Linux) and `install.ps1` (PowerShell 5.1+, Windows) at the
+repository root script the manual curl+shasum steps README.md's install section already documents,
+as the one-line `curl -fsSL .../install.sh | sh` / `irm .../install.ps1 | iex` experience. Both:
+
+- map the detected OS and CPU architecture to one of the five archive names in
+  `scripts/artifact-targets.ts` (`wtm-darwin-arm64.tar.gz`, `wtm-darwin-x64.tar.gz`,
+  `wtm-linux-x64.tar.gz`, `wtm-linux-arm64.tar.gz`, `wtm-windows-x64.zip`); a combination outside
+  that list is a clear, actionable error before any network call, never a silently wrong download;
+- resolve the release tag to install from GitHub's `releases/latest` redirect (or the GitHub API
+  equivalent), overridable with `--version`/`-v` (`-Version` on Windows) or the
+  `WTM_INSTALL_VERSION` environment variable — needed today because the one published tag,
+  `v0.1.0-rc.1`, is a prerelease, and GitHub's "latest release" excludes prereleases by default;
+- download the archive and `SHA256SUMS` from the same `releases/download/<tag>/` path and verify
+  the archive's digest against it — `shasum -a 256 -c --ignore-missing` (falling back to
+  `sha256sum`) on POSIX, `Get-FileHash -Algorithm SHA256` compared against the parsed
+  `SHA256SUMS` line on Windows — before extracting anything; a mismatch is a hard failure that
+  installs nothing;
+- extract and install the executable into `$HOME/.local/bin` by default (POSIX, overridable with
+  `--prefix`/`WTM_INSTALL_PREFIX`, mirroring the Makefile's `PREFIX`/`BINDIR`) or
+  `$env:LOCALAPPDATA\wtm\bin` by default (Windows, overridable with `-Prefix`/
+  `WTM_INSTALL_PREFIX`, no administrator rights required), overwriting an existing install in
+  place — this is the upgrade path, with no separate detection step;
+- register no daemon service; that remains `make install`'s job (or `wtm daemon install` run by
+  hand afterwards) — these scripts' scope is the binary alone.
+
+Every network/base-URL touchpoint is overridable through `WTM_INSTALL_BASE_URL` (default
+`https://github.com/0furkancolak/wtm`), which is what lets
+`scripts/__tests__/install-script.test.ts` run `install.sh` as a real child process against a
+local `Bun.serve` fixture server instead of reaching GitHub, per CLAUDE.md's "tests never reach
+the network" rule. That test file also builds a small real fixture archive and `SHA256SUMS`, and
+covers a clean install, a tampered checksum, the upgrade/overwrite path, and an unsupported
+OS/arch (via the `WTM_INSTALL_OS`/`WTM_INSTALL_ARCH` test-only detection seam) — but it necessarily
+runs `install.sh` with `Bun.spawn`, not the blocking `child_process.spawnSync` other release
+scripts here use, because a blocking spawn in the same process as the fixture HTTP server
+deadlocks against it. `install.ps1` has only a structural check (file exists, is non-empty, its
+braces/quotes/parentheses balance) — the sandbox these scripts were written in has no
+`pwsh`/`powershell` binary, so it has never actually been executed.
+
+As with every other channel in this document, neither script has been proven against a real
+release: no tag has ever published a Linux or Windows archive (only the macOS-only `v0.1.0-rc.1`
+prerelease exists), so both scripts' non-macOS paths — and `install.ps1` end to end — remain open
+evidence gaps until a future tag and, for Windows, a real `pwsh`/`powershell` run close them.
+
 ## Release operations
 
 Ordinary CI publishes nothing. Publication runs only for `v*` tags, and every publishing job is

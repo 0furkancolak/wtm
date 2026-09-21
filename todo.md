@@ -3008,12 +3008,45 @@ ve standalone:
 wtm-windows-x64.zip
 ```
 
-- [ ] Install scriptlerin checksum doğrulaması yapması.
-- [ ] Architecture autodetection.
-- [ ] Existing install upgrade desteği.
+- [x] Install scriptlerin checksum doğrulaması yapması. — `install.sh` ve `install.ps1` archive'i
+      indirip `SHA256SUMS`'a karşı doğruluyor (`shasum -a 256 -c --ignore-missing` / `sha256sum`
+      fallback'i, `Get-FileHash -Algorithm SHA256` karşılaştırması); eşleşmeyen checksum sert hata
+      ve hiçbir şey kurmadan çıkıyor.
+- [x] Architecture autodetection. — `install.sh` `uname -s`/`uname -m`'i beş yayınlanan hedeften
+      (`scripts/artifact-targets.ts`) birine eşliyor, `install.ps1` `$env:PROCESSOR_ARCHITECTURE`
+      okuyor; desteklenmeyen platform/mimari indirme yapmadan açık hata veriyor (test seam'i:
+      `WTM_INSTALL_OS`/`WTM_INSTALL_ARCH`).
+- [x] Existing install upgrade desteği. — her iki script de var olan `wtm`/`wtm.exe`'yi ayrı bir
+      tespit adımı olmadan yerinde temiz şekilde değiştiriyor; fixture testinde iki ayrı sürümle
+      arka arkaya çalıştırılıp içerik ve mod bitinin güncellendiği doğrulandı.
 - [x] Uninstall dokümantasyonu. — README/CONTRIBUTING `make uninstall` ile state silen
       `make purge`'ü ayırır; macOS state/log ve Linux XDG state/config köklerini, npm kaldırmayı
       ve Windows için önce doctor kökleri/süreç durumu doğrulamasını açıklar. Installer script'leri açık.
+
+**Not (2026-09-21, W8-2 / 24):** `install.sh` (POSIX `sh`, macOS + Linux) ve `install.ps1`
+(PowerShell 5.1+, Windows) eklendi — README'nin manuel curl+shasum adımlarının script'e çevrilmiş
+hali, `curl -fsSL .../install.sh | sh` / `irm .../install.ps1 | iex` tek satırlık deneyimi olarak.
+Her iki script de: platform/mimariyi `scripts/artifact-targets.ts`'teki beş yayınlanan hedefe
+eşliyor (desteklenmeyen kombinasyon indirme yapmadan net hata veriyor — test seam'i
+`WTM_INSTALL_OS`/`WTM_INSTALL_ARCH`), sürümü GitHub'ın `releases/latest` redirect'inden çözüyor ya
+da `--version`/`-v`/`WTM_INSTALL_VERSION` ile açıkça alıyor, archive + `SHA256SUMS`'ı indirip
+checksum'ı doğrulamadan hiçbir şey çıkarmıyor, ve `$HOME/.local/bin` (`--prefix`/
+`WTM_INSTALL_PREFIX` ile değiştirilebilir; Windows'ta `$env:LOCALAPPDATA\wtm\bin`) altına kuruyor.
+Daemon kaydı yapmıyor — o `make install`'un işi, bu script'lerin kapsamı yalnızca binary. Her
+network/base-URL noktası `WTM_INSTALL_BASE_URL` ile override edilebiliyor, tam olarak
+`scripts/__tests__/install-script.test.ts`'in yerel bir `Bun.serve` fixture sunucusuna karşı
+çalıştırabilmesi için. O test dosyası `install.sh`'ı gerçek bir alt süreç olarak (`Bun.spawn` —
+`spawnSync` fixture sunucusuyla aynı event loop'u kilitleyip deadlock yarattığı için tercih
+edilmedi) temiz kurulum, bozuk checksum, upgrade/overwrite ve desteklenmeyen platform senaryolarında
+koşuyor; 10 test de yeşil (`bun test scripts/__tests__/install-script.test.ts`).
+
+İki açık kanıt boşluğu kalıyor, ikisi de win32/outage boşluklarıyla aynı kategoride
+(`docs/superpowers/plans/`): (1) bu depodan hiçbir tag Linux veya Windows archive'ı yayınlamadı —
+sadece macOS-only `v0.1.0-rc.1` prerelease'i var, yani her iki script'in gerçek indirme yolu hâlâ
+kanıtsız; (2) `install.ps1` hiç çalıştırılmadı — bu sandbox'ta `pwsh`/`powershell` yok
+(`which pwsh powershell` doğrulandı), o yüzden yalnızca yapısal kontroller var (dosya var/boş
+değil, süslü parantez/tırnak sayıları eşleşiyor, gerekli parametreler/env değişkenleri mevcut).
+Her iki boşluk da gerçek kanıt geldiğinde kapanacak; README ve docs/12 aynı dille işaretlendi.
 
 ---
 
