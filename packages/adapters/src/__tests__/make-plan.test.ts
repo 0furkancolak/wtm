@@ -135,9 +135,44 @@ describe('make adapter plan', () => {
       await writeFile(join(fixture.context.workspace.root, 'Makefile'), 'up:\n\t@true\n');
 
       expect((await makeAdapter?.detect(fixture.context))?.detected).toBe(true);
-      expect(Object.keys((await makeAdapter?.plan(fixture.context))?.tasks ?? {})).toEqual(['workspace:up']);
+      expect(Object.keys((await makeAdapter?.plan(fixture.context))?.tasks ?? {}))
+        .toEqual(['workspace:up', 'workspace-here:up']);
     } finally {
       await fixture.cleanup();
     }
+  });
+
+  describe('workspace-here: family (item 48)', () => {
+    it('runs a root target with the worktree as cwd, via an explicit -f path', async () => {
+      const fixture = await createAdapterFixture();
+      try {
+        await writeFile(
+          join(fixture.context.workspace.root, 'Makefile'),
+          'dev: ## Start every service\n\t@true\n',
+        );
+        const plan = await makeAdapter?.plan(fixture.context);
+
+        expect(plan?.tasks['workspace-here:dev']).toEqual({
+          description: 'Start every service',
+          run: ['make', '-f', '{workspace.root}/Makefile', 'dev'],
+          cwd: '{worktree.root}',
+          env: { WTM_WORKTREE_ROOT: '{worktree.root}', WTM_WORKSPACE_ROOT: '{workspace.root}' },
+        });
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+
+    it('names the actual matched makefile in the -f path, not a hardcoded name', async () => {
+      const fixture = await createAdapterFixture();
+      try {
+        await writeFile(join(fixture.context.workspace.root, 'GNUmakefile'), 'up:\n\t@true\n');
+        const plan = await makeAdapter?.plan(fixture.context);
+
+        expect(plan?.tasks['workspace-here:up']?.run).toEqual(['make', '-f', '{workspace.root}/GNUmakefile', 'up']);
+      } finally {
+        await fixture.cleanup();
+      }
+    });
   });
 });

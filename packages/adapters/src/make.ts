@@ -46,30 +46,64 @@ export const makeAdapter = defineBuiltInAdapter({
     return await detectMarkers(context.workspace.root, [...detectionMarkers]);
   },
   plan: async (context) => {
-    const tasks: Record<string, { description?: string; run: string[]; cwd: string }> = {};
-    const makefile = await readMakefile(context.worktree.root);
+    const tasks: Record<string, AdapterMakeTask> = {};
+    const makefile = await locateMakefile(context.worktree.root);
     if (makefile !== null) {
       tasks.make = { description: 'Run the default goal', run: ['make'], cwd: '{worktree.root}' };
-      for (const target of parseMakeTargets(makefile)) {
+      for (const target of parseMakeTargets(makefile.contents)) {
         tasks[`make:${target.name}`] = makeTask(target, '{worktree.root}');
       }
     }
     if (hasSeparateWorkspace(context)) {
-      // Workspace targets keep their own namespace: they run at the root, across every
-      // repository, and a repository's own `dev` is not the same work as the root's.
-      for (const target of await readMakeTargets(context.workspace.root)) {
-        tasks[`workspace:${target.name}`] = makeTask(target, '{workspace.root}');
+      const workspaceMakefile = await locateMakefile(context.workspace.root);
+      if (workspaceMakefile !== null) {
+        for (const target of parseMakeTargets(workspaceMakefile.contents)) {
+          // Workspace targets keep their own namespace: they run at the root, across every
+          // repository, and a repository's own `dev` is not the same work as the root's.
+          tasks[`workspace:${target.name}`] = makeTask(target, '{workspace.root}');
+          // The "here" family runs the very same root target, but with the worktree — not the
+          // workspace root — as `cwd`. This is what closes item 48: a root `dev` that shells out
+          // to a per-repository command (`cd api && npm run dev`) resolves that path against the
+          // wrong root when it isn't asked to run from inside the worktree it's meant to serve.
+          tasks[`workspace-here:${target.name}`] = makeWorkspaceHereTask(target, workspaceMakefile.name);
+        }
       }
     }
     return { resources: [], actions: [], capabilities: {}, tasks };
   },
 });
 
-function makeTask(target: MakeTarget, cwd: string): { description?: string; run: string[]; cwd: string } {
+interface AdapterMakeTask {
+  description?: string;
+  run: string[];
+  cwd: string;
+  env?: Record<string, string>;
+}
+
+function makeTask(target: MakeTarget, cwd: string): AdapterMakeTask {
   return {
     ...(target.description === undefined ? {} : { description: target.description }),
     run: ['make', target.name],
     cwd,
+  };
+}
+
+/**
+ * Runs a root-Makefile target with the worktree as `cwd` instead of the workspace root, via
+ * `make -f <workspace makefile> <target>` rather than copying or symlinking the file. `-f` takes
+ * an explicit path so `make`'s own file resolution (which only ever looks in `cwd`) never runs:
+ * without it, a worktree that also has its own Makefile would silently shadow the root one.
+ *
+ * Only `WTM_WORKTREE_ROOT`/`WTM_WORKSPACE_ROOT` are injected (K5) — a Makefile that breaks on a
+ * relative path (`$(ROOT_DIR)`, `../.cache/state`) has exactly these two variables to rewrite
+ * itself in terms of; WTM does not guess at anything more specific.
+ */
+function makeWorkspaceHereTask(target: MakeTarget, makefileName: string): AdapterMakeTask {
+  return {
+    ...(target.description === undefined ? {} : { description: target.description }),
+    run: ['make', '-f', `{workspace.root}/${makefileName}`, target.name],
+    cwd: '{worktree.root}',
+    env: { WTM_WORKTREE_ROOT: '{worktree.root}', WTM_WORKSPACE_ROOT: '{workspace.root}' },
   };
 }
 
@@ -78,20 +112,15 @@ function hasSeparateWorkspace(context: { workspace: { root: string }; worktree: 
 }
 
 /**
- * Reads the worktree's makefile and returns the targets it declares. The file is parsed,
- * never evaluated: running `make -p` to enumerate targets would execute the `$(shell …)`
- * expansions of a repository WTM has not been told to trust.
+ * Which of `makefileNames` `make` itself would read in `root`, and its contents — or null if
+ * none exists. The filename is kept alongside the contents because `workspace-here:<target>`
+ * needs it to build an explicit `-f` path rather than relying on `make`'s own cwd-relative file
+ * resolution.
  */
-export async function readMakeTargets(root: string): Promise<MakeTarget[]> {
-  const contents = await readMakefile(root);
-  return contents === null ? [] : parseMakeTargets(contents);
-}
-
-/** The contents of the makefile `make` itself would read in `root`, or null if there is none. */
-export async function readMakefile(root: string): Promise<string | null> {
+async function locateMakefile(root: string): Promise<{ name: string; contents: string } | null> {
   for (const name of makefileNames) {
     try {
-      return await readFile(join(root, name), 'utf8');
+      return { name, contents: await readFile(join(root, name), 'utf8') };
     } catch {
       continue;
     }

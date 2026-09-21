@@ -250,6 +250,19 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/daemon/src/__tests__/dev-overlay.test.ts packages/daemon/src/__tests__/proxy-dev-overlay.test.ts packages/daemon/src/__tests__/proxy-policy.test.ts packages/core/src/config/__tests__/schema.test.ts
   ```
 
+### #66 — feat(adapters): add workspace-here:<target> make task family (item 48)
+- Commit: `c499b94` · Unit: madde 48 (P2 backlog taraması, koordinatör talimatıyla)
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası: 5 `Validate` leg'i 6-8 saniyede, runner atanmadan düştü).
+  Yalnızca yerel gate ile doğrulandı (`packages/adapters` 42/42 dahil).
+- Bu PR'a özgü ayrı bir kanıt boşluğu: `make -f <path>` argümanı `{workspace.root}/<ad>` şeklinde
+  ileri taksim işaretiyle kuruluyor; Windows'ta `make` genellikle MSYS2/Git Bash altından
+  çalıştığı için bu muhtemelen sorunsuz ama gerçek Windows'ta hiç egzersiz edilmedi.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/adapters/src/__tests__/make-plan.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
