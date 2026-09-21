@@ -14,7 +14,8 @@
     "./launchd": "./src/launchd.ts",
     "./service-lifecycle": "./src/service-lifecycle.ts",
     "./adapter-tasks": "./src/adapter-tasks.ts",
-    "./task-resolution": "./src/task-resolution.ts"
+    "./task-resolution": "./src/task-resolution.ts",
+    "./ci": "./src/ci/index.ts"
   },
   "dependencies": {
     "@wtm/adapters": "workspace:*",

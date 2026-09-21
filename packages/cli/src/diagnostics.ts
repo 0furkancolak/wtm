@@ -1,5 +1,6 @@
 import { relative, resolve, sep } from 'node:path';
 import {
+  prSummarySchema,
   wtmErrorCodeSchema,
   type JsonEnvelope,
   type WtmError,
@@ -57,6 +58,16 @@ const statusSchema = z.object({
     /** Why it is not ready — a source that is not there, a path the guard refused. */
     detail: z.string().min(1).optional(),
   }).strict()),
+  /**
+   * `wtm status --pr`'s optional section (item 13, K4): present only when the flag was passed.
+   * `summary` is `null` either because the branch has no open PR, or because the lookup itself
+   * could not run — `detail` (mirroring `resources[].detail` above) says which, without turning
+   * either case into a command error. No flag, no network call, no key at all.
+   */
+  pr: z.object({
+    summary: prSummarySchema.nullable(),
+    detail: z.string().min(1).max(300).optional(),
+  }).strict().optional(),
 }).strict();
 
 /**
@@ -150,7 +161,7 @@ export class DiagnosticSourceError extends Error {
 
 export interface DiagnosticDataSource {
   listRegisteredWorkspaces(): Promise<readonly RegisteredWorkspace[]>;
-  readStatus(workspace: RegisteredWorkspace): Promise<StatusDiagnostic>;
+  readStatus(workspace: RegisteredWorkspace, options?: { pr?: boolean }): Promise<StatusDiagnostic>;
   readDoctor(workspace: RegisteredWorkspace): Promise<DoctorDiagnostic>;
   readExplain(workspace: RegisteredWorkspace): Promise<ExplainDiagnostic>;
   readPlan(workspace: RegisteredWorkspace): Promise<PlanDiagnostic>;
@@ -167,6 +178,8 @@ export interface DiagnosticCommandInput {
   cwd: string;
   selector?: string;
   global?: boolean;
+  /** `wtm status` only: fill the `pr` section. Ignored by every other diagnostic command. */
+  pr?: boolean;
 }
 
 export type DiagnosticCommandEnvelope<T> = JsonEnvelope<{ workspaces: T[] }>;
@@ -194,7 +207,11 @@ export async function runStatusCommand(
   input: DiagnosticCommandInput,
   source: DiagnosticDataSource,
 ): Promise<DiagnosticCommandEnvelope<StatusDiagnostic>> {
-  return collect('status', input, source, (workspace) => source.readStatus(workspace), statusSchema, normalizeStatus);
+  return collect(
+    'status', input, source,
+    (workspace) => source.readStatus(workspace, { pr: input.pr === true }),
+    statusSchema, normalizeStatus,
+  );
 }
 
 export async function runDoctorCommand(

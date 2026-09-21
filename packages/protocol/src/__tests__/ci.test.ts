@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ciArgumentSchemas, ciCommandNames, ciWatchAcceptanceSchema, ciWatchSchema, wtmErrorCodeSchema } from '../index';
+import { ciArgumentSchemas, ciCommandNames, ciWatchAcceptanceSchema, ciWatchSchema, prSummarySchema, wtmErrorCodeSchema } from '../index';
 
 const sha = 'a'.repeat(40);
 const watch = {
@@ -33,5 +33,15 @@ describe('ci protocol', () => {
 
   test('knows the CI error code', () => {
     expect(wtmErrorCodeSchema.safeParse('WTM_CI_UNAVAILABLE').success).toBe(true);
+  });
+
+  test('validates a PR summary, with checks optional and unknown fields refused', () => {
+    const pr = { number: 42, url: 'https://github.com/acme/widgets/pull/42', state: 'open', mergeable: 'mergeable', checks: 'pending' };
+    expect(prSummarySchema.safeParse(pr).success).toBe(true);
+    const { checks: _checks, ...withoutChecks } = pr;
+    expect(prSummarySchema.safeParse(withoutChecks).success).toBe(true);
+    expect(prSummarySchema.safeParse({ ...pr, state: 'draft' }).success).toBe(false);
+    expect(prSummarySchema.safeParse({ ...pr, checks: 'green' }).success).toBe(false);
+    expect(prSummarySchema.safeParse({ ...pr, extra: true }).success).toBe(false);
   });
 });

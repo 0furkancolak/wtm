@@ -40,7 +40,7 @@ failure, `2` usage or configuration, `3` safety refusal or conflict, `4` daemon 
 | Command | Use it to |
 | --- | --- |
 | `wtm doctor [selector] --json` | Diagnose the workspace, daemon and platform backend. |
-| `wtm status [selector] --json` | Read identity, state, endpoints, processes and resources. `--global` aggregates registered workspaces. |
+| `wtm status [selector] --json` | Read identity, state, endpoints, processes and resources. `--global` aggregates registered workspaces. `--pr` adds this branch's pull request, looked up live over the network (the one field here that is; everything else is local). |
 | `wtm explain [selector] --json` | See why WTM resolved a value, and from where. |
 | `wtm plan [selector] --json` | See the declarative changes WTM would make, without applying them. |
 | `wtm env [selector] --json` | Read the resolved environment delta. |

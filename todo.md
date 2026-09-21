@@ -2416,7 +2416,25 @@ https://api.billing.wtm.localhost
 
 ---
 
-### [ ] 13. GitHub / PR awareness
+### [x] 13. GitHub / PR awareness
+
+**2026-09-21 tamamlandı (W6-3).** K4 cevabı: `wtm status`'un içinde opsiyonel bir bölüm, network
+kullanımı explicit `--pr` bayrağıyla sınırlı. `CiProvider.findPr(repository, branch)` yeni bir
+provider metodu (`packages/core/src/ci/provider.ts`), `github-provider.ts`'de `gh pr view` ile
+uygulandı; PR'ı olmayan branch için `gh`'nin "no pull requests found" çıktısı hata değil `null`
+sonuç olarak ele alınıyor. `checks` alanı ayrı bir vocabulary icat etmek yerine mevcut
+`aggregateCiRuns`/`CiVerdict`'i (`packages/core/src/ci/aggregate.ts`) kullanıyor — zaten PR'ın
+head commit'i için `listRuns` çağrısı gerekiyordu, `wtm ci watch`'ın `ciWatchStateSchema`'sını
+tekrarlamak yerine bunu paylaştı. `wtm status` hâlihazırda daemon'a hiç gitmeden CLI sürecinden
+SQLite'ı doğrudan okuyor (`state-diagnostics.ts`); `--pr` de aynı şekilde CLI-local kaldı — `gh`
+çağrısı için daemon'un `CiWatcher`'ının kullandığı aynı `createGitHubProvider`/`createGhRunner`
+(`@wtm/daemon/ci` altında yeni bir subpath export) doğrudan çağrılıyor, yeni bir IPC komutu veya
+migration yok (K4'ün kendisi de "no migration needed" diyordu). gh kullanılamıyorsa (`missing`,
+`unauthenticated`, desteklenmeyen remote) komut hata vermiyor: `pr.summary: null` +
+`pr.detail: <sebep>`, `resources[].detail`'in zaten kullandığı örüntünün aynısı — ayrı bir
+envelope-level warning kanalı icat etmek yerine (ön-K4 tasarım notunun önerdiği gibi) mevcut
+örüntüyü tekrar kullanmak daha basitti. Uygulanmayan tek nokta: PR'ın kendi checks alanı ayrı bir
+lookup başarısızlığında `checks` alanı tamamen omit ediliyor (bir yanlış değer uydurmak yerine).
 
 Opsiyonel entegrasyon.
 
@@ -2437,10 +2455,12 @@ mergeable
 
 #### Kurallar
 
-- [ ] Core için GitHub zorunlu dependency olmasın.
-- [ ] Network kullanımı explicit olsun.
-- [ ] GitHub CLI (`gh`) veya adapter üzerinden uygulanabilir.
-- [ ] GitLab/Bitbucket desteğini engellemeyecek interface kullan.
+- [x] Core için GitHub zorunlu dependency olmasın. (`CiProvider` arayüzü core'da, `gh` çağrısı
+      yalnızca daemon'daki `github-provider.ts`'de; aynı sınır `wtm ci watch` için zaten vardı.)
+- [x] Network kullanımı explicit olsun. (`--pr` bayrağı olmadan `wtm status` hiç network'e çıkmaz.)
+- [x] GitHub CLI (`gh`) veya adapter üzerinden uygulanabilir. (`gh pr view`.)
+- [x] GitLab/Bitbucket desteğini engellemeyecek interface kullan. (`findPr` `CiProvider`'ın bir
+      metodu; başka bir provider aynı arayüzü kendi CLI'ı için uygulayabilir.)
 
 ---
 

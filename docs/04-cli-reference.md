@@ -80,6 +80,16 @@ Only variable names and safe values — a port, or a bare `http(s)` address — 
 
 Shows resolved worktree identity, state, endpoints, processes and runtime resources.
 
+`--pr` adds this worktree's pull request as an optional `pr` section: `{ summary, detail? }`.
+`summary` is the PR's number, URL, state, mergeability and rolled-up check status, or `null` when
+the branch has none. Without `--pr`, `status` never touches the network; with it, this is the one
+field that does, looked up live through the `gh` CLI (no separate `gh` credentials — WTM never
+reads or stores a token, same as `wtm ci watch`). When the lookup itself cannot run — no CI
+provider for this remote, or `gh` missing or unauthenticated — `summary` is `null` and `detail`
+says why; this is never a command error, so a machine without GitHub access still gets a `status`.
+This is a one-shot read: unlike `wtm ci watch`, nothing is stored, and nothing here is a
+substitute for it.
+
 ### `wtm doctor [selector]`
 
 Runs deterministic checks for Git, config, adapters, resources, ports, process records and the

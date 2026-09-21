@@ -4,6 +4,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
+  CiProvider,
   DaemonStateStore,
   EndpointLease,
   EndpointLeaseQuery,
@@ -118,6 +119,77 @@ describe('registry-backed diagnostics', () => {
 
     expect(ports.leases.map(({ name, port }) => [name, port]).sort())
       .toEqual([['api', 4100], ['web', 4200]]);
+  });
+});
+
+describe('wtm status --pr', () => {
+  const prWorkspace: WorkspaceRecord = { ...workspace, id: 'ws-pr', name: 'pr-workspace', root: '/pr-workspace' };
+  const prRegistered = { id: prWorkspace.id, name: prWorkspace.name, root: prWorkspace.root, scope: prWorkspace.scope } as const;
+
+  function sourceWithRemote(remoteIdentity: string | null, provider: CiProvider) {
+    const repository: RepositoryRecord = {
+      id: 'pr-repo', workspaceId: prWorkspace.id, commonGitDir: '/pr-workspace/app/.git', mainRoot: '/pr-workspace/app',
+      remoteIdentity, createdAt: '2026-01-01T00:00:00.000Z', lastReconciledAt: null,
+    };
+    const prStore = {
+      listWorkspaces: () => [prWorkspace],
+      listRepositories: () => [repository],
+      listWorktrees: () => [worktree('pr-worktree', repository.id, '/pr-workspace/app', 1)],
+      listManagedProcesses: () => [],
+      listEndpointLeases: () => [],
+    } as unknown as DaemonStateStore;
+    return createStateDiagnosticDataSource(prStore, {
+      cwd: '/pr-workspace/app',
+      globalConfigPath: '/pr-workspace/config.toml',
+      ciProvider: () => provider,
+    });
+  }
+
+  const unusedProvider: CiProvider = {
+    name: 'github',
+    checkAvailable: async () => { throw new Error('must not be called without --pr'); },
+    findPr: async () => { throw new Error('must not be called without --pr'); },
+    listRuns: async () => { throw new Error('must not be called without --pr'); },
+    listJobs: async () => { throw new Error('must not be called without --pr'); },
+    failedJobLog: async () => { throw new Error('must not be called without --pr'); },
+  };
+
+  it('omits the pr field entirely, and never calls the provider, without the flag', async () => {
+    const status = await sourceWithRemote('git@github.com:acme/widgets.git', unusedProvider).readStatus(prRegistered);
+    expect(status.pr).toBeUndefined();
+  });
+
+  it('reports the PR and its rolled-up checks when the branch has one', async () => {
+    const provider: CiProvider = {
+      ...unusedProvider,
+      findPr: async () => ({ ok: true, value: { number: 7, url: 'https://github.com/acme/widgets/pull/7', state: 'open', mergeable: 'mergeable' } }),
+      listRuns: async () => ({ ok: true, value: [{ runId: 1, workflow: 'CI', event: 'push', status: 'completed', conclusion: 'success', url: 'https://x/1', jobs: [] }] }),
+    };
+    const status = await sourceWithRemote('git@github.com:acme/widgets.git', provider).readStatus(prRegistered, { pr: true });
+    expect(status.pr).toEqual({
+      summary: { number: 7, url: 'https://github.com/acme/widgets/pull/7', state: 'open', mergeable: 'mergeable', checks: 'success' },
+    });
+  });
+
+  it('reports summary: null, no detail, when the branch simply has no PR', async () => {
+    const provider: CiProvider = { ...unusedProvider, findPr: async () => ({ ok: true, value: null }) };
+    const status = await sourceWithRemote('git@github.com:acme/widgets.git', provider).readStatus(prRegistered, { pr: true });
+    expect(status.pr).toEqual({ summary: null });
+  });
+
+  it('reports a detail instead of failing the command when gh is unavailable', async () => {
+    const provider: CiProvider = {
+      ...unusedProvider,
+      findPr: async () => ({ ok: false, failure: { kind: 'unavailable', reason: 'missing', detail: 'The GitHub CLI (gh) was not found.' } }),
+    };
+    const status = await sourceWithRemote('git@github.com:acme/widgets.git', provider).readStatus(prRegistered, { pr: true });
+    expect(status.pr).toEqual({ summary: null, detail: 'The GitHub CLI (gh) was not found.' });
+  });
+
+  it('reports a detail when the repository has no supported CI provider remote', async () => {
+    const status = await sourceWithRemote(null, unusedProvider).readStatus(prRegistered, { pr: true });
+    expect(status.pr).toMatchObject({ summary: null });
+    expect(status.pr?.detail).toBeDefined();
   });
 });
 
