@@ -71,6 +71,7 @@ import {
   runTaskListCommand, runTaskSetCommand, runTaskShowCommand, runTaskUnsetCommand,
   taskOverrideToToml, taskValueFromFlags, type TaskFlags,
 } from './commands/task';
+import { runChecklistClearCommand, runChecklistListCommand, runChecklistSetCommand } from './commands/checklist';
 import { runRestartCommand } from './commands/restart';
 import { runPsCommand } from './commands/ps';
 import { followLogs, runLogsCommand } from './commands/logs';
@@ -453,6 +454,57 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       return;
     }
     process.stdout.write(taskOverrideToToml(name, data.task.task));
+  });
+
+  // Top-level, not nested under `task`: a checklist item is not a task. The dev overlay
+  // (`[dev-overlay] enabled = true`) shows these as checkboxes; the user checking one writes
+  // `checked` back here through the proxy's own `/__wtm/checklist` endpoint, never through this
+  // CLI. See `docs/07`'s "Dev overlay" section and todo item 46b.
+  const checklist = program.command('checklist').description('Leave test/review steps in the dev overlay for the user to check off.');
+
+  const checklistList = checklist.command('list').description('List this worktree\'s checklist.');
+  addTargetOptions(checklistList);
+  addJsonOption(checklistList);
+  checklistList.action(async (options: ScopeOptions & TargetOptions) => {
+    const target = await taskTarget(['wtm', 'checklist', 'list'], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('checklist list', target.error), runtimeJson(program, options));
+      return;
+    }
+    renderRuntime(await runChecklistListCommand({ cwd: target.cwd }, dependencies.runtimeClient), runtimeJson(program, options));
+  });
+
+  const checklistSet = checklist.command('set').description('Replace this worktree\'s whole checklist.');
+  addTargetOptions(checklistSet);
+  addJsonOption(checklistSet);
+  checklistSet.option('--item <text>', 'a checklist step; repeat for more', (value: string, previous: string[] = []) => [...previous, value]);
+  checklistSet.action(async (options: ScopeOptions & TargetOptions & { item?: string[] }) => {
+    const target = await taskTarget(['wtm', 'checklist', 'set'], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('checklist set', target.error), runtimeJson(program, options));
+      return;
+    }
+    const items = options.item ?? [];
+    if (items.length === 0) {
+      renderRuntime({
+        schemaVersion: 1, ok: false, command: 'checklist set', data: null, warnings: [],
+        errors: [{ code: 'WTM_CONFIG_INVALID', message: 'wtm checklist set requires at least one --item.', severity: 'error' }],
+      }, runtimeJson(program, options));
+      return;
+    }
+    renderRuntime(await runChecklistSetCommand({ cwd: target.cwd, items }, dependencies.runtimeClient), runtimeJson(program, options));
+  });
+
+  const checklistClear = checklist.command('clear').description('Remove every item of this worktree\'s checklist.');
+  addTargetOptions(checklistClear);
+  addJsonOption(checklistClear);
+  checklistClear.action(async (options: ScopeOptions & TargetOptions) => {
+    const target = await taskTarget(['wtm', 'checklist', 'clear'], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('checklist clear', target.error), runtimeJson(program, options));
+      return;
+    }
+    renderRuntime(await runChecklistClearCommand({ cwd: target.cwd }, dependencies.runtimeClient), runtimeJson(program, options));
   });
 
   const analyze = program.command('analyze [selector]').description('Analyze worktree removal safety.');
