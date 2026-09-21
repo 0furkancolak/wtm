@@ -1,4 +1,5 @@
 export * from './adapter';
+export * from './checklist';
 export * from './ci';
 export * from './errors';
 export * from './ipc';

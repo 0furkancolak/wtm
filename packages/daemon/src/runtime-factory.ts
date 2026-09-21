@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { readFile, realpath } from 'node:fs/promises';
 import { parse } from 'smol-toml';
-import { ciCommandNames, jobCommandNames, taskOverrideCommandNames } from '@wtm/protocol';
+import { checklistCommandNames, ciCommandNames, jobCommandNames, taskOverrideCommandNames } from '@wtm/protocol';
 import { basename as posixBasename, dirname as posixDirname, join as posixJoin, resolve as posixResolve } from 'node:path/posix';
 import { basename as win32Basename, dirname as win32Dirname, join as win32Join, resolve as win32Resolve } from 'node:path/win32';
 import {
@@ -33,13 +33,14 @@ import { CiWatcher } from './ci/watcher';
 import { createGhRunner } from './ci/gh-runner';
 import { createGitHubProvider } from './ci/github-provider';
 import { TaskOverridesHandler } from './task-overrides-handler';
+import { ChecklistHandler } from './checklist-handler';
 import { LifecycleEventDispatcher } from './events';
 import { WtmDaemon } from './main';
 import { ManagedLogStore } from './logs';
 import { HeavyJobQueue, type ResolvedHeavyJob } from './heavy-job-queue';
 import { IdleRuntimeSuspender } from './idle-runtime';
 import { ManagedProcessSupervisor, type RuntimeInvocation } from './process-supervisor';
-import { devOverlayHtmlInjector } from './dev-overlay';
+import { checklistApiHandler, devOverlayHtmlInjector } from './dev-overlay';
 import { defaultProxyPort, ProxyServer } from './proxy';
 import { globalDevOverlayPolicy, globalProxyPolicy } from './proxy-policy';
 import { buildProxyRoutes } from './proxy-routes';
@@ -97,6 +98,7 @@ export interface ProductionDaemonRuntime {
   jobs: HeavyJobQueue | null;
   ci: CiWatcher | null;
   taskOverrides: TaskOverridesHandler | null;
+  checklist: ChecklistHandler | null;
   /** `null` unless `[proxy] enabled = true` in the global configuration. See `proxy.ts`. */
   proxy: ProxyServer | null;
   start(): Promise<void>;
@@ -341,15 +343,25 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
   const devOverlayPolicy = proxyPolicy.enabled === true
     ? await globalDevOverlayPolicy(paths.globalConfigPath)
     : {};
+  // The checklist's browser-facing toggle endpoint (todo item 46b, W11-1) shares the exact same
+  // `[dev-overlay].enabled` gate `htmlInjector` above uses — there is no second config flag for
+  // this half of the overlay, since a checklist with no overlay to render it in has nothing to
+  // toggle from.
   const proxy = proxyPolicy.enabled === true ? new ProxyServer({
     port: proxyPolicy.port ?? defaultProxyPort,
     resolveRoute: (hostname) => buildProxyRoutes(stateStore).get(hostname) ?? null,
     ...(options.proxyHosts === undefined ? {} : { hosts: options.proxyHosts }),
     onError,
     ...(devOverlayPolicy.enabled === true ? { htmlInjector: devOverlayHtmlInjector(stateStore) } : {}),
+    ...(devOverlayPolicy.enabled === true && stateStore.checklist !== undefined
+      ? { overlayApi: checklistApiHandler(stateStore.checklist) } : {}),
   }) : null;
   const taskOverrides = stateStore.taskOverrides === undefined ? null : new TaskOverridesHandler({
     store: stateStore.taskOverrides,
+    registration: stateStore,
+  });
+  const checklist = stateStore.checklist === undefined ? null : new ChecklistHandler({
+    store: stateStore.checklist,
     registration: stateStore,
   });
   const ci = stateStore.ci === undefined ? null : new CiWatcher({
@@ -374,7 +386,8 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
       ciCommandNames.has(request.command) && ci !== null ? ci.handle(request)
         : jobCommandNames.has(request.command) && jobs !== null ? jobs.handle(request)
           : taskOverrideCommandNames.has(request.command) && taskOverrides !== null ? taskOverrides.handle(request)
-            : controller.handle(request, context)
+            : checklistCommandNames.has(request.command) && checklist !== null ? checklist.handle(request)
+              : controller.handle(request, context)
     ),
     // Preparation and lifecycle events belong to the pass that noticed the change, so a
     // worktree created while WTM is watching is prepared before anybody runs anything in it.
@@ -399,6 +412,7 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     jobs,
     ci,
     taskOverrides,
+    checklist,
     proxy,
     start: async () => { await daemon.start(); await jobs?.start(); await ci?.start(); idle.start(); await proxy?.start(); },
     close: async () => {
