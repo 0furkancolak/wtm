@@ -33,6 +33,7 @@ import { createCli, runCli } from '../../main';
 import { isolatedHomeEnvironment } from '../../../../testkit/src/isolated-home';
 import { shortTmpRoot } from '../../../../testkit/src/platform';
 import { runScenario, scenarioTimeoutMs } from '../../../../testkit/src/scenario-child';
+import { ipcEndpointAbsent, ipcEndpointReachable } from '../../../../testkit/src/ipc-address';
 
 const serveScenarioPath = fileURLToPath(new URL('./daemon-serve.scenario.ts', import.meta.url));
 const serveFailureScenarioPath = fileURLToPath(new URL('./daemon-serve-failure.scenario.ts', import.meta.url));
@@ -769,6 +770,21 @@ describe('daemon failure output', () => {
 
   test('an over-long HOME refuses serve with one coded line naming the length and the limit', async () => {
     const fixture = await overLongHome();
+    if (fixture === null) {
+      // No HOME on this host can reach the refusal, so the claim worth pinning is the reason: the
+      // address is a fixed length whatever the home is, and therefore always fits. Returning
+      // quietly instead would leave a test that passes by measuring nothing.
+      const shallow = await mkdtemp(join(shortTmpRoot(), 'wtm-daemon-fixed-address-'));
+      try {
+        const deep = join(shallow, 'h'.repeat(200));
+        expect(Buffer.byteLength(hostSocketPathFor(deep)))
+          .toBe(Buffer.byteLength(hostSocketPathFor(shallow)));
+        expect(measureDaemonSocketPath(hostSocketPathFor(deep), hostLimitBytes).fits).toBe(true);
+      } finally {
+        await rm(shallow, { recursive: true, force: true });
+      }
+      return;
+    }
     const measurement = measureDaemonSocketPath(hostSocketPathFor(fixture.home), hostLimitBytes);
     try {
       const result = runScenario('node', ['--import', 'tsx', serveScenarioPath], {
@@ -835,8 +851,23 @@ describe('daemon failure output', () => {
  * `$XDG_RUNTIME_DIR` under it — so the padding is arithmetic, and the result is checked rather
  * than assumed.
  */
-async function overLongHome(): Promise<{ root: string; home: string }> {
+/**
+ * A HOME whose daemon address lands exactly one byte past this host's limit — or `null` on a host
+ * where no such HOME exists.
+ *
+ * It exists on macOS and Linux because the published address is the home (or the runtime
+ * directory under it) plus a fixed suffix, so a longer home is a longer address. It does not exist
+ * on Windows: `windowsPlatformPaths` derives the pipe name by hashing the data root, so every home
+ * on that host publishes a name of the same length, well inside the namespace limit. The preflight
+ * is unreachable through HOME there — which is a property of the derivation, not a gap in it, and
+ * `addressGrowsWithHome` is how this fixture decides rather than by naming a platform.
+ */
+async function overLongHome(): Promise<{ root: string; home: string } | null> {
   const root = await mkdtemp(join(shortTmpRoot(), 'wtm-daemon-long-home-'));
+  if (!addressGrowsWithHome(root)) {
+    await rm(root, { recursive: true, force: true });
+    return null;
+  }
   const padding = hostLimitBytes + 1 - Buffer.byteLength(hostSocketPathFor(root)) - 1;
   if (padding < 1) throw new Error('the temporary root is already past the socket path limit');
   const home = join(root, 'h'.repeat(padding));
@@ -845,6 +876,12 @@ async function overLongHome(): Promise<{ root: string; home: string }> {
   }
   await mkdir(home, { recursive: true });
   return { root, home };
+}
+
+/** Whether a deeper home yields a longer daemon address on this host. */
+function addressGrowsWithHome(root: string): boolean {
+  return Buffer.byteLength(hostSocketPathFor(join(root, 'deeper')))
+    > Buffer.byteLength(hostSocketPathFor(root));
 }
 
 describe('daemon CLI surface', () => {
@@ -935,7 +972,10 @@ describe('daemon CLI surface', () => {
     });
     const resultPromise = childResult(child);
     try {
-      await untilAsync(async () => await lstat(socketPath).then((stat) => stat.isSocket(), () => false), 10_000);
+      // A connection, not an `lstat`: a named pipe has no filesystem entry, so the socket-file
+      // poll this used to run could only ever spend its whole deadline on the win32 leg. It is
+      // also the stronger observation — a bound socket file can exist before anything accepts.
+      await untilAsync(async () => await ipcEndpointReachable(socketPath), 10_000);
       child.kill('SIGTERM');
       const result = await resultPromise;
       expect(result.code, result.stderr).toBe(0);
@@ -943,7 +983,12 @@ describe('daemon CLI surface', () => {
       expect(JSON.parse(result.stdout)).toMatchObject({
         ok: true, command: 'daemon serve', data: { state: 'stopped', signal: 'SIGTERM' },
       });
-      expect(await lstat(socketPath).then(() => true, () => false)).toBe(false);
+      expect(await ipcEndpointAbsent(socketPath)).toBe(true);
+      // Where the address is a filesystem path, the entry itself must be gone too. Guarded on the
+      // address rather than on the host: a pipe name is not a path anyone can `lstat`.
+      if (!socketPath.startsWith('\\\\.\\pipe\\')) {
+        expect(await lstat(socketPath).then(() => true, () => false)).toBe(false);
+      }
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       await rm(home, { recursive: true, force: true });

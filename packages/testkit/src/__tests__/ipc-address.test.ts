@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createConnection, createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
-import { fixtureIpcAddress, ipcEndpointAbsent } from '../ipc-address';
+import { createTrackedIpcServer, fixtureIpcAddress, ipcEndpointAbsent } from '../ipc-address';
 import { shortTmpRoot } from '../platform';
 
 test('Windows fixture addresses use a bounded pipe namespace isolated by the complete fixture path', () => {
@@ -24,36 +24,67 @@ test('POSIX fixture addresses retain the explicitly short socket path', () => {
 test('a real fixture endpoint answers, closes, and can be bound again at the same address', async () => {
   const root = await mkdtemp(join(shortTmpRoot(), 'wtm-ipc-'));
   const address = fixtureIpcAddress(root);
-  const server = createServer((socket) => { socket.on('error', () => {}); socket.end('fixture reply'); });
+  const endpoint = createTrackedIpcServer((socket) => { socket.on('error', () => {}); socket.end('fixture reply'); });
   try {
     expect(await ipcEndpointAbsent(address)).toBe(true);
-    await listen();
+    await endpoint.listen(address);
     expect(await ipcEndpointAbsent(address)).toBe(false);
     const reply = await new Promise<string>((resolve, reject) => {
       const socket = createConnection(address);
       let output = '';
       socket.on('data', (chunk) => { output += chunk.toString(); });
-      socket.once('end', () => resolve(output));
+      socket.once('end', () => { socket.destroy(); resolve(output); });
       socket.once('error', reject);
     });
     expect(reply).toBe('fixture reply');
-    await close();
+    await endpoint.close();
     expect(await ipcEndpointAbsent(address)).toBe(true);
-    await listen();
+    await endpoint.listen(address);
     expect(await ipcEndpointAbsent(address)).toBe(false);
   } finally {
-    if (server.listening) await close();
+    if (endpoint.server.listening) await endpoint.close();
     await rm(root, { recursive: true, force: true });
   }
-  async function listen(): Promise<void> {
+});
+
+test('closing a fixture endpoint does not wait on a peer that never lets go', async () => {
+  const root = await mkdtemp(join(shortTmpRoot(), 'wtm-ipc-hold-'));
+  const held: Socket[] = [];
+  // Neither handler answers and neither client ends: this is the shape `Server.close()` is
+  // documented to wait on, and the pair below is the whole argument for tracking connections.
+  const bare = createServer((socket) => { socket.on('error', () => {}); });
+  const tracked = createTrackedIpcServer((socket) => { socket.on('error', () => {}); });
+  try {
+    const bareAddress = fixtureIpcAddress(root, 'bare.sock');
+    const trackedAddress = fixtureIpcAddress(root, 'tracked.sock');
     await new Promise<void>((resolve, reject) => {
-      const failed = (error: Error) => { server.off('listening', ready); reject(error); };
-      const ready = () => { server.off('error', failed); resolve(); };
-      server.once('error', failed); server.once('listening', ready); server.listen(address);
+      bare.once('error', reject);
+      bare.listen(bareAddress, () => resolve());
     });
+    await tracked.listen(trackedAddress);
+    await Promise.all([hold(bareAddress), hold(trackedAddress)]);
+
+    let bareCloseSettled = false;
+    bare.close(() => { bareCloseSettled = true; });
+    await tracked.close();
+
+    // The tracked endpoint has already released its address while the bare one is still waiting.
+    expect(await ipcEndpointAbsent(trackedAddress)).toBe(true);
+    expect(bareCloseSettled).toBe(false);
+  } finally {
+    for (const socket of held) socket.destroy();
+    if (tracked.server.listening) await tracked.close();
+    await rm(root, { recursive: true, force: true });
   }
-  async function close(): Promise<void> {
-    await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+
+  async function hold(address: string): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const socket = createConnection(address);
+      held.push(socket);
+      socket.on('error', () => {});
+      socket.once('connect', () => resolve());
+      socket.once('error', reject);
+    });
   }
 });
 
