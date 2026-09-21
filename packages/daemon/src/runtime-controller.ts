@@ -132,6 +132,14 @@ export interface DaemonRuntimeControllerOptions {
    * failure is that event's business, not the start's.
    */
   onRuntimeEvent?(event: 'runtime.started' | 'runtime.stopped', worktreeId: string): void;
+  /**
+   * Told whenever a daemon-handled request observed a managed task, which is the only kind of
+   * activity WTM can see: it has no reverse proxy, so traffic to the task's own port is invisible
+   * here. Idle suspension (`[tasks.<name>.idle]`) dates its window from these calls. A request
+   * scoped to one task names it; one scoped to the whole worktree — `ps` — omits the name and
+   * means all of them.
+   */
+  onTaskActivity?(worktreeId: string, taskName?: string): void;
 }
 
 export class DaemonRuntimeController {
@@ -141,6 +149,7 @@ export class DaemonRuntimeController {
   readonly #inspectProcess: (pid: number) => Promise<ProcessInspection>;
   readonly #readinessFetch: ReadinessFetch | undefined;
   readonly #onRuntimeEvent: NonNullable<DaemonRuntimeControllerOptions['onRuntimeEvent']>;
+  readonly #onTaskActivity: NonNullable<DaemonRuntimeControllerOptions['onTaskActivity']>;
 
   constructor(options: DaemonRuntimeControllerOptions) {
     this.#supervisor = options.supervisor;
@@ -149,6 +158,12 @@ export class DaemonRuntimeController {
     this.#inspectProcess = options.inspectProcess ?? inspectProcess;
     this.#readinessFetch = options.readinessFetch;
     this.#onRuntimeEvent = options.onRuntimeEvent ?? (() => {});
+    this.#onTaskActivity = options.onTaskActivity ?? (() => {});
+  }
+
+  /** Never allowed to fail a request: an activity clock is a convenience, not a contract. */
+  #observeActivity(worktreeId: string, taskName?: string): void {
+    try { this.#onTaskActivity(worktreeId, taskName); } catch {}
   }
 
   async handle(request: IpcRequest, context?: { signal?: AbortSignal }): Promise<JsonEnvelope<unknown>> {
@@ -204,6 +219,9 @@ export class DaemonRuntimeController {
         if (!result.existing || request.command === 'restart') {
           this.#onRuntimeEvent('runtime.started', resolved.worktreeId);
         }
+        // Including a start that found the task already running: asking for it is interacting
+        // with it, which is the whole of what an idle window measures.
+        this.#observeActivity(resolved.worktreeId, taskName);
         if (healthcheck === null || !healthcheck.success) {
           return success(request.command, {
             process: result.record, existing: result.existing, readiness: uncheckedReadiness(),
@@ -224,6 +242,9 @@ export class DaemonRuntimeController {
               ?? records.find((record) => record.id === result.record.id) ?? null;
           },
         });
+        // Again after the wait: a readiness observation can run for its whole timeout, and the
+        // window should start from when WTM stopped looking rather than from when it began.
+        this.#observeActivity(resolved.worktreeId, taskName);
         const envelope = success(request.command, { ...observation, existing: result.existing }, scopeOf(resolved));
         if (observation.readiness.state === 'READY') return envelope;
         const state = observation.readiness.state;
@@ -266,6 +287,9 @@ export class DaemonRuntimeController {
         const registration = await this.#resolver.resolveWorktree(cwd);
         const scope = registration.workspaceWorktreeIds ?? [registration.worktreeId];
         const processes = scope.flatMap((worktreeId) => this.#supervisor.list(worktreeId));
+        // `ps` asks about every task of the scope at once, so it counts as interaction with each
+        // of them. Nothing inside WTM polls this command; it is only ever a person's `wtm ps`.
+        for (const worktreeId of scope) this.#observeActivity(worktreeId);
         return success('ps', { processes }, scopeOf(registration));
       }
 
@@ -337,6 +361,7 @@ export class DaemonRuntimeController {
             }),
           });
         }
+        for (const record of records) this.#observeActivity(worktreeId, record.taskName);
         const responseScope = scopeOf(registration);
         let envelope = success('logs', { logs, ...(truncated ? { truncated: true } : {}) }, responseScope);
         while (!fitsIpcResponse(request.id, envelope) && logs.length > 0) {

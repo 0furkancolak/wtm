@@ -217,6 +217,13 @@ healthcheck and run `wtm start <task> --wait --timeout 30s --json` (or `wtm rest
 `NOT_CHECKED`, and a live PID is not readiness. Timeout, failed evidence and cancellation leave the
 service running. Inspect `wtm logs <task>` and stop explicitly when needed.
 
+A task may opt into automatic idle suspension (`[tasks.<name>.idle] enabled/timeout`, off by
+default): WTM stops it after that long without a WTM interaction — a start, a readiness wait,
+`wtm ps` or `wtm logs` — and `wtm start <task>` brings it back. Idleness is measured from those
+interactions only, never from traffic to the task's port, so an opted-in service with live users
+and no WTM command still stops; `wtm logs <task>` carries the reason
+(see [`docs/07`](../../docs/07-process-port-runtime.md#automatic-idle-suspension)).
+
 When a task misbehaves, read `wtm resolve <task> --json`, `wtm env --json` and `wtm ports --json`
 before changing project files.
 
