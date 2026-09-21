@@ -3301,7 +3301,13 @@ birlikte 62/62 (bkz. Removal/Create parity turu). `bun run typecheck && bun run 
 - [ ] npm `@next` global kurulum
 - [x] README quick start'ın temiz bir workspace'te baştan sona çalışması
 - [x] `sun_path` sınırını aşan uzun `HOME`
-- [ ] farklı `HOME`'larda aynı anda iki daemon
+- [x] farklı `HOME`'larda aynı anda iki daemon — yeni `dual-home-daemons.scenario.ts`: iki gerçek
+      `createProductionDaemon` (ayrı SQLite state store, ayrı IPC soketi, ayrı log kökü),
+      `selectPlatformRuntime` üzerinden yalnızca farklı bir `HOME`'dan türetilmiş, aynı anda
+      ayakta. Yol izolasyonu (`containsPath`), eşzamanlı `ping`, birbirinden habersiz `start`/`ps`
+      ve bağımsız kapanma (biri kapanınca diğeri hâlâ yanıt veriyor) doğrulanıyor. Linux'ta ölçüldü;
+      Windows/macOS'ta ayrı bir ölçüm yok, ama kod platformdan bağımsız (`@wtm/platform` seçimi
+      dışında dal yok).
 - [x] `init` sonrası oluşturulan worktree
 
 ---
