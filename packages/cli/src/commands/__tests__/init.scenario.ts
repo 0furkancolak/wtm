@@ -17,6 +17,12 @@ try {
   if (scenario === 'config-context') {
     await writeFile(join(fixture.root, 'wtm.toml'), '[workspace]\nname = 42\n');
   }
+  if (scenario === 'preset-existing-config') {
+    await writeFile(join(fixture.root, 'wtm.toml'), 'version = 1\n\n[workspace]\nname = "chosen-by-user"\n');
+  }
+  if (scenario === 'preset-detection-conflict') {
+    await writeFile(join(fixture.firstRepoPath, '.env.example'), 'PORT=4000\n');
+  }
   if (scenario === 'update-required-secret') {
     await writeFile(
       join(fixture.root, 'wtm.toml'),
@@ -57,9 +63,20 @@ try {
     // An installer is available and nothing asked for it: registering must still write only
     // `wtm.toml`, and leave the project without a `.agents` tree it did not ask for.
     ...(scenario === 'default-no-skill' ? { aiSkillInstaller: installer } : {}),
+    ...(scenario === 'preset-unknown' ? { preset: 'not-a-real-preset' } : {}),
+    ...(scenario === 'preset-known' || scenario === 'preset-detection-conflict'
+      || scenario === 'preset-existing-config' ? { preset: 'rust' } : {}),
   };
   const envelope = await runInitCommand(input);
-  if (scenario === 'skill-install' || scenario === 'no-ai-skill' || scenario === 'default-no-skill') {
+  if (scenario === 'preset-known') {
+    process.stdout.write(`${JSON.stringify({
+      ...envelope,
+      data: envelope.data === null ? null : {
+        ...envelope.data,
+        config: await readFile(join(fixture.root, 'wtm.toml'), 'utf8'),
+      },
+    })}\n`);
+  } else if (scenario === 'skill-install' || scenario === 'no-ai-skill' || scenario === 'default-no-skill') {
     process.stdout.write(`${JSON.stringify({
       ok: envelope.ok,
       installs,

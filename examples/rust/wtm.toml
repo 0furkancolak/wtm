@@ -1,0 +1,15 @@
+version = 1
+
+[workspace]
+name = "rust"
+
+[tasks.dev]
+description = "Run the project for this worktree."
+run = ["cargo", "run"]
+cwd = "{worktree.root}"
+background = true
+
+[tasks.test]
+description = "Run the Rust test suite."
+run = ["cargo", "test"]
+cwd = "{worktree.root}"

@@ -105,6 +105,43 @@ When a new repository is cloned under a registered workspace, a structural files
 
 A new worktree outside the workspace can still be detected when its common Git repository lives inside a watched registered workspace because the Git common directory changes.
 
+## Workspace presets (`--preset`)
+
+`wtm init --preset <name>` seeds a brand-new `wtm.toml` from a fixed, known starter instead of
+leaving it as bare name-and-version. Each preset is one file, `examples/<name>/wtm.toml`, read
+verbatim so the file on disk and what gets seeded can never drift; only its `[workspace]` name is
+rewritten to the real workspace's name. The known names, one per shipped example:
+
+```text
+nextjs
+nextjs-hono
+bun-monorepo
+docker-compose
+python-uv
+rust
+go
+```
+
+An unknown name is refused with a `WTM_CONFIG_INVALID` error naming every known preset, before
+anything is read from disk.
+
+**A preset never replaces detection.** Step 7 above still runs by default, and its result always
+wins:
+
+- If detection (unless `--no-detect` was also passed) finds nothing it would write — the same
+  situation `--no-detect` addresses on its own — the preset becomes the new file's whole seed.
+- If detection *does* find something to declare, `--preset` is refused outright rather than
+  silently discarding either side: the error names the conflict
+  (`context.conflict: "preset-detection-conflict"`) and says to rerun with
+  `--no-detect --preset <name>` to use the preset anyway, or to drop `--preset` and keep what
+  detection found.
+- If `wtm.toml` already exists, `--preset` has nothing to seed — `wtm init` never edits a file it
+  did not write, the same rule detection itself already follows — and the result reports
+  `data.preset = { name, applied: false }` with a warning rather than an error, since nothing is
+  at risk of being silently discarded.
+
+`data.preset` is `null` when `--preset` was not given.
+
 ## Non-interactive AI initialization
 
 ```bash

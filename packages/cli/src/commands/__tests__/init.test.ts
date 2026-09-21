@@ -139,6 +139,66 @@ describe('runInitCommand', () => {
     expect(serialized).not.toContain('stack');
   });
 
+  test('rejects an unknown preset name with a clear, actionable envelope error', () => {
+    const envelope = runScenario('preset-unknown');
+
+    expect(jsonEnvelopeSchema.parse(envelope)).toMatchObject({
+      ok: false,
+      command: 'init',
+      errors: [{
+        code: 'WTM_CONFIG_INVALID',
+        message: expect.stringContaining('Unknown preset "not-a-real-preset"'),
+        severity: 'error',
+        context: {
+          preset: 'not-a-real-preset',
+          knownPresets: ['nextjs', 'nextjs-hono', 'bun-monorepo', 'docker-compose', 'python-uv', 'rust', 'go'],
+        },
+      }],
+    });
+  });
+
+  test('seeds a known preset\'s task names into the generated config', () => {
+    const envelope = runScenario('preset-known');
+
+    expect(jsonEnvelopeSchema.parse(envelope)).toMatchObject({
+      ok: true,
+      command: 'init',
+      data: { preset: { name: 'rust', applied: true } },
+    });
+    const config = (envelope.data as { config: string }).config;
+    expect(config).toContain('[tasks.dev]');
+    expect(config).toContain('[tasks.test]');
+    expect(config).toContain('run = ["cargo", "test"]');
+  });
+
+  test('refuses a preset instead of silently overriding a real detection result', () => {
+    const envelope = runScenario('preset-detection-conflict');
+
+    expect(jsonEnvelopeSchema.parse(envelope)).toMatchObject({
+      ok: false,
+      command: 'init',
+      errors: [{
+        code: 'WTM_CONFIG_INVALID',
+        context: { conflict: 'preset-detection-conflict', preset: 'rust' },
+      }],
+    });
+  });
+
+  test('reports a preset as unapplied when wtm.toml already exists, as a warning rather than an error', () => {
+    const envelope = runScenario('preset-existing-config');
+
+    expect(jsonEnvelopeSchema.parse(envelope)).toMatchObject({
+      ok: true,
+      command: 'init',
+      data: { preset: { name: 'rust', applied: false } },
+      warnings: [{
+        code: 'WTM_CONFIG_INVALID',
+        severity: 'warning',
+        context: { component: 'preset', preset: 'rust' },
+      }],
+    });
+  });
+
   test('installs the Agent Skill after successful initialization without changing AGENTS.md', () => {
     const result = runScenario('skill-install');
 

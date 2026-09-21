@@ -17,7 +17,10 @@ const root = new URL('../../', import.meta.url);
 
 /** Mirrors the checklist in todo.md item 32; a directory added there without a matching entry
  * here should fail loudly rather than silently skip validation. */
-const exampleDirs = ['minimal', 'multi-repo', 'bun-monorepo', 'docker-compose', 'polyglot'] as const;
+const exampleDirs = [
+  'minimal', 'multi-repo', 'bun-monorepo', 'docker-compose', 'polyglot',
+  'nextjs', 'nextjs-hono', 'python-uv', 'rust', 'go',
+] as const;
 
 interface LoadedExample {
   readonly dir: string;

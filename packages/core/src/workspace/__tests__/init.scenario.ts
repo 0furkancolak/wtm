@@ -1,5 +1,6 @@
 import { access, readFile, writeFile } from 'node:fs/promises';
 import { basename, join, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { createWorkspaceFixture } from '../../../../testkit/src/workspace-fixture';
 import { SQLiteStateStore } from '../../state/sqlite-store';
@@ -341,6 +342,61 @@ try {
     } finally {
       database.close();
     }
+  } else if (scenario === 'preset-seeds-new-config') {
+    const configPath = join(fixture.root, 'wtm.toml');
+    const presetToml = await readFile(
+      fileURLToPath(new URL('../../../../../examples/nextjs/wtm.toml', import.meta.url)),
+      'utf8',
+    );
+    const result = await initializeWorkspace({
+      root: fixture.root,
+      globalOnly: false,
+      userDataDir: fixture.userDataDir,
+      stateStore: store,
+      preset: { name: 'nextjs', toml: presetToml },
+    });
+    print({
+      preset: result.preset,
+      config: await readFile(configPath, 'utf8'),
+    });
+  } else if (scenario === 'preset-existing-config') {
+    const configPath = join(fixture.root, 'wtm.toml');
+    const original = 'version = 1\n\n[workspace]\nname = "chosen-by-user"\n';
+    await writeFile(configPath, original);
+    const presetToml = await readFile(
+      fileURLToPath(new URL('../../../../../examples/nextjs/wtm.toml', import.meta.url)),
+      'utf8',
+    );
+    const result = await initializeWorkspace({
+      root: fixture.root,
+      globalOnly: false,
+      userDataDir: fixture.userDataDir,
+      stateStore: store,
+      preset: { name: 'nextjs', toml: presetToml },
+    });
+    print({
+      preset: result.preset,
+      configUnchanged: await readFile(configPath, 'utf8') === original,
+    });
+  } else if (scenario === 'preset-detection-conflict') {
+    const presetToml = await readFile(
+      fileURLToPath(new URL('../../../../../examples/nextjs/wtm.toml', import.meta.url)),
+      'utf8',
+    );
+    await writeFile(join(fixture.firstRepoPath, '.env.example'), 'PORT=4000\n');
+    const error = await captureInitError(() => initializeWorkspace({
+      root: fixture.root,
+      globalOnly: false,
+      userDataDir: fixture.userDataDir,
+      stateStore: store,
+      preset: { name: 'nextjs', toml: presetToml },
+    }));
+    print({
+      errorCode: error.code,
+      conflict: error.context?.conflict,
+      preset: error.context?.preset,
+      localConfigExists: await exists(join(fixture.root, 'wtm.toml')),
+    });
   } else if (scenario === 'existing-incomplete') {
     const configPath = join(fixture.root, 'wtm.toml');
     const original = '# user setting\n[ports.web]\npreferred = 4111\n';

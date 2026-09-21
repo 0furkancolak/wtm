@@ -4,12 +4,14 @@ import {
   initializeWorkspace,
   SQLiteStateStore,
   verifyPrivateDirectory,
+  WtmConfigError,
   type InitInput,
   type InitResult,
   type StateStore,
 } from '@wtm/core';
 import type { FileTrustPolicy } from '@wtm/platform/ports';
 import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
+import { isPresetName, presetAssets, presetNames, type PresetAssetProvider } from '../assets';
 import { runSkillInstallCommand, type SkillInstaller } from './skill';
 
 export type InitAiSkillStatus =
@@ -24,18 +26,36 @@ export interface InitCommandResult extends InitResult {
 
 export type InitCommandEnvelope = JsonEnvelope<InitCommandResult | null>;
 
-export interface InitCommandInput extends InitInput {
+export interface InitCommandInput extends Omit<InitInput, 'preset'> {
   aiSkillInstaller?: SkillInstaller;
   installAiSkill?: boolean;
   /** Records explicit acceptance of non-destructive defaults; init remains non-interactive. */
   acceptDefaults?: boolean;
+  /**
+   * The raw `--preset <name>` argument, not yet known to be one of the fixed, known preset names —
+   * `runInitCommand` validates it against `presetNames` and, once valid, reads it (via
+   * `presetAssetProvider`, defaulting to the real filesystem) from `examples/<name>/wtm.toml`
+   * before `initializeWorkspace` ever runs. Core stays unaware presets are examples on disk; it
+   * only ever sees the resolved `{ name, toml }` pair `InitInput.preset` already expects. An
+   * unrecognized name becomes a `WTM_CONFIG_INVALID` envelope error, the same as any other invalid
+   * `wtm init` input, rather than a bare CLI-parse failure outside the JSON contract.
+   */
+  preset?: string;
+  presetAssetProvider?: PresetAssetProvider;
 }
 
 export async function runInitCommand(input: InitCommandInput): Promise<InitCommandEnvelope> {
   const mode = input.globalOnly === true ? 'global' as const : 'local' as const;
+  const { aiSkillInstaller, installAiSkill, acceptDefaults, preset: presetName, presetAssetProvider, ...coreInput } = input;
   let result: InitResult;
   try {
-    result = await initializeWorkspace(input);
+    const preset = presetName === undefined
+      ? undefined
+      : { name: presetName, toml: await resolvePreset(presetName, presetAssetProvider) };
+    result = await initializeWorkspace({
+      ...coreInput,
+      ...(preset === undefined ? {} : { preset }),
+    });
   } catch (error) {
     return {
       schemaVersion: 1,
@@ -56,6 +76,18 @@ export async function runInitCommand(input: InitCommandInput): Promise<InitComma
     severity: 'warning' as const,
     context: { service: port.service, port: port.preferred, range: port.range },
   }));
+  // `wtm.toml` already existed, so `--preset` had nothing to seed — the same rule that keeps
+  // `wtm init` from ever editing a file it did not write. This is a warning, not the refusal a
+  // preset that conflicts with a real detection result gets, because there is no risk of it
+  // discarding anything: the existing file always wins, silently, the way detection already does.
+  if (result.preset !== null && !result.preset.applied) {
+    warnings.push({
+      code: 'WTM_CONFIG_INVALID',
+      message: `wtm.toml already exists, so --preset "${result.preset.name}" was not applied.`,
+      severity: 'warning',
+      context: { component: 'preset', preset: result.preset.name },
+    });
+  }
   // Registering a workspace writes `wtm.toml` and nothing else. Installing the Agent Skill
   // put a `.agents/skills/wtm/SKILL.md` tree into the repository as well — a second structure,
   // in someone else's project, that they had not asked for and would have to notice, gitignore
@@ -116,6 +148,9 @@ export interface ProductionInitCommandInput {
    * runtime should pass its `fileTrust` instead, the same way `wtm skill install` does.
    */
   fileTrust?: FileTrustPolicy;
+  /** The raw `--preset` argument; see `InitCommandInput.preset`. */
+  preset?: string;
+  presetAssetProvider?: PresetAssetProvider;
 }
 
 export interface ProductionInitDependencies {
@@ -144,6 +179,8 @@ export async function runProductionInitCommand(
       ...(input.installAiSkill === undefined ? {} : { installAiSkill: input.installAiSkill }),
       ...(input.detect === undefined ? {} : { detect: input.detect }),
       ...(input.acceptDefaults === undefined ? {} : { acceptDefaults: input.acceptDefaults }),
+      ...(input.preset === undefined ? {} : { preset: input.preset }),
+      ...(input.presetAssetProvider === undefined ? {} : { presetAssetProvider: input.presetAssetProvider }),
     });
   } finally {
     opened.close();
@@ -164,6 +201,17 @@ function toInitError(error: unknown): WtmError {
     severity: 'error',
     context: { ...errorContext(error), command: 'init' },
   };
+}
+
+async function resolvePreset(name: string, provider: PresetAssetProvider = presetAssets()): Promise<string> {
+  if (!isPresetName(name)) {
+    throw new WtmConfigError(`Unknown preset "${name}". Choose one of: ${presetNames.join(', ')}.`, {
+      preset: name,
+      knownPresets: [...presetNames],
+      action: `Rerun with one of: ${presetNames.map((known) => `--preset ${known}`).join(', ')}.`,
+    });
+  }
+  return provider.readPreset(name);
 }
 
 function errorCode(error: unknown): WtmErrorCode {

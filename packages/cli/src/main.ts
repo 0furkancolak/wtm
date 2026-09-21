@@ -110,6 +110,7 @@ import {
   runProductionInitCommand,
   type ProductionInitCommandInput,
 } from './commands/init';
+import { presetNames } from './assets';
 import { runDetectCommand, type DetectCommandInput } from './commands/detect';
 import {
   createFilesystemSkillInstaller,
@@ -806,11 +807,14 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   init.option('--max-depth <n>', 'maximum discovery depth', parseNonNegativeInteger);
   init.option('--ai-skill', 'also install the local Agent Skill, as `wtm skill install` does');
   init.option('--no-detect', 'write only a name and a version, reading no repository');
+  init.option('--preset <name>', `seed a new wtm.toml from a known starter (${presetNames.join(', ')}); `
+    + 'only where detection finds nothing to declare');
   init.action(async (path: string | undefined, options: ScopeOptions & {
     yes?: boolean;
     maxDepth?: number;
     aiSkill?: boolean;
     detect?: boolean;
+    preset?: string;
   }) => {
     const global = options.global === true || program.opts<ScopeOptions>().global === true;
     const databasePath = dependencies.initDatabasePath ?? defaultProductionRuntimePaths().databasePath;
@@ -827,6 +831,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       aiSkillInstaller: installer,
       fileTrust: hostPlatformRuntime().fileTrust,
       ...(options.maxDepth === undefined ? {} : { maxDepth: options.maxDepth }),
+      ...(options.preset === undefined ? {} : { preset: options.preset }),
     });
     if (envelope.ok) await announceRegistration(dependencies.runtimeClient);
     renderRuntime(envelope, runtimeJson(program, options));

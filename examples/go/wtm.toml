@@ -1,0 +1,15 @@
+version = 1
+
+[workspace]
+name = "go"
+
+[tasks.dev]
+description = "Run the project for this worktree."
+run = ["go", "run", "."]
+cwd = "{worktree.root}"
+background = true
+
+[tasks.test]
+description = "Run the Go test suite."
+run = ["go", "test", "./..."]
+cwd = "{worktree.root}"
