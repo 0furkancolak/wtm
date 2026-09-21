@@ -116,14 +116,20 @@ The configured verification and publication scopes differ:
 | Workflow | Native runner targets | Effect |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | macOS arm64, macOS x64, Linux x64, Linux arm64, Windows x64 | Schedules lint, typecheck, tests, e2e, bundle/package verification and standalone smoke checks; publishes nothing |
-| `.github/workflows/release.yml` | macOS arm64 and macOS x64 | Verifies the two Darwin artifacts and publishes them only for version tags |
+| `.github/workflows/release.yml` | macOS arm64, macOS x64 (`verify`), Linux x64, Linux arm64 (`verify-linux`), Windows x64 (`verify-windows`) | Verifies all five artifacts and publishes them for version tags; Windows is optional (see below) |
 
 A configured CI leg is not a claim that its latest run passed. Windows remains experimental, with
 native failures tracked in the development notes. Until those failures are fixed (todo item 9), the
-Windows leg is informational: it runs the same steps with a 25 minute cap, and its failure does not
-fail the run. CI runs on pull requests and on pushes to `main`, once per commit. Linux arm64 now uses `ubuntu-24.04-arm`; its
-first passing native result is still pending. The five configured CI legs do not imply five
-release targets.
+Windows leg is informational everywhere it appears, `release.yml` included: `ci.yml`'s win32 leg
+runs the same steps with a 25 minute cap and does not fail the run, and `release.yml`'s
+`verify-windows` job carries `continue-on-error` for the same reason — a native failure in either
+one must never block the rest of a release. CI runs on pull requests and on pushes to `main`, once
+per commit. Linux arm64 now uses `ubuntu-24.04-arm`; its first passing native result is still
+pending. The five configured CI legs do not imply five *required* release targets: `scripts/artifact-targets.ts` publishes five
+(`publishedReleaseTargets`) but only requires four (`requiredReleaseTargets`, everything except
+`win32`) — a release whose Windows leg never produced an archive still ships macOS and Linux; a
+Windows archive that *is* present is verified exactly as strictly as any other. Windows moves into
+the required set once todo item 9 lands.
 
 A manual `workflow_dispatch` run can narrow that 25 minute win32 leg to a chosen group of test
 files instead of the full suite, to prove a fix green without waiting on every leg: dispatch the
@@ -142,29 +148,33 @@ gh workflow run CI --ref <branch> -f win32_test_filter="packages/x/src/__tests__
 Leaving the input empty (or triggering CI any other way) runs the full suite on every leg as before.
 
 The tag workflow publishes `wtm-darwin-arm64.tar.gz`, `wtm-darwin-x64.tar.gz`,
-`wtm-linux-x64.tar.gz`, `wtm-linux-arm64.tar.gz` and `SHA256SUMS`. The verified published
-prerelease `v0.1.0-rc.1` carries the two macOS assets only: it was tagged before the Linux legs
-existed, and no tag has been cut since, so the Linux half is workflow wiring that no release run
-has exercised yet. Linux users build from source until a tag carries those archives. There is no
-published Windows archive at all; Windows contributor builds must be assessed against the
-experimental backend's remaining gates.
+`wtm-linux-x64.tar.gz`, `wtm-linux-arm64.tar.gz`, `wtm-windows-x64.zip` (when `verify-windows`
+produced one) and `SHA256SUMS`. The verified published prerelease `v0.1.0-rc.1` carries the two
+macOS assets only: it was tagged before the Linux and Windows legs existed, and no tag has been cut
+since, so that half is workflow wiring no release run has exercised yet. Linux and Windows users
+build from source until a tag carries those archives.
 
 Signing and notarization are scoped to the platform family that has them. `codesign`, the notary
-service and Gatekeeper are macOS facts, so the Linux legs run none of them and report
+service and Gatekeeper are macOS facts, so the Linux and Windows legs run none of them and report
 `not-applicable` for both. `scripts/verify-release.ts` accepts that answer only for a selection
-holding no macOS archive: a macOS archive claiming it is refused, and so is a Linux leg claiming a
-signature it could not have produced. The combined gate over all four archives still requires a
-signed, notarized macOS build before a stable tag publishes.
+holding no macOS archive: a macOS archive claiming it is refused, and so is a non-macOS leg claiming
+a signature it could not have produced. The combined gate requires a signed, notarized macOS build
+before a stable tag publishes, regardless of how many other archives are attached.
 
-Local archive construction supports Linux x64 and arm64: after `bun run build:binary`, run
-`bun run release:artifacts` on that native host to produce `dist/release/wtm-linux-x64.tar.gz`
-or `dist/release/wtm-linux-arm64.tar.gz` and `SHA256SUMS`.
-The archive contains the executable, license, notice and third-party notices. Construction
-checks a bounded ELF header against the declared architecture (x86-64 or AArch64), sets numeric
-archive ownership and writes checksums. Both Linux CI legs separately archive and extract the
-freshly built SEA, verify exact bytes, ownership, executable mode and checksums, and execute
-`--version`. Fixture header tests alone are not native execution evidence. Windows archive
-construction is not enabled, and no Windows target is published.
+Local archive construction supports Linux x64 and arm64, and Windows x64: after
+`bun run build:binary`, run `bun run release:artifacts` on that native host to produce
+`dist/release/wtm-linux-x64.tar.gz`, `dist/release/wtm-linux-arm64.tar.gz` or
+`dist/release/wtm-windows-x64.zip` and `SHA256SUMS`. The archive contains the executable, license,
+notice and third-party notices. Construction checks a bounded platform-appropriate header against
+the declared architecture — an ELF header (x86-64 or AArch64) on Linux, a PE header (`MZ` +
+`PE\0\0` + machine field, read up to 1024 bytes since `e_lfanew` can point past a smaller bound) on
+Windows — sets numeric archive ownership on the POSIX archives and writes checksums. The Windows
+archive is zipped with PowerShell's `Compress-Archive`, present on every `windows-latest` runner,
+rather than GNU tar. Both Linux CI legs separately archive and extract the freshly built SEA, verify
+exact bytes, ownership, executable mode and checksums, and execute `--version`; the `verify-windows`
+job does the same for the zip, with an exe extension and a `ping`-based task fixture in place of the
+POSIX ones. Fixture header tests alone are not native execution evidence, and no real
+`windows-latest` runner has exercised this path yet (see Release operations, below).
 
 The npm registry publication, dist-tags and provenance have not been verified. A successful
 `package:verify` is a build and dry-run tarball check, not proof that a registry installation works.
@@ -193,16 +203,20 @@ guarded by `startsWith(github.ref, 'refs/tags/v')`.
 
 The tag workflow (`.github/workflows/release.yml`):
 
-- builds and verifies the executable natively on macOS arm64 and macOS x64;
-- measures performance inside each `verify` matrix job and records `PERFORMANCE.json` alongside
-  signing, notarization and smoke evidence. There is no separate `Performance` workflow.
-  `publish` depends on `verify` and runs the combined artifact gate again;
+- builds and verifies the executable natively on macOS arm64, macOS x64 (`verify`), Linux x64,
+  Linux arm64 (`verify-linux`) and Windows x64 (`verify-windows`, `continue-on-error`);
+- measures performance inside each matrix/job and records `PERFORMANCE.json` alongside signing,
+  notarization and smoke evidence for that leg. There is no separate `Performance` workflow.
+  `publish` depends on all three verify jobs and runs the combined artifact gate again over
+  whichever archives actually got uploaded;
 - requires the tag to match the `package.json` version exactly, including any prerelease suffix;
-- checks executable smoke results, recomputes archive digests and requires exactly the two expected
-  Darwin archives before publication;
+- checks executable smoke results, recomputes archive digests and requires every *required*
+  archive (the four non-Windows ones) before publication; a present Windows archive is checked
+  exactly as strictly, but publication does not wait on one, per todo item 9;
 - requires a **stable** release to have Developer ID signing, successful notarization and no
   performance blockers. The notarization step submits a temporary ZIP with `notarytool --wait`,
-  requires an accepted result, then runs `spctl --assess`. Published archives remain `.tar.gz`;
+  requires an accepted result, then runs `spctl --assess`. The signed, notarized executable still
+  ships as `.tar.gz`; only the Windows archive is a `.zip`;
 - allows **prereleases** to carry ad-hoc or unsigned signing evidence, skipped notarization and
   performance blockers. Missing or invalid required evidence is still an error, and failed smoke
   checks are not exempted;
@@ -217,6 +231,13 @@ The tag workflow (`.github/workflows/release.yml`):
 Signing/notarization workflow code and gate tests do not establish that a notarized release has
 passed Gatekeeper on a clean macOS machine. That native acceptance remains open; retain the
 README/CHANGELOG quarantine workaround until it is demonstrated.
+
+No tag has been pushed since the Linux and Windows legs were added, so `verify-linux` and
+`verify-windows` are workflow wiring proven only by structural tests and by the unit gate run
+locally against fixture archives (`bun run release:gate` with each leg's own environment shape);
+neither has produced a real archive on a native `ubuntu-24.04(-arm)` or `windows-latest` runner.
+The first real tag closes that gap automatically for whichever legs GitHub Actions can run at the
+time.
 The workflow's Gatekeeper check is designed around online ticket lookup for the bare executable;
 it does not exercise offline installation or establish first-run acceptance for a future release.
 
