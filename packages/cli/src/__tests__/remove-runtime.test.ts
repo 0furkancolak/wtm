@@ -120,6 +120,16 @@ describe('runtime-aware wtm remove', () => {
     });
   }, scenarioTestTimeoutMs);
 
+  test('deletes the worktree\'s task overrides alongside its endpoint leases', () => {
+    expect(runLifecycleCase('task-override-cleanup')).toEqual({
+      exitCode: 0,
+      ok: true,
+      hadOverrideBeforeRemoval: true,
+      overrideAfterRemoval: null,
+      worktreeExists: false,
+    });
+  }, scenarioTestTimeoutMs);
+
   test('reconciles locally and says the daemon will emit worktree.removed when it next runs', () => {
     const report = runLifecycleCase('local-reconcile');
 

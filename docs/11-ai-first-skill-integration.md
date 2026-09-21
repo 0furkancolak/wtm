@@ -76,6 +76,10 @@ wtm analyze --json
 7. Never use `git worktree remove -f` to bypass WTM safety.
 8. Never auto-commit/push/reset merely to satisfy deletion; report blockers unless the user explicitly asked for that Git action.
 9. If WTM is unhealthy, run `wtm doctor --json` and `wtm plan --json` before inventing local workarounds.
+10. To fix a derived task's `cwd`, port template or argv, use `wtm task set` (`--task-json` for
+    full fidelity), never hand-edit `wtm.toml` for a one-worktree fix — the override is scoped to
+    the worktree it is run in and `wtm task unset` reverts it cleanly. Reserve editing `wtm.toml`
+    for a change that should apply to every worktree of the workspace.
 
 ## Skill installation
 

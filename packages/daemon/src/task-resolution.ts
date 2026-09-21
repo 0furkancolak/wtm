@@ -1,5 +1,6 @@
 import { basename, resolve } from 'node:path';
 import {
+  applyTaskOverrides,
   containsPath,
   inspectResources,
   prepareResources,
@@ -111,16 +112,25 @@ export async function resolveWorktreeRuntime(input: WorktreeRuntimeInput): Promi
     repoRoot: registration.repository.mainRoot,
   });
 
+  const withAdapters = await withAdapterTasks(config.value, adapterContext(registration));
+  // `wtm task set` records win over both the file configuration and any adapter-derived task of
+  // the same name, so they are layered last.
+  const overrides = input.store.taskOverrides?.listForWorktree(registration.worktree.id) ?? [];
+  const resolved = applyTaskOverrides(
+    { value: withAdapters, provenance: config.provenance },
+    Object.fromEntries(overrides.map((override) => [override.taskName, override.task])),
+  );
+
   return {
     registration,
-    config: await withAdapterTasks(config.value, adapterContext(registration)),
+    config: resolved.value,
     context: templateContext(registration, endpoints, cors.value),
     automaticEnvironment: {
       ...endpoints.env,
       ...Object.fromEntries(cors.variables.map((name) => [name, cors.value])),
     },
     endpoints,
-    provenance: config.provenance,
+    provenance: resolved.provenance,
     ...(observed === undefined ? {} : { observedEndpoints: observed.endpoints }),
     ...(repo === undefined ? {} : { repoEnvironment: repo }),
   };

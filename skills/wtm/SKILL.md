@@ -56,6 +56,10 @@ failure, `2` usage or configuration, `3` safety refusal or conflict, `4` daemon 
 | `wtm ci watch --json` | Start following HEAD's CI runs in the background; returns at once. `--pr <number>` labels the pull request. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm ci status --json` | Read the latest CI watch result from local state, with failed-job log summaries; never touches the network. `--all` lists every worktree in the workspace. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm ci unwatch --json` | Stop a worktree's pending CI watch. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
+| `wtm task set <name> --task-json <definition> --json` | Override one task for this worktree; wins over `wtm.toml` and any adapter-derived task of the same name. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
+| `wtm task list --json` / `wtm task show <name> --json` | Read this worktree's task overrides. |
+| `wtm task unset <name> --json` | Remove a worktree's override; `wtm.toml`/an adapter decides the task again. |
+| `wtm task export <name>` | Print a worktree's override as a `[tasks.<name>]` block, to paste into `wtm.toml` if it should apply everywhere. |
 | `wtm jobs list --json` | List recent queued jobs (`--limit <count>`). |
 | `wtm jobs status <job-id> --json` | Read a job's state and cleanup status. |
 | `wtm jobs result <job-id> --json` | Read a finished job's result and verify its source evidence. |
@@ -249,6 +253,9 @@ pointing at another repository into `wtm.toml`.
 - Avoid `kill`, `pkill` and `lsof` workarounds; use `wtm ps`, `wtm stop` and `wtm doctor`.
 - Use `--json` for reasoning; human text is not a stable contract.
 - Do not hard-code ports or environment unless the user asks to bypass WTM.
+- To fix one worktree's `cwd`, port template or argv for a task, use `wtm task set`
+  (`--task-json` for full fidelity), not a hand edit to `wtm.toml`. Edit `wtm.toml` only when the
+  fix should apply to every worktree of the workspace, not just this one.
 
 ## Worktree analysis
 

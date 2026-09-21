@@ -140,6 +140,24 @@ describe('explained decisions', () => {
     });
   });
 
+  it('attributes a `wtm task set` override to the database, ahead of the file and any adapter', () => {
+    const overridden = runtime();
+    overridden.config = { ...overridden.config, tasks: { ...overridden.config.tasks, dev: { run: ['npm', 'run', 'dev'] } } };
+    overridden.provenance = new Map(provenance);
+    overridden.provenance.delete('tasks.dev.run');
+    overridden.provenance.set('tasks.dev.run', { source: 'db' });
+
+    const decisions = explainDecisions({ runtime: overridden, adapters, resources, environment: { PORT: '4000', WTM_ID: '1', CORS_ORIGINS: 'http://localhost:4000' } });
+
+    expect(decisions.find(({ key }) => key === 'dev')).toEqual({
+      kind: 'task',
+      key: 'dev',
+      value: { run: ['npm', 'run', 'dev'] },
+      provenance: { source: 'db' },
+      reason: 'Overridden by a database record (`wtm task set`), which wins over the workspace configuration and any adapter.',
+    });
+  });
+
   it('reports each declared resource with the state this worktree has it in', () => {
     expect(explain().find(({ kind }) => kind === 'resource')).toEqual({
       kind: 'resource',
