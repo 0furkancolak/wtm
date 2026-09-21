@@ -549,6 +549,12 @@ command: make dev-with-worktree-7
 
 Unknown top-level words do not automatically execute shell commands. Tasks are always addressed by name through `wtm run`, `wtm start`, `wtm restart` or `wtm resolve`.
 
+A task name can come from `wtm.toml`, from `wtm task set`, or from a detected adapter. The `make`
+adapter contributes up to three families for one Makefile target — `make:<target>` (the
+worktree's own Makefile), `workspace:<target>` (the workspace root's Makefile, run at the
+workspace root), and `workspace-here:<target>` (the same workspace-root target, run with the
+worktree as `cwd` instead) — see [Adapter task namespaces](03-configuration-spec.md#adapter-task-namespaces-make).
+
 ## Adapters
 
 ### `wtm adapter list`
@@ -1025,6 +1031,24 @@ wtm skill install --global
 The canonical source is `skills/wtm/SKILL.md`.
 
 `skill install --global` installs into `~/.agents/skills` instead of the current workspace.
+
+## Shell completion
+
+### `wtm completion <shell>`
+
+Prints a shell completion script to stdout for `bash`, `zsh` or `fish`:
+
+```bash
+wtm completion bash > /etc/bash_completion.d/wtm
+wtm completion zsh > "${fpath[1]}/_wtm"
+wtm completion fish > ~/.config/fish/completions/wtm.fish
+```
+
+The script's suggestions are the CLI's own top-level command names, read from the program at
+generation time rather than hand-maintained, plus a dynamic candidate lookup (task names for the
+worktree containing the current directory) for the commands that take one. Not a JSON command —
+this prints a script, not the stable envelope — and not machine-readable output for anything but a
+shell's own completion loader.
 
 ## JSON guarantee
 

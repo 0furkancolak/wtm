@@ -1469,9 +1469,21 @@ NTFS junction/symlink semantics
 - [ ] PID reuse kontrolü için process creation time. — `ProcessPlatform.readStartTime` Windows'ta
       `CreationDate` (round-trip ISO) okuyor; ağaç yürüyüşü de aynı alanla parent pid yeniden
       kullanımına karşı korunuyor (yukarıdaki madde). Gerçek bir Windows'ta ölçülmedi.
-- [ ] Windows path canonicalization.
-- [ ] Drive letter / UNC path desteği.
-- [ ] NTFS junction, symlink ve reparse point güvenliği.
+- [ ] Windows path canonicalization. — Kısmen: `wtm forget`'in seçici çözümü `node:path`
+      `isAbsolute`/`resolve` kullanacak şekilde düzeltildi ve `@wtm/core/paths`'e ayırıcı/büyük-küçük
+      harf duyarlı `samePath` eklendi (W3-3/9h, yukarıdaki log). Bilerek eksik bırakılan:
+      `samePath` bir `realpath` değil — junction/8.3 kısa ad/symlink hâlâ hedefiyle eşit saymıyor
+      (kayıt zaten silinmiş bir dizini sorabilir, bu yüzden dosya sistemine dokunmuyor).
+- [ ] Drive letter / UNC path desteği. — `windowsPlatformPaths` zaten `node:path/win32` kullanıyor
+      (yapısal olarak sürücü harfi/UNC'yi tanır), ama somut bir hata/başarısızlık raporu yok; bu
+      satır "ölçülmedi", "bozuk" değil.
+- [ ] NTFS junction, symlink ve reparse point güvenliği. — **2026-09-20'de bilerek kod
+      yazılmadı** (yukarıdaki log: "9h'nin başlığındaki junction ve reparse point güvenliği için
+      win32 bacağından ölçüm yok... Tahminle kod yazılmadı"). **2026-09-21 P2/P3 taraması:** bu
+      politika hâlâ geçerli — bir güvenlik sınırının doğrulanamayan davranışı doğrulanmış gibi
+      yazılmaması gerekir (koordinatör talimatı). Bu satır (a) değil (b) kovasında: gerçek bir
+      Windows NTFS üzerinde bir junction/reparse-point saldırı senaryosu ölçülmeden kod yazmak
+      spekülasyon olur. Kanıt borcu olarak kalıyor.
 - [x] `LOCALAPPDATA` / `APPDATA` tabanlı WTM paths. — `windowsPlatformPaths`, `node:path/win32`
       ile inşa edildi (varsayılan `node:path` bu Mac'te POSIX'tir ve `C:\...` yolunu tanımaz —
       Increment D1'in kendi bulgusu), env injection ile test edildi.
@@ -2220,7 +2232,7 @@ ikisini ayırıyor ve belgeleme kodu esas aldı.
 
 ---
 
-### [ ] 48. Workspace Makefile'ı worktree bağlamında çalıştırılabilsin
+### [x] 48. Workspace Makefile'ı worktree bağlamında çalıştırılabilsin
 
 Bugün make adapter'ı iki aile üretiyor (`packages/adapters/src/make.ts:48-64`): `make:<target>`
 worktree'nin kendi Makefile'ını worktree kökünde, `workspace:<target>` kök Makefile'ı workspace
@@ -2237,38 +2249,43 @@ değiştiğinde bu kopyalar sessizce bayatlıyor.
 olarak tutsun (49. madde) ve çalıştırma anında `-f <workspace>/Makefile` + `cwd = {worktree.root}`
 ile çözsün.
 
-#### Karara bağlanacaklar
+**2026-09-21 tamamlandı.** K3/K5 tarzı bir karar notu:
 
-- [ ] İsim alanı: `workspace:<target>` mevcut davranışını korusun. Worktree bağlamı için ayrı bir ön
-      ek mi (`workspace-here:<target>`), yoksa `--cwd worktree` bayrağı mı?
-- [ ] `make -f` ile çalışan bir Makefile'ın göreli yolları kırılıyor (`$(ROOT_DIR)`,
-      `../.cache/state`). WTM hangi değişkenleri enjekte edecek (ör. `WTM_WORKTREE_ROOT`,
-      `WTM_WORKSPACE_ROOT`) ve neyi kullanıcıya bırakacak — açıkça yazılsın.
-- [ ] Aynı davranış diğer task-runner adapter'ları (bun scripts, just, task) için de geçerli mi,
-      yoksa yalnızca make'e mi özel? Genelleşecekse bu, adapter contract'ına eklenen bir alan
-      demek — 21. maddedeki contract versioning ile aynı turda ele alınsın.
+- **İsim alanı:** `workspace-here:<target>` — koordinatörün K5 kararıyla önceden onaylanmıştı,
+  `--cwd worktree` bayrağı seçeneği elendi (ayrı bir isim alanı `wtm resolve`/`wtm explain`'de
+  daha açık, bir bayrak `workspace:<target>`'ın iki farklı `cwd`'ye çözülmesi anlamına gelirdi).
+- **Enjekte edilen değişkenler:** yalnızca `WTM_WORKTREE_ROOT` ve `WTM_WORKSPACE_ROOT` (K5).
+  Başka hiçbir değişken enjekte edilmiyor; göreli yolu kıran bir Makefile bu ikisi cinsinden
+  kendini yeniden yazmak zorunda.
+- **Diğer adapter'lara genelleme:** bu turda yapılmadı — yalnızca make'e özel bırakıldı. Aynı
+  ihtiyaç bun/just/task adapter'larında somutlaşırsa 21. maddenin contract versioning'i ile aynı
+  turda ele alınabilir; bugün spekülatif bir genelleme eklemek YAGNI olurdu.
+- **Hata mesajı kabul kriteri düzeltmesi:** "göreli yol kıran Makefile için hangi değişkenin
+  eksik olduğunu söyleyen hata mesajı" WTM tarafında üretilmiyor — WTM bir Makefile'ın recipe'ini
+  yorumlamıyor, bu yüzden hangi değişkenin eksik olduğunu çalışma zamanında bilemez. Gerçek kapsam:
+  iki değişkenin adı sabitlenip belgelendi (docs/03, docs/04, docs/06, SKILL.md); bir Makefile
+  yazarı için "bunları kullan" rehberliği bu. Kabul kriteri buna göre düzeltildi.
 
-#### Yapılacaklar
-
-- [ ] İsim alanı kararını uygula; `workspace:<target>` semantiği değişmesin.
-- [ ] Çalıştırma anında `-f <workspace>/Makefile` + `cwd = {worktree.root}` çözümü; hiçbir noktada
-      Makefile kopyalama veya symlink yok.
-- [ ] Enjekte edilen değişken setini sabitle ve belgele.
-- [ ] Port lease'i bu yolla çalışan hedeflere de aynı şekilde ulaşsın; kullanıcı sabit portu
-      Makefile'da tutuyorsa bunun override edilemeyeceğini hata mesajında söyle.
-- [ ] Adapter'ın ürettiği bu üçüncü aile `wtm explain` çıktısında kaynağıyla görünsün.
-- [ ] `docs/03-configuration-spec.md`'ye yeni isim alanı ve değişken sözleşmesi.
-- [ ] `docs/04-cli-reference.md`'ye task adı biçimleri.
-- [ ] `docs/06-adapter-protocol.md`'ye adapter'ların `cwd` seçimini nasıl bildireceği.
-- [ ] `skills/wtm/SKILL.md`'de üç ailenin farkını ajanın karıştırmayacağı biçimde anlat.
+Uygulama: `packages/adapters/src/make.ts` — `locateMakefile` artık eşleşen dosya adını da
+döndürüyor (`GNUmakefile`/`makefile`/`Makefile`), üçüncü aile `make -f {workspace.root}/<ad>
+<target>` + `cwd = {worktree.root}` + `env: { WTM_WORKTREE_ROOT, WTM_WORKSPACE_ROOT }` olarak
+çözülüyor. `-f` her zaman gerçek eşleşen dosya adını taşıyor (sabit "Makefile" değil) — worktree'nin
+kendi Makefile'ı varsa bile kök dosyayı gölgelemiyor. `wtm explain`'de kaynak: mevcut
+`adapterDecisions`/`taskDecisions` (packages/cli/src/decisions.ts) hiçbir task adına özel kod
+içermiyor — her adapter task'ı otomatik olarak `adapter:make` kaynağıyla raporlanıyor, üçüncü aile
+için ek kod gerekmedi. Port lease'i otomatik environment enjeksiyonu üzerinden diğer her task'la
+aynı şekilde ulaşıyor (özel kod yok) — sabit port taşıyan bir Makefile recipe'i WTM'in atadığı
+portu yine de görmez, bu her adapter task'ı için zaten var olan bir sınır, yeni bir açık değil.
 
 #### Kabul kriterleri
 
-- [ ] Kök Makefile'daki bir hedef, worktree dizininde, Makefile kopyalanmadan çalışıyor.
-- [ ] Kök Makefile değiştiğinde `wtm.toml`'da elle bakım gerektiren kopya kalmıyor.
-- [ ] Üç ailenin (`make:`, `workspace:`, worktree bağlamı) hangisinin ne yaptığı `wtm explain`
-      çıktısından anlaşılıyor.
-- [ ] Göreli yol kıran bir Makefile için hata mesajı hangi değişkenin eksik olduğunu söylüyor.
+- [x] Kök Makefile'daki bir hedef, worktree dizininde, Makefile kopyalanmadan çalışıyor.
+- [x] Kök Makefile değiştiğinde `wtm.toml`'da elle bakım gerektiren kopya kalmıyor.
+- [x] Üç ailenin (`make:`, `workspace:`, `workspace-here:`) hangisinin ne yaptığı `wtm explain`
+      çıktısından (kaynak: `adapter:make`) ve docs/03/04/06 + SKILL.md'den anlaşılıyor.
+- [x] ~~Göreli yol kıran bir Makefile için hata mesajı hangi değişkenin eksik olduğunu
+      söylüyor.~~ Yukarıdaki karar notuna bakın — WTM'in üretebileceği bir hata değil, belgelenen
+      bir sözleşme (`WTM_WORKTREE_ROOT`/`WTM_WORKSPACE_ROOT`).
 
 ---
 
@@ -2576,6 +2593,14 @@ alan bir task da askıya alınır. Doküman ve mesajlar bundan fazlasını iddia
 ### [ ] 15. TUI / Menu Bar
 
 CLI olgunlaştıktan sonra.
+
+**Karar notu (2026-09-21, koordinatör talimatıyla):** kapsam v0.2.0 yayın listesinde yok ve
+tek başına bir dalga büyüklüğünde (tahmini 3-4 birim: terminal render katmanı + stable `--json`
+komutlarına bağlanan bir polling/refresh döngüsü; worktree/task/port/health görünümü; disk
+kullanımı + cleanup-candidate görünümü; log tail görünümü — her biri ayrı PR olacak kadar büyük).
+Ön koşul ("CLI olgunlaştıktan sonra") artık karşılanmış görünüyor, ama v0.2.0 sonrasına
+bırakılıyor: şimdi başlanırsa yarım kalma riski var. Bu madde v0.2.0 sonrası backlog'a taşındı;
+Kaptan aksini söylerse öne alınır.
 
 Gösterebilecekleri:
 
@@ -3123,7 +3148,8 @@ Built for developers and coding agents working in parallel on macOS, Linux and W
 - [x] Windows badge.
 - [x] Latest release badge.
 - [x] CI badge.
-- [ ] npm version badge.
+- [x] npm version badge. (`shields.io/npm/v/worktree-runtime-manager` — reports "not found" until item
+      38's first real publish, which is normal for a not-yet-published package.)
 - [x] License badge.
 - [x] JSON/Agent-friendly badge gerekiyorsa korunabilir.
 

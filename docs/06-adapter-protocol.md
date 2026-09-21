@@ -166,6 +166,13 @@ Example:
 
 Task contributions are keyed task definitions. Commands use argv arrays by default; shell strings require an explicit `shell: true`. Adapters may also declare task `cwd`, `background` and `singleton` behavior. Tasks are registered by core and are not executed merely because a plan is applied.
 
+An adapter's own `cwd` choice is what lets one source file back more than one task family under
+different working directories, without copying or symlinking anything: the built-in `make`
+adapter reads the workspace root's Makefile once and contributes both `workspace:<target>` (`cwd`
+= workspace root) and `workspace-here:<target>` (`cwd` = worktree root, reached through an
+explicit `-f <path>` rather than relying on `make`'s own cwd-relative file lookup) from the same
+parse — see [Adapter task namespaces](03-configuration-spec.md#adapter-task-namespaces-make).
+
 For V1.0 compatibility, a plan that omits `tasks` is accepted and normalized to an empty task map.
 
 The adapter does not mutate the repository during `plan`.

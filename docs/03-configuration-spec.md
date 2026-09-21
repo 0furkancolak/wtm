@@ -422,6 +422,34 @@ wtm task export dev            # prints the row as a [tasks.dev] block, to paste
 it deletes the worktree's CI watches: worktree rows are never hard-deleted from the state
 database, so a stale override for a gone worktree would otherwise persist forever.
 
+### Adapter task namespaces (make)
+
+The `make` adapter contributes up to three task families for one root target, never by copying or
+symlinking the Makefile it read:
+
+```text
+make:<target>            worktree's own Makefile,   cwd = worktree root
+workspace:<target>       workspace root's Makefile, cwd = workspace root
+workspace-here:<target>  workspace root's Makefile, cwd = worktree root
+```
+
+`workspace-here:<target>` exists for a root target whose recipe shells into a specific
+repository (`cd api && npm run dev`): running it with the workspace root as `cwd` always reaches
+the workspace's own checkout of `api`, never the worktree's. It resolves to `make -f
+<workspace root>/<Makefile name> <target>` — an explicit `-f` path, so `make`'s own cwd-relative
+file lookup never runs and a worktree that also has its own Makefile can't shadow the root one.
+
+Because the recipe still runs with the worktree as `cwd`, any relative path it references
+(`$(ROOT_DIR)`, `../.cache/state`) resolves against the wrong root unless the Makefile is written
+in terms of two variables WTM injects for exactly this: `WTM_WORKTREE_ROOT` and
+`WTM_WORKSPACE_ROOT`. No other variable is injected — a Makefile that needs something more
+specific has to derive it from these two itself.
+
+Port leases reach `workspace-here:<target>` the same way they reach every other task (the
+automatic `[port.*]`/`PORT`-style environment, layered beneath the task's own `env`): WTM cannot
+detect a hardcoded port inside a Makefile recipe, so a target whose command line always passes a
+fixed `--port` will keep using it regardless of the lease WTM assigned.
+
 ### HTTP readiness
 
 ```toml

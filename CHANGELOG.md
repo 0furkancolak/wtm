@@ -461,6 +461,21 @@ coverage): internal test-infrastructure corrections that make the win32 CI leg m
 platform accurately, not new user-facing behavior on their own. See `CLAUDE.md`'s CI section for
 the win32 leg's current (informational) status.
 
+### Added
+
+- A dev overlay (`[dev-overlay]`, off by default, inert unless `[proxy]` is also enabled): the
+  local reverse proxy injects a small identity/sibling-endpoints fragment into an HTML response,
+  so a browser tab open on one of several worktrees' `web` services can be told apart from the
+  others by more than a port number. Only `text/html`, uncompressed, non-streaming responses are
+  buffered and spliced; every other response keeps the exact byte-for-byte path it always had,
+  whether or not the overlay is configured.
+- `workspace-here:<target>`: a third `make` adapter task family alongside `make:<target>` and
+  `workspace:<target>`. It runs a root Makefile target with the *worktree* as `cwd` instead of the
+  workspace root, via an explicit `make -f <path>` rather than copying or symlinking the file —
+  closing the gap where a root target whose recipe shells into a specific repository always
+  reached the workspace's own checkout, never the worktree's. Only `WTM_WORKTREE_ROOT` and
+  `WTM_WORKSPACE_ROOT` are injected.
+
 ## [0.1.0-rc.1] - 2026-08-30
 
 ### Added
