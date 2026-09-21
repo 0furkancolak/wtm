@@ -42,47 +42,39 @@ vardı. Yeni bir "## Shell completion" bölümü eklendi.
 Her iki düzeltme de bu denetimin PR'ında; ayrıca aynı PR'a CHANGELOG'un `[Unreleased]` bölümüne
 #65 (dev overlay) ve #66 (`workspace-here:`) için eksik girişler bindirildi (aşağıya bakın).
 
-## Büyük bulgular — açık kalan, tasarım kararı gerektiriyor
+## Büyük bulgular — koordinatör kapsam kararını verdi, kapatıldı
 
-### 3. `docs/02-architecture.md`'nin "Daemon responsibilities" listesi üç alt sistemi hiç anmıyor
+Koordinatör (2026-09-21T23:08Z) ikisinin de Kaptan'a gitmesine gerek olmadığını, kapsam kararını
+kendisinin verdiğini bildirdi ve artımlı bir tamamlama talimatı verdi — tam yeniden yazım değil.
+Aşağıdaki iki madde bu talimatla, aynı takip PR'ında kapatıldı.
 
-Liste (satır ~81-92) yalnızca: dosya sistemi izleme, reconciliation zamanlama, platform IPC
-sunucusu, kalıcı managed-process supervision, log yönlendirme/rotasyon, servis kurulum durumu,
-arka plan cleanup denemeleri. Hiç anılmayan üçü: yerel reverse proxy (`packages/daemon/src/proxy.ts`,
-`proxy-routes.ts`, `proxy-policy.ts`), dev overlay (`packages/daemon/src/dev-overlay.ts`),
-işlem/bellek bütçesi admission kapısı (`packages/daemon/src/runtime-controller.ts`). Üçü de
-daemon-geneli, opt-in, config-güdümlü alt sistemler — listede zaten olan "arka plan cleanup
-denemeleri" ile aynı sınıftan. Bu, yeni bir okuyucunun/ajanın önce başvuracağı üst-düzey mimari
-belgesi olduğu için release-hazırlığı açısından gerçek bir boşluk.
+### 3. `docs/02-architecture.md`'nin "Daemon responsibilities" listesi üç alt sistemi hiç anmıyordu — düzeltildi
 
-**Öneri:** listeye üç madde eklenecek şekilde küçük bir takip PR'ı; tasarım kararı gerektirmiyor,
-yalnızca zaman ayırmak gerekiyor — bu yüzden (a) kovasına yakın ama bu denetimin kapsamı dışında
-bırakıldı.
+Listeye (satır ~81-96) yerel reverse proxy, dev overlay ve işlem/bellek bütçesi admission kapısı
+için iki madde eklendi, `docs/07`'nin ilgili bölümlerine çapraz referansla.
 
-### 4. `docs/13-data-model-and-state-machines.md` PR #50-#66 arasında eklenen çoğu tabloyu içermiyor
+### 4. `docs/13-data-model-and-state-machines.md` PR #50-#66 arasında eklenen çoğu tabloyu içermiyordu — artımlı olarak tamamlandı
 
-Belgelenen tablolar: `workspaces`, `repositories`, `worktrees`, `endpoint_leases`,
-`managed_processes`, `repository_operation_leases`, `resources`, `adapter_trust`, `cleanup_jobs`.
+Koordinatörün talimatı: "`task_overrides` başta olmak üzere" #50-#66 arasında eklenen, kullanıcıya
+CLI üzerinden zaten görünen tabloları mevcut belgenin şemasına uyacak şekilde ekle; durum
+makinelerini de bu dalgada değişenler kadarıyla güncelle; belgenin tamamını yeniden yazmak
+v0.2.0'ın işi değil.
 
-Gerçekte var olan ama belgelenmeyen tablolar (migration dosyalarından grep):
+Eklenenler (`## Core tables` altına, mevcut terse şema-bloğu üslubunda): `task_overrides`,
+`heavy_jobs` (+ tek satırlık `heavy_job_state_owner` notu), `ci_watches`/`ci_runs`,
+`features`/`feature_creations`/`feature_creation_members`. Yeni durum makineleri: `## Heavy job
+state`, `## CI watch state`, `## Feature creation state`.
+
+**Kasıtlı olarak dışarıda bırakılanlar (v0.2.0 sonrası, ayrı birim):**
 `managed_process_start_reservations`, `resource_sandboxes`, `resource_storage_objects`,
 `resource_references`, `resource_cleanup_leases`, `resource_gc_journal(_next/_hardened)`,
-`lifecycle_event_dispatches`, `heavy_jobs`, `heavy_job_state_owner`, `features`,
-`feature_creations`, `feature_creation_members`, `ci_watches`, `ci_runs`, ve — bu denetimin
-kapsamına en doğrudan giren — **`task_overrides`** (migration 016, `wtm task
-list/show/set/unset/export`'un arkasındaki tablo).
-
-Bu, tek bir maddeden ("`task_overrides` eksik") çok daha geniş bir bayatlamayı işaret ediyor:
-belgenin çoğu PR #50-#66'dan (heavy job kuyruğu, CI watch, çok-repo feature oluşturma, task
-override'ları) önceki bir hâli yansıtıyor.
-
-**Öneri:** iki seçenek var — (i) `task_overrides`'ı (ve ideal olarak kullanıcıya `wtm
-jobs`/`wtm ci`/`wtm create --repos` üzerinden zaten görünen `heavy_jobs`/`ci_watches`/`features`'ı)
-tek bir küçük ekleme PR'ıyla kapatmak, ya da (ii) belgenin tamamını PR #50-#66 sonrası duruma göre
-yeniden yazmak. İkincisi bir tasarım/kapsam kararı istiyor (hangi iç tabloların — `resource_gc_*`,
-`repository_operation_leases` türü uygulama detaylarının — bu belgenin okuyucu kitlesine (kullanıcı
-mı, katkıda bulunan ajan mı) göre belgelenmeye değer olduğu), bu yüzden bu denetimin kapsamında
-yapılmadı; Kaptan'ın veya koordinatörün kapsam kararı vermesi gerekiyor.
+`lifecycle_event_dispatches`. Bunların hepsi zaten belgelenmiş bir üst tablonun (`managed_processes`,
+`resources`) saf uygulama detayı — belgenin geri kalanı da bu iç tabloları hiç ayrı bir bölüm
+olarak anmıyor (ör. `resources`'ın kendi alt tabloları da yok). Bu yedi tabloyu ayrı bölümler
+olarak eklemek, hangi iç tablonun bu belgenin okuyucu kitlesine (kullanıcı mı, katkıda bulunan
+ajan mı) göre belgelenmeye değer olduğuna dair bir tasarım kararı gerektiriyor — koordinatörün
+"tam yeniden yazım değil" sınırının tam olarak dışında kalan kısım budur, o yüzden buraya not
+düşülüp bırakıldı.
 
 ## Doğrulanan, bozuk olmadığı teyit edilen alanlar (negatif sonuçlar)
 

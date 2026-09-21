@@ -196,6 +196,143 @@ last_error nullable
 state
 ```
 
+### `task_overrides`
+
+```text
+worktree_id
+task_name
+task_json
+created_at
+updated_at
+
+primary key (worktree_id, task_name)
+```
+
+Written by `wtm task set`; read back by `wtm task list/show/unset/export`. The whole task
+definition lives in `task_json`, validated against the same schema as `[tasks.<name>]` in
+`wtm.toml`, so an override outranks a `wtm.toml` task and any adapter-derived task of the same name
+(see [K3](03-configuration-spec.md), [`wtm task`](04-cli-reference.md#task-overrides)) without a
+second serialization path. Worktree-scoped with no foreign key, like `ci_watches` below: worktree
+rows are never deleted, so `wtm remove` deletes a worktree's overrides explicitly.
+
+### `heavy_jobs`
+
+```text
+sequence integer primary key autoincrement
+job_id unique
+scope
+workspace_id
+repository_id
+worktree_id
+worktree_path
+task_name
+idempotency_key
+command_fingerprint
+source_fingerprint
+timeout_ms
+state
+slot_held boolean
+process_id nullable
+anchor_pid nullable
+created_at
+started_at nullable
+finished_at nullable
+exit_code nullable
+signal nullable
+error nullable
+source_validity UNCHANGED|CHANGED|UNKNOWN
+stop_reason nullable CANCELLED|TIMED_OUT|INTERRUPTED
+memory_estimate_bytes nullable
+
+unique (scope, idempotency_key)
+```
+
+Backs `wtm run <task> --enqueue`; see [the shared finite-task
+queue](02-architecture.md#shared-finite-task-queue) for the FIFO/concurrency/memory-budget rules
+this table enforces. `heavy_job_state_owner` is a single-row table (`singleton = 1`) binding the
+whole database to one machine/user scope before managed-process recovery runs.
+
+### `ci_watches` / `ci_runs`
+
+```text
+ci_watches:
+  watch_id primary key
+  sequence
+  repository_id
+  worktree_id
+  worktree_path
+  provider_repo
+  branch nullable
+  head_sha
+  pr nullable
+  state pending|success|failure|cancelled|timed_out|no_runs|superseded|unavailable
+  detail nullable
+  started_at
+  updated_at
+  finished_at nullable
+  next_poll_at
+  poll_interval_ms
+  failure_streak
+  saw_runs boolean
+
+  at most one row per worktree_id with state = pending
+
+ci_runs:
+  watch_id references ci_watches(watch_id) on delete cascade
+  position
+  run_json
+
+  primary key (watch_id, position)
+```
+
+Backs `wtm ci watch/status/unwatch`. Like `heavy_jobs`, a watch has no foreign key to `worktrees`:
+worktree rows are never deleted, so `wtm remove` deletes a worktree's watches explicitly. Runs
+belong to their watch and cascade with it.
+
+### `features` / `feature_creations` / `feature_creation_members`
+
+```text
+features:
+  id UUID primary key
+  workspace_id references workspaces(id) on delete cascade
+  branch
+  created_at
+
+  unique (workspace_id, branch)
+
+feature_creations:
+  id UUID primary key
+  feature_id references features(id) on delete cascade
+  state IN_PROGRESS|COMPLETED|SUPERSEDED
+  from_ref nullable
+  created_at
+  updated_at
+  completed_at nullable
+
+  at most one row per feature_id with state = IN_PROGRESS
+
+feature_creation_members:
+  creation_id references feature_creations(id) on delete cascade
+  repository_id (no foreign key, see below)
+  repository_main_root
+  position
+  worktree_path
+  branch_existed boolean
+  start_oid
+  phase PLANNED|APPLYING|APPLIED|REGISTERED
+  last_error_code nullable
+  updated_at
+
+  primary key (creation_id, repository_id)
+  unique (creation_id, position)
+```
+
+Backs multi-repository `wtm create --repos`. A feature is "one workspace, one full branch ref"
+given a durable id; a creation is one attempt at materializing that branch across repositories.
+`feature_creation_members.repository_id` has no foreign key on purpose: forgetting a repository
+mid-creation must leave the member visible, so `--resume` can refuse by naming it instead of
+silently finishing without it.
+
 ## Worktree state
 
 ```text
@@ -241,6 +378,47 @@ STARTING -> RUNNING -> STOPPING -> STOPPED
 ```
 
 `STALE_IDENTITY` means the stored PID no longer matches the originally tracked process. WTM drops/repairs the record and never signals the unrelated process.
+
+## Heavy job state
+
+```text
+QUEUED -> RUNNING -> SUCCEEDED | FAILED | TIMED_OUT | INTERRUPTED
+
+Cancellation, any state before a terminal one:
+QUEUED/RUNNING -> CANCELLED
+```
+
+`slot_held` tracks concurrency/worktree-exclusion admission independently of `state`: a job keeps
+its slot until the daemon proves its complete owned process group or tree is absent, so a `STOPPED`
+label or a cancellation request alone never releases it. See [the shared finite-task
+queue](02-architecture.md#shared-finite-task-queue).
+
+## CI watch state
+
+```text
+pending -> success | failure | cancelled | timed_out | no_runs | unavailable
+
+A new `wtm ci watch` on the same worktree while one is pending:
+pending -> superseded
+```
+
+Only one `pending` watch may exist per worktree at a time (a unique partial index enforces it); a
+newer watch supersedes rather than racing the older one.
+
+## Feature creation state
+
+```text
+feature_creations.state:
+  IN_PROGRESS -> COMPLETED
+  IN_PROGRESS -> SUPERSEDED   (a new `wtm create` restarts the same feature)
+
+feature_creation_members.phase, per member:
+  PLANNED -> APPLYING -> APPLIED -> REGISTERED
+```
+
+Only one `IN_PROGRESS` creation may exist per feature; `--resume` re-drives each member's own
+`phase` rather than the creation's `state`, since members can be at different phases when a
+multi-repository `wtm create` is interrupted.
 
 ## Transactions
 

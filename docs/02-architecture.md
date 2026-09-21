@@ -88,7 +88,12 @@ The daemon owns:
 - persistent managed-process supervision;
 - log redirection/rotation;
 - service installation state (launchd, the systemd user manager or Scheduled Tasks);
-- background cleanup retries.
+- background cleanup retries;
+- the local reverse proxy (`[proxy]`, off by default) and its dev overlay (`[dev-overlay]`,
+  off by default, inert unless `[proxy]` is also enabled) — see
+  [Local reverse proxy](07-process-port-runtime.md#local-reverse-proxy);
+- the process-count/host-memory admission gate on `start`/`restart` (`[budgets]`, optional) — see
+  [Resource budgets](07-process-port-runtime.md#resource-budgets).
 
 The daemon never interprets a framework-specific lockfile itself; it calls the core/adapter layer.
 
