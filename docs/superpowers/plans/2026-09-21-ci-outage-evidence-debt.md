@@ -200,6 +200,20 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/daemon/src/__tests__/proxy-cors-integration.test.ts
   ```
 
+### #61 — feat(core,daemon,protocol): resource budgets admission gate (W9-1 / 19)
+- Commit: `78fc6d2` · Unit: W9-1 / 19
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası: 5 `Validate` leg'i 4-6 saniyede, `runner_id: 0` ile,
+  runner atanmadan düştü). Yalnızca yerel gate ile doğrulandı.
+- Bu PR'a özgü ayrı bir kanıt boşluğu yok: `[budgets]` admission kontrolü platforma özel hiçbir
+  şey yapmıyor (host bellek okuması zaten `job-memory.ts` üzerinden Node/libuv'a devrediliyor,
+  W6-2'nin ağır iş kuyruğu tarafından zaten gerçek platformlarda dolaylı olarak egzersiz edilen
+  aynı kod yolu).
+- Hedefli `win32_test_filter`:
+  ```
+  packages/core/src/config/__tests__/schema.test.ts packages/daemon/src/__tests__/runtime-controller.test.ts packages/daemon/src/__tests__/budgets-composition.test.ts packages/protocol/src/__tests__/errors.test.ts packages/cli/src/__tests__/exit-codes.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,

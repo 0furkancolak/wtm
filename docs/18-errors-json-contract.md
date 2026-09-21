@@ -348,6 +348,8 @@ RUNTIME_STOP_FAILED
 RUNTIME_READINESS_TIMEOUT
 RUNTIME_READINESS_FAILED
 RUNTIME_READINESS_ABORTED
+RUNTIME_PROCESS_BUDGET_EXCEEDED
+RUNTIME_MEMORY_BUDGET_EXCEEDED
 ```
 
 The three readiness errors map to exit code 1. A timeout reports `TIMED_OUT`; cancellation
@@ -355,6 +357,18 @@ reports `ABORTED`; a failed observation distinguishes `PROCESS_EXITED`, `PROCESS
 `IDENTITY_UNCERTAIN` and `EVIDENCE_UNAVAILABLE`. Start/restart responses preserve the process
 and observation in `data` even when `ok:false`. `READY` is the successful wait observation;
 `NOT_CHECKED` is a start without a probe. Neither timeout nor abort stops the managed task.
+
+`RUNTIME_PROCESS_BUDGET_EXCEEDED` and `RUNTIME_MEMORY_BUDGET_EXCEEDED` (exit code 1) are the
+`[budgets]` admission checks (todo item 19; see `docs/07`'s "Resource budgets" section). Both are
+evaluated only when a `start`/`restart` would create a net-new managed process (a restart that
+replaces an already-active one does not increase the count and is never refused by either).
+`RUNTIME_PROCESS_BUDGET_EXCEEDED` reports `context.limit` and `context.current` (the host-wide
+managed-process count from `ManagedProcessSupervisor.list()` before this start).
+`RUNTIME_MEMORY_BUDGET_EXCEEDED` reports `context.floorMib` and `context.availableMib`, reusing
+the same host-memory reading the heavy-job queue's own memory admission uses
+(`packages/daemon/src/job-memory.ts`); when that reading is unavailable, the check fails open
+(never blocks a start) rather than report a number it does not have. Neither error touches the
+process the request targets; the task remains exactly as it was before the refused call.
 
 ### Adapter
 
