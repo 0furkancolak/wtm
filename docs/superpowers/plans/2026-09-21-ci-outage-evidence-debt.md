@@ -116,6 +116,17 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   yapısal testlerle doğrulandı, gerçek bir Windows leg'in başarısız olup release'in geri kalanını
   bloklamadığı bir tag'de hiç görülmedi.
 
+### #50 — feat(core,daemon,cli): DB-backed task overrides (W6-2 / 49)
+- Commit: `3018ce1` · Unit: W6-2 / 49 (kapsamı genişletilerek W7-2/W7-3'ün `wtm task` CLI ailesini
+  ve `wtm remove` temizliğini de kapsadı)
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası: 5 `Validate` leg'i saniyeler içinde, runner atanmadan
+  düştü). Yalnızca yerel gate ile doğrulandı.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/cli/src/__tests__/decisions.test.ts packages/cli/src/__tests__/remove-runtime.test.ts packages/cli/src/commands/__tests__/task.test.ts packages/core/src/config/__tests__/merge.test.ts packages/core/src/state/__tests__/assets.test.ts packages/core/src/state/__tests__/sqlite-store.test.ts packages/core/src/state/__tests__/task-overrides.test.ts packages/daemon/src/__tests__/task-override-resolution.test.ts packages/daemon/src/__tests__/task-overrides-handler.test.ts packages/protocol/src/__tests__/task-overrides.test.ts
+  ```
+
 ### #51 — feat(daemon,core): automatic idle runtime suspension for managed tasks (W8-3 / 14)
 - Commit: `b2771f1` · Unit: W8-3 / 14
 - Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
@@ -133,6 +144,17 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
 - Hedefli `win32_test_filter`:
   ```
   packages/core/src/workspace/__tests__/init.integration.test.ts packages/cli/src/commands/__tests__/init.test.ts scripts/__tests__/examples-portability.test.ts
+  ```
+
+### #54 — feat(core,daemon,cli): PR awareness in wtm status (W6-3 / 13)
+- Commit: `e390c7c` · Unit: W6-3 / 13 (K4)
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası). Yalnızca yerel gate ile doğrulandı.
+- Bu PR'a özgü ayrı bir kanıt boşluğu yok: `gh` çağrısı testlerde her zaman sahte
+  (`ciProvider` seam), gerçek ağ veya gerçek `gh` hiç kullanılmıyor.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/cli/src/__tests__/main.test.ts packages/cli/src/__tests__/state-diagnostics.test.ts packages/daemon/src/ci/__tests__/github-provider.test.ts packages/protocol/src/__tests__/ci.test.ts
   ```
 
 ### #55 — feat(cli): install.sh and install.ps1 standalone-binary installers (W8-2 / 24)
