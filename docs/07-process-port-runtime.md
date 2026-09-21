@@ -120,9 +120,9 @@ non-privileged port instead (`[proxy] port`, default `19999` — chosen to sit j
 types still carries `:<proxy-port>`. That is the same honest way this document's own idle-
 suspension section above states what it cannot observe: this unit delivers a stable, memorable
 *hostname* in place of a dynamic port number, not the fully port-free address bar item 12's
-headline goal describes. HTTPS/local certificates, CORS origin auto-integration and
-port-allocation backward compatibility are separate, later pieces of that same item and are not
-part of this one.
+headline goal describes. HTTPS/local certificates and port-allocation backward compatibility are
+separate, later pieces of that same item and are not part of this one; CORS origin
+auto-integration, unlike those two, is already done — see [CORS](03-configuration-spec.md#cors).
 
 **It binds loopback only** — `127.0.0.1`, and `::1` when the host supports IPv6 — never a
 wide-open address. A machine-wide proxy that bound every interface would expose every developer's
