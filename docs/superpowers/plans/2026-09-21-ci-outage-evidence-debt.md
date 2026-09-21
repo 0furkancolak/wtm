@@ -172,6 +172,16 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/core/src/runtime/__tests__/proxy-hostname.test.ts packages/daemon/src/__tests__/proxy.test.ts packages/daemon/src/__tests__/proxy-routes.test.ts packages/core/src/config/__tests__/schema.test.ts
   ```
 
+### #58 — feat(adapter-sdk,docs): add an adapter SDK, authoring guide and test harness (W10-2 / 21)
+- Commit: `f39ec7c` · Unit: W10-2 / 21
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası: 5 `Validate` leg'i 3-7 saniyede, `runner_id: 0` ile,
+  runner atanmadan düştü). Yalnızca yerel gate ile doğrulandı.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/adapter-sdk/src/__tests__/index.test.ts packages/adapter-sdk/src/testing/__tests__/invoke-adapter.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
