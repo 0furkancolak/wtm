@@ -227,6 +227,9 @@ export class HeavyJobQueue {
       || job.processId === null && record.taskName === `job-${job.jobId}`) ?? null;
   }
 
+  // Host headroom only, never a per-job process-tree RSS sum — see readHostJobMemory's own
+  // comment and docs/07's "Heavy job memory admission" for why (cost, and shared-page
+  // double-counting). This is admission, not an OS-enforced hard memory limit.
   #memory(): JobMemoryAdmission | undefined {
     if (this.#options.memory === undefined) return undefined;
     let sample: HostJobMemory;

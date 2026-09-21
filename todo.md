@@ -1080,10 +1080,18 @@ korur. Geçici yetersizlikte strict FIFO bekler. Native ve gerçek makine ölç�
       bekleyen işlerin ilerleme ve adalet politikasını tanımla.
 - [x] Uzun ömürlü `wtm start` servislerini sonlanan ağır işlerden ayrı ele al; dev server
       tek ağır iş slotunu süresiz tutmasın, fakat belleği kabul hesabında dikkate alınsın.
-- [ ] Süreç ağacının bellek ölçüm maliyetini sınırla. RSS toplamını paylaşılan sayfalar nedeniyle
+- [x] Süreç ağacının bellek ölçüm maliyetini sınırla. RSS toplamını paylaşılan sayfalar nedeniyle
       kesin fiziksel RAM tüketimi sayma. Tahmine dayalı kabul kontrolü ile işletim sistemi
       tarafından zorlanan sert bellek sınırını ayır; platform desteğini doğrulamadan vaat etme.
-      Genel disk/process bütçeleri madde 19'da kalsın; iki ayrı scheduler oluşturma.
+      Genel disk/process bütçeleri madde 19'da kalsın; iki ayrı scheduler oluşturma. —
+      **2026-09-21 (W8-4 / 50b):** kod zaten hiç süreç ağacı/RSS taraması yapmıyordu
+      (`job-memory.ts`, yalnızca host `available`/`constrained` belleği); eksik olan bunun neden
+      böyle olduğunun (maliyet + paylaşılan sayfa nedeniyle RSS toplamının yanıltıcılığı) ve
+      kabul ile OS-zorlamalı sert limit arasındaki farkın belgelenmesiydi.
+      `docs/07-process-port-runtime.md`'ye "Heavy job memory admission" bölümü eklendi,
+      `SKILL.md` ve `heavy-job-queue.ts`'e çapraz referanslı birer not eklendi. Madde 19 ile
+      paylaşılan muhasebe/ayrı scheduler yok ilkesi zaten K7'de teyit edilmişti, burada tekrar
+      belgelendi. Kod davranışı değişmedi; bu saf dokümantasyon kapanışı.
 
 #### Kabul kriterleri
 
@@ -3092,10 +3100,23 @@ kanıtın tek yolu.
 - [~] Build provenance tüm artifact'lar için üret. — `attest-build-provenance`'ın `subject-path`'i
       artık `*.tar.gz` ve `*.zip`'i birlikte kapsıyor; yapısal test glob listesinin katalogla
       ayrışmasını engelliyor. Gerçek attestation çalışması görülmedi.
-- [~] Release gate tüm required platformları görmeden publish etmesin. — birleşik gate beş
-      arşivin tamamını istiyor; biri eksikken `SHA256SUMS does not list <ad>` ile reddediyor
-      (yerel koşumla doğrulandı). "Required" küme artık Windows'u içeriyor ama gerçek tag/CI
-      kanıtı yok.
+- [~] Release gate tüm required platformları görmeden publish etmesin. — birleşik gate dört
+      required arşivin (Darwin arm64/x64, Linux x64/arm64) tamamını istiyor; biri eksikken
+      `SHA256SUMS does not list <ad>` ile reddediyor (yerel koşumla doğrulandı). Windows,
+      `publishedReleaseTargets`'ta ama `requiredReleaseTargets`'ta değil (#46, 9. madde
+      kapanana kadar) — mevcutsa tam sıkılıkla doğrulanıyor, yoksa release'i bloklamıyor; gerçek
+      tag/CI kanıtı yok.
+
+**2026-09-21 W7-1 dilimi (29c):** Bu maddenin kendi kapanış birimi büyük ölçüde W6-1'in düzeltme
+PR'ı tarafından zaten yapılmıştı — `#46` (`requiredReleaseTargets`, beş arşivin SHA256SUMS/
+provenance kapsaması, "eksik required arşiv reddedilir ama eksik Windows reddedilmez" testleri)
+29c'nin tarif ettiği davranışın kendisi. Bu dilimde kod değişmedi; `docs/12-open-source-
+distribution.md` #42/#45/#46'dan sonra hâlâ "iki Darwin, Windows arşivi yok, Linux arşiv
+kurulumu devre dışı" diyordu — beş hedefi, required/optional ayrımını ve gerçek runner kanıtının
+hâlâ eksik olduğunu yansıtacak şekilde güncellendi. Yukarıdaki "Required küme artık Windows'u
+içeriyor" ifadesi yanlıştı (#46 tam tersini yaptı), düzeltildi. Doğrulama: `bun run typecheck &&
+bun run lint && bun run test` yerel olarak yeşil (bilinen iki uid-0 hatası hariç); CI hâlâ kota
+kesintisinde, gerçek `ubuntu-24.04(-arm)`/`windows-latest` runner kanıtı yok.
 
 ---
 

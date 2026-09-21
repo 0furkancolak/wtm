@@ -205,7 +205,9 @@ shared, and never delete the ownership record to bypass a refusal. Optional `job
 each task's `memory_estimate_mib` (estimate the whole worker tree) and `queue_env` for
 queue-only worker settings; missing or permanently unfit estimates are explicit errors. Neither
 concurrency nor memory admission is a hard RAM limit, and commands launched directly bypass the
-queue.
+queue. Admission compares that estimate against host headroom only — it never sums a job's
+process-tree RSS, which double-counts shared pages and would not be a real usage figure anyway
+(see [`docs/07`](../../docs/07-process-port-runtime.md#heavy-job-memory-admission)).
 
 ### Long-running services
 
