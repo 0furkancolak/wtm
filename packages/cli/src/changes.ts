@@ -5,6 +5,7 @@ import {
   detectWorkspaceServices,
   parseWtmConfig,
   renderConfigDraft,
+  stripByteOrderMark,
   type ManagedProcessRecord,
   type PreparedResource,
   type WtmConfig,
@@ -51,7 +52,7 @@ async function configChanges(input: ChangeInput): Promise<Change[]> {
   const configPath = join(root, 'wtm.toml');
   let existing: WtmConfig | undefined;
   try {
-    existing = parseWtmConfig(parse(await readFile(configPath, 'utf8')), configPath);
+    existing = parseWtmConfig(parse(stripByteOrderMark(await readFile(configPath, 'utf8'))), configPath);
   } catch {
     // A workspace with no file of its own, or one that no longer parses; either way the draft
     // is still worth showing, and the configuration check reports a file that does not parse.
