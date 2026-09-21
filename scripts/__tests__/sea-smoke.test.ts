@@ -318,7 +318,7 @@ describe.skipIf(!existsSync(executable))('standalone executable', () => {
     })).resolves.toEqual(response);
   });
 
-  test('ships a stripped runtime', () => {
+  test(windows ? 'ships an unstripped runtime within its own bound' : 'ships a stripped runtime', () => {
     // The pinned Node version fixes the runtime size, so the bound only moves when a build
     // regresses — or when reviewed new functionality lands. Raised 2026-09-03 (Increment D1,
     // the Windows trust-and-transport seam) after the added FileTrustPolicy/Windows-backend
@@ -326,7 +326,12 @@ describe.skipIf(!existsSync(executable))('standalone executable', () => {
     // the darwin arm64 binary measured on this host stayed at 97,667,584 bytes. Raised with
     // headroom rather than nudged to the exact new size, so the next small, legitimate addition
     // does not immediately retrip it.
-    expect(statSync(executable).size).toBeLessThan(115_000_000);
+    //
+    // Windows gets its own, wider bound: `build-sea.ts` documents why there is no `/usr/bin/strip`
+    // equivalent run against the PE it produces, so it ships with its ~25 MB of debug/local symbols
+    // still attached. Bounding it at all still catches a real regression; it just cannot share the
+    // POSIX bound a stripped binary earns.
+    expect(statSync(executable).size).toBeLessThan(windows ? 140_000_000 : 115_000_000);
   });
 
   test('embeds its assets instead of shipping a native SQLite addon', () => {
