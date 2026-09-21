@@ -47,3 +47,22 @@ export async function grantForeignDirectoryAccess(path: string): Promise<void> {
     killSignal: 'SIGKILL',
   });
 }
+
+/**
+ * The write-capable counterpart, for a fixture whose premise is `0o777` rather than `0o755`.
+ *
+ * The distinction is the one the masks draw and is not cosmetic: `0o022` ("no group or other
+ * *write*") accepts a world-*readable* directory and refuses a world-writable one, so a fixture
+ * built with {@link grantForeignDirectoryAccess} proves nothing against a call site asking that
+ * question. `Modify` is the NTFS right that fails both masks, the way `0o777` fails both modes.
+ */
+export async function grantForeignDirectoryWrite(path: string): Promise<void> {
+  if (!isWindowsTestHost) {
+    await chmod(path, 0o777);
+    return;
+  }
+  await execFileAsync('icacls', [path, '/grant', `*${everyoneSid}:(M)`], {
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  });
+}
