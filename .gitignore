@@ -14,3 +14,6 @@ artifacts/
 .env
 .env.*
 !.env.example
+
+# Claude Code agent worktrees (session-scoped, not project content)
+.claude/worktrees/
