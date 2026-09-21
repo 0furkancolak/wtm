@@ -3252,6 +3252,19 @@ Kontrol:
 - [x] `examples/bun-monorepo`
 - [x] `examples/docker-compose`
 - [x] `examples/polyglot`
+- [x] `examples/nextjs`
+- [x] `examples/nextjs-hono`
+- [x] `examples/python-uv`
+- [x] `examples/rust`
+- [x] `examples/go`
+
+**Not (2026-09-21, W9-2 / 20):** madde 20'nin beş yeni preset örneği (`nextjs`, `nextjs-hono`,
+`python-uv`, `rust`, `go`) eklendiğinde `scripts/__tests__/examples-portability.test.ts`'teki sabit
+`exampleDirs` listesi güncellenmemişti; test bunu tam olarak amaçlandığı gibi yakaladı
+("the checklist covers every directory under examples/" testi kırmızıydı). Liste beş yeni girdiyle
+genişletildi; hepsi zaten argv array kullanıyor, hiçbirinde hard-code path yok, hepsinin `cwd`'si
+`{worktree.root}` (veya onun altındaki bir alt dizin) altında kalıyor — ayrı bir düzeltme
+gerekmedi.
 
 Kurallar:
 
