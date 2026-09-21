@@ -149,6 +149,16 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   makinesinde elle veya bir sonraki Windows CI tetiklemesinde manuel `.\install.ps1` çalıştırmakla
   gelir, mevcut `win32_test_filter` mekanizması bu depo kökü script'lerini kapsamıyor.
 
+### #56 — feat(core,cli): revoke adapter trust deliberately (W10-3 / 21)
+- Commit: `df55a71` · Unit: W10-3 / 21
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası: 5 `Validate` leg'i 3-6 saniyede, `runner_id: 0` ile,
+  runner atanmadan düştü). Yalnızca yerel gate ile doğrulandı.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/core/src/plan/__tests__/adapter-trust.test.ts packages/core/src/state/__tests__/sqlite-store.test.ts packages/cli/src/commands/__tests__/adapter.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
