@@ -2808,7 +2808,18 @@ oluyor, yeni bir kod protokole eklenmiyor.
 
 - [ ] Adapter SDK package.
 - [ ] Adapter authoring guide.
-- [ ] Adapter contract versioning.
+- [x] Adapter contract versioning. — **Not (2026-09-21, W9-3 / K9):** zaten uygulanmış:
+      `packages/protocol/src/adapter.ts`'te `protocolVersionSchema` (`{ major, minor }`) ve
+      `isProtocolVersionCompatible`; gerçek yürütme yollarında zorunlu kılınıyor
+      (`packages/cli/src/client.ts:300`, `packages/core/src/plan/external-adapter.ts:389` —
+      uyumsuz protokolü `incompatible protocol` ile reddediyor), `docs/06-adapter-protocol.md`'nin
+      "Protocol version" bölümünde major/minor kuralları belgeli (major uyuşmazlığı
+      uyumsuz; adapter'ın eski minor'ü, gerekli alanlar destekleniyorsa kabul; adapter'ın yeni
+      minor'ü, yalnızca ileri-uyumlu işaretlenmiş opsiyonel alanlar yoksayılarak). Bugün v1.0 tek
+      minor olduğu için `isProtocolVersionCompatible` basit eşitlik kontrolü yapıyor — bu, kuralın
+      basitleştirilmesi değil, kuralın v1.0'da eşitliğe indirgenmiş hâli (yorum satırı bunu
+      açıkça söylüyor); ikinci bir minor tanımlandığında eşitlik kontrolü genişletilmeli. Yeni kod
+      yazılmadı, yalnızca bu madde işaretlendi.
 - [ ] Adapter test harness.
 - [ ] Trust UX iyileştirmesi.
 - [ ] Community adapter registry ancak ihtiyaç oluşursa.
