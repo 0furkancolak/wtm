@@ -511,6 +511,24 @@ command: make dev-with-worktree-7
 
 Unknown top-level words do not automatically execute shell commands. Tasks are always addressed by name through `wtm run`, `wtm start`, `wtm restart` or `wtm resolve`.
 
+## Adapters
+
+### `wtm adapter list`
+
+Lists every trusted external adapter: adapter ID, canonical path, SHA-256 and when it was trusted.
+
+### `wtm adapter trust <adapter-id> <executable-path>`
+
+Trusts a repository-local executable adapter. See [`docs/06-adapter-protocol.md`](06-adapter-protocol.md#trust-model)
+for the file format an external adapter must meet and how trust is authenticated. Re-trusting an
+adapter ID replaces its existing record.
+
+### `wtm adapter untrust <adapter-id>`
+
+Revokes every trust record for an adapter ID. Returns `{ removed: boolean }` — `false` when nothing
+was trusted under that ID, never an error. A changed or removed binary is already refused by the
+SHA-256 check on its own; `untrust` is for ending trust deliberately, without waiting on that.
+
 ## Runtime commands
 
 ### `wtm ps`

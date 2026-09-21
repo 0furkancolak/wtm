@@ -36,6 +36,8 @@ export interface TrustedAdapterDescriptor {
 export interface AdapterTrustStore {
   list(): readonly AdapterTrustRecord[];
   upsert(input: AdapterTrustInput): Promise<AdapterTrustRecord>;
+  /** Revokes every trust record for `adapterId`. Returns whether any existed to revoke. */
+  untrust(adapterId: string): Promise<boolean>;
 }
 
 export interface TrustRepositoryAdapterInput {
@@ -66,6 +68,11 @@ export function createAdapterTrustStore(records: readonly AdapterTrustRecord[] =
       ]);
       return record;
     },
+    untrust: async (adapterId) => {
+      const before = current.length;
+      current = current.filter((candidate) => candidate.adapterId !== adapterId);
+      return current.length !== before;
+    },
   };
 }
 
@@ -73,6 +80,7 @@ export function createSqliteAdapterTrustStore(store: AdapterTrustStateStore): Ad
   return {
     list: () => store.listAdapterTrust(),
     upsert: async (input) => store.upsertAdapterTrust(input),
+    untrust: async (adapterId) => store.deleteAdapterTrust(adapterId) > 0,
   };
 }
 

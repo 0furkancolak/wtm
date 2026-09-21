@@ -18,6 +18,7 @@ type StateStoreDomainOperation =
   | 'allocateEndpoint'
   | 'upsertAdapterTrust'
   | 'listAdapterTrust'
+  | 'deleteAdapterTrust'
   | 'listEndpointLeases'
   | 'createManagedProcess'
   | 'getManagedProcess'
@@ -971,9 +972,13 @@ function adapterTrustPersistence() {
       const renewed = second.upsertAdapterTrust({
         adapterId: 'fake', canonicalPath: '/adapters/fake', sha256: 'b'.repeat(64),
       });
+      const removed = first.deleteAdapterTrust('fake');
+      const removedAgain = first.deleteAdapterTrust('fake');
       return {
         records: first.listAdapterTrust().map(({ adapterId, canonicalPath, sha256 }) => [adapterId, canonicalPath, sha256]),
         trustedAtIsIso: !Number.isNaN(Date.parse(renewed.trustedAt)),
+        removed,
+        removedAgain,
       };
     } finally {
       second.close();

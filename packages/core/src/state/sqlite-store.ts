@@ -621,6 +621,11 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
     return rows.map(adapterTrustFromRow);
   }
 
+  deleteAdapterTrust(adapterId: string): number {
+    this.#assertOpen();
+    return this.#database.prepare('DELETE FROM adapter_trust WHERE adapter_id = ?').run(adapterId).changes;
+  }
+
   upsertResourceSandbox(input: ResourceSandboxInput): void {
     this.#assertOpen();
     this.transaction(() => {

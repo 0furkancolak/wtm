@@ -25,6 +25,14 @@ test('trusts an adapter in the production SQLite state database and lists it', (
   });
 });
 
+test('revokes a trusted adapter in the production SQLite state database', () => {
+  expect(runScenario('untrust-persistence')).toEqual({
+    removed: true,
+    removedAgain: false,
+    recordCount: 0,
+  });
+});
+
 test('concurrent SQLite trust commands retain independent adapter records', () => {
   expect(runScenario('concurrent-trust')).toEqual({ adapterIds: ['first', 'second'] });
 });
@@ -101,4 +109,20 @@ test('trusts an adapter executable through the injected policy rather than core\
   } finally {
     await adapter.cleanup();
   }
+});
+
+test('untrust revokes a trusted adapter, and reports false for one that was never trusted', async () => {
+  const trust = createAdapterTrustStore();
+  await trust.upsert({ adapterId: 'fake', canonicalPath: '/adapters/fake', sha256: 'a'.repeat(64) });
+
+  const revoked = await runAdapterCommand({
+    action: 'untrust', adapterId: 'fake', databasePath: 'unused-because-the-store-is-injected', trust,
+  });
+  expect(revoked).toMatchObject({ ok: true, data: { removed: true } });
+  expect(trust.list()).toEqual([]);
+
+  const nothingToRevoke = await runAdapterCommand({
+    action: 'untrust', adapterId: 'fake', databasePath: 'unused-because-the-store-is-injected', trust,
+  });
+  expect(nothingToRevoke).toMatchObject({ ok: true, data: { removed: false } });
 });

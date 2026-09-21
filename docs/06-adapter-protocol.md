@@ -231,7 +231,9 @@ Built-in adapters are trusted as part of WTM releases.
 
 External adapters installed into user-controlled WTM directories can be trusted at installation time.
 
-Repository-local executable adapters are **not executed automatically**. Trust records store adapter ID, canonical path and SHA-256. A changed binary requires renewed trust.
+Repository-local executable adapters are **not executed automatically**. Trust records store adapter ID, canonical path and SHA-256. A changed binary requires renewed trust — the SHA-256 check already refuses a mismatched file on its own, with no separate revocation step needed for that case.
+
+`wtm adapter untrust <adapter-id>` removes every trust record for an adapter ID outright, for the case where trust should end even though the binary hasn't changed (an adapter is being retired, or a repository-local trust decision needs to be undone deliberately). It reports `{ removed: boolean }` and never errors when nothing was trusted to begin with.
 
 ### V1 external executable format
 
