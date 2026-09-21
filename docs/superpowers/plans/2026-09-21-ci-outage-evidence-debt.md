@@ -159,6 +159,19 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/core/src/plan/__tests__/adapter-trust.test.ts packages/core/src/state/__tests__/sqlite-store.test.ts packages/cli/src/commands/__tests__/adapter.test.ts
   ```
 
+### #57 — feat(daemon,core): local reverse proxy backend and hostname allocation (W9-4 / 12b)
+- Commit: `a8f9ccb` · Unit: W9-4 / 12b
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası: 5 `Validate` leg'i saniyeler içinde, boş çıktıyla,
+  runner atanmadan düştü). Yalnızca yerel gate ile doğrulandı.
+- Bu PR'a özgü ayrı bir kanıt boşluğu: proxy loopback-only bind ve WebSocket/HMR upgrade
+  splicing yalnızca bu Linux sandbox'ında, sahte bir backend'e karşı test edildi — gerçek bir
+  macOS/Windows makinesinde, gerçek bir dev server'a (Vite HMR gibi) karşı hiç çalıştırılmadı.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/core/src/runtime/__tests__/proxy-hostname.test.ts packages/daemon/src/__tests__/proxy.test.ts packages/daemon/src/__tests__/proxy-routes.test.ts packages/core/src/config/__tests__/schema.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
