@@ -12,6 +12,7 @@
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'bun:test';
+import { isWindowsTestHost } from '../platform';
 
 const childPath = fileURLToPath(new URL('./scenario-bound.child.ts', import.meta.url));
 
@@ -57,9 +58,23 @@ describe('a scenario child that will not die on SIGTERM', () => {
     expect(report.bounded.message).toMatch(/did not finish|timed out/i);
   });
 
+  /**
+   * This is the reason `killSignal` is set at all — on a platform where a process can decline a
+   * signal. Windows is not one: Node documents `subprocess.kill()` as terminating the child
+   * unconditionally there, whatever signal name it is handed, so no child can be made to survive
+   * the default and the fixture this measurement needs cannot exist.
+   *
+   * The expectation therefore states the platform rather than a single answer. It is not a
+   * weakening: the Windows branch asserts the *opposite* result, so a Windows runner that started
+   * honouring `SIGTERM` the POSIX way would fail here just as loudly as a POSIX runner that
+   * stopped. And `killSignal` stays set regardless, because the platforms that need it still do.
+   */
   test('would not have been ended by the same deadline with the default kill signal', () => {
-    // This is the reason `killSignal` is set at all. If this ever reports `returned: true`, the
-    // platform has changed underneath the fix and the comment in `scenario-child.ts` needs redoing.
+    if (isWindowsTestHost) {
+      expect(report.sigtermAttempt.returned).toBe(true);
+      expect(report.sigtermAttempt.killedByOuterBound).toBe(false);
+      return;
+    }
     expect(report.sigtermAttempt.returned).toBe(false);
     expect(report.sigtermAttempt.killedByOuterBound).toBe(true);
   });
