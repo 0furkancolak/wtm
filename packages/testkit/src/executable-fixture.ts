@@ -12,10 +12,30 @@ import { basename } from 'node:path';
  * re-launches it through `cmd.exe` on its own. But that recognition happens on the extension of
  * the name the caller hands to `spawn`, not on what the file's sibling happens to be — a caller
  * still holding the bare, extension-less POSIX name gets `ENOENT`, not an automatic upgrade. So on
- * win32 this fixture is two files (a plain script holding `body`, and a `.cmd` one-liner that
- * `exec`s it through `node`) standing in for the one file darwin/linux gets, and `path` below is
- * whichever of them a caller must actually name to run it.
+ * win32 this fixture is two files (a script holding the same source darwin/linux writes, and a
+ * `.cmd` one-liner that `exec`s it through `node`) standing in for the one file darwin/linux gets,
+ * and `path` below is whichever of them a caller must actually name to run it.
+ *
+ * The hashbang goes into the script on *every* platform, including the win32 one that cannot
+ * dispatch on it. Windows ignoring a line is not a reason to omit it: Node strips a leading `#!`
+ * from a module it runs regardless of platform, so writing it costs nothing there, and a caller
+ * that reads this fixture's source rather than running it — `createFakeAdapter`, whose file is
+ * read and hashed by `assertExactV1AdapterDeclaration`, which requires exactly that line — gets
+ * the same bytes on every platform instead of a file that is only a valid adapter on two of the
+ * three. Omitting it was what made every `wtm adapter trust` fixture unusable on win32.
  */
+
+/**
+ * The one line every fixture's source starts with, on every platform. Exported because
+ * `__tests__/executable-fixture.test.ts` pins it rather than restating the literal, and because
+ * it is the same line `assertExactV1AdapterDeclaration` requires of a v1 adapter.
+ */
+export const fixtureHashbang = '#!/usr/bin/env node';
+
+function fixtureSource(body: string): string {
+  return `${fixtureHashbang}\n${body}`;
+}
+
 export interface ExecutableFixture {
   /** What a caller should hand to `spawn`/`execFile`, or put on `PATH`, to *run* this fixture. */
   readonly path: string;
@@ -66,9 +86,10 @@ export interface ExecutableFixtureOptions {
  * migrated call sites can share rather than a rewrite of what they were doing, so a regression here
  * would be a regression in every scenario test that depends on a fake `git`.
  *
- * win32: `path` is `${basePath}.cmd`. `body` is written unmodified to a same-directory sibling
- * script and left to run under `node`, unmodified — a caller that put `process.platform` branches
- * in its own script *body* for the two OSes would be solving a problem this helper already removes.
+ * win32: `path` is `${basePath}.cmd`, and the same source darwin/linux writes lands in a
+ * same-directory sibling script left to run under `node` — a caller that put `process.platform`
+ * branches in its own script *body* for the two OSes would be solving a problem this helper
+ * already removes.
  */
 export async function writeExecutableFixture(
   basePath: string,
@@ -86,7 +107,7 @@ export async function writeExecutableFixture(
     // reused as-is rather than doubled into `name.mjs.mjs`.
     const expectedExtension = module === 'module' ? '.mjs' : '.cjs';
     const scriptPath = basePath.endsWith(expectedExtension) ? basePath : `${basePath}${expectedExtension}`;
-    await writeFile(scriptPath, body, { flag });
+    await writeFile(scriptPath, fixtureSource(body), { flag });
     const cmdPath = `${basePath}.cmd`;
     await writeFile(cmdPath, [
       '@echo off',
@@ -104,7 +125,7 @@ export async function writeExecutableFixture(
     return { path: cmdPath, scriptPath };
   }
 
-  await writeFile(basePath, `#!/usr/bin/env node\n${body}`, { mode, flag });
+  await writeFile(basePath, fixtureSource(body), { mode, flag });
   await chmod(basePath, mode);
   return { path: basePath, scriptPath: basePath };
 }
