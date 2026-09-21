@@ -135,6 +135,20 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/core/src/workspace/__tests__/init.integration.test.ts packages/cli/src/commands/__tests__/init.test.ts scripts/__tests__/examples-portability.test.ts
   ```
 
+### #55 — feat(cli): install.sh and install.ps1 standalone-binary installers (W8-2 / 24)
+- Commit: `3dc748e` · Unit: W8-2 / 24
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası: 5 `Validate` leg'i saniyeler içinde, boş çıktıyla,
+  runner atanmadan düştü). Yalnızca yerel gate ile doğrulandı.
+- Bu PR'a özgü ayrı bir kanıt boşluğu: `install.ps1` gerçek `pwsh`/`powershell` ile hiç
+  çalıştırılmadı (sandbox'ta yok, yalnızca yapısal kontrol yapıldı), ve bu depodan hiçbir tag
+  Linux/Windows arşivi yayımlamadı (yalnızca macOS'lu `v0.1.0-rc.1` var) — `install.sh`'ın Linux
+  yolu ve `install.ps1`'in tamamı gerçek bir release'e karşı hiç sınanmadı. Yerel `Bun.serve`
+  fixture testi bunun yerini tutmaz, yalnızca protokolü doğrular.
+- Hedefli `win32_test_filter`: yok — `install.ps1` için gerçek kanıt yalnızca gerçek bir Windows
+  makinesinde elle veya bir sonraki Windows CI tetiklemesinde manuel `.\install.ps1` çalıştırmakla
+  gelir, mevcut `win32_test_filter` mekanizması bu depo kökü script'lerini kapsamıyor.
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
