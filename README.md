@@ -115,6 +115,27 @@ is no Linux or Windows download yet: the release workflow now builds and publish
 cut since that landed, so nothing is published for either platform today. Install on Linux from
 source, or use the Windows contributor build below, until a release carries those archives.
 
+The one-line install downloads the right archive for your Mac, verifies it against `SHA256SUMS`,
+and installs `wtm` to `$HOME/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/0furkancolak/wtm/main/install.sh | sh
+```
+
+Pass `--version <tag>` (or set `WTM_INSTALL_VERSION`) to install a specific release instead of the
+latest one, and `--prefix <dir>` (or `WTM_INSTALL_PREFIX`) to install somewhere other than
+`$HOME/.local/bin`, mirroring the Makefile's `PREFIX`/`BINDIR` convention. Re-running the same
+command overwrites an existing install in place — this is the upgrade path. The script installs
+the executable only; it does not register the daemon, so run `wtm daemon install` afterwards if
+you want the supervised background service, or use `make install` from source if you want both in
+one step. Like every other channel on this page whose "awaiting verification" or "no tag" caveat
+is stated above, this script has not been exercised against a real published release: only the
+macOS-only `v0.1.0-rc.1` prerelease has ever shipped, and the script's own test coverage
+(`scripts/__tests__/install-script.test.ts`) runs it only against a local fixture server standing
+in for GitHub Releases.
+
+#### Or do it by hand
+
 Select the archive matching your architecture, verify it against `SHA256SUMS`, then extract:
 
 ```bash
@@ -128,6 +149,9 @@ curl -LO https://github.com/0furkancolak/wtm/releases/download/v<VERSION>/SHA256
 shasum -a 256 -c --ignore-missing SHA256SUMS
 tar -xzf "$archive"
 ```
+
+This is exactly what `install.sh` above automates; read it if you want to see each step spelled
+out, or if you'd rather not pipe a script into your shell.
 
 <!-- gatekeeper-quarantine:start -->
 #### If you downloaded the archive through a browser
@@ -151,6 +175,24 @@ not something you should have to do. It disappears when the stable macOS binarie
 signed and notarized.
 <!-- gatekeeper-quarantine:end -->
 
+### Linux: published prerelease binary (once a release ships one)
+
+The release workflow builds and gates `wtm-linux-x64.tar.gz` and `wtm-linux-arm64.tar.gz` the same
+way it does the macOS archives, but as with the Windows archive below, no tag has shipped one yet
+— only the macOS-only `v0.1.0-rc.1` prerelease has ever been published. Build from source (above)
+until a release carries a Linux archive; once one does, the same one-line install works here too:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/0furkancolak/wtm/main/install.sh | sh
+```
+
+It detects your CPU architecture, downloads the matching `wtm-linux-x64.tar.gz` or
+`wtm-linux-arm64.tar.gz`, verifies it against `SHA256SUMS`, and installs `wtm` to
+`$HOME/.local/bin` — see the macOS section above for the `--version`/`--prefix` flags and their
+`WTM_INSTALL_*` environment equivalents; they work identically on Linux. Until a tag actually
+publishes a Linux archive, running this on Linux today fails at the download step with a normal
+HTTP error, not a silent wrong install.
+
 ### npm package: publication awaiting verification
 
 The repository builds and verifies an npm package named `worktree-runtime-manager`, but the
@@ -167,12 +209,29 @@ every gate. See [Platform support](#platform-support), especially the Windows li
 
 ### Windows: experimental contributor build
 
-There is no published Windows archive, PowerShell installer, Scoop manifest or WinGet package. The
-release workflow now builds and gates a `wtm-windows-x64.zip` the same way it does for macOS and
-Linux, but no tag has shipped one yet, and its job is informational rather than release-blocking:
-see [Platform support](#platform-support). The source includes a Windows backend and a native CI
-leg, which still has failures. To inspect that work from PowerShell after cloning this repository
-and installing its development prerequisites:
+There is no published Windows archive, Scoop manifest or WinGet package yet. The release workflow
+now builds and gates a `wtm-windows-x64.zip` the same way it does for macOS and Linux, but no tag
+has shipped one yet, and its job is informational rather than release-blocking: see
+[Platform support](#platform-support). A PowerShell installer, `install.ps1`, exists in this
+repository and mirrors `install.sh` — it resolves the latest release (or an explicit `-Version`),
+downloads `wtm-windows-x64.zip`, verifies it against `SHA256SUMS` with `Get-FileHash`, and installs
+`wtm.exe` into `$env:LOCALAPPDATA\wtm\bin` (override with `-Prefix` or `WTM_INSTALL_PREFIX`), with
+no administrator rights required:
+
+```powershell
+irm https://raw.githubusercontent.com/0furkancolak/wtm/main/install.ps1 | iex
+```
+
+**This has not been run.** No tag has ever published a Windows archive to install, and the sandbox
+that wrote `install.ps1` has no `pwsh`/`powershell` available to execute it — it has only a
+structural check (file exists, non-empty, braces/quotes balance) in
+`scripts/__tests__/install-script.test.ts`. Treat it the same way as every other still-unverified
+Windows evidence gap tracked in `docs/superpowers/plans/`: real evidence needs a real Windows
+machine and a real tag, and neither exists yet.
+
+The source includes a Windows backend and a native CI leg, which still has failures. To inspect
+that work from PowerShell after cloning this repository and installing its development
+prerequisites:
 
 ```powershell
 bun install --frozen-lockfile
