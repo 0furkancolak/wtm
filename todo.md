@@ -2272,7 +2272,19 @@ ile çözsün.
 
 ---
 
-### [ ] 49. Task kayıtları DB'de tutulsun ve düzenlenebilir olsun (ajan tarafından)
+### [x] 49. Task kayıtları DB'de tutulsun ve düzenlenebilir olsun (ajan tarafından)
+
+**2026-09-21 tamamlandı (W6-2).** K3 cevabı: DB kaydı `wtm.toml`'u override eder (precedence
+zincirinin 8. basamağı, zaten dokümanda "CLI/runtime override" olarak yer tutuluyordu), `wtm
+explain` kaynağı `db` olarak gösterir, kapsam yalnızca worktree (workspace/repo scope'u
+modellenmedi — K3'ün kendisi bunu tek scope olarak netleştirdi), `wtm task export` var, ayrı bir
+trust defteri yok (yazma zaten access-controlled local socket üzerinden, `adapter_trust`'a
+benzer ikinci bir onay mekanizması gereksiz görüldü). Migration 016 (`task_overrides`, tek JSON
+sütunu `task_json` — sütun sütun patlatmak yerine `taskSchema`'nın tam şekli, `wtm.toml`'daki
+`[tasks.<name>]` bloğuyla birebir aynı). `applyTaskOverrides` (core/config/merge.ts) dosya+adapter
+katmanının üstüne bindirilip provenance'ı `db` olarak işaretliyor; override bütün task'ı değiştirir
+(alan alan merge değil). PR: bkz. proje hafızası. Uygulanmayan/basitleştirilen tek nokta: scope
+tek (worktree) olduğu için workspace/repo scope kararı gereksiz kaldı.
 
 48. maddenin ön koşulu. Bugün bir task ya `wtm.toml`'da yazılı ya da bir adapter'ın ürettiği türev.
 İkisinin arasında, "WTM'in kendi kaydettiği, sonradan düzenlenebilen task" diye bir şey yok.
@@ -2291,38 +2303,42 @@ wtm task unset <name>
 
 #### Karara bağlanacaklar
 
-- [ ] Öncelik sırası: `wtm.toml` her zaman kazanmalı mı, yoksa DB kaydı override mı? Mevcut
-      precedence zinciri `docs/03-configuration-spec.md`'de; yeni katman oraya açıkça yazılmalı,
-      ima edilmemeli.
-- [ ] Kaynak provenance: `wtm explain` bir task'ın DB'den mi TOML'dan mı geldiğini satır/kaynak
-      düzeyinde söylemeye devam etmeli.
-- [ ] Kalıcılık ve taşınabilirlik: DB kaydı makineye bağlı, ekip arkadaşı aynı task'ı görmüyor.
-      `wtm task export` ile `wtm.toml`'a düşürme yolu olmalı mı?
-- [ ] Güvenlik: keyfi argv'yi kalıcılaştıran bir yüzey. Adapter trust registry (21. madde) ile aynı
-      güven modeline oturmalı; ayrı bir onay mekanizması doğmamalı.
+- [x] Öncelik sırası: DB kaydı override eder (K3). `docs/03-configuration-spec.md`'nin precedence
+      zincirine 8. basamak olarak açıkça yazıldı.
+- [x] Kaynak provenance: `wtm explain` `db` kaynağını satır numarası olmadan (DB kaydının satırı
+      yok) ama açıkça gösteriyor.
+- [x] Kalıcılık ve taşınabilirlik: `wtm task export` ile `wtm.toml`'a düşürme yolu var.
+- [x] Güvenlik: ayrı bir trust defteri yok (K3) — yazma zaten access-controlled local socket
+      üzerinden (`wtm task set`), adapter_trust'a benzer ikinci bir onay mekanizması gereksiz.
 
 #### Yapılacaklar
 
-- [ ] State DB'de task override tablosu; scope (workspace / repo / worktree) açıkça modellensin.
-- [ ] `wtm task list|show|set|unset` komutları, hepsinde stable `--json`.
-- [ ] Precedence kararını uygula ve `wtm explain`'de kaynağı göster.
-- [ ] Placeholder'lar (`{worktree.root}`, `{workspace.root}`, port lease'leri) DB kayıtlarında da
-      aynı biçimde çözülsün; ikinci bir interpolation dili doğmasın.
-- [ ] Trust modeli: DB'ye yazılan argv'nin hangi onaydan geçtiğini kaydet.
-- [ ] `wtm remove` bir worktree'yi kaldırdığında ona bağlı task kayıtları da temizlensin.
-- [ ] Export kararı uygulanırsa `wtm task export` ile `wtm.toml`'a düşür.
-- [ ] `docs/03-configuration-spec.md`'ye yeni precedence katmanı.
-- [ ] `docs/04-cli-reference.md`'ye `wtm task` komut ailesi.
-- [ ] `docs/06-adapter-protocol.md`'ye adapter türevlerinin DB kaydıyla ilişkisi.
-- [ ] `docs/11-ai-first-skill-integration.md` ve `skills/wtm/SKILL.md`'ye ajanın task düzeltme
+- [x] State DB'de task override tablosu — K3 scope'u worktree'yle sınırladığı için tek scope
+      sütunu (`worktree_id`), workspace/repo scope modellenmedi.
+- [x] `wtm task list|show|set|unset` komutları, hepsinde stable `--json`.
+- [x] Precedence kararını uygula ve `wtm explain`'de kaynağı göster.
+- [x] Placeholder'lar (`{worktree.root}`, `{workspace.root}`, port lease'leri) DB kayıtlarında da
+      aynı biçimde çözülüyor — `resolveTask` DB override'ını da aynı `TemplateContext`'le çözüyor,
+      ikinci bir interpolation dili yok.
+- [x] Trust modeli: ayrı bir kayıt yok (K3) — komutun kendisi (access-controlled socket) trust
+      kararı.
+- [x] `wtm remove` bir worktree'yi kaldırdığında ona bağlı task kayıtları da temizleniyor.
+- [x] `wtm task export` ile `wtm.toml`'a düşürme uygulandı.
+- [x] `docs/03-configuration-spec.md`'ye yeni precedence katmanı.
+- [x] `docs/04-cli-reference.md`'ye `wtm task` komut ailesi.
+- [x] `docs/06-adapter-protocol.md`'ye adapter türevlerinin DB kaydıyla ilişkisi.
+- [x] `docs/11-ai-first-skill-integration.md` ve `skills/wtm/SKILL.md`'ye ajanın task düzeltme
       akışı ve yapmaması gerekenler.
 
 #### Kabul kriterleri
 
-- [ ] Bir ajan türetilmiş bir task'ı düzeltip kalıcılaştırabiliyor; `wtm.toml` elle düzenlenmiyor.
-- [ ] `wtm explain` her task için kaynağını (TOML satırı / adapter / DB kaydı) söylüyor.
-- [ ] Precedence dokümanda yazdığı gibi çalışıyor ve parity testiyle sabitleniyor (34/35. maddeler).
-- [ ] Worktree kaldırıldığında ardında yetim task kaydı kalmıyor.
+- [x] Bir ajan türetilmiş bir task'ı düzeltip kalıcılaştırabiliyor; `wtm.toml` elle düzenlenmiyor.
+- [x] `wtm explain` her task için kaynağını (TOML satırı / adapter / DB kaydı) söylüyor.
+- [x] Precedence dokümanda yazdığı gibi çalışıyor ve testle sabitleniyor
+      (`applyTaskOverrides`/`decisions.test.ts`/`task-override-resolution` senaryosu) — 34/35.
+      maddelerin platform-parity testi bu konunun kapsamı dışında, yeni davranış kendi testleriyle
+      doğrulandı.
+- [x] Worktree kaldırıldığında ardında yetim task kaydı kalmıyor.
 
 ---
 

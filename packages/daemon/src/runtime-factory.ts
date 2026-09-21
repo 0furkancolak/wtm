@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { readFile, realpath } from 'node:fs/promises';
 import { parse } from 'smol-toml';
-import { ciCommandNames, jobCommandNames } from '@wtm/protocol';
+import { ciCommandNames, jobCommandNames, taskOverrideCommandNames } from '@wtm/protocol';
 import { basename as posixBasename, dirname as posixDirname, join as posixJoin, resolve as posixResolve } from 'node:path/posix';
 import { basename as win32Basename, dirname as win32Dirname, join as win32Join, resolve as win32Resolve } from 'node:path/win32';
 import {
@@ -29,6 +29,7 @@ import {
 import { CiWatcher } from './ci/watcher';
 import { createGhRunner } from './ci/gh-runner';
 import { createGitHubProvider } from './ci/github-provider';
+import { TaskOverridesHandler } from './task-overrides-handler';
 import { LifecycleEventDispatcher } from './events';
 import { WtmDaemon } from './main';
 import { ManagedLogStore } from './logs';
@@ -78,6 +79,7 @@ export interface ProductionDaemonRuntime {
   daemon: WtmDaemon;
   jobs: HeavyJobQueue | null;
   ci: CiWatcher | null;
+  taskOverrides: TaskOverridesHandler | null;
   start(): Promise<void>;
   close(): Promise<void>;
 }
@@ -291,6 +293,10 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
       resolveTask: async (cwd, taskName) => resolveHeavyJob(stateStore, paths.globalConfigPath, cwd, taskName),
     });
   }
+  const taskOverrides = stateStore.taskOverrides === undefined ? null : new TaskOverridesHandler({
+    store: stateStore.taskOverrides,
+    registration: stateStore,
+  });
   const ci = stateStore.ci === undefined ? null : new CiWatcher({
     store: stateStore.ci,
     registration: stateStore,
@@ -312,7 +318,8 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     runtimeHandler: async (request, context) => (
       ciCommandNames.has(request.command) && ci !== null ? ci.handle(request)
         : jobCommandNames.has(request.command) && jobs !== null ? jobs.handle(request)
-          : controller.handle(request, context)
+          : taskOverrideCommandNames.has(request.command) && taskOverrides !== null ? taskOverrides.handle(request)
+            : controller.handle(request, context)
     ),
     // Preparation and lifecycle events belong to the pass that noticed the change, so a
     // worktree created while WTM is watching is prepared before anybody runs anything in it.
@@ -335,6 +342,7 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     daemon,
     jobs,
     ci,
+    taskOverrides,
     start: async () => { await daemon.start(); await jobs?.start(); await ci?.start(); },
     close: async () => {
       if (closed) return;

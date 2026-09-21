@@ -137,13 +137,15 @@ function taskDecisions(input: DecisionInput): Decision[] {
       key: name,
       value: toJson(task),
       provenance: declared ?? { source: adapter === undefined ? wtmSource : `adapter:${adapter}` },
-      reason: declared !== undefined
-        ? adapter === undefined
-          ? 'Defined by the workspace configuration.'
-          : `Defined by the workspace configuration, which wins over the ${adapter} adapter's task of the same name.`
-        : adapter === undefined
-          ? 'Contributed by a detected adapter.'
-          : `Contributed by the ${adapter} adapter, because the configuration does not define it.`,
+      reason: declared?.source === 'db'
+        ? 'Overridden by a database record (`wtm task set`), which wins over the workspace configuration and any adapter.'
+        : declared !== undefined
+          ? adapter === undefined
+            ? 'Defined by the workspace configuration.'
+            : `Defined by the workspace configuration, which wins over the ${adapter} adapter's task of the same name.`
+          : adapter === undefined
+            ? 'Contributed by a detected adapter.'
+            : `Contributed by the ${adapter} adapter, because the configuration does not define it.`,
     };
   });
 }

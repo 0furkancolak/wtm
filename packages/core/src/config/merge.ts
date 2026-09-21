@@ -1,5 +1,5 @@
-import type { ResolvedConfig, Provenance } from './provenance';
-import { WtmConfigError, type WtmConfig } from './schema';
+import { collectProvenance, type ResolvedConfig, type Provenance } from './provenance';
+import { WtmConfigError, type TaskConfig, type WtmConfig } from './schema';
 
 type ConfigRecord = Record<string, unknown>;
 
@@ -70,4 +70,27 @@ export function mergeConfigLayers(layers: ConfigLayer[]): ResolvedConfig<WtmConf
   }
 
   return { value: value as WtmConfig, provenance };
+}
+
+/**
+ * Layers `wtm task set` records on top of an already-resolved configuration. Each named task is
+ * a whole replacement, not a field-by-field merge — the same way a later file layer replaces an
+ * earlier one's array or string leaves in {@link mergeConfigLayers} — so a stale provenance entry
+ * from the file-defined task cannot survive under a field the override left out and be picked up
+ * by `wtm explain` as if it still applied.
+ */
+export function applyTaskOverrides(resolved: ResolvedConfig<WtmConfig>, overrides: Record<string, TaskConfig>): ResolvedConfig<WtmConfig> {
+  const names = Object.keys(overrides);
+  if (names.length === 0) return resolved;
+
+  const tasks = { ...resolved.value.tasks, ...overrides };
+  const provenance = new Map(resolved.provenance);
+  for (const name of names) {
+    for (const key of provenance.keys()) {
+      if (key === `tasks.${name}` || key.startsWith(`tasks.${name}.`)) provenance.delete(key);
+    }
+  }
+  for (const [key, value] of collectProvenance({ tasks: overrides }, 'db')) provenance.set(key, value);
+
+  return { value: { ...resolved.value, tasks }, provenance };
 }

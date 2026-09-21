@@ -7,3 +7,4 @@ export * from './jobs';
 export * from './runtime';
 export * from './json-envelope';
 export * from './schema-version';
+export * from './task-overrides';

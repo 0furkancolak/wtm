@@ -103,11 +103,12 @@ export type {
 } from './analysis/operation-lease';
 export { resolveWorkspaceConfig, builtInConfig } from './config/load';
 export { stripByteOrderMark } from './config/toml-text';
-export { mergeConfigLayers } from './config/merge';
-export { parseWtmConfig, wtmConfigSchema, WtmConfigError } from './config/schema';
-export type { CorsConfig, GitConfig, PortConfig, PortsConfig, RepoConfig, ResourceConfig, WtmConfig } from './config/schema';
+export { mergeConfigLayers, applyTaskOverrides } from './config/merge';
+export { parseWtmConfig, wtmConfigSchema, taskSchema, WtmConfigError } from './config/schema';
+export type { CorsConfig, GitConfig, PortConfig, PortsConfig, RepoConfig, ResourceConfig, TaskConfig, WtmConfig } from './config/schema';
 export { repoEnvironment, resolveRepoScope } from './config/repos';
 export type { RepoScopeInput, ResolvedRepoScope } from './config/repos';
+export { collectProvenance } from './config/provenance';
 export type { ResolvedConfig, Provenance } from './config/provenance';
 export { resolveTemplate, WtmTemplateError } from './templates/resolve';
 export type { TemplateContext } from './templates/resolve';
@@ -291,4 +292,5 @@ export type { WorktreeReclaimableInput, WorktreeReclaimableMeasurement } from '.
 export { memoryEstimateError, memoryCapacity, type JobMemoryAdmission, type JobMemoryErrorCode } from './state/job-memory';
 export { CiWatchError } from './state/ci';
 export type { CiWatchRecord, CiWatchStartInput, CiWatchStore, CiWatchUpdate } from './state/ci';
+export type { TaskOverrideRecord, TaskOverrideSetInput, TaskOverrideStore } from './state/task-overrides';
 export * from './ci';

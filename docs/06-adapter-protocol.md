@@ -194,6 +194,11 @@ WTM merges the plans, detects conflicts and applies explicit config precedence.
 
 If two adapters give incompatible policy to the same resource, WTM emits a plan conflict rather than silently choosing.
 
+The same precedence covers tasks: a `[tasks.<name>]` block in `wtm.toml` wins over an
+adapter-suggested task of the same name, and a `wtm task set` record
+([docs/03](03-configuration-spec.md#overriding-a-task-per-worktree)) wins over both — the file
+config and the adapter alike. `wtm explain` names the winning source for every task, `db` included.
+
 ## Capabilities
 
 Framework adapters depend on semantic capabilities rather than adapter names.
