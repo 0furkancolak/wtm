@@ -102,6 +102,20 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   release tag'i ile gelir. Actions dönünce ilk prerelease tag'inde otomatik doğrulanır.
 - Ayrıca darwin/win32 genel CI kanıtı da yok (aynı kesinti).
 
+### #45 — feat(release,scripts): add a Windows x64 zip release target (W6-1 / 29b)
+- Commit: `255fd79` · Unit: W6-1 / 29b
+- Eksik kanıt: **gerçek `windows-latest` runner'da hiç çalışmadı** — `verify-windows` job'ı, PE
+  header doğrulaması ve `Compress-Archive` zip'lemesi yalnızca sahte PE fixture'larıyla, bu Linux
+  sandbox'ta doğrulandı. `release.yml` `workflow_dispatch` almadığı için bu bir
+  `win32_test_filter` meselesi değil; kanıt yalnızca gerçek bir release tag'i ile gelir.
+- Ayrıca darwin/linux genel CI kanıtı da yok (aynı kesinti).
+
+### #46 — fix(release): make the Windows archive optional in the whole-release gate
+- Commit: `e07f317` · #45'in düzeltmesi
+- Eksik kanıt: aynı — `requiredReleaseTargets`/`continue-on-error` mantığı yalnızca yerel gate ve
+  yapısal testlerle doğrulandı, gerçek bir Windows leg'in başarısız olup release'in geri kalanını
+  bloklamadığı bir tag'de hiç görülmedi.
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
@@ -109,8 +123,9 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
 2. Yukarıdaki `win32_test_filter` dizelerini tek tek `workflow_dispatch` ile koştur (Kaptan'ın eli
    gerekiyor, bu ortamdan 403). Her biri kendi PR'ının açıklamasında zaten yazılı, bu belge onları
    tek yerde toplar.
-3. #42 için ayrıca ilk gerçek `v0.2.0-rc.*` tag'i push'lanmalı — yalnızca o an `verify-linux`
-   job'ı gerçekten çalışır.
+3. #42 ve #45/#46 için ayrıca ilk gerçek `v0.2.0-rc.*` tag'i push'lanmalı — yalnızca o an
+   `verify-linux` ve `verify-windows` job'ları gerçekten çalışır (`release.yml`
+   `workflow_dispatch` almıyor).
 
 ## Bu kesintiyle ilgisi olmayan, önceden bilinen borç
 
