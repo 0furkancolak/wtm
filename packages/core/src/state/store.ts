@@ -369,6 +369,7 @@ export interface LifecycleEventStore {
 export type DaemonStateStore = StateStore & StateRegistrationReader & {
   jobs?: import('./jobs').HeavyJobStore;
   ci?: import('./ci').CiWatchStore;
+  taskOverrides?: import('./task-overrides').TaskOverrideStore;
 };
 
 export interface ResourceSandboxInput {

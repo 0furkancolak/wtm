@@ -11,7 +11,7 @@ Resolved configuration follows this precedence, from lowest to highest:
 5. workspace `wtm.toml`;
 6. nested `wtm.toml` files between workspace root and repository;
 7. repository `.wtm.toml`;
-8. CLI/runtime override.
+8. CLI/runtime override — a worktree's `wtm task set` records (see [Tasks](#tasks)).
 
 **Adapter suggestions never override explicit user configuration.**
 
@@ -388,6 +388,29 @@ queue_env           environment overrides applied only to enqueued execution
 `shell` is required when a command is written as a single string and rejected when a command is written as an argv array.
 
 `expose` is accepted by the configuration schema but has no CLI dispatch effect in V1: it does not create a top-level `wtm <task>` word. Tasks are always addressed by name through `wtm run`, `wtm start`, `wtm restart` or `wtm resolve`.
+
+### Overriding a task per worktree
+
+`wtm task set <name> [flags]` writes a whole task definition into the state database, scoped to
+the worktree it is run in. It wins over the same name in every file layer above and over an
+adapter-derived task of the same name — precedence rung 8, [Files and precedence](#files-and-precedence).
+The override replaces the task wholesale: a field a prior file layer set but the override leaves
+out does not survive, the same way a later file layer's own value replaces an earlier one's rather
+than merging into it.
+
+```bash
+wtm task set dev --run 'npm run dev -- --port {port.web}' --shell --background
+wtm task set dev --task-json '{"run":["node","server.js"],"background":true}'
+wtm task list
+wtm task show dev
+wtm task unset dev
+wtm task export dev            # prints the row as a [tasks.dev] block, to paste into wtm.toml
+```
+
+`wtm explain` names a task's source as `db` when a `wtm task set` record decided it, ahead of
+`wtm.toml` and any adapter. Removing a worktree (`wtm remove`) deletes its overrides, the same way
+it deletes the worktree's CI watches: worktree rows are never hard-deleted from the state
+database, so a stale override for a gone worktree would otherwise persist forever.
 
 ### HTTP readiness
 

@@ -4,7 +4,7 @@ import { createConnection } from 'node:net';
 import { access } from 'node:fs/promises';
 import { constants, homedir, hostname } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import type { JsonEnvelope, WtmError, WtmErrorCode } from '@wtm/protocol';
+import type { JsonEnvelope, TaskOverrideRecordWire, WtmError, WtmErrorCode } from '@wtm/protocol';
 import { readinessDurationMs } from '@wtm/protocol';
 import { exitCodeForError } from './exit-codes';
 import {
@@ -67,6 +67,10 @@ import { measureCleanupCandidates } from './commands/cleanup-estimates';
 import { runStartCommand } from './commands/start';
 import { runStopCommand } from './commands/stop';
 import { readCiStatus, runCiUnwatchCommand, runCiWatchCommand } from './commands/ci';
+import {
+  runTaskListCommand, runTaskSetCommand, runTaskShowCommand, runTaskUnsetCommand,
+  taskOverrideToToml, taskValueFromFlags, type TaskFlags,
+} from './commands/task';
 import { runRestartCommand } from './commands/restart';
 import { runPsCommand } from './commands/ps';
 import { followLogs, runLogsCommand } from './commands/logs';
@@ -347,6 +351,101 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       return;
     }
     renderRuntime(await runCiUnwatchCommand({ cwd: target.cwd }, dependencies.runtimeClient), runtimeJson(program, options));
+  });
+
+  const task = program.command('task').description('Fix a task WTM resolved for this worktree, without hand-editing wtm.toml.');
+
+  const taskList = task.command('list').description('List this worktree\'s task overrides.');
+  addTargetOptions(taskList);
+  addJsonOption(taskList);
+  taskList.action(async (options: ScopeOptions & TargetOptions) => {
+    const target = await taskTarget(['wtm', 'task', 'list'], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('task list', target.error), runtimeJson(program, options));
+      return;
+    }
+    renderRuntime(await runTaskListCommand({ cwd: target.cwd }, dependencies.runtimeClient), runtimeJson(program, options));
+  });
+
+  const taskShow = task.command('show <name>').description('Show this worktree\'s override of a task, if any.');
+  addTargetOptions(taskShow);
+  addJsonOption(taskShow);
+  taskShow.action(async (name: string, options: ScopeOptions & TargetOptions) => {
+    const target = await taskTarget(['wtm', 'task', 'show'], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('task show', target.error), runtimeJson(program, options));
+      return;
+    }
+    renderRuntime(await runTaskShowCommand({ cwd: target.cwd, taskName: name }, dependencies.runtimeClient), runtimeJson(program, options));
+  });
+
+  const taskSet = task.command('set <name>').description('Override a task for this worktree; wins over wtm.toml and any adapter-derived task.');
+  addTargetOptions(taskSet);
+  addJsonOption(taskSet);
+  taskSet.option('--run <command>', 'a shell command; requires --shell');
+  taskSet.option('--argv <item>', 'one argv element; repeat for the full command, no shell', (value: string, previous: string[] = []) => [...previous, value]);
+  taskSet.option('--cwd <path>', 'working directory the task starts in');
+  taskSet.option('--shell', 'run --run through the shell');
+  taskSet.option('--background', 'start without blocking the caller');
+  taskSet.option('--singleton', 'refuse a second concurrent run');
+  taskSet.option('--description <text>', 'shown by wtm explain and wtm status');
+  taskSet.option('--env <KEY=VALUE>', 'an environment variable; repeat for more', (value: string, previous: string[] = []) => [...previous, value]);
+  taskSet.option('--task-json <definition>', 'the full task definition as JSON, in place of the flags above');
+  taskSet.action(async (name: string, options: ScopeOptions & TargetOptions & TaskFlags) => {
+    const target = await taskTarget(['wtm', 'task', 'set'], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('task set', target.error), runtimeJson(program, options));
+      return;
+    }
+    const built = taskValueFromFlags(options);
+    if ('error' in built) {
+      renderRuntime({ schemaVersion: 1, ok: false, command: 'task set', data: null, warnings: [], errors: [built.error] }, runtimeJson(program, options));
+      return;
+    }
+    renderRuntime(
+      await runTaskSetCommand({ cwd: target.cwd, taskName: name, task: built.value }, dependencies.runtimeClient),
+      runtimeJson(program, options),
+    );
+  });
+
+  const taskUnset = task.command('unset <name>').description('Remove this worktree\'s override of a task; wtm.toml or an adapter decides it again.');
+  addTargetOptions(taskUnset);
+  addJsonOption(taskUnset);
+  taskUnset.action(async (name: string, options: ScopeOptions & TargetOptions) => {
+    const target = await taskTarget(['wtm', 'task', 'unset'], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('task unset', target.error), runtimeJson(program, options));
+      return;
+    }
+    renderRuntime(await runTaskUnsetCommand({ cwd: target.cwd, taskName: name }, dependencies.runtimeClient), runtimeJson(program, options));
+  });
+
+  const taskExport = task.command('export <name>').description('Print this worktree\'s override of a task as a [tasks.<name>] wtm.toml block.');
+  addTargetOptions(taskExport);
+  taskExport.action(async (name: string, options: ScopeOptions & TargetOptions) => {
+    const target = await taskTarget(['wtm', 'task', 'export'], options);
+    if (target.outcome === 'refused') {
+      renderRuntime(refusedTarget('task export', target.error), runtimeJson(program, options));
+      return;
+    }
+    const envelope = await runTaskShowCommand({ cwd: target.cwd, taskName: name }, dependencies.runtimeClient);
+    if (!envelope.ok) {
+      renderRuntime(envelope, runtimeJson(program, options));
+      return;
+    }
+    const data = envelope.data as { task: TaskOverrideRecordWire | null } | null;
+    if (data?.task == null) {
+      renderRuntime({
+        schemaVersion: 1, ok: false, command: 'task export', data: null, warnings: [],
+        errors: [{ code: 'WTM_CONFIG_INVALID', message: `No override is set for task "${name}" in this worktree.`, severity: 'error' }],
+      }, runtimeJson(program, options));
+      return;
+    }
+    if (runtimeJson(program, options)) {
+      renderRuntime(envelope, true);
+      return;
+    }
+    process.stdout.write(taskOverrideToToml(name, data.task.task));
   });
 
   const analyze = program.command('analyze [selector]').description('Analyze worktree removal safety.');

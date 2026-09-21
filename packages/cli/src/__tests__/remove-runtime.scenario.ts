@@ -337,6 +337,30 @@ const cases: Record<string, () => Promise<unknown>> = {
   },
 
   /**
+   * The same post-removal store step also deletes a removed worktree's task overrides (`wtm task
+   * set`), for the same reason as its CI watches: worktree rows are never deleted, so a stale
+   * override naming a task in a worktree that is gone would otherwise persist forever.
+   */
+  'task-override-cleanup': async () => {
+    const prepared = await prepare();
+    prepared.store.taskOverrides.set({
+      worktreeId: prepared.worktreeId, taskName: 'dev', task: { run: 'npm run dev', shell: true },
+      now: new Date().toISOString(),
+    });
+    const before = prepared.store.taskOverrides.get(prepared.worktreeId, 'dev');
+
+    const { exitCode, envelope } = await removeLinked(prepared, unreachableDaemon([]));
+
+    return {
+      exitCode,
+      ok: envelope.ok,
+      hadOverrideBeforeRemoval: before !== null,
+      overrideAfterRemoval: prepared.store.taskOverrides.get(prepared.worktreeId, 'dev'),
+      worktreeExists: await pathExists(prepared.fixture.linkedWorktreePath),
+    };
+  },
+
+  /**
    * With no daemon to emit `worktree.removed`, the CLI reconciles the repository itself and says
    * so, rather than leaving the registration pointing at a directory that is gone.
    */
