@@ -35,13 +35,17 @@ test('a real child inherits only fixture home and app-data locations without hel
   const root = mkdtempSync(join(shortTmpRoot(), 'wtm-env-'));
   const home = join(root, 'home');
   try {
+    // No `timeoutMs` override: `runScenario`'s own doc reserves that for tests measuring the
+    // bound, and this one measures environment inheritance. The 5 s it used to pass was a bound on
+    // a cold Node start, which a contended windows-latest runner loses — the fixture then reports
+    // the platform's cost as a failure of the thing under test.
     const result = runScenario('node', ['--input-type=module', '-e', `
       import { homedir } from 'node:os';
       process.stdout.write(JSON.stringify({
         home: homedir(), userProfile: process.env.USERPROFILE,
         local: process.env.LOCALAPPDATA, roaming: process.env.APPDATA,
       }));
-    `], { env: { ...process.env, ...isolatedHomeEnvironment(home) }, timeoutMs: 5_000 });
+    `], { env: { ...process.env, ...isolatedHomeEnvironment(home) } });
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({
       home, userProfile: home,

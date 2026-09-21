@@ -1794,6 +1794,28 @@ wtm-windows-arm64.exe
       `delegate to the port the platform seam selected` testinin `toEqual` farkı; ve
       `daemon-restart-recovery`'nin 30 sn'de öldürülen senaryosu. Üçü de tahmine dayalı bir
       düzeltme yazmak yerine kanıt bekliyor.
+      **2026-09-20 (W3-3 / 9h):** kümeleme dokümanının 9h bölümündeki iki hatanın ikisi de
+      kapatıldı ve biri gerçek bir ürün kusuruydu. `forget.ts`'in `resolveAgainst` fonksiyonu
+      seçiciyi yalnızca `/` ile başlıyorsa mutlak sayıyor ve aksi halde kendi `/`'ı ile cwd'ye
+      yapıştırıyordu: `C:\projects\repo` `/` ile başlamaz, yani Windows'ta mutlak bir seçici
+      göreli okunup `C:\work/C:\projects\repo` oluyordu. Sonuç, `wtm forget <mutlak yol>`'un
+      depo dalına hiç ulaşamaması ve sessizce içeren workspace'i emekli etmesi — istenenden
+      büyük bir işlem. Artık `node:path`'in `isAbsolute`/`resolve`'u kullanılıyor.
+      İkinci yarısı karşılaştırma: `mainRoot === path` bir dizinin birden çok meşru yazılışı
+      olan bir hostta doğru testi değil. `@wtm/core/paths`'e `samePath` eklendi; `node:path`'in
+      `relative`'i ayırıcıyı normalize ediyor ve büyük/küçük harf kuralını hostun kendisinden
+      alıyor (Windows'ta `C:\p\repo` ile `c:\p\repo` aynı, POSIX'te değil). Bilerek
+      `realpath` değil: bu çağıranlar dizini çoktan silinmiş olabilecek kayıtları soruyor.
+      `forget.test.ts`'in fixture'ı da gerçek bir `mkdtemp` yolunu `path/posix` ile birleştiriyordu,
+      yani Windows'ta `…\wtm-forget-x/repo` ile `…\wtm-forget-x\repo` karşılaştırılıyordu;
+      birleştirme artık kökün kendi yazılışını izliyor. Hostun kendi yazılışında mutlak ve göreli
+      seçici için iki yeni test var.
+      `isolated-home.test.ts`'in çocuğu 5 sn'de öldürülüyordu: `runScenario`'nun kendi dokümanı
+      `timeoutMs` geçersiz kılmasını yalnızca sınırı ölçen testlere ayırıyor, bu test ise ortam
+      kalıtımını ölçüyor. 5 sn soğuk bir Node başlangıcına konmuş bir sınırdı ve yüklü bir
+      windows-latest koşucusu onu kaybediyor. Paylaşılan varsayılan kullanılıyor artık.
+      9h'nin başlığındaki junction ve reparse point güvenliği için win32 bacağından ölçüm yok:
+      iki koşu da `core`'un ilgili dosyalarına hiç ulaşmamıştı. Tahminle kod yazılmadı.
 - [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
 - [ ] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
       `plistPath` macOS'a özel bir ek alan olarak bilerek duruyor (D11), kaldırılması daemon JSON
