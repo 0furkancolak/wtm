@@ -40,6 +40,17 @@ test.skipIf(isWindowsTestHost)('keeps adapter ID, canonical path, SHA-256, and t
   expect(store.list()).toEqual([record]);
 });
 
+test('untrust removes every record for an adapter ID and reports whether one existed', async () => {
+  const store = createAdapterTrustStore();
+  await store.upsert({ adapterId: 'fake', canonicalPath: '/adapters/fake-1', sha256: 'a'.repeat(64) });
+  await store.upsert({ adapterId: 'fake', canonicalPath: '/adapters/fake-2', sha256: 'b'.repeat(64) });
+  await store.upsert({ adapterId: 'other', canonicalPath: '/adapters/other', sha256: 'c'.repeat(64) });
+
+  expect(await store.untrust('fake')).toBe(true);
+  expect(store.list().map(({ adapterId }) => adapterId)).toEqual(['other']);
+  expect(await store.untrust('fake')).toBe(false);
+});
+
 /**
  * The executability answer comes from the injected policy on every host, so both directions are
  * stated by injecting one rather than by chmod-ing a file and trusting the host to agree.

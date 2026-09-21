@@ -26,9 +26,13 @@ interface AdapterCommandBase {
 
 export type AdapterCommandInput =
   | AdapterCommandBase & { action: 'list' }
-  | AdapterCommandBase & { action: 'trust'; adapterId: string; executablePath: string };
+  | AdapterCommandBase & { action: 'trust'; adapterId: string; executablePath: string }
+  | AdapterCommandBase & { action: 'untrust'; adapterId: string };
 
-export type AdapterCommandResult = AdapterTrustRecord | { adapters: readonly AdapterTrustRecord[] };
+export type AdapterCommandResult =
+  | AdapterTrustRecord
+  | { adapters: readonly AdapterTrustRecord[] }
+  | { removed: boolean };
 export type AdapterCommandEnvelope = JsonEnvelope<AdapterCommandResult | null>;
 
 export async function runAdapterCommand(input: AdapterCommandInput): Promise<AdapterCommandEnvelope> {
@@ -38,6 +42,8 @@ export async function runAdapterCommand(input: AdapterCommandInput): Promise<Ada
     try {
       const data: AdapterCommandResult = input.action === 'list'
         ? { adapters: opened.trust.list() }
+        : input.action === 'untrust'
+        ? { removed: await opened.trust.untrust(input.adapterId) }
         // The selected policy has to reach the executable's own safety checks too, not just the
         // private directory above the database. `trustRepositoryAdapter` defaults to core's
         // POSIX-only fallback, which answers `currentIdentityAvailable()` false on win32 and

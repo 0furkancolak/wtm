@@ -79,6 +79,7 @@ failure, `2` usage or configuration, `3` safety refusal or conflict, `4` daemon 
 | `wtm daemon serve` | Run the daemon in the foreground (isolated testing only). |
 | `wtm adapter list --json` | List trusted external adapters. |
 | `wtm adapter trust <adapter-id> <executable>` | Trust an adapter executable by SHA-256. |
+| `wtm adapter untrust <adapter-id> --json` | Revoke every trust record for an adapter ID; `{removed: boolean}`, never errors if nothing was trusted. |
 | `wtm skill print` | Print this skill. |
 | `wtm skill install` | Install this skill into the workspace; `--global` for `~/.agents/skills`. |
 | `wtm completion <shell>` | Print a bash, zsh or fish completion script. |

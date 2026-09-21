@@ -805,6 +805,17 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       ...(dependencies.adapterTrustStore === undefined ? {} : { trust: dependencies.adapterTrustStore }),
     }), runtimeJson(program, options));
   });
+  const adapterUntrust = adapter.command('untrust <adapter-id>').description('Revoke every trust record for an adapter; a changed or removed binary needs `trust` again.');
+  addJsonOption(adapterUntrust);
+  adapterUntrust.action(async (adapterId: string, options: ScopeOptions) => {
+    renderRuntime(await runAdapterCommand({
+      action: 'untrust',
+      adapterId,
+      databasePath: dependencies.adapterDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+      fileTrust: hostPlatformRuntime().fileTrust,
+      ...(dependencies.adapterTrustStore === undefined ? {} : { trust: dependencies.adapterTrustStore }),
+    }), runtimeJson(program, options));
+  });
 
   const init = program.command('init [path]').description('Initialize and register a WTM workspace.');
   addJsonOption(init);

@@ -69,6 +69,10 @@ class FailingReconciliationStore implements StateStore {
     return this.inner.listAdapterTrust();
   }
 
+  deleteAdapterTrust(adapterId: string): number {
+    return this.inner.deleteAdapterTrust(adapterId);
+  }
+
   createManagedProcess(input: ManagedProcessInput, options?: ManagedProcessCreateOptions): ManagedProcessRecord {
     return this.inner.createManagedProcess(input, options);
   }
