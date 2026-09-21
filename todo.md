@@ -2421,8 +2421,10 @@ aynı adlı bölümü (`[proxy]` şeması, global-config-only olma nedeni).
 
 Kasıtlı olarak kapsam dışı bırakılanlar — ayrı, sonraki birimler:
 
-- HTTPS / local certificate stratejisi — K8'de belirsiz süreyle ertelendi (bkz.
-  `docs/superpowers/plans/2026-09-15-remaining-work-waves.md` K8 satırı); bu birim hiç dokunmadı.
+- HTTPS / local certificate stratejisi — K8 bunu v1 kapsamı dışı bıraktı (Kaptan'ın
+  2026-09-21T19:02 onayı: tarayıcılar `*.localhost`'u zaten güvenli bağlam saydığı ve mkcert
+  tarzı bir yerel CA bağımlılığı v1'e fazla geldiği için proxy HTTPS'siz kalıyor). Bekleyen bir
+  karar değil, kapanmış bir kapsam sınırı; bu birim hiç dokunmadı.
 - CORS origins ile otomatik entegrasyon — W10-1'in işi (`packages/core/src/runtime/cors.ts`
   bilinçli olarak değiştirilmedi; bu birime sadece çakışmamak için okundu).
 - Port allocation ile backward compatibility — bu proxy port tahsisini hiç değiştirmiyor, sadece
@@ -2462,12 +2464,10 @@ kanıtlandı (`packages/daemon/src/__tests__/proxy-cors-integration.test.ts`).
 
 Madde 12'nin kendi başlığı ve "HTTPS gerekiyorsa local certificate strategy" alt maddesi bilinçli
 olarak `[ ]` kalıyor: bu birim sadece CORS yarısını kapsıyor (bkz. görev tanımındaki "W10-1, CORS
-half only"), HTTPS/local certificate stratejisi ayrı bir birim ve gerçek bir sistem-trust-store
-etkisi taşıyor — yerel bir CA üretip işletim sistemine/tarayıcıya güvendirmek anlamına geliyor,
-bu da proje sahibinden ayrı, açık bir onay gerektiriyor (ör. "sertifika materyalini WTM'in kendi
-state dizinine üret ama ayrı, açık bir komut olmadan asla sistem trust store'una otomatik
-kurma"); bu birim o kararı hiç almadı ve HTTPS'e hiç dokunmadı — proxy origin'leri hâlâ `http://`,
-proxy'nin bugünkü HTTP-only gerçeğiyle uyumlu (`docs/07`'nin bu konudaki dürüst notuna bakın).
+half only"). HTTPS/local certificate stratejisi **K8 ile v1 kapsamı dışı bırakıldı** — bekleyen
+bir güvenlik kararı değil, kapanmış bir kapsam sınırı (yukarıdaki W9-4 notuna bakın); bu birim
+bilinçli olarak hiç dokunmadı. Proxy origin'leri hâlâ `http://`, proxy'nin bugünkü HTTP-only
+gerçeğiyle uyumlu (`docs/07`'nin bu konudaki dürüst notuna bakın).
 
 ---
 
