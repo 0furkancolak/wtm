@@ -343,8 +343,24 @@ export function createServiceLifecycle(options: ServiceLifecycleOptions): Servic
   const platform = options.platform ?? process.platform;
   const home = options.home ?? homedir();
   const paths = servicePathsFor(backend, { home, env: options.env ?? process.env });
-  const uid = nonNegativeInteger(options.uid ?? process.getuid?.() ?? -1, `${manager} uid`);
-  const ownerUid = nonNegativeInteger(options.fileOwnerUid ?? process.getuid?.() ?? uid, `${manager} file owner uid`);
+  // `backend.usesUid` is false only for Task Scheduler, which has no POSIX uid at all --
+  // `process.getuid` does not exist on that host, and there was previously no third option
+  // besides trusting it or falling back to `-1`, which `nonNegativeInteger` always refused. That
+  // refused every `wtm daemon` subcommand on Windows before a single `schtasks.exe` argument
+  // vector was built. `0` is not a guess standing in for a real identity: `fs.Stats.uid` is
+  // always `0` on Windows regardless of the file (`resources/gc.ts` documents the same fact for
+  // its own TOCTOU comparisons), so every `stat.uid !== ownerUid` check below this point already
+  // degrades to comparing `0` against `0` on that platform -- `0` is what Node itself would have
+  // reported anyway, not a new assumption introduced here.
+  const identityBoundToUid = backend.usesUid ?? true;
+  const uid = nonNegativeInteger(
+    options.uid ?? process.getuid?.() ?? (identityBoundToUid ? -1 : 0),
+    `${manager} uid`,
+  );
+  const ownerUid = nonNegativeInteger(
+    options.fileOwnerUid ?? process.getuid?.() ?? (identityBoundToUid ? uid : 0),
+    `${manager} file owner uid`,
+  );
   const migration = backend.legacyMigration;
   const commands = backend.commands({ uid, label: paths.label, definitionPath: paths.definitionPath });
   const legacyCommands = paths.legacyDefinitionPath === null || migration === undefined

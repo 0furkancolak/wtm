@@ -1884,6 +1884,44 @@ wtm-windows-arm64.exe
       ters sınır kalıbı `runScenario` çağıran ~18 test dosyasında daha var — süpürme kendi
       birimini hak ediyor, çünkü her askıyı 30 sn yerine 120 sn'ye çıkarmak win32
       bacağının 20 dakikalık `--budget`'ını etkiler ve o etki ölçülmeden yapılmamalı.
+      **2026-09-21 (W4-3 / 9i):** kümeleme dokümanının kaydettiği tek somut hata —
+      `daemon.test.ts`'in `the CLI drives the selected backend rather than a hard-wired
+      launchd one` testi, `ServiceLifecycleError: Task Scheduler uid must be a non-negative
+      integer` ile inşa aşamasında patlıyor — gerçek bir ürün kusuruydu, enjeksiyon
+      tesisatı değil. `createServiceLifecycle` uid'i koşulsuz
+      `options.uid ?? process.getuid?.() ?? -1`'den okuyordu; `process.getuid` win32'de hiç
+      yok ve `-1` her zaman reddediliyordu, yani **hiçbir açık `uid` verilmeden hiçbir**
+      `wtm daemon` alt komutu Windows'ta bir tek `schtasks.exe` argüman vektörü kurulmadan
+      önce inşa bile edilemiyordu. `ServiceBackend`'e `usesUid?: boolean` eklendi
+      (launchd'nin `gui/<uid>`'ı ve systemd'nin kullanıcı oturumu gibi gerçekten bir POSIX
+      uid'e bağlı olup olmadığını backend'in kendisi söylüyor; varsayılan `true`, yani
+      darwin/linux hiç değişmedi); win32'de `false`. `uid`/`fileOwnerUid` yoksa ve backend
+      uid'e bağlı değilse `0`'a düşüyor — tahmini bir değer değil, çünkü `fs.Stats.uid`
+      zaten her zaman `0` Windows'ta (`resources/gc.ts`'in kendi TOCTOU karşılaştırmaları
+      için kaydettiği aynı olgu), yani bu satırdan sonraki her `stat.uid !== ownerUid`
+      kontrolü Node'un kendisinin zaten vereceği cevapla karşılaştırıyor.
+      İkinci, ilişkili kusur aynı dosyada, tek CLI hatasının hiç dokunmadığı bir yolda:
+      `windowsProcessInspector.current()` her PID için koşulsuz `state: 'unknown'`
+      döndüren bir yer tutucuydu — `process/windows.ts`'in gerçek bir `readStartTime`'ı
+      olmadığı bir dönemde yazılmış (D2 TODO), o TODO 9d'de kapandığında hiç
+      güncellenmemiş. Sonuç: kendi sürecini asla `live` olarak gözlemleyemediği için
+      `withServiceOperationLock`'ın çağırdığı her `current()` daima `LAUNCHD_OPERATION_BUSY`
+      fırlatıyordu — yani uid düzeltmesinden *sonra bile* `install`/`uninstall`/`enable`/
+      `disable` işlem kilidini alan her Windows işlemi başarısız kalırdı (`status` kilidi
+      almadığı için gözlemlenen tek hatada görünmedi). `linuxProcessInspector`'ın zaten
+      kullandığı örüntü izlendi: `createWindowsProcessInspector` artık
+      `createWindowsProcessPlatform().readStartTime(pid)` üzerinden okuyor, enjekte
+      edilebilir bir `WindowsProcessPlatformOptions` alıyor.
+      Kanıt durumu: hem uid hem process-inspector düzeltmesi sahte bir `schtasks`/WMI
+      sorgu koşucusuna karşı test edildi, tam kapı Linux'ta temiz. Gerçek bir
+      `schtasks.exe`/Task Scheduler'a karşı hiçbir kanıt yok — bu dosyanın kendi doküman
+      yorumunun zaten söylediği gibi, argüman vektörlerinin şekli kanıtlanıyor, Task
+      Scheduler'ın onları kabul ettiği değil. Hedefli bir `win32_test_filter` koşusu
+      gerekiyor.
+      Kapanmayan: "PowerShell install/uninstall ve completion, Git Bash testi" — birimin
+      plan tablosundaki kod alanı — kümeleme dokümanı bu alt-alanlar için hiçbir gözlemlenen
+      hata kaydetmiyor (`platform/src/service/__tests__` win32'de hiç koşmadı); yeni kanıt
+      olmadan spekülatif bir düzeltme yazılmadı.
 - [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
 - [ ] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
       `plistPath` macOS'a özel bir ek alan olarak bilerek duruyor (D11), kaldırılması daemon JSON

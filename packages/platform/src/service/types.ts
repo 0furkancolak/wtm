@@ -185,4 +185,17 @@ export interface ServiceBackend {
   defaultCommandRunner: ServiceCommandRunner;
   defaultProcessInspector: ServiceProcessInspector;
   legacyMigration?: LegacyServiceMigration;
+  /**
+   * Whether this manager's own domain is keyed by a POSIX uid, the way launchd's `gui/<uid>` and
+   * systemd's per-user session are. Task Scheduler has no such concept: `scheduledTaskCommands`
+   * takes a `uid` argument only so its call shape matches the other two backends', and discards it
+   * immediately (`void options.uid`). Defaults to `true`, which is every backend's behaviour from
+   * before this field existed, so darwin and linux need not set it.
+   *
+   * `createServiceLifecycle` reads this to decide whether it may fail a lifecycle it cannot even
+   * construct when `process.getuid` does not exist -- true everywhere except win32, where a
+   * daemon that owns no POSIX identity at all was refusing every `wtm daemon` subcommand before a
+   * single `schtasks.exe` argument vector was built.
+   */
+  readonly usesUid?: boolean;
 }
