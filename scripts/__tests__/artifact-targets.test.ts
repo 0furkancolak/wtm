@@ -14,16 +14,20 @@ test('local archive targets keep exact platform and architecture names', () => {
   expect(artifactTargetFor('linux', 'x64')).toEqual({
     platform: 'linux', arch: 'x64', archiveName: 'wtm-linux-x64.tar.gz', executableName: 'wtm',
   });
+  expect(artifactTargetFor('win32', 'x64')).toEqual({
+    platform: 'win32', arch: 'x64', archiveName: 'wtm-windows-x64.zip', executableName: 'wtm.exe',
+  });
 });
 
-test('a tagged release publishes both macOS and both Linux archives', () => {
-  // Item 29's Linux half. Publication is still narrower than the catalog -- Windows archives are
-  // buildable by nothing here and published by nothing -- so the two lists stay separate.
+test('a tagged release publishes both macOS archives, both Linux archives, and the Windows archive', () => {
+  // Item 29 / W6-1: every entry in the catalog above is now built, smoked and gated by a release
+  // job, so the published list matches it exactly.
   expect(publishedReleaseTargets).toEqual([
     { platform: 'darwin', arch: 'arm64', archiveName: 'wtm-darwin-arm64.tar.gz', executableName: 'wtm' },
     { platform: 'darwin', arch: 'x64', archiveName: 'wtm-darwin-x64.tar.gz', executableName: 'wtm' },
     { platform: 'linux', arch: 'x64', archiveName: 'wtm-linux-x64.tar.gz', executableName: 'wtm' },
     { platform: 'linux', arch: 'arm64', archiveName: 'wtm-linux-arm64.tar.gz', executableName: 'wtm' },
+    { platform: 'win32', arch: 'x64', archiveName: 'wtm-windows-x64.zip', executableName: 'wtm.exe' },
   ]);
 });
 
@@ -38,7 +42,7 @@ test('every published target is a local archive target the build can actually pr
 });
 
 test('the target resolver refuses unsupported platforms, architectures and aliases', () => {
-  for (const [platform, arch] of [['linux', 'ia32'], ['win32', 'x64'], ['freebsd', 'x64'],
+  for (const [platform, arch] of [['linux', 'ia32'], ['win32', 'arm64'], ['freebsd', 'x64'],
     ['darwin', 'ia32'], ['linux', 'x86_64'], ['', 'x64'], ['linux', '']] as const) {
     expect(() => artifactTargetFor(platform, arch)).toThrow();
   }

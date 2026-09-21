@@ -308,10 +308,131 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # W6-1 / todo item 29b: the Windows half of the Linux job above. Same reasoning for a separate
+  # job (signing/notarization/Gatekeeper name a Mach-O executable and would need a
+  # `matrix.platform == 'win32'` guard on every one of those steps instead), plus one more: the
+  # whole-release gate for one `bun run test` step ci.yml's win32 leg already measured and
+  # documented (`validate` job above) -- a real per-call PowerShell cost in
+  # `ManagedLogStore`'s rotation tests, not a hang, that a flat 60s bound fails outright. This job
+  # cannot reuse the `release:verify` composite script for that reason: it runs the same steps in
+  # the same order, but with the wider bound and whole-run budget ci.yml's own win32 leg already
+  # established as necessary, not a new guess.
+  verify-windows:
+    name: Verify ${{ matrix.platform }} ${{ matrix.arch }}
+    timeout-minutes: 30
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: win32
+            arch: x64
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      # Same install flake and the same fix ci.yml's win32 leg documents in full: better-sqlite3
+      # has no Windows prebuild for this bun/Node ABI, so its install shells out to a nested
+      # `bun x node-gyp rebuild` that can race the outer install's own cache writes.
+      - name: bun install --frozen-lockfile
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if bun install --frozen-lockfile; then
+              bun run verify:install && exit 0
+              bun pm cache rm || true
+            fi
+            echo "bun install failed or left an unloadable tree (attempt $attempt/3), retrying..." >&2
+            rm -rf node_modules || true
+            sleep 5
+          done
+          exit 1
+
+      # `release:verify`'s own steps, in its own order, with only the `test` bound widened.
+      - run: bun run lint
+        shell: bash
+      - run: bun run typecheck
+        shell: bash
+      - run: bun run build
+        shell: bash
+      - run: bun run binary:verify
+        shell: bash
+      - run: bun run test --timeout 300000 --budget 1200000
+        shell: bash
+      - run: bun run test:e2e
+        shell: bash
+      - run: bun install --frozen-lockfile
+        shell: bash
+      - run: bun run package:verify
+        shell: bash
+      - run: bun run release:artifacts
+        shell: bash
+
+      - name: Measure performance budgets
+        shell: bash
+        run: |
+          set -uo pipefail
+          bun run test:perf || true
+
+      - name: Verify the executable
+        shell: bash
+        run: |
+          set -uo pipefail
+          if bun test scripts/__tests__/sea-smoke.test.ts --timeout 60000; then
+            smoke='[{"name":"standalone executable smoke suite","passed":true}]'
+          else
+            smoke='[{"name":"standalone executable smoke suite","passed":false,'
+            smoke="$smoke"'"detail":"scripts/__tests__/sea-smoke.test.ts failed"}]'
+          fi
+          echo "WTM_RELEASE_SMOKE=$smoke" >> "$GITHUB_ENV"
+
+      - name: Record the release evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Nothing signs a PE executable here and there is no Gatekeeper equivalent to clear:
+          # not-applicable is the same explicit answer the Linux leg gives, for the same reason.
+          echo 'not-applicable' > dist/release/SIGNING
+          echo 'not-applicable' > dist/release/NOTARIZATION
+          printf '%s' "$WTM_RELEASE_SMOKE" > dist/release/SMOKE.json
+          bun -e "const {readFileSync,writeFileSync}=require('node:fs');
+            const r=JSON.parse(readFileSync('artifacts/performance.json','utf8')).release;
+            writeFileSync('dist/release/PERFORMANCE.json', JSON.stringify([r]));"
+          {
+            echo 'WTM_RELEASE_PERFORMANCE<<WTM_PERFORMANCE_EOF'
+            cat dist/release/PERFORMANCE.json
+            echo
+            echo 'WTM_PERFORMANCE_EOF'
+          } >> "$GITHUB_ENV"
+
+      - name: Gate the release artifacts
+        shell: bash
+        env:
+          WTM_RELEASE_SIGNING: not-applicable
+          WTM_RELEASE_NOTARIZATION: not-applicable
+          WTM_RELEASE_PLATFORM: ${{ matrix.platform }}
+          WTM_RELEASE_ARCH: ${{ matrix.arch }}
+        run: bun run release:gate
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wtm-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/release/
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish
     timeout-minutes: 20
-    needs: [verify, verify-linux]
+    needs: [verify, verify-linux, verify-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-15
     permissions:
@@ -342,7 +463,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist/release
-          find staged -name '*.tar.gz' -exec cp {} dist/release/ ';'
+          find staged \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} dist/release/ ';'
           # Each leg wrote its own one-line SHA256SUMS; the release carries the union of all of them.
           cat staged/*/SHA256SUMS | sort -k2 > dist/release/SHA256SUMS
           # Signing and notarization describe macOS archives, so they are read from the macOS legs
@@ -360,6 +481,8 @@ jobs:
           # this job from some other build. The gate refuses that too, but it never sees these
           # files -- it is handed the macOS values above -- so the claim is refused here.
           test "$(cat staged/wtm-linux-*/SIGNING staged/wtm-linux-*/NOTARIZATION | sort -u)" = 'not-applicable'
+          # Same claim, same reason, for the Windows leg's PE executable.
+          test "$(cat staged/wtm-win32-*/SIGNING staged/wtm-win32-*/NOTARIZATION | sort -u)" = 'not-applicable'
           # The name the gate reads. Exporting it as anything else leaves the gate with no smoke
           # evidence at all, which it refuses.
           {
@@ -396,7 +519,9 @@ jobs:
       # workflow that is running.
       - uses: actions/attest-build-provenance@v4
         with:
-          subject-path: dist/release/*.tar.gz
+          subject-path: |
+            dist/release/*.tar.gz
+            dist/release/*.zip
 
       - name: Create the GitHub Release
         env:
@@ -413,6 +538,7 @@ jobs:
             dist/release/wtm-darwin-x64.tar.gz \
             dist/release/wtm-linux-x64.tar.gz \
             dist/release/wtm-linux-arm64.tar.gz \
+            dist/release/wtm-windows-x64.zip \
             dist/release/SHA256SUMS
 
       - name: Publish to npm with provenance

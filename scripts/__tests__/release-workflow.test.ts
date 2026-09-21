@@ -6,7 +6,9 @@ import { publishedReleaseTargets } from '../artifact-targets';
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const tagGuard = "startsWith(github.ref, 'refs/tags/v')";
 /** The jobs that build one published target each and upload it for `publish` to collect. */
-const verifyJobs = ['verify', 'verify-linux'];
+const verifyJobs = ['verify', 'verify-linux', 'verify-windows'];
+/** Verify jobs whose executable is not Apple's to sign, notarize or clear through Gatekeeper. */
+const nonAppleVerifyJobs = ['verify-linux', 'verify-windows'];
 
 interface WorkflowStep {
   name?: string;
@@ -153,24 +155,28 @@ describe('release workflow', () => {
     expect(create).toContain('dist/release/SHA256SUMS');
     // Globbed rather than listed, so provenance covers a new archive the moment a leg produces one.
     const attest = steps.find((step) => (step.uses ?? '').startsWith('actions/attest-build-provenance'));
-    expect(attest?.with?.['subject-path']).toBe('dist/release/*.tar.gz');
+    expect((attest?.with?.['subject-path'] ?? '').trim().split('\n').map((line) => line.trim())).toEqual([
+      'dist/release/*.tar.gz', 'dist/release/*.zip',
+    ]);
   });
 
   test('keeps Apple signing, notarization and Gatekeeper on the legs that have them', () => {
-    // Signing a Linux ELF executable is not a step that could work; it is a step that means the
-    // workflow no longer knows what it is building. The gate refuses the claim (verify-release.ts),
-    // and this refuses the attempt.
+    // Signing a Linux ELF or a Windows PE executable is not a step that could work; it is a step
+    // that means the workflow no longer knows what it is building. The gate refuses the claim
+    // (verify-release.ts), and this refuses the attempt.
     const jobs = workflow('release.yml').jobs ?? {};
-    const linux = (jobs['verify-linux']?.steps ?? [])
-      .map((step) => `${step.run ?? ''} ${Object.values(step.env ?? {}).join(' ')}`).join('\n');
+    for (const name of nonAppleVerifyJobs) {
+      const steps = (jobs[name]?.steps ?? [])
+        .map((step) => `${step.run ?? ''} ${Object.values(step.env ?? {}).join(' ')}`).join('\n');
 
-    for (const apple of ['codesign', 'notarytool', 'spctl', 'security ', 'MACOS_', 'xcrun']) {
-      expect(linux, `the Linux legs must not run ${apple}`).not.toContain(apple);
+      for (const apple of ['codesign', 'notarytool', 'spctl', 'security ', 'MACOS_', 'xcrun']) {
+        expect(steps, `${name} must not run ${apple}`).not.toContain(apple);
+      }
+      // And it says so to the gate rather than leaving the evidence absent, which is refused.
+      const gate = (jobs[name]?.steps ?? []).find((step) => (step.run ?? '').includes('release:gate'));
+      expect(gate?.env?.WTM_RELEASE_SIGNING, name).toBe('not-applicable');
+      expect(gate?.env?.WTM_RELEASE_NOTARIZATION, name).toBe('not-applicable');
     }
-    // And it says so to the gate rather than leaving the evidence absent, which is refused.
-    const gate = (jobs['verify-linux']?.steps ?? []).find((step) => (step.run ?? '').includes('release:gate'));
-    expect(gate?.env?.WTM_RELEASE_SIGNING).toBe('not-applicable');
-    expect(gate?.env?.WTM_RELEASE_NOTARIZATION).toBe('not-applicable');
     // The macOS legs still report a real status, which the stable-release rules then decide on.
     const darwinGate = (jobs.verify?.steps ?? []).find((step) => (step.run ?? '').includes('release:gate'));
     expect(darwinGate?.env?.WTM_RELEASE_SIGNING).toBe('${{ steps.sign.outputs.signing }}');

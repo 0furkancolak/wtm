@@ -3038,21 +3038,48 @@ Actions hesap düzeyinde kesintide (2026-09-21), dolayısıyla yeni YAML'ın tek
 testleri ve gerçek `release:gate` betiğinin her job'ın env şekliyle elle koşturulmasıdır; gerçek
 bir tag'de Linux arşivinin üretilip yayımlandığı görülmedi.
 
-- [~] Artifact names stable contract olsun. — dört yayımlanan hedef (Darwin arm64/x64, Linux
-      x64/arm64) ortak katalogda ve release workflow'unu sürüyor; adlar
+**2026-09-21 Windows yayımlama dilimi (W6-1 / 29b):** `publishedReleaseTargets` artık beş hedef —
+önceki dördüne `win32/x64` (`wtm-windows-x64.zip`, `wtm.exe`) eklendi. `release-artifacts.ts` PE
+(MZ + "PE\0\0" + machine alanı) başlığını doğruluyor — `readPrefix`'in üst sınırı 64'ten 1024 bayta
+çıkarıldı, çünkü `e_lfanew` bu sınırın ötesine işaret edebiliyor — ve GNU tar yerine
+`Compress-Archive` (PowerShell, her `windows-latest` runner'da hazır) ile zip'liyor.
+`release.yml`'e ayrı bir `verify-windows` job'ı eklendi (`windows-latest`); signing/notarization
+Linux gibi `not-applicable`. Bu job `release:verify` composite script'ini **çağırmıyor**: `bun run
+test`'in düz 60 saniyelik sınırı, `ci.yml`'in win32 bacağının ölçüp belgelediği gerçek
+`Get-Acl`/PowerShell maliyetini (`ManagedLogStore` rotasyon testleri, 149-180 sn) karşılamıyor;
+bunun yerine aynı adımlar tek tek, `test` adımı `--timeout 300000 --budget 1200000` ile (yine
+`ci.yml`'in kendi ölçtüğü değerler) çalıştırılıyor. `publish` job'ı: `needs` listesine
+`verify-windows` eklendi, "Collect every architecture" artık `.zip`'i de topluyor,
+`attest-build-provenance`'ın `subject-path`'i `*.tar.gz` ve `*.zip`'i kapsıyor, `gh release create`
+komutuna `wtm-windows-x64.zip` eklendi. `sea-smoke.test.ts`'teki "ships a stripped runtime" testi
+Windows için ayrı, daha geniş bir üst sınıra (140MB) ayrıldı — `build-sea.ts` zaten Windows'ta
+strip çalıştırmadığını belgeliyor, dolayısıyla POSIX sınırı orada anlamsız; **140MB rakamı
+ölçülmedi, `build-sea.ts`'in belgelediği "~25MB fazla" tahminine dayanıyor.**
+
+**Ölçülmeyen:** bu dilim de GitHub Actions kesintisi sırasında yazıldı (bkz.
+`docs/development/github-actions-outage-2026-09-21.md` benzeri not) — gerçek bir `windows-latest`
+runner'da hiçbir adım (build, smoke, zip, boyut sınırı) çalıştırılmadı. Tek kanıt: yerel Linux
+gate'in (`typecheck && lint && test`, sahte/fixture PE header'larıyla) yeşil olması ve
+`release-artifacts.ts`/`verify-release.ts`/`release.yml` yapısal testlerinin güncellenmiş beş
+hedefi doğrulaması. `win32_test_filter` ile hedefli bir workflow_dispatch çalışması, gerçek
+kanıtın tek yolu.
+
+- [~] Artifact names stable contract olsun. — beş yayımlanan hedef (Darwin arm64/x64, Linux
+      x64/arm64, Windows x64) ortak katalogda ve release workflow'unu sürüyor; adlar
       `publishedReleaseTargets`'tan türetiliyor ve yapısal test workflow ile katalogun
-      ayrışmasını engelliyor. Windows ZIP açık.
-- [~] Her platform smoke tested. — Linux bacakları da SEA smoke suite'ini çalıştırıp sonucu
-      gate'e veri olarak veriyor (macOS'taki gibi). Gerçek tag çalışması yok (Actions kesintisi);
-      Windows yayımlanmıyor.
-- [~] Checksums tüm platformları kapsasın. — `SHA256SUMS` dört arşivin birleşimi ve gate
-      eksik/fazla girdiyi reddediyor (yerel olarak doğrulandı). Windows açık.
-- [~] Build provenance tüm artifact'lar için üret. — `attest-build-provenance` zaten
-      `dist/release/*.tar.gz` glob'u; dört tarball'u da kapsıyor ve yapısal test glob'un listeye
-      dönüşmesini engelliyor. Gerçek attestation çalışması görülmedi.
-- [~] Release gate tüm required platformları görmeden publish etmesin. — birleşik gate dört
+      ayrışmasını engelliyor.
+- [~] Her platform smoke tested. — `sea-smoke.test.ts` zaten `windows`'a göre dallanıyor (exe
+      uzantısı, `ping`-tabanlı görev fixture'ı) ve `verify-windows` job'ı aynı suite'i çalıştırıp
+      sonucu gate'e veriyor. Gerçek `windows-latest` runner kanıtı yok (Actions kesintisi).
+- [~] Checksums tüm platformları kapsasın. — `SHA256SUMS` beş arşivin birleşimi ve gate
+      eksik/fazla girdiyi reddediyor (yerel olarak, sahte PE fixture'larıyla doğrulandı).
+- [~] Build provenance tüm artifact'lar için üret. — `attest-build-provenance`'ın `subject-path`'i
+      artık `*.tar.gz` ve `*.zip`'i birlikte kapsıyor; yapısal test glob listesinin katalogla
+      ayrışmasını engelliyor. Gerçek attestation çalışması görülmedi.
+- [~] Release gate tüm required platformları görmeden publish etmesin. — birleşik gate beş
       arşivin tamamını istiyor; biri eksikken `SHA256SUMS does not list <ad>` ile reddediyor
-      (yerel koşumla doğrulandı). "Required" küme Windows'u henüz içermiyor.
+      (yerel koşumla doğrulandı). "Required" küme artık Windows'u içeriyor ama gerçek tag/CI
+      kanıtı yok.
 
 ---
 
@@ -3078,7 +3105,9 @@ Stable sonrası hedef:
 
 Öncelik sırası:
 
-- [ ] standalone zip/exe
+- [~] standalone zip/exe — `release.yml`'in `verify-windows` job'ı `wtm-windows-x64.zip`'i
+      üretip yayımlıyor (W6-1 / 29b); gerçek `windows-latest` runner kanıtı yok (Actions
+      kesintisi), yerel kanıt sahte PE fixture'larıyla sınırlı.
 - [ ] Scoop
 - [ ] WinGet
 - [ ] Chocolatey ancak talep oluşursa

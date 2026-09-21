@@ -36,6 +36,16 @@ function elfHeader(type = 3, machine = 62): Buffer {
   return bytes;
 }
 
+/** A minimal but well-formed PE (MZ + PE\0\0 + machine field) header, padded to 1024 bytes. */
+function peHeader(machine = 0x8664, peOffset = 128): Buffer {
+  const bytes = Buffer.alloc(1024);
+  bytes[0] = 0x4d; bytes[1] = 0x5a; // "MZ"
+  bytes.writeUInt32LE(peOffset, 0x3c);
+  bytes.writeUInt32LE(0x00004550, peOffset); // "PE\0\0"
+  bytes.writeUInt16LE(machine, peOffset + 4);
+  return bytes;
+}
+
 function createHost(overrides: Partial<FixtureReleaseHost> = {}): { host: FixtureReleaseHost; recording: Recording } {
   const recording: Recording = { commands: [], reads: [], writes: new Map(), copies: [], modes: [],
     directories: [], removed: [], digests: [] };
@@ -258,8 +268,75 @@ describe('local Linux ARM64 archive assembly', () => {
   }
 });
 
+describe('local Windows x64 archive assembly', () => {
+  test('accepts a PE x64 executable and zips the staged directory via Compress-Archive', async () => {
+    const { host, recording } = createHost({ platform: 'win32', arch: 'x64', readPrefix: (path, maxBytes) => {
+      recording.reads.push({ path, maxBytes }); return peHeader();
+    } });
+
+    const result = await buildReleaseArtifacts(host);
+
+    expect(recording.reads).toEqual([{ path: join(root, 'dist/sea/wtm.exe'), maxBytes: 1024 }]);
+    expect(result.archive).toBe(join(root, 'dist/release/wtm-windows-x64.zip'));
+    expect(recording.commands).toEqual([{
+      command: 'powershell.exe',
+      args: ['-NoProfile', '-NonInteractive', '-Command',
+        `Compress-Archive -Path "${join(root, 'dist/release/.stage/*')}" -DestinationPath "${result.archive}" -Force`],
+    }]);
+    expect(recording.copies.map(({ destination }) => basename(destination)))
+      .toEqual(['wtm.exe', 'LICENSE', 'NOTICE', 'THIRD_PARTY_LICENSES.md']);
+    expect(recording.modes).toEqual([{ path: join(root, 'dist/release/.stage/wtm.exe'), mode: 0o755 }]);
+    expect(recording.writes.get(result.checksums)).toBe(`${'a'.repeat(64)}  wtm-windows-x64.zip\n`);
+  });
+
+  for (const [name, corrupt] of [
+    ['bad MZ magic', (bytes: Buffer) => { bytes[0] = 0; }],
+    ['i386 machine', (bytes: Buffer) => { bytes.writeUInt16LE(0x014c, 128 + 4); }],
+    ['ARM64 machine', (bytes: Buffer) => { bytes.writeUInt16LE(0xaa64, 128 + 4); }],
+    ['missing PE signature', (bytes: Buffer) => { bytes.writeUInt32LE(0, 128); }],
+  ] as const) {
+    test(`rejects ${name} before staging or checksumming any output`, async () => {
+      const bytes = peHeader(); corrupt(bytes);
+      const { host, recording } = createHost({ platform: 'win32', arch: 'x64', readPrefix: () => bytes });
+
+      await expect(buildReleaseArtifacts(host)).rejects.toThrow(/PE|MZ/);
+
+      expect(recording.commands).toEqual([]);
+      expect(recording.copies).toEqual([]);
+      expect(recording.directories).toEqual([]);
+      expect(recording.removed).toEqual([]);
+      expect(recording.writes.size).toBe(0);
+      expect(recording.digests).toEqual([]);
+    });
+  }
+
+  test('rejects a PE header offset past the bounded read', async () => {
+    const bytes = Buffer.alloc(1024);
+    bytes[0] = 0x4d; bytes[1] = 0x5a; // "MZ"
+    bytes.writeUInt32LE(1020, 0x3c); // e_lfanew leaves no room for the header + machine field
+    const { host } = createHost({ platform: 'win32', arch: 'x64', readPrefix: () => bytes });
+
+    await expect(buildReleaseArtifacts(host)).rejects.toThrow('past the first 1024 bytes');
+  });
+
+  test('a failed Compress-Archive invocation cleans staging and never publishes a checksum', async () => {
+    const { host, recording } = createHost({ platform: 'win32', arch: 'x64', readPrefix: () => peHeader() });
+    host.run = (command, args) => {
+      recording.commands.push({ command, args });
+      return { status: 1, stdout: '', stderr: 'Compress-Archive failed' };
+    };
+
+    await expect(buildReleaseArtifacts(host)).rejects.toThrow('Compress-Archive failed');
+
+    expect(recording.commands[0]?.command).toBe('powershell.exe');
+    expect(recording.removed.at(-1)).toBe(join(root, 'dist/release/.stage'));
+    expect(recording.digests).toEqual([]);
+    expect(recording.writes.size).toBe(0);
+  });
+});
+
 describe('unsupported local archive targets', () => {
-  for (const [platform, arch] of [['linux', 'ia32'], ['win32', 'x64'], ['freebsd', 'x64'],
+  for (const [platform, arch] of [['linux', 'ia32'], ['win32', 'arm64'], ['freebsd', 'x64'],
     ['darwin', 'ia32'], ['linux', 'x86_64'], ['', 'x64']] as const) {
     test(`refuses ${platform || 'missing platform'}/${arch} before any filesystem or process operation`, async () => {
       const { host, recording } = createHost({ platform, arch });

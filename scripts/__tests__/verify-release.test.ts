@@ -22,6 +22,7 @@ const payloads: Readonly<Record<string, string>> = {
   'wtm-darwin-x64.tar.gz': 'x64 archive payload',
   'wtm-linux-arm64.tar.gz': 'linux arm64 archive payload',
   'wtm-linux-x64.tar.gz': 'linux x64 archive payload',
+  'wtm-windows-x64.zip': 'windows x64 archive payload',
 };
 /** The one archive a single Linux leg builds, gated on its own the way a single darwin leg is. */
 const linuxArm64 = 'wtm-linux-arm64.tar.gz';
@@ -140,14 +141,15 @@ describe('release artifact gate', () => {
     });
   });
 
-  test('publishes both macOS and both Linux archives', () => {
-    // Item 29's Linux half: a tagged release carries the Linux archives as real assets, not only
-    // as something `bun run release:artifacts` can build on a contributor's own machine.
+  test('publishes both macOS archives, both Linux archives, and the Windows archive', () => {
+    // Item 29 / W6-1: a tagged release carries these as real assets, not only as something
+    // `bun run release:artifacts` can build on a contributor's own machine.
     expect(releaseArchiveNames).toEqual([
       'wtm-darwin-arm64.tar.gz',
       'wtm-darwin-x64.tar.gz',
       'wtm-linux-x64.tar.gz',
       'wtm-linux-arm64.tar.gz',
+      'wtm-windows-x64.zip',
     ]);
   });
 
@@ -158,7 +160,8 @@ describe('release artifact gate', () => {
     expect(releaseArchiveFor('linux', 'arm64')).toBe(linuxArm64);
     expect(releaseArchiveFor('darwin', 'x64')).toBe('wtm-darwin-x64.tar.gz');
     expect(releaseArchiveFor('linux', 'x64')).toBe('wtm-linux-x64.tar.gz');
-    for (const [platform, arch] of [['linux', 'ia32'], ['win32', 'x64'], ['', 'arm64'], ['linux', '']] as const) {
+    expect(releaseArchiveFor('win32', 'x64')).toBe('wtm-windows-x64.zip');
+    for (const [platform, arch] of [['linux', 'ia32'], ['win32', 'arm64'], ['', 'arm64'], ['linux', '']] as const) {
       expect(() => releaseArchiveFor(platform, arch)).toThrow('No release archive is defined for');
     }
   });
@@ -328,6 +331,7 @@ describe('release artifact gate', () => {
       'wtm-darwin-x64.tar.gz',
       'wtm-linux-arm64.tar.gz',
       'wtm-linux-x64.tar.gz',
+      'wtm-windows-x64.zip',
     ]);
   });
 
@@ -541,15 +545,15 @@ describe('Apple evidence outside the darwin family', () => {
   });
 
   test('gates the whole release on the macOS evidence the darwin legs reported', () => {
-    // The combined gate in `publish` covers all four archives at once. Linux riding along does not
-    // dilute the macOS requirement: the stable-release rules still decide the release.
+    // The combined gate in `publish` covers all five archives at once. Linux and Windows riding
+    // along does not dilute the macOS requirement: the stable-release rules still decide the release.
     const directory = stage();
 
     expect(() => verifyReleaseArtifacts(request(directory, { signing: 'adhoc' })))
       .toThrow('Stable release v1.2.3 requires a signed executable, found adhoc');
     expect(() => verifyReleaseArtifacts(request(directory, { notarization: 'skipped' })))
       .toThrow('Stable release v1.2.3 requires a notarized executable, found skipped');
-    expect(verifyReleaseArtifacts(request(directory)).archives).toHaveLength(4);
+    expect(verifyReleaseArtifacts(request(directory)).archives).toHaveLength(5);
   });
 });
 

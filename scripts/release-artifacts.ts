@@ -10,6 +10,14 @@ export const releaseArchiveFiles = ['wtm', 'LICENSE', 'NOTICE', 'THIRD_PARTY_LIC
 
 const machoArchitectures: Readonly<Record<string, string>> = { arm64: 'arm64', x64: 'x86_64' };
 
+/** PE `IMAGE_FILE_HEADER.Machine` values (winnt.h), the only ones a target here can declare. */
+const peArchitectures: Readonly<Record<string, number>> = { x64: 0x8664 };
+
+/** The name a file from {@link releaseArchiveFiles} takes inside the staged archive. */
+function stagedFileName(file: (typeof releaseArchiveFiles)[number], target: ArtifactTarget): string {
+  return file === 'wtm' ? target.executableName : file;
+}
+
 export interface ReleaseHost {
   root: string;
   platform: string;
@@ -45,17 +53,28 @@ export async function buildReleaseArtifacts(host: ReleaseHost): Promise<ReleaseA
   host.makeDirectory(stage);
   try {
     for (const file of releaseArchiveFiles) {
-      host.copyFile(file === 'wtm' ? executable : join(host.root, file), join(stage, file));
+      host.copyFile(file === 'wtm' ? executable : join(host.root, file), join(stage, stagedFileName(file, target)));
     }
-    host.chmod(join(stage, 'wtm'), 0o755);
-    check(host, '/usr/bin/tar', [
-      ...(target.platform === 'darwin'
-        ? ['--no-mac-metadata', '--numeric-owner', '--uid', '0', '--gid', '0']
-        : ['--numeric-owner', '--owner', '0', '--group', '0']),
-      '-czf', archive,
-      '-C', stage,
-      ...releaseArchiveFiles,
-    ]);
+    host.chmod(join(stage, target.executableName), 0o755);
+    if (target.platform === 'win32') {
+      // No POSIX owner/mode to normalize and no GNU tar on a bare Windows image: `Compress-Archive`
+      // is the one archiver every `windows-latest` runner (and every contributor's own Windows
+      // install, PowerShell 5.1+) already has. It zips the staged directory's contents, not the
+      // directory itself, which is exactly the flat layout the POSIX tarballs above already use.
+      check(host, 'powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `Compress-Archive -Path "${join(stage, '*')}" -DestinationPath "${archive}" -Force`,
+      ]);
+    } else {
+      check(host, '/usr/bin/tar', [
+        ...(target.platform === 'darwin'
+          ? ['--no-mac-metadata', '--numeric-owner', '--uid', '0', '--gid', '0']
+          : ['--numeric-owner', '--owner', '0', '--group', '0']),
+        '-czf', archive,
+        '-C', stage,
+        ...releaseArchiveFiles.map((file) => stagedFileName(file, target)),
+      ]);
+    }
   } finally {
     host.remove(stage);
   }
@@ -71,6 +90,9 @@ export function checksumDocument(entries: ReadonlyArray<{ name: string; sha256: 
     .join('');
 }
 
+/** Bytes read from the front of a PE image: enough to reach `e_lfanew` and the machine field it points at. */
+const peHeaderReadBytes = 1024;
+
 function assertArchitecture(host: ReleaseHost, executable: string, target: ArtifactTarget): void {
   if (target.platform === 'linux') {
     const bytes = host.readPrefix(executable, 64);
@@ -84,6 +106,32 @@ function assertArchitecture(host: ReleaseHost, executable: string, target: Artif
       || ![2, 3].includes(header.getUint16(16, true)) || header.getUint16(18, true) !== machine
       || header.getUint32(20, true) !== 1 || header.getUint16(52, true) !== 64) {
       throw new Error(`${executable} is not an ELF64 little-endian ${architecture} executable`);
+    }
+    return;
+  }
+  if (target.platform === 'win32') {
+    const bytes = host.readPrefix(executable, peHeaderReadBytes);
+    if (bytes.byteLength < 64 || bytes[0] !== 0x4d || bytes[1] !== 0x5a) {
+      throw new Error(`${executable} does not start with an MZ (DOS) header`);
+    }
+    const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    // `e_lfanew`, the offset of the PE header, always sits at 0x3C in the DOS header.
+    const peOffset = header.getUint32(0x3c, true);
+    if (peOffset + 6 > bytes.byteLength) {
+      throw new Error(`${executable} has a PE header past the first ${String(peHeaderReadBytes)} bytes`);
+    }
+    // "PE\0\0" as a little-endian uint32.
+    if (header.getUint32(peOffset, true) !== 0x00004550) {
+      throw new Error(`${executable} has no "PE\\0\\0" signature at its declared header offset`);
+    }
+    const expected = peArchitectures[target.arch];
+    if (expected === undefined) throw new Error(`No PE machine type is known for arch "${target.arch}"`);
+    const machine = header.getUint16(peOffset + 4, true);
+    if (machine !== expected) {
+      throw new Error(
+        `${executable} is not a PE ${target.arch} executable: machine 0x${machine.toString(16)}, `
+        + `expected 0x${expected.toString(16)}`,
+      );
     }
     return;
   }
@@ -104,7 +152,9 @@ export function createReleaseHost(): ReleaseHost {
       return { status: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
     },
     readPrefix(path, maxBytes) {
-      if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 64) throw new RangeError('Archive header reads are limited to 64 bytes');
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > peHeaderReadBytes) {
+        throw new RangeError(`Archive header reads are limited to ${String(peHeaderReadBytes)} bytes`);
+      }
       const bytes = Buffer.alloc(maxBytes);
       // A FIFO can block at open, before the byte limit matters. Inspect the opened descriptor
       // rather than relying on an lstat whose pathname could change before open.
