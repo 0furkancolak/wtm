@@ -9,5 +9,6 @@ export * from './ipc';
 export { mountBoundaryReaderFor } from './mounts';
 export { selectPlatformRuntime, supportedPlatforms, UnsupportedPlatformError } from './select';
 export type { SelectPlatformRuntimeOptions } from './select';
+export * from './exec';
 export { selfRuntimeInvocation, sourceRuntimeHooksUrl } from './runtime-invocation';
 export type { RuntimeInvocation, RuntimeInvocationHost } from './runtime-invocation';

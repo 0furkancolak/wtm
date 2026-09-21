@@ -12,7 +12,7 @@ import {
   measureDaemonSocketPath,
   publishedDaemonSocketPath,
 } from '@wtm/platform/socket';
-import { selectPlatformRuntime, selfRuntimeInvocation } from '@wtm/platform';
+import { executablePathResolverFor, selectPlatformRuntime, selfRuntimeInvocation } from '@wtm/platform';
 import type { PlatformRuntime } from '@wtm/platform/ports';
 import type { AdapterTrustStore } from '@wtm/core';
 import {
@@ -25,6 +25,7 @@ import {
   refreshRemoteTrackingRefs,
   resolveWorkspaceConfig,
   SQLiteStateStore,
+  useGitExecutableResolver,
   type TaskResolutionInput,
 } from '@wtm/core';
 import type {
@@ -2036,7 +2037,17 @@ function exitCodeForEnvelope(envelope: JsonEnvelope<unknown>): number {
  */
 let selectedHostPlatform: PlatformRuntime | null = null;
 function hostPlatformRuntime(): PlatformRuntime {
-  return (selectedHostPlatform ??= selectPlatformRuntime());
+  if (selectedHostPlatform === null) {
+    selectedHostPlatform = selectPlatformRuntime();
+    // Installed beside the selection itself, once, for the same reason the selection is memoized
+    // rather than re-read: `@wtm/core`'s `runGit` cannot know its own host (spec D1), so the
+    // composition root that just chose one hands it the search that host's `spawn` actually
+    // performs. Without this a `git` earlier on `PATH` -- a version-manager shim, or one of this
+    // repository's own test fixtures -- is invisible on win32, where only `.com`/`.exe` are found
+    // by a bare name; WTM would silently run whatever `git.exe` came after it instead.
+    useGitExecutableResolver(executablePathResolverFor(selectedHostPlatform.id));
+  }
+  return selectedHostPlatform;
 }
 
 /**

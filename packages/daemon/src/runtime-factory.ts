@@ -4,7 +4,9 @@ import { parse } from 'smol-toml';
 import { ciCommandNames, jobCommandNames } from '@wtm/protocol';
 import { basename as posixBasename, dirname as posixDirname, join as posixJoin, resolve as posixResolve } from 'node:path/posix';
 import { basename as win32Basename, dirname as win32Dirname, join as win32Join, resolve as win32Resolve } from 'node:path/win32';
-import { readHeavyJobScope, selectPlatformRuntime, windowsNamedPipeRootFor } from '@wtm/platform';
+import {
+  executablePathResolverFor, readHeavyJobScope, selectPlatformRuntime, windowsNamedPipeRootFor,
+} from '@wtm/platform';
 import type { FileTrustPolicy, PlatformId, PlatformRuntime } from '@wtm/platform/ports';
 import {
   assertDaemonSocketPathFits,
@@ -19,6 +21,7 @@ import {
   HeavyJobError,
   parseWtmConfig,
   queueTaskTimeoutMs,
+  useGitExecutableResolver,
   type DaemonStateStore,
   type LifecycleEventStore,
   type WtmConfig,
@@ -166,6 +169,12 @@ export function resolveProductionRuntimePaths(
 
 export async function createProductionDaemon(options: ProductionDaemonOptions = {}): Promise<ProductionDaemonRuntime> {
   const platformRuntime = options.platformRuntime ?? selectPlatformRuntime();
+  // `@wtm/core`'s `listGitWorktrees`/`runGit` cannot know their own host (spec D1); the
+  // composition root that just chose one hands it the search that host's `spawn` actually
+  // performs, the same seam `cli`'s own `hostPlatformRuntime()` installs. Without it a `git`
+  // shadowed earlier on `PATH` -- the daemon's reconcile pass runs on every registered
+  // repository -- is invisible on win32, where only `.com`/`.exe` are found by a bare name.
+  useGitExecutableResolver(executablePathResolverFor(platformRuntime.id));
   const { join, dirname, basename } = pathModuleFor(platformRuntime.id);
   const requestedPaths = resolveProductionRuntimePaths(platformRuntime, options);
   const { dataRoot } = requestedPaths;
@@ -285,7 +294,12 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
   const ci = stateStore.ci === undefined ? null : new CiWatcher({
     store: stateStore.ci,
     registration: stateStore,
-    provider: createGitHubProvider(createGhRunner()),
+    // Same reason as `useGitExecutableResolver` above: `createGhRunner`'s bare `'gh'` default is
+    // invisible to a bare-name `spawn` on win32 if `gh` is shadowed by a non-`.exe`/`.com`
+    // wrapper earlier on `PATH`, which is exactly what `ci-watch-scenario.test.ts`'s fixture does.
+    provider: createGitHubProvider(createGhRunner({
+      executable: executablePathResolverFor(platformRuntime.id)('gh'),
+    })),
     onError,
   });
   const daemon = new WtmDaemon({
