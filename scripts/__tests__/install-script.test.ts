@@ -35,9 +35,12 @@ function buildFixtureArchive(scriptContent: string): { bytes: Buffer; sha256: st
     writeFileSync(wtmPath, scriptContent);
     // The mode the staged file carries into the archive does not matter to install.sh, which
     // always re-chmods 0755 itself — mirrored here only because a real release archive does too.
-    spawnSync('chmod', ['0755', wtmPath]);
+    // timeout + killSignal on every synchronous spawn per packages/testkit's scenario-guard rule.
+    spawnSync('chmod', ['0755', wtmPath], { timeout: 10_000, killSignal: 'SIGKILL' });
     const archivePath = join(stageDir, 'archive.tar.gz');
-    const tarResult = spawnSync('tar', ['-czf', archivePath, '-C', stageDir, 'wtm'], { encoding: 'utf8' });
+    const tarResult = spawnSync('tar', ['-czf', archivePath, '-C', stageDir, 'wtm'], {
+      encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL',
+    });
     if (tarResult.status !== 0) {
       throw new Error(`fixture tar failed: ${tarResult.stderr || tarResult.stdout}`);
     }
