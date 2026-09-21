@@ -960,6 +960,17 @@ field no portable consumer reads. Removing it on its own would break `0.1.0-rc.1
 nothing, so it is scheduled rather than executed: it rides along with a break that is happening
 anyway. Read `definitionPath`.
 
+### Local reverse proxy
+
+Opt-in through the global configuration's `[proxy]` table (`enabled = true`; see
+[`docs/03`](03-configuration-spec.md#local-reverse-proxy)), and restart the daemon. Once running,
+every active endpoint lease is reachable at `http://<service>.<slug>.wtm.localhost:<proxy-port>`
+in place of the dynamic port `wtm ports` shows for it — see
+[`docs/07`](07-process-port-runtime.md#local-reverse-proxy) for the exact hostname format, the
+collision rule, and the honest limitation that binding a fixed port rather than port 80 leaves a
+port number in the URL. There is no separate CLI command for it: the proxy is a daemon-level
+listener, started and stopped only by the daemon itself, not by any single `wtm` invocation.
+
 ## Skill
 
 ```bash

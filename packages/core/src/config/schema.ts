@@ -98,6 +98,23 @@ const corsSchema = z.object({
  * one of them: the API publishes its port as `PORT`, and so does the web app — one workspace
  * `[environment]` cannot say both. Naming the repository is what lets it.
  */
+/**
+ * The local reverse proxy (todo item 12b). Daemon-wide: it opens one network listener for the
+ * whole machine, so it is read from the global configuration the same way `[jobs]` is, not
+ * per-workspace. See `docs/07`'s "Local reverse proxy" section for the hostname format and the
+ * port this opts into.
+ */
+const proxySchema = z.object({
+  /** Off by default: this opens a loopback network listener, so it is explicit opt-in. */
+  enabled: z.boolean().optional(),
+  /**
+   * The proxy's own listening port. Left unset, the composition root that starts it picks a
+   * fixed default outside `[ports].range`'s dynamic band so the two can never collide; see
+   * `docs/07`'s "Local reverse proxy" section.
+   */
+  port: z.number().int().min(1).max(65535).optional(),
+}).strict();
+
 const repoSchema = z.object({
   /**
    * Where the repository sits, relative to the workspace root. Left unset, the table's own
@@ -176,6 +193,7 @@ export const wtmConfigSchema = z.object({
   prepare: z.object({ mode: z.enum(['lazy', 'eager']).optional() }).strict().optional(),
   ports: portsSchema.optional(),
   cors: corsSchema.optional(),
+  proxy: proxySchema.optional(),
   repos: z.record(z.string(), repoSchema).optional(),
   environment: z.record(z.string(), z.string()).optional(),
   tasks: z.record(z.string(), taskSchema).optional(),
@@ -192,6 +210,7 @@ export type TaskConfig = z.infer<typeof taskSchema>;
 export type PortConfig = z.infer<typeof portSchema>;
 export type GitConfig = z.infer<typeof gitSchema>;
 export type CorsConfig = z.infer<typeof corsSchema>;
+export type ProxyConfig = z.infer<typeof proxySchema>;
 export type RepoConfig = z.infer<typeof repoSchema>;
 export type ResourceConfig = z.infer<typeof resourceSchema>;
 export type PortsConfig = {

@@ -2405,11 +2405,41 @@ https://web.billing.wtm.localhost
 https://api.billing.wtm.localhost
 ```
 
+**2026-09-21 (W9-4 / 12b):** Maddenin ilk üç alt maddesi tamamlandı: `[proxy]` opsiyonel bir
+global-config tablosuyla açılan (varsayılan kapalı) bir yerel reverse proxy, `packages/daemon/src/proxy.ts`
+(düz `node:http`, dış bağımlılık yok). Yönlendirme tablosu yeni bir SQLite tablosu/migration
+olmadan, mevcut endpoint-lease ve worktree kayıtlarından her istek için taze kuruluyor
+(`packages/daemon/src/proxy-routes.ts`) — K8/W9 planındaki "daemon memory, not a new table"
+kararının ruhuna uygun, ama isim olarak `idle-runtime.ts`'deki gibi kalıcı bir cache değil: istek
+başına yeniden hesaplama, hem her zaman güncel kalıyor hem de invalidation mantığı gerektirmiyor;
+bu bilinçli bir sapma, raporda ayrıca belirtildi. Hostname şeması ve slug/çakışma kuralı core'a
+taşındı (`packages/core/src/runtime/proxy-hostname.ts`, `assignProxySlugs`/`proxyHostname`), böylece
+ileride `wtm status`/`wtm ports` veya CORS entegrasyonu aynı mantığı tekrar yazmadan kullanabilir
+(K8'in "nice to have" notu, madde 8). Detaylar: `docs/07-process-port-runtime.md`'in "Local reverse
+proxy" bölümü (hostname formatı, çakışma kuralı, port 80 kısıtı) ve `docs/03-configuration-spec.md`'in
+aynı adlı bölümü (`[proxy]` şeması, global-config-only olma nedeni).
+
+Kasıtlı olarak kapsam dışı bırakılanlar — ayrı, sonraki birimler:
+
+- HTTPS / local certificate stratejisi — K8'de belirsiz süreyle ertelendi (bkz.
+  `docs/superpowers/plans/2026-09-15-remaining-work-waves.md` K8 satırı); bu birim hiç dokunmadı.
+- CORS origins ile otomatik entegrasyon — W10-1'in işi (`packages/core/src/runtime/cors.ts`
+  bilinçli olarak değiştirilmedi; bu birime sadece çakışmamak için okundu).
+- Port allocation ile backward compatibility — bu proxy port tahsisini hiç değiştirmiyor, sadece
+  mevcut lease'lerin üzerine bir hostname katmanı ekliyor; ayrı bir uyumluluk sorunu doğurmuyor,
+  ama madde kendi checklist'inde kapalı kalsın diye işaretlenmedi.
+
+Madde 12'nin kendi başlığı bu yüzden `[ ]` kalıyor — tam kapsam (port numaralarını tamamen gizlemek)
+teslim edilmedi ve edilmeyecek: port 80'e bind etmek root/setcap (Linux) veya admin hakları
+(Windows) gerektiriyor, bu birim onu denemiyor. Kullanıcının gördüğü URL hâlâ `:<proxy-port>`
+taşıyor — dinamik bir portu ezberlemek yerine kararlı bir hostname'i ezberlemek, gerçek ama kısmi
+bir kazanım.
+
 #### Yapılacaklar
 
-- [ ] Local reverse proxy backend.
-- [ ] Feature/repo/endpoint domain naming.
-- [ ] Stable hostname allocation.
+- [x] Local reverse proxy backend. **(2026-09-21, W9-4)**
+- [x] Feature/repo/endpoint domain naming. **(2026-09-21, W9-4)**
+- [x] Stable hostname allocation. **(2026-09-21, W9-4)**
 - [ ] HTTPS gerekiyorsa local certificate strategy.
 - [ ] CORS origins ile otomatik entegrasyon.
 - [ ] Port allocation ile backward compatibility.

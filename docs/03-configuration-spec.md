@@ -468,10 +468,12 @@ any singleton task that is not running.
 
 **What "idle" means here is narrow, and the narrowness is the point.** WTM observes only its own
 interactions with a task — the start or restart that launched it, a readiness wait, `wtm ps`,
-`wtm logs`. It has no reverse proxy, so requests arriving at the task's own port are invisible to
-it. A task serving a browser or an API client for an hour, with nobody touching WTM meanwhile,
-reads as idle and will be suspended. Opt a task in only when a stop it did not ask for is
-acceptable; see [`docs/07`](07-process-port-runtime.md#automatic-idle-suspension).
+`wtm logs`. Requests arriving at the task's own port are invisible to it, whether they arrive
+directly or through the local reverse proxy (below): the proxy forwards bytes to a running task,
+it does not report them to the idle tracker. A task serving a browser or an API client for an
+hour, with nobody touching WTM meanwhile, reads as idle and will be suspended. Opt a task in only
+when a stop it did not ask for is acceptable; see
+[`docs/07`](07-process-port-runtime.md#automatic-idle-suspension).
 
 ### Shared heavy-job memory admission
 
@@ -527,6 +529,32 @@ or extra polling service. Dev servers and other apps reduce the observed availab
 without owning a finite-job slot. This is estimated admission, not an OS-enforced limit;
 tasks, other apps and direct commands can grow after a sample. Native platform validation
 and real two-AI RAM/swap measurements are still required before claiming measured savings.
+
+## Local reverse proxy
+
+In the daemon's global configuration, optionally turn on the local reverse proxy (todo item
+12's "12b" slice):
+
+```toml
+[proxy]
+enabled = true
+port = 19999
+```
+
+`enabled` defaults to `false` — this opens a loopback network listener, so, like idle suspension
+above, it is explicit opt-in rather than a default behavior. `port` defaults to `19999`, chosen to
+sit just outside `[ports]`'s own default dynamic band (`20000-50000`) so the proxy's own port can
+never collide with one WTM allocates for a task. Restart the daemon to apply a change here, the
+same as `[jobs]` above: this is a daemon setting, read once at startup, not a per-workspace one —
+a workspace's own `wtm.toml` may declare `[proxy]` too, but only the value in the global
+configuration file is read, for the same reason only the global file's `[jobs]` is.
+
+Once enabled, every active endpoint lease is reachable at
+`http://<service>.<slug>.wtm.localhost:<port>`, where `<service>` is the lease's own name
+(`web`, `api`, ...) and `<slug>` is derived from the worktree's branch. See
+[`docs/07`](07-process-port-runtime.md#local-reverse-proxy) for the exact hostname format, the
+collision rule, and — stated plainly, not buried — what binding a fixed, non-privileged port
+instead of port 80 means for the URL a person actually types.
 
 ## Events
 

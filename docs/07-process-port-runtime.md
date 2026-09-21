@@ -66,6 +66,79 @@ range = "20000-50000"
 
 `preferred` is attempted for the main worktree or as a hint, not treated as a universal fixed port.
 
+## Local reverse proxy
+
+Todo item 12's "12b" slice: a local reverse proxy that gives each `(service, worktree)` pair a
+stable hostname instead of a port number that changes when the lease that backs it is
+re-allocated. Off by default — see [`docs/03`](03-configuration-spec.md#local-reverse-proxy) for
+the `[proxy]` table that turns it on.
+
+```text
+http://web.auth.wtm.localhost:19999
+http://api.auth.wtm.localhost:19999
+```
+
+### Hostname format
+
+`<service>.<slug>.wtm.localhost`, where:
+
+- `service` is an endpoint lease's own `name` field — the same `web`/`api` names shown in
+  "Endpoint leases" above and configured under `[ports.<name>]`.
+- `slug` is the owning worktree's `branch`, sanitized to a DNS-safe label: lowercase,
+  `[a-z0-9-]` only, every other character collapsed to `-`, repeated `-` collapsed to one,
+  leading/trailing `-` trimmed. `fix/auth-bug` and `release/2026.09` become `fix-auth-bug` and
+  `release-2026-09`. A worktree with no branch (detached `HEAD`) falls back to its own id.
+
+`.wtm.localhost` needs no `/etc/hosts` entry and no DNS server anywhere. RFC 6761 §6.3 reserves
+`.localhost` to resolve to loopback for every conforming resolver, and says so explicitly for any
+depth of subdomain under it ("any domain name ending in '.localhost'"), which is what lets
+`web.auth.wtm.localhost` resolve without WTM registering anything with the system. `wtm` is one
+extra label of WTM's own choosing, so `*.wtm.localhost` cannot collide with a hostname a
+repository's own tooling picks under plain `*.localhost`.
+
+### Collision handling
+
+Two worktrees can sanitize to the same slug — `fix/auth-bug` and `fix-auth-bug` both become
+`fix-auth-bug`. When that happens, mirroring the "WTM registry collision check" language above:
+the worktree WTM has held longest (the lowest `numericId`) keeps the plain slug, and every other
+member of the group appends `-<suffix>`, where `<suffix>` is the first 6 hex characters of
+`sha256(worktreeId)` — deterministic, so it does not change across a daemon restart, and short
+enough to stay readable. This keeps the earliest worktree's hostname stable: a bookmarked URL for
+it does not break just because a second, later branch happens to sanitize the same way.
+
+The routing table itself lives in daemon memory, rebuilt from the existing endpoint-lease and
+worktree records on every proxied request rather than cached — see `packages/daemon/src/proxy-routes.ts`.
+There is no new SQLite table and no migration: this is the same lease/worktree data `wtm ports`
+already reads, read again.
+
+### What this does not do
+
+**It does not bind port 80.** Doing that needs root/setcap/authbind on Linux and administrator
+rights on Windows, and this unit does not attempt either. The proxy listens on one fixed,
+non-privileged port instead (`[proxy] port`, default `19999` — chosen to sit just outside
+`[ports]`'s own dynamic band so the two can never collide), which means the URL a person actually
+types still carries `:<proxy-port>`. That is the same honest way this document's own idle-
+suspension section above states what it cannot observe: this unit delivers a stable, memorable
+*hostname* in place of a dynamic port number, not the fully port-free address bar item 12's
+headline goal describes. HTTPS/local certificates, CORS origin auto-integration and
+port-allocation backward compatibility are separate, later pieces of that same item and are not
+part of this one.
+
+**It binds loopback only** — `127.0.0.1`, and `::1` when the host supports IPv6 — never a
+wide-open address. A machine-wide proxy that bound every interface would expose every developer's
+dev server on the local network, which is not a tradeoff this feature makes.
+
+**Every request's `Host` header is validated before anything is proxied.** A header that does not
+end in `.wtm.localhost`, or one that does but names no active route, is refused with a plain 4xx
+before any backend is contacted. The proxy is a router for WTM's own hostnames, never an open
+relay for an arbitrary `Host` header.
+
+**It does not feed WTM's idle-suspension activity clock.** Traffic arriving through the proxy is
+exactly the kind of traffic the "Automatic idle suspension" section below already says WTM cannot
+observe — the proxy forwards bytes, it does not touch a task's activity clock, and resume is still
+never triggered by traffic. A task reached only through the proxy, with nobody running a WTM
+command, is still idle as far as that feature is concerned.
+
 ## Process ownership
 
 Only processes started through WTM are managed.
@@ -155,7 +228,9 @@ How it works, and what it deliberately reuses:
   `[events."runtime.stopped"]` fires as it does for `wtm stop`.
 - **Resume needs no new mechanism.** A singleton task that is not running is started by the next
   `wtm start <task>` or `wtm restart <task>`; that is the resume path, and it is the only one.
-  Resume is never triggered by traffic or by a proxy — WTM has no reverse proxy.
+  Resume is never triggered by traffic — not directly, and not through the local reverse proxy
+  documented above: the proxy forwards bytes to a running task's port and refuses a request for
+  anything else, and it never starts a task or touches this activity clock.
 - The reason is written as one line into the task's own log stream, so `wtm logs <task>` says the
   task was stopped for inactivity and cites the window it exceeded. Nothing new appears in
   `wtm ps` or `wtm status`: a suspended task is a stopped task.
@@ -172,11 +247,12 @@ it again; a queued job ends inside its own finite timeout and is the heavy-job q
 ### What WTM can actually observe
 
 **Idleness here means "no WTM interaction", not "no traffic".** The daemon sees a start, a restart,
-a readiness wait, a `wtm ps` and a `wtm logs`. It does not see HTTP requests arriving at the task's
-own port, because nothing of WTM's sits in front of that port: there is no reverse proxy, and one
-is a separate, later piece of work. A task that serves a browser or an API client steadily for an
-hour, while nobody runs a WTM command, is idle as far as this feature is concerned and will be
-stopped.
+a readiness wait, a `wtm ps` and a `wtm logs`. It does not see HTTP requests arriving at the
+task's own port: the local reverse proxy documented above sits in front of the *hostname*, not the
+idle tracker, and forwarding a request through it is not a WTM interaction any more than a browser
+hitting the port directly would be. A task that serves a browser or an API client steadily for an
+hour — whether reached by its raw port or through the proxy's hostname — while nobody runs a WTM
+command, is idle as far as this feature is concerned and will be stopped.
 
 This is the same class of statement as the one the heavy-job queue makes about memory below: the
 mechanism is honest about what it measures, and documentation and messages must not imply a
