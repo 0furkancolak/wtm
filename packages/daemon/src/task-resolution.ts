@@ -1,7 +1,9 @@
 import { basename, resolve } from 'node:path';
 import {
   applyTaskOverrides,
+  canonicalProxyHostname,
   containsPath,
+  defaultOriginHost,
   inspectResources,
   prepareResources,
   repoEnvironment,
@@ -28,6 +30,8 @@ import { selectPlatformRuntime } from '@wtm/platform';
 import type { FileTrustPolicy } from '@wtm/platform/ports';
 import type { AdapterContext } from '@wtm/protocol';
 import { withAdapterTasks } from './adapter-tasks';
+import { defaultProxyPort } from './proxy';
+import { globalProxyPolicy } from './proxy-policy';
 import { DaemonRegistrationError } from './runtime-controller';
 
 export interface Registration {
@@ -101,10 +105,13 @@ export async function resolveWorktreeRuntime(input: WorktreeRuntimeInput): Promi
     groupWorktreeIds: group.map(({ id }) => id),
     index: owner.numericId,
   }, input.probe);
+  const proxyPolicy = await globalProxyPolicy(input.globalConfigPath);
   const cors = await resolveCors({
     ...(config.value.cors === undefined ? {} : { cors: config.value.cors }),
     root: registration.worktree.path,
-    origins: endpoints.origins,
+    origins: proxyPolicy.enabled === true
+      ? [...endpoints.origins, ...proxyHostnameOrigins(endpoints, group, proxyPolicy.port ?? defaultProxyPort)]
+      : endpoints.origins,
   });
 
   const repo = repoEnvironment(config.value, {
@@ -217,6 +224,40 @@ export function featureGroup(store: StateRegistrationReader, registration: Regis
   return store.listWorktrees()
     .filter((worktree) => repositories.has(worktree.repositoryId) && worktree.branch === branch)
     .sort((left, right) => left.path.localeCompare(right.path));
+}
+
+/**
+ * The proxy-hostname origins for the endpoints that already publish a dynamic-port origin, when
+ * `[proxy] enabled = true` (todo item 12b's other half, W10-1).
+ *
+ * This deliberately walks `endpoints.leases` rather than `[ports]` itself: a fixed-port endpoint
+ * has no lease and the proxy's own routing table (`proxy-routes.ts`'s `buildProxyRoutes`) is
+ * built purely from active leases, so a fixed port is never reachable through the proxy and must
+ * not get a proxy-hostname origin here either. Within the leased endpoints, only the ones that
+ * already contributed a `http://<host>:<port>` origin above are extended — an endpoint whose own
+ * `[ports.<name>] origin = false` opted out of a browser origin entirely, and this must not hand
+ * it one back through the proxy's side door. The correlation is by port rather than by name,
+ * because `endpoints.leases` (unlike `endpoints.origins`) is not filtered by that opt-out and
+ * carries no origin flag of its own — matching on the origin string `resolveEndpoints` already
+ * built is what keeps this the *same* set, not a superset or subset of it.
+ */
+function proxyHostnameOrigins(
+  endpoints: ResolvedEndpoints,
+  group: readonly WorktreeRecord[],
+  proxyPort: number,
+): string[] {
+  if (endpoints.leases.length === 0) return [];
+  const worktreesById = new Map(group.map((worktree) => [worktree.id, worktree] as const));
+  const origins: string[] = [];
+  for (const lease of endpoints.leases) {
+    if (!endpoints.origins.includes(`http://${defaultOriginHost}:${lease.port}`)) continue;
+    const worktree = worktreesById.get(lease.worktreeId);
+    // Every lease resolved here was looked up within `group`'s own worktree ids
+    // (`resolveEndpoints`'s `groupWorktreeIds`), so this is defensive rather than expected.
+    if (worktree === undefined) continue;
+    origins.push(`http://${canonicalProxyHostname(worktree, lease.name, group)}:${proxyPort}`);
+  }
+  return origins;
 }
 
 export function findRegistration(store: StateRegistrationReader, cwd: string): Registration {

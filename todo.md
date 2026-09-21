@@ -2441,8 +2441,33 @@ bir kazanım.
 - [x] Feature/repo/endpoint domain naming. **(2026-09-21, W9-4)**
 - [x] Stable hostname allocation. **(2026-09-21, W9-4)**
 - [ ] HTTPS gerekiyorsa local certificate strategy.
-- [ ] CORS origins ile otomatik entegrasyon.
+- [x] CORS origins ile otomatik entegrasyon. **(2026-09-21, W10-1)**
 - [ ] Port allocation ile backward compatibility.
+
+**2026-09-21 (W10-1, CORS yarısı):** `[proxy] enabled = true` iken, `resolveWorktreeRuntime`
+(`packages/daemon/src/task-resolution.ts`) artık `endpoints.leases`'i `endpoints.origins` ile
+port üzerinden eşleştirip (`origin != false` opt-out'una sahip olan lease'ler için) her birine
+`canonicalProxyHostname` ile bir proxy-hostname origin'i hesaplıyor ve bunu `resolveCors`'a giden
+`origins` dizisine dinamik-port origin'inin yanına, onun yerine değil, ekliyor —
+`packages/core/src/runtime/cors.ts`'in kendisi hâlâ dokunulmadı (imzası ve davranışı aynı; tek
+değişen, çağıranın ona verdiği düz origin listesi). Sabit port'lu (fixed strategy) endpoint'ler
+lease taşımadığı ve proxy'nin kendi routing tablosu (`proxy-routes.ts`) da sadece aktif
+lease'lerden kurulduğu için zaten proxy üzerinden hiç erişilemiyor — bu yüzden onlara proxy-origin
+eklenmedi, bu bilinçli bir "aynı küme" kararı. `runtime-factory.ts`'deki private
+`globalProxyPolicy` fonksiyonu `packages/daemon/src/proxy-policy.ts`'ye taşındı; iki çağıran
+(`runtime-factory.ts`, `task-resolution.ts`) artık aynı parse-and-catch-ENOENT mantığını
+paylaşıyor, davranış değişmedi. `[proxy]` kapalıyken (varsayılan) davranış birebir eskisiyle
+aynı — ek origin yok, ek config okuması yok (ENOENT yolu zaten vardı); bu ayrı bir testle
+kanıtlandı (`packages/daemon/src/__tests__/proxy-cors-integration.test.ts`).
+
+Madde 12'nin kendi başlığı ve "HTTPS gerekiyorsa local certificate strategy" alt maddesi bilinçli
+olarak `[ ]` kalıyor: bu birim sadece CORS yarısını kapsıyor (bkz. görev tanımındaki "W10-1, CORS
+half only"), HTTPS/local certificate stratejisi ayrı bir birim ve gerçek bir sistem-trust-store
+etkisi taşıyor — yerel bir CA üretip işletim sistemine/tarayıcıya güvendirmek anlamına geliyor,
+bu da proje sahibinden ayrı, açık bir onay gerektiriyor (ör. "sertifika materyalini WTM'in kendi
+state dizinine üret ama ayrı, açık bir komut olmadan asla sistem trust store'una otomatik
+kurma"); bu birim o kararı hiç almadı ve HTTPS'e hiç dokunmadı — proxy origin'leri hâlâ `http://`,
+proxy'nin bugünkü HTTP-only gerçeğiyle uyumlu (`docs/07`'nin bu konudaki dürüst notuna bakın).
 
 ---
 

@@ -40,6 +40,7 @@ import { HeavyJobQueue, type ResolvedHeavyJob } from './heavy-job-queue';
 import { IdleRuntimeSuspender } from './idle-runtime';
 import { ManagedProcessSupervisor, type RuntimeInvocation } from './process-supervisor';
 import { defaultProxyPort, ProxyServer } from './proxy';
+import { globalProxyPolicy } from './proxy-policy';
 import { buildProxyRoutes } from './proxy-routes';
 import { DaemonRuntimeController, type DaemonRuntimeResolver } from './runtime-controller';
 import {
@@ -401,21 +402,6 @@ async function globalJobPolicy(path: string): Promise<NonNullable<WtmConfig['job
     throw error;
   }
   return parseWtmConfig(parse(value), path).jobs ?? {};
-}
-
-/**
- * The local reverse proxy's policy, read from the same global configuration file `[jobs]` is —
- * it opens one machine-wide loopback listener, which is a daemon setting rather than a
- * per-workspace one (decision 6 in the W9-4 plan; `docs/03`'s "Local reverse proxy" section).
- */
-async function globalProxyPolicy(path: string): Promise<NonNullable<WtmConfig['proxy']>> {
-  let value: string;
-  try { value = await readFile(path, 'utf8'); }
-  catch (error) {
-    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return {};
-    throw error;
-  }
-  return parseWtmConfig(parse(value), path).proxy ?? {};
 }
 
 /**
