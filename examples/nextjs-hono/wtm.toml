@@ -1,0 +1,32 @@
+version = 1
+
+[workspace]
+name = "nextjs-hono"
+
+[ports]
+range = "3000-3999"
+
+[ports.web]
+preferred = 3000
+
+[ports.api]
+preferred = 3001
+
+[tasks.dev-web]
+description = "Run the Next.js frontend for this worktree."
+expose = true
+run = ["next", "dev"]
+cwd = "{worktree.root}/apps/web"
+background = true
+
+[tasks.dev-api]
+description = "Run the Hono API for this worktree."
+expose = true
+run = ["bun", "run", "dev"]
+cwd = "{worktree.root}/apps/api"
+background = true
+
+[tasks.test]
+description = "Run the monorepo test suite."
+run = ["bun", "test"]
+cwd = "{worktree.root}"

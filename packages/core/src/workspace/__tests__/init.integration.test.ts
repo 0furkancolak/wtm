@@ -151,6 +151,33 @@ describe('initializeWorkspace', () => {
     });
   });
 
+  test('seeds a brand-new configuration from a preset, renamed to the real workspace', () => {
+    expect(runScenario('preset-seeds-new-config')).toEqual({
+      preset: { name: 'nextjs', applied: true },
+      config: 'version = 1\n\n[workspace]\nname = "workspace with spaces"\n\n[ports]\n'
+        + 'range = "3000-3999"\n\n[ports.web]\npreferred = 3000\n\n[tasks.dev]\n'
+        + 'description = "Run the Next.js dev server for this worktree."\nexpose = true\n'
+        + 'run = ["next", "dev"]\ncwd = "{worktree.root}"\nbackground = true\n\n[tasks.test]\n'
+        + 'description = "Run the project\'s test suite."\nrun = ["npm", "test"]\ncwd = "{worktree.root}"\n',
+    });
+  });
+
+  test('reports a preset as unapplied rather than editing a configuration that already exists', () => {
+    expect(runScenario('preset-existing-config')).toEqual({
+      preset: { name: 'nextjs', applied: false },
+      configUnchanged: true,
+    });
+  });
+
+  test('refuses a preset that would silently discard a real detection result', () => {
+    expect(runScenario('preset-detection-conflict')).toEqual({
+      errorCode: 'WTM_CONFIG_INVALID',
+      conflict: 'preset-detection-conflict',
+      preset: 'nextjs',
+      localConfigExists: false,
+    });
+  });
+
   test('uses no-replace publication when another actor creates the initially absent config', () => {
     expect(runScenario('concurrent-create')).toEqual({
       errorCode: 'WTM_CONFIG_INVALID',

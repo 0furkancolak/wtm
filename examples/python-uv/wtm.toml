@@ -1,0 +1,18 @@
+version = 1
+
+[workspace]
+name = "python-uv"
+
+[capabilities]
+"python.environment-manager" = "uv"
+
+[tasks.dev]
+description = "Run the application for this worktree."
+run = ["uv", "run", "python", "-m", "app"]
+cwd = "{worktree.root}"
+background = true
+
+[tasks.test]
+description = "Run the test suite with uv."
+run = ["uv", "run", "pytest"]
+cwd = "{worktree.root}"

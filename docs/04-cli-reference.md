@@ -35,11 +35,20 @@ Options:
 --max-depth <n>   discovery depth
 --ai-skill        also install the local Agent Skill, as `wtm skill install` does
 --no-detect       write only a name and a version, reading no repository
+--preset <name>   seed a new wtm.toml from a known starter
 --json            machine-readable result
 ```
 
 `--yes` records explicit acceptance of WTM's non-destructive defaults in the result contract as
 `data.confirmation.defaultsAccepted`. V1 init is non-interactive, so this flag never approves destructive work.
+
+`--preset <name>` seeds a brand-new `wtm.toml` from `examples/<name>/wtm.toml`, verbatim except
+for its workspace name — one of `nextjs`, `nextjs-hono`, `bun-monorepo`, `docker-compose`,
+`python-uv`, `rust`, `go`; any other name is a `WTM_CONFIG_INVALID` error naming the known list.
+It never replaces detection: it only seeds where detection (unless also turned off) found nothing
+to write, refuses outright if detection did find something to declare, and does nothing but warn
+if `wtm.toml` already exists. See [`docs/09-init-scope-discovery.md`](09-init-scope-discovery.md#workspace-presets---preset)
+for the exact rule.
 
 Registering writes `wtm.toml` and nothing else into the project. Everything else WTM can put
 there — the Agent Skill among them — is asked for explicitly, so adopting WTM in someone else's

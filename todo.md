@@ -2660,7 +2660,7 @@ max_disk = "20GiB"
 
 ---
 
-### [ ] 20. Workspace presets / templates
+### [x] 20. Workspace presets / templates
 
 Örnek preset'ler:
 
@@ -2675,6 +2675,63 @@ go
 ```
 
 Bunlar detection'ın yerine geçmemeli; yalnızca bootstrap kolaylığı sağlamalı.
+
+#### Yapılacaklar
+
+- [x] `wtm init` komutuna `--preset <name>` bayrağı ekle; sabit, bilinen yedi isimle sınırlı.
+- [x] Bilinmeyen preset ismi, bilinen listeyi sayan `WTM_CONFIG_INVALID` zarfıyla reddedilsin.
+- [x] Eksik beş örneği (`nextjs`, `nextjs-hono`, `python-uv`, `rust`, `go`) `examples/` altına,
+      mevcut `bun-monorepo`/`docker-compose` ile aynı üslupta ekle; `examples/README.md`'ye
+      birer paragraf düş.
+- [x] `--preset`, `examples/<name>/wtm.toml` dosyasını olduğu gibi okusun (TOML içeriği
+      TypeScript'te tekrarlanmasın), yalnızca `[workspace]` adını gerçek workspace adıyla
+      değiştirsin.
+- [x] `--preset` ve detection etkileşimini netleştir ve uygula: detection (kapatılmadıysa) hiçbir
+      şey yazmayacaksa preset tüm dosyayı tohumlar; detection gerçekten bir şey bulduysa `--preset`
+      sessizce ezmek yerine `preset-detection-conflict` bağlamıyla reddedilir ve `--no-detect
+      --preset <name>` önerilir; `wtm.toml` zaten varsa `wtm init` onu hiç düzenlemediği için
+      preset uygulanmaz, `data.preset = { applied: false }` ve bir uyarı döner.
+- [x] `docs/09-init-scope-discovery.md`'ye "Workspace presets (`--preset`)" bölümünü, `docs/04-cli-reference.md`'ye bayrağı belgele.
+- [x] `packages/core/src/workspace/__tests__/init.integration.test.ts` ve
+      `packages/cli/src/commands/__tests__/init.test.ts`'e testler ekle: bilinmeyen isim
+      reddediliyor, bilinen preset görev adlarını tohumluyor, mevcut dosyada uygulanmıyor, gerçek
+      detection sonucuyla çakışınca reddediliyor.
+
+#### Kabul kriterleri
+
+- [x] `wtm init --preset <name>` boş bir dizinde beklenen görev adlarını (`dev`/`test`) içeren bir
+      `wtm.toml` üretiyor.
+- [x] Detection gerçek bir servis bulduğunda `--preset` sessizce hiçbir şeyi (ne kendini ne
+      detection'ı) ezmiyor; açık bir hatayla reddediyor.
+- [x] `wtm.toml` zaten varken `--preset` dosyayı değiştirmiyor.
+- [x] `bun run typecheck && bun run lint` temiz; ilgili test dosyaları (`bun test
+      packages/core/src/workspace/__tests__/init.integration.test.ts
+      packages/cli/src/commands/__tests__/init.test.ts`) geçiyor.
+
+#### Not (2026-09-21)
+
+Kapandı, branch `claude/w9-2-workspace-presets`. Preset içeriği `@wtm/core`'a gömülmedi:
+`packages/cli/src/assets.ts`'teki `filesystemPresetAssets`, `skills/wtm/SKILL.md` için zaten var
+olan `canonicalSkillPathForModule` desenini birebir izleyerek `examples/<name>/wtm.toml`'u
+dev/npm-paketli düzende okuyor; `@wtm/core`'un `initializeWorkspace`'i yalnızca zaten okunmuş
+`{ name, toml }` çiftini görüyor, presetlerin dosya olduğunu hiç bilmiyor. `dist/cli/examples/`
+kopyası için kök `package.json`'daki `build` betiğine bir `cp -r` satırı eklendi (SKILL.md'nin
+`dist/cli/skills/`'e kopyalanmasıyla aynı desen).
+
+**Bilinçli kapsam dışı bırakma:** standalone SEA yürütülebilir dosyası (`wtm.blob`) presetleri
+`seaSkillAssets`/`seaMigrationAssets`'in yaptığı gibi gömmüyor; o üç dosyayı
+(`scripts/build-sea.ts`, `packages/cli/src/sea-assets.ts`, `packages/cli/src/sea-bin.ts`) birlikte
+değiştirmek gerekirdi ve bu, aynı anda süren başka birimlerin de dokunabileceği paylaşılan
+paketleme altyapısı. SEA derlemesinde `wtm init --preset` bugün "preset bu kurulumda eksik" hatası
+veriyor; npm paketinde ve monorepo geliştirme ortamında tam çalışıyor. Bu, gelecekte ayrı bir
+birimin üstlenebileceği açık bir takip maddesi.
+
+Hata kodu için yeni bir `WtmErrorCode` eklenmedi: hem bilinmeyen preset ismi hem
+preset/detection çakışması, zaten `wtm init`'in geçersiz girdiler için kullandığı
+`WTM_CONFIG_INVALID`'i (mevcut `WtmConfigError` sınıfı üzerinden) yeniden kullanıyor —
+`context.conflict`/`context.preset`/`context.knownPresets` alanlarıyla ayırt edilebilir durumda,
+`docs/18-errors-json-contract.md`'de zaten belgelenen kodun context alanları genişletilmiş
+oluyor, yeni bir kod protokole eklenmiyor.
 
 ---
 

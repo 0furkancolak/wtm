@@ -23,6 +23,18 @@ export interface InitInput {
    * turning it off leaves `wtm.toml` with nothing but its name and version.
    */
   detect?: boolean;
+  /**
+   * A starting `wtm.toml` seed for a brand-new configuration — the caller (the CLI's `--preset`
+   * option) has already validated `name` against a fixed known list and read `toml` from
+   * `examples/<name>/wtm.toml`, verbatim, so it and the seeded output can never drift. It only
+   * ever takes effect where there is nothing else to write: the configuration does not exist yet,
+   * and detection (unless turned off) found nothing it would write into it — the same tables
+   * `configBlocks`/`pendingConfig` already report. When detection did find something to declare
+   * and a preset was asked for anyway, initialization refuses rather than silently discarding one
+   * or the other — see `InitResult.preset` and the thrown error's
+   * `context.conflict === 'preset-detection-conflict'`.
+   */
+  preset?: { name: string; toml: string };
   beforeConfigCommit?: (context: { path: string }) => Promise<void> | void;
 }
 
@@ -51,6 +63,13 @@ export interface InitResult {
   pendingConfig: string;
   /** Ports a repository asked for that the configuration's own range would never offer. */
   outOfRangePorts: OutOfRangePort[];
+  /**
+   * What became of an explicit `--preset`; `null` when none was given. `applied` is true only
+   * when the preset text actually became the new file's seed. It is false when a `wtm.toml`
+   * already existed — `wtm init` never edits a file it did not write, the same rule detection
+   * follows.
+   */
+  preset: { name: string; applied: boolean } | null;
 }
 
 export async function initializeWorkspace(input: InitInput): Promise<InitResult> {
@@ -69,6 +88,7 @@ export async function initializeWorkspace(input: InitInput): Promise<InitResult>
     selectedName,
     defaultName,
     detection,
+    ...(input.preset === undefined ? {} : { preset: input.preset }),
     ...(input.beforeConfigCommit === undefined ? {} : { beforeConfigCommit: input.beforeConfigCommit }),
   });
 
@@ -104,6 +124,7 @@ export async function initializeWorkspace(input: InitInput): Promise<InitResult>
     configBlocks: config.blocks,
     pendingConfig: config.pending,
     outOfRangePorts: config.outOfRange,
+    preset: config.preset,
   };
 }
 
@@ -127,6 +148,7 @@ interface MinimalConfigInput {
   selectedName: string;
   defaultName: string;
   detection: WorkspaceDetection | null;
+  preset?: { name: string; toml: string };
   beforeConfigCommit?: InitInput['beforeConfigCommit'];
 }
 
@@ -136,6 +158,7 @@ async function ensureMinimalConfig(input: MinimalConfigInput): Promise<{
   blocks: Array<{ path: string; present: boolean }>;
   pending: string;
   outOfRange: OutOfRangePort[];
+  preset: { name: string; applied: boolean } | null;
 }> {
   const { path } = input;
   const snapshot = await readConfigSnapshot(path);
@@ -145,21 +168,41 @@ async function ensureMinimalConfig(input: MinimalConfigInput): Promise<{
   // reported as needing a change — so no existing file loses its marker to this.
   const original = snapshot.state === 'present' ? stripByteOrderMark(snapshot.content) : '';
 
-  const existing = original.length === 0
-    ? parseWtmConfig({}, path)
-    : parseConfigToml(original, path);
-  const workspaceName = existing.workspace?.name ?? input.selectedName;
-  const draft = configDraft(input.detection, snapshot.state === 'present' ? existing : undefined);
-  const requiredChanges = requiredConfigChanges(existing, input.defaultName);
   if (snapshot.state === 'present') {
-    // The file is the workspace's, not WTM's: what detection found is reported, never applied.
+    const existing = original.length === 0 ? parseWtmConfig({}, path) : parseConfigToml(original, path);
+    const workspaceName = existing.workspace?.name ?? input.selectedName;
+    const draft = configDraft(input.detection, existing);
+    const requiredChanges = requiredConfigChanges(existing, input.defaultName);
+    // The file is the workspace's, not WTM's: what detection (or a preset) found is reported,
+    // never applied — the same rule for both.
+    const presetOutcome: { name: string; applied: boolean } | null = input.preset === undefined
+      ? null
+      : { name: input.preset.name, applied: false };
     if (requiredChanges.length === 0) {
-      return { workspaceName, changed: false, blocks: blockIndex(draft.blocks), pending: draft.additions, outOfRange: draft.outOfRange };
+      return {
+        workspaceName,
+        changed: false,
+        blocks: blockIndex(draft.blocks),
+        pending: draft.additions,
+        outOfRange: draft.outOfRange,
+        preset: presetOutcome,
+      };
     }
     throw configUpdateRequired(path, requiredChanges);
   }
 
-  let updated = original;
+  // Nothing exists yet: a preset may seed the whole document, but only where there is nothing
+  // else to write — a real detection result always wins over an example, never the other way.
+  // `detection.services` has one entry per repository whether or not anything about it was
+  // actually detected, so eligibility is decided from what detection would *write* (`draft`),
+  // the same thing `configBlocks`/`pendingConfig` already report to every other caller.
+  const draft = configDraft(input.detection, undefined);
+  const preset = input.preset;
+  if (preset !== undefined && draft.blocks.length > 0) throw presetDetectionConflict(path, preset.name);
+  let updated = preset === undefined ? original : seedFromPreset(preset.toml, input.selectedName, path);
+
+  const existing = updated.length === 0 ? parseWtmConfig({}, path) : parseConfigToml(updated, path);
+  const workspaceName = existing.workspace?.name ?? input.selectedName;
 
   if (existing.version === undefined) updated = `version = 1\n${updated}`;
   if (existing.workspace?.name === undefined) updated = addWorkspaceName(updated, workspaceName);
@@ -167,7 +210,46 @@ async function ensureMinimalConfig(input: MinimalConfigInput): Promise<{
 
   parseConfigToml(updated, path);
   await atomicCreateFile(path, updated, input.beforeConfigCommit);
-  return { workspaceName, changed: true, blocks: blockIndex(draft.blocks), pending: '', outOfRange: draft.outOfRange };
+  return {
+    workspaceName,
+    changed: true,
+    blocks: blockIndex(draft.blocks),
+    pending: '',
+    outOfRange: draft.outOfRange,
+    preset: preset === undefined ? null : { name: preset.name, applied: true },
+  };
+}
+
+/**
+ * Substitutes the selected workspace's real name for the preset's own placeholder, so an
+ * `examples/<name>/wtm.toml` copy that declares `name = "nextjs"` seeds a workspace named after
+ * the actual directory instead — matching every other `wtm init` naming path. Every preset file
+ * this repository ships is written to this exact shape (`[workspace]` immediately followed by one
+ * `name = "..."` line), so a mismatch here means the shipped example itself is malformed.
+ */
+function seedFromPreset(toml: string, selectedName: string, path: string): string {
+  const normalized = toml.endsWith('\n') ? toml : `${toml}\n`;
+  const workspaceNameLine = /^\[workspace\]\nname = "[^"]*"\n/m;
+  if (!workspaceNameLine.test(normalized)) {
+    throw new WtmConfigError('WTM preset configuration is malformed: expected [workspace] followed by a name line.', {
+      source: path,
+      category: 'preset-malformed',
+    });
+  }
+  return normalized.replace(workspaceNameLine, `[workspace]\nname = ${JSON.stringify(selectedName)}\n`);
+}
+
+function presetDetectionConflict(path: string, name: string): WtmConfigError {
+  return new WtmConfigError(
+    `Detection found services this repository declares; --preset "${name}" would silently discard them. `
+    + `Rerun with --no-detect --preset ${name} to use the preset instead, or drop --preset to keep what detection found.`,
+    {
+      source: path,
+      conflict: 'preset-detection-conflict',
+      preset: name,
+      action: `Rerun with --no-detect --preset ${name}, or drop --preset to keep what detection found.`,
+    },
+  );
 }
 
 function blockIndex(blocks: ReadonlyArray<{ path: string; present: boolean }>): Array<{ path: string; present: boolean }> {
