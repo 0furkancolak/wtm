@@ -76,6 +76,31 @@ export function anchorProtocolTimeoutMs(platform: PlatformId): number {
   return processObservationBudgetFor(platform) + anchorProtocolSlackMs;
 }
 
+/**
+ * The floor under every wait for a process group to go away, whatever bound its caller passed.
+ *
+ * `gracePeriodMs` is a statement about the *subject*: how long a signalled tree may take to die.
+ * The loop that waits it out also has to *observe* whether it died, and until now the floor under
+ * that wait was a flat 2 000 ms — a number that is exactly right for a platform whose observation
+ * is a `/proc` read or one `ps`, and meaningless on one whose observation starts `powershell.exe`
+ * and queries WMI over the whole process table. A caller that asks for 500 ms of patience on
+ * win32 gets a deadline the loop's own first observation has already blown, so the loop takes one
+ * sample and answers `alive` for a group that was merely still being looked at.
+ *
+ * So the floor is the observation's own budget plus the slack the POSIX number already carried
+ * over its 1 s read. That keeps darwin and linux at exactly 2 000 ms — this is not a re-tuning of
+ * the platforms that were already green — and gives win32 a floor that can hold one real
+ * observation, which is the least a wait *on* an observation can be worth.
+ *
+ * This is the same inequality `anchorProtocolTimeoutMs` above states, at a different layer: a
+ * consumer that waits on an observation has to be more patient than the observation itself.
+ */
+const groupAbsenceSlackMs = 1_000;
+
+export function groupAbsenceTimeoutMs(platform: PlatformId): number {
+  return processObservationBudgetFor(platform) + groupAbsenceSlackMs;
+}
+
 /** The port's identity, re-exported under the name the daemon and its consumers already use. */
 export type ProcessIdentity = ObservedProcessIdentity;
 export type ProcessInspection = PlatformProcessInspection;
@@ -440,6 +465,11 @@ export class ManagedProcessSupervisor {
     return anchorProtocolTimeoutMs(this.#selectedPlatform());
   }
 
+  /** The least a wait for group absence may be, sized to one of that platform's observations. */
+  #groupAbsenceFloorMs(): number {
+    return groupAbsenceTimeoutMs(this.#selectedPlatform());
+  }
+
   async #spawn(input: ManagedProcessStartInput, reservationToken: string): Promise<ManagedProcessStartResult> {
     if (input.argv[0] === undefined || input.argv[0].length === 0) throw startFailure(input, new Error('EMPTY_COMMAND'), 'not-started');
     let logs: PreparedManagedLogs;
@@ -584,6 +614,7 @@ export class ManagedProcessSupervisor {
       this.#signalGroup(expectedIdentity.pgid, 'SIGKILL');
       const group = await waitForGroupAbsent(
         expectedIdentity.pgid, this.#inspectGroup, this.#gracePeriodMs, this.#pollIntervalMs,
+        this.#groupAbsenceFloorMs(),
       );
       if (group !== 'gone') throw new Error(group === 'failed' ? 'ROLLBACK_INSPECTION_FAILED' : 'ROLLBACK_GROUP_ALIVE');
     } finally {
@@ -641,6 +672,7 @@ export class ManagedProcessSupervisor {
       catch (error) { if (!isSignalWithoutLiveTarget(error)) throw error; }
       const killed = await waitForGroupAbsent(
         stopping.pgid, this.#inspectGroup, this.#gracePeriodMs, this.#pollIntervalMs,
+        this.#groupAbsenceFloorMs(),
       );
       if (killed !== 'gone') throw new Error(killed === 'failed' ? 'PROCESS_INSPECTION_FAILED' : 'GROUP_REMAINED_ALIVE');
       return this.#transition(stopping, 'STOPPED');
@@ -664,6 +696,7 @@ export class ManagedProcessSupervisor {
       if (record === null) return;
       const group = await waitForGroupAbsent(
         record.pgid, this.#inspectGroup, this.#gracePeriodMs, this.#pollIntervalMs,
+        this.#groupAbsenceFloorMs(),
       );
       const state: ManagedProcessState = group === 'gone'
         ? (record.state === 'STOPPING' || (exitCode === 0 && signal === null) ? 'STOPPED' : 'FAILED')
@@ -733,6 +766,7 @@ export class ManagedProcessSupervisor {
     catch (error) { if (!isNoSuchProcess(error)) return false; }
     return await waitForGroupAbsent(
       record.pgid, this.#inspectGroup, this.#gracePeriodMs, this.#pollIntervalMs,
+      this.#groupAbsenceFloorMs(),
     ) === 'gone';
   }
   #reportError(error: unknown): void { try { this.#onError(error); } catch {} }
@@ -819,8 +853,9 @@ async function inspectWithRetry(
 
 async function waitForGroupAbsent(
   pgid: number, inspect: (pgid: number) => Promise<ProcessGroupInspection>, timeoutMs: number, pollIntervalMs: number,
+  floorMs: number,
 ): Promise<'gone' | 'alive' | 'failed'> {
-  const deadline = Date.now() + Math.max(timeoutMs, 2_000);
+  const deadline = Date.now() + Math.max(timeoutMs, floorMs);
   while (true) {
     const result = await inspect(pgid);
     if (result.status === 'absent') return 'gone';
