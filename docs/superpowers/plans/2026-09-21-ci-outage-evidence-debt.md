@@ -236,6 +236,19 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/core/src/config/__tests__/schema.test.ts packages/daemon/src/__tests__/runtime-controller.test.ts packages/daemon/src/__tests__/budgets-composition.test.ts packages/protocol/src/__tests__/errors.test.ts packages/cli/src/__tests__/exit-codes.test.ts
   ```
 
+### #65 — feat(daemon,core): inject dev overlay into proxied HTML responses (W10-4 / 46)
+- Commit: `e47b4ef` · Unit: W10-4 / 46 (MVP slice — kontrol listesi hariç)
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası). Yalnızca yerel gate ile doğrulandı.
+- Bu PR'a özgü ayrı bir kanıt boşluğu: enjeksiyon `ProxyServer`'ın kendi response akışına
+  eklendi, bu yüzden #57'nin (W9-4) zaten taşıdığı aynı "gerçek bir dev server'a (Vite HMR gibi)
+  karşı hiç çalıştırılmadı" boşluğunu miras alıyor — sahte bir `http.Server` backend'e karşı
+  test edildi.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/daemon/src/__tests__/dev-overlay.test.ts packages/daemon/src/__tests__/proxy-dev-overlay.test.ts packages/daemon/src/__tests__/proxy-policy.test.ts packages/core/src/config/__tests__/schema.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
