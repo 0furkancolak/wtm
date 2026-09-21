@@ -3122,6 +3122,88 @@ events
 
 dokümanda anlatıldığı gibi çalışıyor mu test edilmeli.
 
+**35a değerlendirmesi (2026-09-21):** beş alandan dördü kapatıldı, biri (resource lifecycle) bir
+notla kapatıldı; `events` tamamen yeni kanıtla kapatıldı, o yüzden üstteki satır hâlâ `[ ]`
+bırakıldı -- tek bir "hepsi bitti" imzası, aşağıdaki notu okumadan geçilmemesi için.
+
+- **remove lifecycle — zaten kapalı.** PR #11 zaten `### [x] Removal` ve `### [x] Remote safety`
+  bölümlerini kapatmıştı (satır 3129-3159); o kanıt burada tekrarlanmıyor. Bu oturum ek bir şey
+  bulmadı.
+- **cleanup candidates — kapalı, küçük bir boşluk kapatıldı.**
+  `packages/core/src/analysis/__tests__/cleanup-ranking.test.ts` (20 test) ve
+  `packages/cli/src/__tests__/cleanup-ranking.test.ts` +
+  `packages/cli/src/__tests__/cleanup-ranking.scenario.ts` (gerçek Git fixture'ı üzerinden CLI
+  seviyesinde) zaten `docs/10-git-safety-worktree-analysis.md`'nin ["Cleanup
+  candidates"](docs/10-git-safety-worktree-analysis.md#cleanup-candidates) bölümündeki 7 tier'i
+  (readiness, running, unsettled work, persistence strength, idleness, prunable, reclaimable
+  estimate), path tie-break'i, `score`'un sıralamayla hiç çelişmediğini ve `BLOCKED`'ın listeden
+  düşürülmeden en sona konduğunu tek tek doğruluyordu -- madde 12'nin ("cleanup candidate ranking
+  ekle") kendisi de zaten `[x]`. Eksik olan tek şey: tier 5 ("longest since the last WTM activity
+  *first*, then since the last commit") için mevcut testlerin hepsi diğer zaman damgasını sabit
+  tutuyordu, yani runtime-idleness'ın commit-idleness'a gerçekten üstün geldiğini (ikisi
+  çeliştiğinde) hiçbiri kanıtlamıyordu. Yeni test: `cleanup-ranking.test.ts`, "runtime idleness
+  outranks commit idleness when the two disagree" -- bir aday yakın zamanda çalıştırılmış ama
+  commit'i çok eski, diğeri tam tersi; birincisi hâlâ ikinciden daha kötü (daha az temizlenmeye
+  aday) sıralanıyor. `bun test packages/core/src/analysis/__tests__/cleanup-ranking.test.ts`: 20/20
+  yeşil. Platform: bu sandbox'ta yalnızca Linux üzerinde çalıştırıldı; çapraz platform CI kanıtı
+  iddia edilmiyor (zaten platformdan bağımsız saf mantık).
+- **performance gate — zaten kapalı, kod değişikliği gerekmedi.**
+  `scripts/__tests__/verify-release.test.ts`, `docs/12-open-source-distribution.md`'nin "Release
+  operations" bölümünün tam olarak iddia ettiği üç davranışı ayrı ayrı doğruluyor: "rejects a
+  stable release with a performance blocker" (stable + 1 blocker -> reddedilir), "accepts a stable
+  release with performance warnings but no blockers" (stable + yalnızca warning -> kabul edilir,
+  yani warning hiçbir zaman blocker gibi davranmıyor) ve "accepts a prerelease despite a
+  performance blocker" (prerelease + blocker -> kabul edilir, tam muafiyet). Bunlara ek olarak
+  "rejects a release without performance results", "a negative report cannot cancel another
+  architecture's blocker" ve "reports combined blocker counts exactly even above the safe number
+  range" da `verifyPerformance`'ın (`scripts/verify-release.ts`) genel doğruluğunu kanıtlıyor. Bu
+  zaten "implementation-detail unit testleri" değil, dokümanın kendi cümleleriyle bire bir eşleşen
+  davranış testleri -- madde 4 ve release checklist'teki "Performance workflow/docs parity" satırı
+  da zaten `[x]`. `bun test scripts/__tests__/verify-release.test.ts` yeşil.
+- **resource lifecycle — büyük ölçüde kapalı; bir dokümantasyon/implementasyon uyuşmazlığı not
+  edildi, test boşluğu değil.** `docs/07-process-port-runtime.md`'nin `DISCOVERED -> ALLOCATED ->
+  PREPARING -> READY` ve `READY/RUNNING -> ORPHANED -> CLEANING -> REMOVED` akışları ile
+  `docs/08-storage-cache-gc.md`'nin storage policy'leri (`shared`/`native-cache`/`clone`/
+  `isolated`/`symlink`/`copy`/`ephemeral`/`external`/`ignore`) zaten
+  `packages/core/src/resources/__tests__/` altında (`materializer.test.ts`,
+  `preparation.test.ts`, `removal.test.ts`, `guard.test.ts`, `guard-lifecycle.scenario.ts` +
+  `.test.ts`, `gc.test.ts`, `gc-repository-lease.test.ts`) kapsamlı şekilde test ediliyor; endpoint
+  lease'lerin `ORPHANED` worktree'de serbest bırakılması (docs/07 "Endpoint leases") zaten
+  `sqlite-store.test.ts`/`.scenario.ts` üzerinden, "port release" satırının (`### [x] Removal`)
+  kendi kanıtı. **Not:** docs/07'nin "Cleanup" tablosundaki `containers delete` / `networks
+  delete` / `volumes retain by default` satırları için `packages/core`, `packages/adapters` ve
+  `packages/daemon` içinde karşılık gelen hiçbir kod bulunamadı (`gc.ts`'teki "container" terimi
+  yalnızca GC'nin kendi dosya-sistemi karantina dizinini ifade ediyor, Docker değil) -- bu satırlar
+  muhtemelen henüz core'a bağlanmamış adapter-sahipli kaynaklar (ör. Docker Compose) için bir
+  kapsam beyanı, `docs/08`'in kendisinin de söylediği gibi ("Adapter-declared disposable build
+  outputs and adapter-native dependency cleanup plans are not part of this mode"). Var olmayan bir
+  davranış için test yazmak yerine burada açıkça not edildi; bu WTM lifecycle test kapsamının değil,
+  ayrı bir implementasyon kapsamının konusu.
+- **events — önceden yalnızca `worktree.created` gerçek bir daemon'a karşı kanıtlıydı; şimdi
+  8 olayın 8'i de kanıtlı.** `docs/03-configuration-spec.md`'nin Events tablosu sekiz olay
+  listeliyor: `workspace.discovered`, `repo.discovered`, `worktree.discovered`, `worktree.created`,
+  `worktree.ready`, `worktree.removed`, `runtime.started`, `runtime.stopped`. PR #11
+  `worktree.created`'ı gerçek bir daemon'a karşı kanıtlamıştı
+  (`create-daemon-running.scenario.ts`); geri kalan yedisi yalnızca
+  `packages/daemon/src/__tests__/events.test.ts`'in sahte `LifecycleEventDispatcher` harness'ıyla
+  (sahte `store`, sahte `start` -- gerçek supervisor, gerçek soket, gerçek reconcile yok)
+  doğrulanıyordu. Yeni `packages/cli/src/__tests__/lifecycle-events-daemon.scenario.ts` +
+  `.test.ts`, gerçek `createProductionDaemon` + gerçek `DaemonClient` + gerçek CLI ile kalan
+  yedisini tek tek kanıtlıyor: bir workspace/repository'nin ilk reconcile'ı aynı anda
+  `workspace.discovered`, `repo.discovered` ve `worktree.discovered`'ı (her biri kendi marker
+  task'ını gerçekten çalıştırarak) tetikliyor; `[prepare] mode = "eager"` ile aynı ilk reconcile
+  `worktree.ready`'yi de tetikliyor; `wtm start dev` (daemon'un gerçek supervisor'ı üzerinden)
+  `runtime.started`'ı, `wtm stop dev` `runtime.stopped`'ı tetikliyor (ve durdurulan sürecin OS'ten
+  gerçekten kaybolduğu ayrıca doğrulanıyor); ham bir `git worktree remove` (kasıtlı olarak `wtm
+  remove` değil -- o başka bir unit'in alanı ve zaten kendisi hiçbir şey dispatch etmiyor, bir
+  sonraki reconcile ediyor) + `reconcile` de `worktree.removed`'ı ana worktree'de tetikliyor, tam
+  dokümanda anlatıldığı gibi. Her assertion, ilgili event konfigürasyondan çıkarıldığında testin
+  gerçekten kırıldığı elle doğrulandı (ör. `worktree.ready` için `mode: 'lazy'`'a çevrilince test
+  zaman aşımıyla başarısız oluyor) -- yani bu testler olayların varlığını değil, gerçekten
+  çalıştığını kanıtlıyor. `bun test
+  packages/cli/src/__tests__/lifecycle-events-daemon.test.ts`: 1/1 yeşil. Platform: bu sandbox'ta
+  yalnızca Linux üzerinde çalıştırıldı; çapraz platform CI kanıtı iddia edilmiyor.
+
 ---
 
 # Testing checklist
