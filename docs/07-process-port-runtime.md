@@ -133,6 +133,42 @@ references for durations and result/error states.
 
 Managed task stdout/stderr is redirected to WTM log files. `wtm logs` reads from disk; the daemon does not accumulate unlimited output in memory.
 
+## Heavy job memory admission
+
+The shared heavy-job queue (`wtm run <task> --enqueue`, config in
+[`docs/03`](03-configuration-spec.md#shared-heavy-job-memory-admission), CLI in
+[`docs/04`](04-cli-reference.md)) can gate admission on memory as well as concurrency. That
+admission reads two numbers only: the task's declared `memory_estimate_mib` and the host's
+current `available`/`constrained` memory (`process.availableMemory()` /
+`process.constrainedMemory()`, in `packages/daemon/src/job-memory.ts`). It never walks the
+process tree of a running or candidate job to sum resident set sizes.
+
+Two reasons, not one:
+
+- **Cost.** Reading a process's own memory counters is cheap; enumerating an entire process
+  group and reading each descendant's counters is not, and the enumeration mechanism and its
+  cost differ per platform (`/proc` on Linux, `task_info` on macOS, PSAPI/`NtQuerySystemInformation`
+  on Windows). An admission check runs on every enqueue; its cost has to stay bounded and
+  platform-uniform, which a per-process-tree scan is neither.
+- **Accuracy.** Summing RSS across a process tree is not a physical-RAM figure even when it is
+  cheap to compute: forked/copy-on-write pages and shared libraries are mapped into more than
+  one process, so a naive sum double-counts them. Treating that sum as "how much RAM this job
+  is using" overstates it, sometimes by a large margin.
+
+This is why the admission stays estimate-plus-host-headroom, and why a future per-job memory
+*reporting* feature (as opposed to admission) would still need to bound how often and how deep
+it samples, and would still have to disclose the shared-page caveat above rather than present a
+raw RSS sum as exact usage.
+
+Estimate-based admission is explicitly **not an OS-enforced hard memory limit**. WTM does not
+create a cgroup, Job Object or `rlimit` for a queued job, and does not kill a running job for
+exceeding its declared estimate — the estimate only decides whether a *new* job is admitted.
+Documentation and error messages must not claim otherwise, and no platform-specific hard-limit
+support is promised until it is actually built and verified there. General process/disk budgets
+(todo item 19) read the same host-memory accounting as this queue but stay a separate, narrower
+budget on a separate schedule; item 19 does not get a second scheduler; both currently avoid
+process-tree measurement for the same cost/accuracy reasons above.
+
 ## Docker Compose namespace
 
 A worktree-specific environment value is recommended:
