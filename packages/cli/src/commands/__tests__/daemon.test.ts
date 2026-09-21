@@ -61,6 +61,17 @@ const linuxHost = selectPlatformRuntime({
   home: '/home/x',
   env: { XDG_RUNTIME_DIR: '/run/user/501' },
 });
+/**
+ * And a windows one, constructed the same way.
+ *
+ * Fixture evidence, explicitly: this is a `PlatformRuntime` built for the `win32` id from whichever
+ * host runs the file, not a measurement taken on Windows. That is the right instrument for the
+ * question the parity tests below ask — the *shape* of the JSON `wtm daemon` publishes is decided
+ * by `published()` reading `host.service.id`, and injecting the id is exactly how that decision is
+ * reached. What it cannot establish is that `schtasks.exe` accepts the argument vectors the same
+ * backend builds; that needs a real Task Scheduler and a `win32_test_filter` run.
+ */
+const windowsHost = selectPlatformRuntime({ platform: 'win32', home: 'C:\\Users\\x', env: {} });
 
 /** A lifecycle that fails with one of the internal `LAUNCHD_*` codes. */
 function failingWith(code: string): ServiceLifecycle {
@@ -356,6 +367,123 @@ describe('the published definition path', () => {
       expect(Object.hasOwn(data, 'plistPath')).toBe(false);
       expect(JSON.stringify(envelope)).not.toContain('plistPath');
     }
+  });
+
+  test('windows carries only the neutral name, for the same reason linux does', async () => {
+    // The gate in `published()` is `host.service.id === 'darwin'`, so win32 falls to the same side
+    // as linux by construction rather than by a branch anybody wrote for it. Pinning it is what
+    // turns "by construction" into something a future edit cannot quietly undo — a gate rewritten
+    // as `id !== 'linux'` would pass every test in this file that existed before this one and
+    // start telling a Windows reader that a Scheduled Task XML file is a plist.
+    for (const action of ['install', 'uninstall', 'status'] as const) {
+      const envelope = await runDaemonLifecycleCommand(action, fakeManager(), undefined, undefined, windowsHost);
+      const data = envelope.data as object;
+
+      expect(jsonEnvelopeSchema.parse(envelope)).toEqual(envelope);
+      expect(data).toMatchObject({ definitionPath: '/tmp/agent.plist' });
+      expect(Object.hasOwn(data, 'plistPath')).toBe(false);
+      expect(JSON.stringify(envelope)).not.toContain('plistPath');
+    }
+  });
+
+  /**
+   * todo item 9's "JSON contract platformlar arasında aynı kalıyor", stated as a test rather than
+   * as a sentence.
+   *
+   * The criterion is not "the three platforms emit identical JSON" — they cannot, because the
+   * paths in it are OS-native and `plistPath` is a deliberate macOS-only extra (C1's D13, C2's
+   * D11: `definitionPath` is on every platform and is what a portable consumer reads; `plistPath`
+   * is additive and is removed by the first increment that has an independent reason to break this
+   * contract). The criterion is that the *field set* is the same everywhere apart from that one
+   * documented addition, so a script written against one platform finds every key it reads on the
+   * other two. Asserting the key sets directly is what catches the failure mode a field-by-field
+   * test misses: a key that quietly appears on one platform only.
+   */
+  test('the published field set is identical on all three platforms apart from the macOS-only plistPath', async () => {
+    const keysFor = async (host: PlatformRuntime, action: 'install' | 'uninstall' | 'status'): Promise<string[]> => {
+      const envelope = await runDaemonLifecycleCommand(action, fakeManager(), undefined, undefined, host);
+      expect(jsonEnvelopeSchema.parse(envelope)).toEqual(envelope);
+      // Read back through JSON rather than off the object: the contract is what a reader parses,
+      // and a key set to `undefined` is a key on the object but not in the document. That is the
+      // `exactOptionalPropertyTypes` failure mode this repo is configured to prevent, and reading
+      // the serialized form is what would notice it if the configuration ever stopped biting.
+      return Object.keys(JSON.parse(JSON.stringify(envelope)).data as object).sort();
+    };
+
+    for (const action of ['install', 'uninstall', 'status'] as const) {
+      const [darwin, linux, windows] = await Promise.all([
+        keysFor(darwinHost, action),
+        keysFor(linuxHost, action),
+        keysFor(windowsHost, action),
+      ]);
+
+      // The two non-macOS platforms agree exactly: there is no third spelling of anything.
+      expect(windows).toEqual(linux);
+      // And macOS is that same set plus exactly one field, named here rather than computed, so
+      // this test has to be edited — and the decision re-read — if the exception ever grows.
+      expect(darwin).toEqual([...linux, 'plistPath'].sort());
+      // Additive in the direction that matters: everything a portable consumer reads on macOS is
+      // still there on the other two.
+      expect(darwin.filter((key) => key !== 'plistPath')).toEqual(linux);
+      expect(linux).toContain('definitionPath');
+    }
+  });
+
+  test('the label and definitionPath shapes are the ones docs/04-cli-reference.md tabulates', () => {
+    // The `wtm daemon status` field table in `docs/04-cli-reference.md` describes `label` and
+    // `definitionPath` per platform, and prose describing a value is the kind of documentation
+    // that goes stale silently. It had: the table said the Linux label was
+    // `wtm-daemon-<digest>.service`, and it is not — the suffix belongs to the *definition file*,
+    // which is why `definitionPath` appends it to the label rather than the label carrying it.
+    // Windows was missing from the table outright.
+    //
+    // Fixture evidence: three `PlatformRuntime`s built by id on whichever host runs this, with
+    // injected homes. The shapes are what is pinned, not any digest.
+    const shapes = ([
+      [darwinHost, '/Users/x', {}],
+      [linuxHost, '/home/x', { XDG_RUNTIME_DIR: '/run/user/501' }],
+      [windowsHost, 'C:\\Users\\x', {}],
+    ] as const).map(([host, home, env]) => servicePathsFor(host.service, { home, env }));
+    const [darwin, linux, windows] = shapes;
+
+    // One digest derivation, three labels built from it, and no label carries its definition's
+    // file extension.
+    for (const paths of shapes) expect(paths.label).toMatch(/[0-9a-f]{32}$/u);
+    expect(darwin?.label).toMatch(/^dev\.wtm\.daemon\.[0-9a-f]{32}$/u);
+    expect(linux?.label).toMatch(/^wtm-daemon-[0-9a-f]{32}$/u);
+    expect(windows?.label).toMatch(/^wtm-daemon-[0-9a-f]{32}$/u);
+
+    // The suffix is the definition file's, and each platform's is its own.
+    expect(darwin?.definitionPath).toBe(`/Users/x/Library/LaunchAgents/${darwin?.label}.plist`);
+    expect(linux?.definitionPath).toBe(`/home/x/.config/systemd/user/${linux?.label}.service`);
+    expect(windows?.definitionPath).toBe(`C:\\Users\\x\\AppData\\Local\\WTM\\service\\${windows?.label}.xml`);
+  });
+
+  test('a failure envelope keeps its shape on all three platforms', async () => {
+    // The parity above is about the success path. `ok: false` is the half a script reaches when
+    // something went wrong, which is exactly when it can least afford a platform-shaped surprise:
+    // the envelope has to carry a coded error and no `data` on every platform, with only the
+    // human-readable message differing because it names that platform's service manager.
+    const codes: string[] = [];
+    for (const host of [darwinHost, linuxHost, windowsHost]) {
+      const envelope = await runDaemonLifecycleCommand('status', failingWith('LAUNCHD_DOMAIN_UNAVAILABLE'), undefined, undefined, host);
+
+      expect(jsonEnvelopeSchema.parse(envelope)).toEqual(envelope);
+      expect(envelope).toMatchObject({ schemaVersion: 1, ok: false, command: 'daemon status', data: null, warnings: [] });
+      expect(envelope.errors).toHaveLength(1);
+      expect(Object.keys(JSON.parse(JSON.stringify(envelope))).sort())
+        .toEqual(['command', 'data', 'errors', 'ok', 'schemaVersion', 'warnings']);
+      const code = envelope.errors[0]?.code;
+      expect(code).toBeDefined();
+      if (code !== undefined) codes.push(code);
+      // The message is the one thing allowed to differ, and it has to: naming launchd on Windows
+      // would be false. Every platform still has to say *something*.
+      expect(envelope.errors[0]?.message).not.toBe('');
+    }
+    // One code for one condition, whichever service manager reported it. An unclassified
+    // `WTM_DAEMON_REQUEST_FAILED` on one platform and a named code on another is the asymmetry
+    // the platform seam exists to remove.
+    expect(new Set(codes).size).toBe(1);
   });
 
   test('the CLI drives the selected backend rather than a hard-wired launchd one', async () => {

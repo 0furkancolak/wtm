@@ -845,9 +845,9 @@ observe.
 | Field | Meaning |
 | --- | --- |
 | `state` | `loaded` when the service manager knows the job, `installed-not-loaded` when the definition is on disk but the manager does not know it, `absent` when there is neither. |
-| `runState` | The service manager's own word for the job, passed through verbatim rather than normalised — `running` / `not running` from launchd, and drawn from `LoadState`, `ActiveState` and `SubState` on systemd. `null` when the manager does not know the job. |
-| `label` | The name this `HOME` publishes under: `dev.wtm.daemon.<digest>` on macOS, `wtm-daemon-<digest>.service` on Linux. The digest is the same derivation on both. |
-| `definitionPath` | The service definition named by that label, always inside this `HOME`. |
+| `runState` | The service manager's own word for the job, passed through verbatim rather than normalised — `running` / `not running` from launchd, drawn from `LoadState`, `ActiveState` and `SubState` on systemd, and the `Status` field of the task listing on Windows. `null` when the manager does not know the job. |
+| `label` | The name this `HOME` publishes under: `dev.wtm.daemon.<digest>` on macOS, `wtm-daemon-<digest>` on Linux and on Windows. The digest is the same derivation on all three, and the label never carries the definition file's extension — that belongs to `definitionPath`. |
+| `definitionPath` | The service definition named by that label, always inside this `HOME`: a `.plist` under `LaunchAgents` on macOS, a `.service` unit under the XDG user unit directory on Linux, a `.xml` task definition under WTM's own service directory on Windows. |
 | `plistPath` | **Deprecated.** The same value as `definitionPath`, present on macOS only. |
 | `reachable` | Whether the daemon answered on its socket. A service manager reports a service as running the moment it forks, which says nothing about whether a command would work. |
 
@@ -860,14 +860,20 @@ describe different agents — under a second `HOME`, `state` and `runState` came
 translating it would mean inventing a third vocabulary that matches neither of the two a user sees
 when they run `launchctl print` or `systemctl --user show` themselves.
 
-`definitionPath` is the field to read. WTM's service definition is a LaunchAgent plist on macOS
-and a systemd user unit on Linux, so `plistPath` is only ever true on one of them; naming a
-`.service` file `plistPath` would be a lie told for the sake of a schema. It is dropped from the
-Linux envelope for that reason.
+`definitionPath` is the field to read. WTM's service definition is a LaunchAgent plist on macOS, a
+systemd user unit on Linux and a Scheduled Task XML file on Windows, so `plistPath` is only ever
+true on one of the three; naming a `.service` or `.xml` file `plistPath` would be a lie told for
+the sake of a schema. It is dropped from the Linux and Windows envelopes for that reason.
 
 `plistPath` is retained on macOS purely for compatibility — JSON output is a contract that may
 only grow, and a rename is not a growth: a script reading `plistPath` would simply stop finding
 it. Both fields are present there and always carry the same value.
+
+**Apart from `plistPath`, the field set is identical on all three platforms**, so a script written
+against one of them finds every key it reads on the other two. That is asserted rather than
+promised: `packages/cli/src/commands/__tests__/daemon.test.ts` builds the envelope for a `darwin`,
+a `linux` and a `win32` runtime and compares the published key sets directly, and the same file
+pins the `label` and `definitionPath` shapes this table describes.
 
 **When it goes.** `plistPath` is removed by the first increment that has an independent reason to
 break the daemon JSON contract, and not before. `definitionPath` is already present on every
