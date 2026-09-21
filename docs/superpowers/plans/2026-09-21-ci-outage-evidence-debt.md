@@ -264,7 +264,8 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   ```
 
 ### #69 — feat(core,protocol,daemon,cli): add the dev-overlay checklist (W11-1 / 46b)
-- Commit: (bu PR'ın head'i) · Unit: W11-1 / 46b — madde 46'nın son açık parçası, kapatıyor.
+- Commit: `2dcf096` (öncesi) → merge sonrası güncel head · Unit: W11-1 / 46b — madde 46'nın son
+  açık parçası, kapatıyor.
 - Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
   de hiç çalışmadı (aynı kesinti imzası). Yalnızca yerel gate ile doğrulandı.
 - Bu PR'a özgü ayrı bir kanıt boşluğu: yeni proxy-native HTTP ucu (`/__wtm/checklist`) ve overlay'in
