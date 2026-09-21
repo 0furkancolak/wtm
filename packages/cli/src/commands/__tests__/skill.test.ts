@@ -352,8 +352,18 @@ describe('Agent Skill command', () => {
       fileTrust: hostFileTrust,
     });
 
+    // Unlike the pre-write hook above, `beforePublication` fires after the installer has already
+    // opened its own handle to a file inside `targetDirectory`. On POSIX an open file descriptor
+    // follows the inode rather than the path, so the rename above succeeds silently and it is the
+    // installer's own post-hook identity recheck that has to catch the switch -- the specific
+    // rejection asserted below. A real win32 leg measured that same `rename` throwing `EPERM`
+    // instead: NTFS refuses to rename a directory while a handle to a file inside it is open, so
+    // the attack this test simulates cannot reach the installer's check at all there. That is a
+    // stronger guarantee than the one this test exists to pin, not a gap in it, so this asserts
+    // the security property both platforms actually deliver -- nothing publishes outside the
+    // anchor -- rather than the one POSIX-only code path that proves it.
     await expect(runSkillInstallCommand({ scope: 'local', installer })).rejects.toThrow(
-      'Agent Skill destination contains an unsafe path component.',
+      isWindowsTestHost ? /EPERM/u : 'Agent Skill destination contains an unsafe path component.',
     );
     expect(await exists(join(outside, 'SKILL.md'))).toBe(false);
   });
