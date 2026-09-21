@@ -1922,10 +1922,62 @@ wtm-windows-arm64.exe
       plan tablosundaki kod alanı — kümeleme dokümanı bu alt-alanlar için hiçbir gözlemlenen
       hata kaydetmiyor (`platform/src/service/__tests__` win32'de hiç koşmadı); yeni kanıt
       olmadan spekülatif bir düzeltme yazılmadı.
-- [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
-- [ ] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
+- [x] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
+      **2026-09-21 (W5-3 / 9m):** burada gerçek bir hata vardı. UTF-8 dosyayı okumak byte order
+      mark'ı `U+FEFF` olarak string'in içinde bırakıyor, TOML'un onu atlayan bir kuralı yok, yani
+      mark'ı varsayılan olarak yazan editörlerin kaydettiği her `wtm.toml` — yazarına göre aynı
+      yapılandırma — ilk anahtarın ilk karakterinde sözdizimi hatasıyla reddediliyordu; üstelik
+      hiçbir editörün göstermediği bir karakter için gözle bakınca doğru görünen bir satırı
+      işaret eden bir mesajla. `stripByteOrderMark` (`packages/core/src/config/toml-text.ts`)
+      yalnızca *baştaki* mark'ı siliyor ve diskteki dosyayı hiç yeniden yazmıyor; kullanıcının
+      yazdığı bir TOML dosyasını diskten okuyan dört yere de uygulandı (config yükleyici,
+      `wtm init`, `wtm detect`, `wtm changes`). Yeni `packages/core/src/config/__tests__/
+      cross-platform-config.test.ts` dört kodlamayı (LF, CRLF ve her ikisinin mark'lı hali) hem
+      ayrıştırıcıdan hem gerçek yükleyiciden geçiriyor, değerleri birbirleriyle değil yazılı bir
+      beklentiyle karşılaştırıyor (hepsinin aynı şekilde yanlış olması hâli görünür kalsın diye)
+      ve `wtm explain`'in gösterdiği provenance satır numaralarının kodlamadan bağımsız olduğunu
+      sabitliyor. Dosyanın ortasındaki bir mark hâlâ sözdizimi hatası.
+      Bilinçli olarak *düzeltilmeyen* tek fark yazıya geçti ve testle sabitlendi: çok satırlı bir
+      temel dizenin (`"""…"""`) *içindeki* satır sonu ayırıcı değil değerin kendisi, dolayısıyla
+      dosyayla birlikte yolculuk ediyor (CRLF kopya `\r\n`, LF kopya `\n` veriyor). Normalleştirmek
+      tırnak içindeki bir değeri yeniden yazmak olurdu; `docs/03-configuration-spec.md`'nin yeni
+      "File encoding" bölümü bunu ve taşınabilir yazımın `\n` kaçışı olduğunu söylüyor.
+      Kanıt durumu: kodlama testleri fixture (baytlar burada kurgulanıyor, gerçek bir editörden
+      gelmiyor — ama `U+FEFF` ve `\r\n` dizileri OS'a değil kendi spesifikasyonlarına bağlı).
+      Yol biçimi tarafı zaten `scripts/__tests__/examples-portability.test.ts` ile POSIX ve win32
+      path flavor'ları üzerinden kapsanıyordu; buna ek olarak yeni dosyanın son testi host'un kendi
+      `node:path`'iyle iç içe workspace katmanlamasını okuyor, yani onu çalıştıran her CI
+      bacağında native kanıt — win32 bacağı onu Windows kanıtı yapan şey. Bu oturumda yalnızca
+      Linux'ta koştu; GitHub Actions hesap çapında kesintide olduğu için gerçek bir macOS/Windows
+      koşusu yok. Dokunulmayan tek okuma yeri `packages/daemon/src/runtime-factory.ts:355`
+      (`globalJobPolicy`) — bu dalgada başka bir birimin alanı, ve mark'lı bir global
+      `config.toml` orada hâlâ reddedilir; ayrı bir birim olarak kapatılmalı.
+- [x] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
       `plistPath` macOS'a özel bir ek alan olarak bilerek duruyor (D11), kaldırılması daemon JSON
       sözleşmesini kırmak için bağımsız bir nedeni olan ilk artıma programlandı.
+      **2026-09-21 (W5-3 / 9m):** ölçüt artık bir cümle değil bir test.
+      `packages/cli/src/commands/__tests__/daemon.test.ts` zarfı darwin, linux ve win32 için
+      kuruyor ve yayımlanan *anahtar kümelerini* doğrudan karşılaştırıyor — alan alan karşılaştırma
+      asıl önemli hata biçimini, yani tek bir platformda sessizce beliren bir anahtarı, göremez.
+      linux ile win32 birebir aynı; darwin aynı küme artı yalnızca `plistPath` (harfi harfine
+      yazıldı, yani istisnanın büyümesi bu testi düzenlemeyi ve D13/D11'i yeniden okumayı
+      gerektirir). Anahtarlar JSON'dan geri okunuyor, böylece `undefined` bir anahtar okuyucunun
+      gördüğü gibi "yok" sayılıyor. `ok: false` yarısı da üç platformda aynı şekli ve tek bir kodu
+      koruyor; yalnızca servis yöneticisini adlandıran mesaj değişiyor. `published()`'ın kapısı
+      `id === 'darwin'` olduğu için win32 yapı gereği linux tarafına düşüyor; bunu sabitlemenin
+      değeri mutasyonla doğrulandı (kapı `id !== 'linux'` yapıldığında iki yeni test kırmızıya
+      dönüyor). Dördüncü test `label`/`definitionPath` biçimlerini sabitliyor ve
+      `docs/04-cli-reference.md`'de gerçek bir sapma yakaladı: tablo Linux etiketini
+      `wtm-daemon-<digest>.service` diye veriyordu — sonek tanım *dosyasına* ait, etikete değil —
+      ve Windows tabloda hiç yoktu; ikisi de düzeltildi.
+      `plistPath`'e dokunulmadı: C1'in D13'ü ile C2'nin D11'i aynı sonuca ayrı ayrı vardı, bu
+      artımın onu kırmak için bağımsız bir nedeni yok. Kutu D13'ün "kaldırılana kadar işaretsiz
+      kalır" notuna rağmen işaretlendi, çünkü onu D11 geçersiz kıldı: taşınabilir bir tüketicinin
+      ihtiyacı olan özellik `definitionPath`'in her platformda bulunması ve bu artık kanıtlı.
+      Kanıt durumu: fixture — üç `PlatformRuntime` kimliğe göre kuruluyor, gerçek bir macOS/Windows
+      çekirdeğinde ölçüm değil. `schtasks.exe`'in aynı backend'in kurduğu argüman vektörlerini
+      kabul ettiği hakkında hiçbir şey söylemiyor; o hâlâ hedefli bir `win32_test_filter` koşusu
+      istiyor.
 - [x] CLI command names platforma göre değişmiyor. — aynı komut listesi iki platformda da
       `main.test.ts` tarafından sabitleniyor.
 - [x] Platform-specific farklar `wtm doctor` ile açıkça raporlanıyor.
@@ -3291,8 +3343,20 @@ birlikte 62/62 (bkz. Removal/Create parity turu). `bun run typecheck && bun run 
 - [ ] Windows path/drive-letter tests
 - [ ] Windows Named Pipe IPC tests
 - [ ] Windows Job Object/process-tree cleanup tests
-- [ ] Cross-platform config fixture tests
-- [ ] Cross-platform JSON contract parity
+- [x] Cross-platform config fixture tests — `packages/core/src/config/__tests__/cross-platform-config.test.ts`
+      (the four encodings a `wtm.toml` arrives in — LF, CRLF, and each with a leading UTF-8 byte
+      order mark — through both the parser and the real loader, with provenance line numbers and
+      the deliberate multi-line-string exception pinned) and the pre-existing
+      `scripts/__tests__/examples-portability.test.ts` (every published example resolved under a
+      POSIX path flavor and a Windows one). Fixture evidence; the last test in the first file is
+      host-native and is Windows evidence on the win32 CI leg. Run on Linux only in this session.
+- [x] Cross-platform JSON contract parity — `packages/cli/src/commands/__tests__/daemon.test.ts`,
+      `the published definition path`: the `wtm daemon install/uninstall/status` envelope built for
+      a darwin, a linux and a win32 `PlatformRuntime`, with the published key sets compared
+      directly (identical apart from the macOS-only additive `plistPath`), the `ok: false` shape
+      and error code compared too, and `label`/`definitionPath` pinned against the
+      `docs/04-cli-reference.md` table. Fixture evidence: the platform is injected by id, not
+      measured on a real kernel.
 
 ### [ ] Distribution / install
 
