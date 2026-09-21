@@ -42,6 +42,11 @@ describe('assignProxySlugs', () => {
     expect(slugs.get('b')).toBe('feature-billing');
   });
 
+  it('strips the refs/heads/ prefix WorktreeRecord.branch actually carries', () => {
+    const slugs = assignProxySlugs([worktree('a', 1, 'refs/heads/feature/auth')]);
+    expect(slugs.get('a')).toBe('feature-auth');
+  });
+
   it('the earliest worktree (lowest numericId) keeps the plain slug on collision', () => {
     const early = worktree('early', 1, 'fix/auth-bug');
     const late = worktree('late', 2, 'fix-auth-bug');
