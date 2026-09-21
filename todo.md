@@ -2421,8 +2421,10 @@ aynı adlı bölümü (`[proxy]` şeması, global-config-only olma nedeni).
 
 Kasıtlı olarak kapsam dışı bırakılanlar — ayrı, sonraki birimler:
 
-- HTTPS / local certificate stratejisi — K8'de belirsiz süreyle ertelendi (bkz.
-  `docs/superpowers/plans/2026-09-15-remaining-work-waves.md` K8 satırı); bu birim hiç dokunmadı.
+- HTTPS / local certificate stratejisi — K8 bunu v1 kapsamı dışı bıraktı (Kaptan'ın
+  2026-09-21T19:02 onayı: tarayıcılar `*.localhost`'u zaten güvenli bağlam saydığı ve mkcert
+  tarzı bir yerel CA bağımlılığı v1'e fazla geldiği için proxy HTTPS'siz kalıyor). Bekleyen bir
+  karar değil, kapanmış bir kapsam sınırı; bu birim hiç dokunmadı.
 - CORS origins ile otomatik entegrasyon — W10-1'in işi (`packages/core/src/runtime/cors.ts`
   bilinçli olarak değiştirilmedi; bu birime sadece çakışmamak için okundu).
 - Port allocation ile backward compatibility — bu proxy port tahsisini hiç değiştirmiyor, sadece
@@ -2441,8 +2443,31 @@ bir kazanım.
 - [x] Feature/repo/endpoint domain naming. **(2026-09-21, W9-4)**
 - [x] Stable hostname allocation. **(2026-09-21, W9-4)**
 - [ ] HTTPS gerekiyorsa local certificate strategy.
-- [ ] CORS origins ile otomatik entegrasyon.
+- [x] CORS origins ile otomatik entegrasyon. **(2026-09-21, W10-1)**
 - [ ] Port allocation ile backward compatibility.
+
+**2026-09-21 (W10-1, CORS yarısı):** `[proxy] enabled = true` iken, `resolveWorktreeRuntime`
+(`packages/daemon/src/task-resolution.ts`) artık `endpoints.leases`'i `endpoints.origins` ile
+port üzerinden eşleştirip (`origin != false` opt-out'una sahip olan lease'ler için) her birine
+`canonicalProxyHostname` ile bir proxy-hostname origin'i hesaplıyor ve bunu `resolveCors`'a giden
+`origins` dizisine dinamik-port origin'inin yanına, onun yerine değil, ekliyor —
+`packages/core/src/runtime/cors.ts`'in kendisi hâlâ dokunulmadı (imzası ve davranışı aynı; tek
+değişen, çağıranın ona verdiği düz origin listesi). Sabit port'lu (fixed strategy) endpoint'ler
+lease taşımadığı ve proxy'nin kendi routing tablosu (`proxy-routes.ts`) da sadece aktif
+lease'lerden kurulduğu için zaten proxy üzerinden hiç erişilemiyor — bu yüzden onlara proxy-origin
+eklenmedi, bu bilinçli bir "aynı küme" kararı. `runtime-factory.ts`'deki private
+`globalProxyPolicy` fonksiyonu `packages/daemon/src/proxy-policy.ts`'ye taşındı; iki çağıran
+(`runtime-factory.ts`, `task-resolution.ts`) artık aynı parse-and-catch-ENOENT mantığını
+paylaşıyor, davranış değişmedi. `[proxy]` kapalıyken (varsayılan) davranış birebir eskisiyle
+aynı — ek origin yok, ek config okuması yok (ENOENT yolu zaten vardı); bu ayrı bir testle
+kanıtlandı (`packages/daemon/src/__tests__/proxy-cors-integration.test.ts`).
+
+Madde 12'nin kendi başlığı ve "HTTPS gerekiyorsa local certificate strategy" alt maddesi bilinçli
+olarak `[ ]` kalıyor: bu birim sadece CORS yarısını kapsıyor (bkz. görev tanımındaki "W10-1, CORS
+half only"). HTTPS/local certificate stratejisi **K8 ile v1 kapsamı dışı bırakıldı** — bekleyen
+bir güvenlik kararı değil, kapanmış bir kapsam sınırı (yukarıdaki W9-4 notuna bakın); bu birim
+bilinçli olarak hiç dokunmadı. Proxy origin'leri hâlâ `http://`, proxy'nin bugünkü HTTP-only
+gerçeğiyle uyumlu (`docs/07`'nin bu konudaki dürüst notuna bakın).
 
 ---
 

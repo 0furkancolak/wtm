@@ -311,6 +311,15 @@ resolves, so a configuration that names the variables itself should set it.
 `wtm init` does exactly that: it writes the variables it found into
 `[repos.<name>.environment]` and sets `enabled = false`, so the file says what happens.
 
+When the daemon's global [`[proxy]`](#local-reverse-proxy) is enabled, the allowlist gains a
+second origin per endpoint — the proxy hostname alongside the dynamic-port one, for every
+endpoint that already counts toward the allowlist (`origin != false`; an endpoint that opted out
+of a browser origin gets neither). Both are legitimate ways to reach the same running task, so
+both are published: `http://localhost:<port>` and `http://<service>.<slug>.wtm.localhost:<proxy
+port>`. See [`docs/07`](07-process-port-runtime.md#local-reverse-proxy) for the hostname format;
+this is purely additive and only applies when `[proxy] enabled = true`, so `[cors]` itself needs
+no configuration to get it.
+
 ## Detection
 
 `wtm init` and `wtm detect` read each repository and write what they find as configuration.
