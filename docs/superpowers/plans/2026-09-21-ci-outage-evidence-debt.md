@@ -125,6 +125,16 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/daemon/src/__tests__/idle-runtime.test.ts packages/core/src/config/__tests__/idle-config.test.ts packages/daemon/src/__tests__/runtime-controller.test.ts packages/daemon/src/__tests__/logs.test.ts
   ```
 
+### #52 — feat(cli,core): add wtm init --preset for seven starter workspaces (W9-2 / 20)
+- Commit: `4533596` (öncesi) → merge sonrası güncel head · Unit: W9-2 / 20
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — bu branch'te de
+  `ci.yml` hiç çalışmadı (aynı kesinti imzası: tüm leg'ler saniyeler içinde, boş çıktıyla düşüyor).
+  Yalnızca yerel gate ile doğrulandı.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/core/src/workspace/__tests__/init.integration.test.ts packages/cli/src/commands/__tests__/init.test.ts scripts/__tests__/examples-portability.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
