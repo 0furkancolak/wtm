@@ -361,6 +361,47 @@ are already pending; or the target worktree has no commit yet (a freshly created
 nothing checked out). A watch that becomes unavailable after it started is reported by `ci status`
 as `state: 'unavailable'` with `detail`, not as a command error.
 
+## Task overrides
+
+```bash
+wtm task list --json
+wtm task show <name> --json
+wtm task set <name> [--run <command> --shell | --argv <item>...] [--cwd <path>] [--background]
+  [--singleton] [--description <text>] [--env <KEY=VALUE>...] [--task-json <definition>] --json
+wtm task unset <name> --json
+wtm task export <name>
+```
+
+| Command | Data and behavior |
+| --- | --- |
+| `wtm task list` | `{ tasks: [{ taskName, task, createdAt, updatedAt }] }`; every override recorded for this worktree. |
+| `wtm task show <name>` | `{ task }`, the same shape as one entry of `wtm task list`, or `{ task: null }` when nothing overrides that name — not an error. |
+| `wtm task set <name>` | `{ task }`, the record just written. Replaces the whole task definition (see below), scoped to the worktree containing `cwd`. |
+| `wtm task unset <name>` | `{ removed }`; `false` when nothing was overriding that name. |
+| `wtm task export <name>` | Not a daemon command: reads the override with `wtm task show` and prints it as a `[tasks.<name>]` block, the same fields `wtm.toml` uses, ready to paste in. Refuses if no override is set. |
+
+All five take `--worktree <selector>` and `--repo <name>`, resolved the same way as the task
+execution commands above.
+
+`wtm task set` builds the task definition from flags, or from `--task-json <definition>` (a whole
+task object as JSON, in place of every other flag) — the path an agent skill should prefer for
+full fidelity, since not every task field (`healthcheck`, `queue`, `requires`, …) has its own flag
+yet. `--run <command> --shell` is a shell string; `--argv <item>` (repeatable) is an argv array and
+takes no `--shell`. Cross-field rules (`--run` requires `--shell`, `queue_env` requires `queue`,
+and so on) are enforced when the daemon writes the row — `WTM_CONFIG_INVALID` on a violation — not
+before, so a shape-valid-but-inconsistent definition still round-trips through `wtm task show`
+until it is written.
+
+An override replaces the whole task, never a single field: `wtm task set dev --cwd /new/path`
+after a prior `run`/`background` was set drops `run`/`background` rather than keeping them. Use
+`wtm task show`/`--task-json` to carry forward fields that should survive.
+
+A `wtm task set` record wins over the same task name in every file layer (`wtm.toml` and its
+nested/repository variants) and over an adapter-derived task of the same name — see
+[Files and precedence](03-configuration-spec.md#files-and-precedence). `wtm explain` reports such a
+task's source as `db`. `wtm remove` deletes a removed worktree's overrides immediately, the same
+way it deletes the worktree's CI watches.
+
 ### `wtm exec <argv...>`
 
 Executes raw argv in the foreground with the same resolved environment/context. The argument is a command line, not a configured task name; use `wtm run <task>` for tasks.

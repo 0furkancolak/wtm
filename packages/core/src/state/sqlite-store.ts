@@ -5,9 +5,11 @@ import type { SqliteDatabase, SqliteDatabaseFactory } from './database';
 import { stateStoreRuntime } from './runtime';
 import { assertNoHeavyJobs, createHeavyJobStore } from './jobs-store';
 import { createCiWatchStore } from './ci-store';
+import { createTaskOverrideStore } from './task-overrides-store';
 import { maxEndpointBatchCandidates, validEndpointBatchResults } from '../runtime/endpoint-batch';
 import type { HeavyJobStore } from './jobs';
 import type { CiWatchStore } from './ci';
+import type { TaskOverrideStore } from './task-overrides';
 import type {
   LifecycleEventSubject,
   AdapterTrustInput,
@@ -269,6 +271,7 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
   readonly #database: SqliteDatabase;
   readonly jobs: HeavyJobStore;
   readonly ci: CiWatchStore;
+  readonly taskOverrides: TaskOverrideStore;
   #closed = false;
 
   constructor(path: string, options: SQLiteStateStoreOptions = {}) {
@@ -278,6 +281,7 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
     });
     this.jobs = createHeavyJobStore(this.#database);
     this.ci = createCiWatchStore(this.#database);
+    this.taskOverrides = createTaskOverrideStore(this.#database);
     try {
       this.#database.pragma('foreign_keys = ON');
       if (options.readonly !== true && path !== ':memory:' && !path.startsWith('file::memory:')) {

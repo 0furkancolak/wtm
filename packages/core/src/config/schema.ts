@@ -6,7 +6,7 @@ import { idleSchema } from './idle';
 
 const commandSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
 
-const taskSchema = z.object({
+export const taskSchema = z.object({
   description: z.string().min(1).optional(),
   expose: z.boolean().optional(),
   run: commandSchema.optional(),
@@ -188,6 +188,7 @@ export const wtmConfigSchema = z.object({
   capabilities: z.record(z.string(), z.string().min(1)).optional(),
 }).strict();
 
+export type TaskConfig = z.infer<typeof taskSchema>;
 export type PortConfig = z.infer<typeof portSchema>;
 export type GitConfig = z.infer<typeof gitSchema>;
 export type CorsConfig = z.infer<typeof corsSchema>;
