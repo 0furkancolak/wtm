@@ -2428,24 +2428,57 @@ mergeable
 
 ---
 
-### [ ] 14. Automatic idle runtime suspension
+### [x] 14. Automatic idle runtime suspension
 
 Uzun süre kullanılmayan managed task'lar isteğe bağlı durdurulabilsin.
 
-Config:
+Config (task başına; maddenin ilk taslağındaki kök `[runtime.idle]` tablosu **kullanılmadı**):
 
 ```toml
-[runtime.idle]
+[tasks.dev.idle]
 enabled = true
 timeout = "30m"
 ```
 
+**2026-09-21 (W8-3 / 14):** kök tablo yerine task başına opt-in seçildi. İki nedeni var:
+`docs/07` kök config şemasının strict olduğunu ve `runtime` tablosu bulunmadığını yazılı bir
+değişmez olarak ilan ediyor; ve workspace geneli bir anahtar, "hangi task interaktif sayılır"
+sorusunu bir sezgiselle çözmek zorunda kalırdı. Task başına opt-in ikisini de ortadan kaldırıyor.
+`timeout`, mevcut task süre dilbilgisini (`ms|s|m|h`) yeniden kullanıyor; alt sınır 1s, çünkü
+kararı veren süpürme periyodik ve bundan ince bir pencere tutulamaz. `queue = true` olan bir
+task'ta `idle` reddediliyor (şemada ve politika okuyucusunda iki kez): kuyruk işi zaten kendi
+sonlu timeout'uyla bitiyor ve `wtm start` ile yönetilen uzun ömürlü bir süreç değil.
+
+**Migration 018 kullanılmadı ve gerekmiyor.** Aktivite saatleri yalnızca daemon belleğinde
+(`packages/daemon/src/idle-runtime.ts`) tutuluyor; yeni tablo, yeni kolon ve yeni
+`ManagedProcessState` yok. Askıya alma mevcut stop yolundan geçiyor ve süreç mevcut `STOPPED`
+durumunda bitiyor, bu yüzden resume için de yeni kod yok: `wtm start <task>` zaten çalışmayan bir
+singleton task'ı başlatıyor. Daemon yeniden başlarsa saatler sıfırlanır — dokümante edilmiş,
+"çalışır bırakma" yönünde hata yapan bir ödünleşim. 018 numarası bu yüzden boş kalıyor; bir
+sonraki migration onu kullanabilir.
+
 #### Güvenlik
 
-- [ ] Default kapalı.
-- [ ] Interactive/debug task'larda yanlışlıkla stop etmemeli.
-- [ ] Resume strategy net olmalı.
-- [ ] Agent activity ile human activity ayrımı zorunlu değil ama ileride desteklenebilir.
+- [x] Default kapalı. **(2026-09-21, W8-3)** `enabled` yazılmadıkça `false`; `idle` bloğu olmayan
+      hiçbir task süpürmeye girmiyor, kök tablo veya workspace geneli anahtar yok.
+- [x] Interactive/debug task'larda yanlışlıkla stop etmemeli. **(2026-09-21, W8-3)** Opt-in task
+      başına olduğu için interaktif/debug task'lar hiçbir şey yazmayarak kapsam dışında kalıyor.
+      `wtm run`/`wtm exec` foreground süreçleri yapısal olarak erişilemez (supervisor kaydı yok),
+      heavy-job kuyruğu ise `queue = true` reddi sayesinde.
+- [x] Resume strategy net olmalı. **(2026-09-21, W8-3, K6 kararı)** Resume yalnızca bir sonraki
+      `wtm start`/`wtm restart` çağrısıyla; proxy veya ağ trafiği gözlemiyle asla (WTM'nin reverse
+      proxy'si yok, o ayrı bir birim). Neden durdurulduğu task'ın kendi log akışına tek satır
+      olarak yazılıyor, `wtm logs <task>` okuyor; yeni komut/alan eklenmedi.
+- [x] Agent activity ile human activity ayrımı zorunlu değil ama ileride desteklenebilir.
+      **(2026-09-21, W8-3)** Ayrım yapılmadı: her daemon isteği (start/restart, readiness bekleme,
+      `wtm ps`, `wtm logs`) tek tip "WTM etkileşimi" sayılıyor. Etkileşimin kaynağı
+      `DaemonRuntimeController.onTaskActivity` tek kapısından geçtiği için ileride ayrım eklenmek
+      istenirse tek yerde genişletilir.
+
+**Bilinçli sınır (dokümante edildi, `docs/03` + `docs/07` + skill):** WTM boşta kalmayı yalnızca
+kendi CLI/daemon etkileşimlerinden ölçüyor, task'ın portuna gelen gerçek trafikten değil. Reverse
+proxy olmadığı için, pencere boyunca hiç WTM komutu çalıştırılmadan yalnızca tarayıcı/API trafiği
+alan bir task da askıya alınır. Doküman ve mesajlar bundan fazlasını iddia etmiyor.
 
 ---
 

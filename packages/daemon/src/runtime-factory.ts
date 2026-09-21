@@ -19,10 +19,13 @@ import {
   resolveTask,
   containsPath,
   HeavyJobError,
+  idlePolicies,
   parseWtmConfig,
   queueTaskTimeoutMs,
+  resolveWorkspaceConfig,
   useGitExecutableResolver,
   type DaemonStateStore,
+  type IdlePolicy,
   type LifecycleEventStore,
   type WtmConfig,
 } from '@wtm/core';
@@ -33,6 +36,7 @@ import { LifecycleEventDispatcher } from './events';
 import { WtmDaemon } from './main';
 import { ManagedLogStore } from './logs';
 import { HeavyJobQueue, type ResolvedHeavyJob } from './heavy-job-queue';
+import { IdleRuntimeSuspender } from './idle-runtime';
 import { ManagedProcessSupervisor, type RuntimeInvocation } from './process-supervisor';
 import { DaemonRuntimeController, type DaemonRuntimeResolver } from './runtime-controller';
 import {
@@ -67,6 +71,8 @@ export interface ProductionDaemonOptions {
   pollIntervalMs?: number;
   onError?: (error: unknown) => void;
   runtimeInvocation?: RuntimeInvocation;
+  /** How often opted-in managed tasks are checked for idleness. See `idle-runtime.ts`. */
+  idleSweepIntervalMs?: number;
 }
 
 export interface ProductionDaemonRuntime {
@@ -75,6 +81,7 @@ export interface ProductionDaemonRuntime {
   logs: ManagedLogStore;
   supervisor: ManagedProcessSupervisor;
   controller: DaemonRuntimeController;
+  idle: IdleRuntimeSuspender;
   daemon: WtmDaemon;
   jobs: HeavyJobQueue | null;
   ci: CiWatcher | null;
@@ -260,6 +267,19 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     fileTrust: platformRuntime.fileTrust,
     onError,
   });
+  const idle = new IdleRuntimeSuspender({
+    supervisor,
+    // Read per sweep, from the workspace configuration alone: an idle window is a fact about a
+    // declared task, and resolving a whole runtime — endpoints, adapters, resources — to learn one
+    // duration would make the sweep cost more than what it reclaims.
+    readIdlePolicies: async (worktreeId) => await readIdlePolicies(stateStore, paths.globalConfigPath, worktreeId),
+    note: async (record, line) => { await logs.appendNote(record.worktreeId, record.taskName, line); },
+    // An idle suspension is a stop, so the workspace's `[events."runtime.stopped"]` hears about it
+    // exactly as it hears about `wtm stop`. Not awaited, for the reason the controller states.
+    onSuspended: (record) => { void events.dispatchForWorktree('runtime.stopped', record.worktreeId).catch(onError); },
+    onError,
+    ...(options.idleSweepIntervalMs === undefined ? {} : { intervalMs: options.idleSweepIntervalMs }),
+  });
   const resolver = new ProductionRuntimeResolver(stateStore, paths.globalConfigPath, (worktreeId) => {
     // Announced once per worktree, whichever timing prepared it: `eager` at discovery, `lazy`
     // here, before the first task. Dispatched without being awaited so that an event's own
@@ -276,6 +296,7 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     onRuntimeEvent: (event, worktreeId) => {
       void events.dispatchForWorktree(event, worktreeId).catch(onError);
     },
+    onTaskActivity: (worktreeId, taskName) => { idle.touch(worktreeId, taskName); },
   });
   if (stateStore.jobs !== undefined) {
     const jobPolicy = await globalJobPolicy(paths.globalConfigPath);
@@ -307,7 +328,7 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     socketPath: paths.socketPath,
     processSupervisor: {
       recover: async () => supervisor.recover(),
-      close: async () => { await ci?.close(); await jobs?.close(); await supervisor.close(); },
+      close: async () => { await idle.close(); await ci?.close(); await jobs?.close(); await supervisor.close(); },
     },
     runtimeHandler: async (request, context) => (
       ciCommandNames.has(request.command) && ci !== null ? ci.handle(request)
@@ -332,10 +353,11 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     logs,
     supervisor,
     controller,
+    idle,
     daemon,
     jobs,
     ci,
-    start: async () => { await daemon.start(); await jobs?.start(); await ci?.start(); },
+    start: async () => { await daemon.start(); await jobs?.start(); await ci?.start(); idle.start(); },
     close: async () => {
       if (closed) return;
       closed = true;
@@ -353,6 +375,31 @@ async function globalJobPolicy(path: string): Promise<NonNullable<WtmConfig['job
     throw error;
   }
   return parseWtmConfig(parse(value), path).jobs ?? {};
+}
+
+/**
+ * The idle windows declared for one worktree's tasks, read straight from the configuration files
+ * in force there.
+ *
+ * Deliberately not `resolveWorktreeRuntime`: that resolves endpoints, adapters and templates, none
+ * of which an idle duration depends on, and it runs on every sweep for every worktree that has a
+ * managed task running. A worktree WTM no longer has on record has no policies rather than an
+ * error — it is about to disappear from the sweep's own listing anyway.
+ */
+async function readIdlePolicies(
+  store: DaemonStateStore,
+  globalConfigPath: string,
+  worktreeId: string,
+): Promise<ReadonlyMap<string, IdlePolicy>> {
+  const worktree = store.listWorktrees().find(({ id }) => id === worktreeId);
+  if (worktree === undefined) return new Map();
+  const registration = findRegistration(store, worktree.path);
+  const config = await resolveWorkspaceConfig({
+    workspaceRoot: registration.workspace.root,
+    repoRoot: registration.worktree.path,
+    globalConfigPath,
+  });
+  return idlePolicies(config.value);
 }
 
 async function resolveHeavyJob(store: DaemonStateStore, globalConfigPath: string, cwd: string, taskName: string): Promise<ResolvedHeavyJob> {

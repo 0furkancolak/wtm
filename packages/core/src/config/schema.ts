@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { normalizeAllowedRemoteRefs } from '../analysis/remote-persistence';
-import { queueTaskTimeoutMs } from './task-timeout';
+import { idleTimeoutMs, queueTaskTimeoutMs } from './task-timeout';
 import { healthcheckSchema } from './healthcheck';
+import { idleSchema } from './idle';
 
 const commandSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
 
@@ -15,6 +16,7 @@ const taskSchema = z.object({
   cwd: z.string().min(1).optional(),
   background: z.boolean().optional(),
   healthcheck: healthcheckSchema.optional(),
+  idle: idleSchema.optional(),
   queue: z.boolean().optional(),
   memory_estimate_mib: z.number().int().min(1).max(1_048_576).optional(),
   queue_env: z.record(z.string().min(1), z.string()).optional(),
@@ -30,6 +32,21 @@ const taskSchema = z.object({
   }
   if (task.queue === true && (task.background === true || queueTaskTimeoutMs(task.timeout) === null)) {
     context.addIssue({ code: 'custom', message: 'queued tasks require background != true and a positive timeout (ms, s, m, h), at most 24h' });
+  }
+  if (task.idle !== undefined) {
+    // Refused whatever `enabled` says: a queued task ends on its own within its own finite
+    // timeout and is never a `wtm start`-managed long-running process, so an idle window on one
+    // is a statement about a population it does not belong to. Accepting it silently would read
+    // as a promise that the queue honours it.
+    if (task.queue === true) {
+      context.addIssue({ code: 'custom', path: ['idle'], message: 'idle may not be combined with queue = true; a queued task already ends within its own timeout' });
+    }
+    if (task.idle.timeout !== undefined && idleTimeoutMs(task.idle.timeout) === null) {
+      context.addIssue({ code: 'custom', path: ['idle', 'timeout'], message: 'idle timeout must be a positive duration (ms, s, m, h), at least 1s and at most 24h' });
+    }
+    if (task.idle.enabled === true && task.idle.timeout === undefined) {
+      context.addIssue({ code: 'custom', path: ['idle', 'timeout'], message: 'idle.enabled = true requires idle.timeout' });
+    }
   }
   if (task.run !== undefined && (task.main !== undefined || task.worktree !== undefined)) {
     context.addIssue({ code: 'custom', message: 'tasks may not combine run with main or worktree' });

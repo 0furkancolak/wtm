@@ -396,6 +396,64 @@ describe('DaemonRuntimeController', () => {
       context: { command: 'stop', processId: 'process-1', taskName: 'dev', worktreeId: 'worktree-7' },
     });
   });
+  /**
+   * Idle suspension (`[tasks.<name>.idle]`, todo item 14) dates its window from these calls and
+   * from nothing else — WTM has no reverse proxy, so traffic to the task's own port never reaches
+   * the daemon. What the daemon *can* see is asserted here so the docs' claim about which
+   * interactions count stays a claim the code keeps.
+   */
+  test('reports every task a request observed, so an idle window can be dated from it', async () => {
+    const observed: Array<[string, string | undefined]> = [];
+    const controller = new DaemonRuntimeController({
+      supervisor: { ...noProcesses(), list: () => [processRecord] },
+      logs: { read: async () => '' },
+      resolver: {
+        resolveTask: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }),
+        resolveWorktree: async () => ({
+          workspaceId: 'workspace-1',
+          worktreeId: 'worktree-7',
+          workspaceWorktreeIds: ['worktree-7', 'worktree-8'],
+        }),
+        resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
+      },
+      onTaskActivity: (worktreeId, taskName) => { observed.push([worktreeId, taskName]); },
+    });
+
+    await controller.handle(request('start', { cwd: '/repo/wt', taskName: 'dev' }));
+    await controller.handle(request('restart', { cwd: '/repo/wt', taskName: 'dev' }));
+    await controller.handle(request('logs', { cwd: '/repo/wt', follow: false }));
+    await controller.handle(request('ps', { cwd: '/repo/wt' }));
+    // Neither is an observation of a managed task: `exec` runs raw argv in the foreground, and a
+    // stop ends the run whose window would have been extended.
+    await controller.handle(request('exec', { cwd: '/repo/wt', argv: ['ls'] }));
+    await controller.handle(request('stop', { cwd: '/repo/wt', taskName: 'dev' }));
+
+    expect(observed).toEqual([
+      ['worktree-7', 'dev'],
+      ['worktree-7', 'dev'],
+      ['worktree-7', 'dev'],
+      // `ps` asks about a whole workspace scope at once, and names no single task.
+      ['worktree-7', undefined],
+      ['worktree-8', undefined],
+    ]);
+  });
+
+  test('an activity listener that throws never costs the request that reported it', async () => {
+    const controller = new DaemonRuntimeController({
+      supervisor: noProcesses(),
+      logs: { read: async () => '' },
+      resolver: {
+        resolveTask: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
+        resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
+      },
+      onTaskActivity: () => { throw new Error('idle bookkeeping failed'); },
+    });
+
+    const envelope = await controller.handle(request('start', { cwd: '/repo/wt', taskName: 'dev' }));
+
+    expect(envelope.ok).toBe(true);
+  });
 });
 
 function noProcesses() {

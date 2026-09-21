@@ -378,6 +378,7 @@ on_failure         fail|warn|continue
 requires           capability[]
 env                 map<string,string>
 healthcheck         optional HTTP readiness configuration
+idle                optional automatic suspension of a managed long-running task
 queue               boolean, opt in a finite task to the shared queue
 memory_estimate_mib  positive integer, estimated peak for the whole task/worker tree
 queue_env           environment overrides applied only to enqueued execution
@@ -410,6 +411,44 @@ is successful; redirects are not followed and response bodies are not buffered. 
 run within one bounded observation, without a persistent health monitor. The optional
 CLI `--timeout` overrides the configuration for that observation. An invalid healthcheck
 is rejected before a wait operation launches or stops a process.
+
+### Automatic idle suspension
+
+A long-running managed task can opt into being stopped after a period with no WTM interaction:
+
+```toml
+[tasks.dev.idle]
+enabled = true
+timeout = "30m"
+```
+
+`enabled` defaults to `false`: nothing WTM starts is suspended unless its own task says so. There
+is no root `[runtime.idle]` table and no workspace-wide switch — the root schema is strict and
+deliberately has no `runtime` table (see [`docs/07`](07-process-port-runtime.md#prepare-is-not-start)),
+and a global switch would need a heuristic for which tasks are interactive enough to spare. A dev
+server somebody watches, or a debug session, simply never writes this block.
+
+`timeout` is required when `enabled = true` and accepts `ms`, `s`, `m` or `h` durations that
+resolve to whole milliseconds, from 1 second to 24 hours. The one-second floor is the sweep's own
+granularity: idleness is decided by a periodic check, and a window finer than that check cannot be
+honoured. A window elapses, and the task is stopped on the next check.
+
+`idle` is rejected on a task with `queue = true`, whatever `enabled` says. A queued task already
+ends inside its own finite `timeout` and is not a `wtm start`-managed process at all, so an idle
+window on one would be a promise the queue does not keep.
+
+Suspension is an ordinary stop — the same SIGTERM, grace period and SIGKILL `wtm stop` performs,
+the same `STOPPED` state, the same `[events."runtime.stopped"]`. There is no new state and no new
+command. The reason is written into the task's own log stream, so `wtm logs <task>` says why it
+stopped and which window it exceeded, and `wtm start <task>` starts it again exactly as it starts
+any singleton task that is not running.
+
+**What "idle" means here is narrow, and the narrowness is the point.** WTM observes only its own
+interactions with a task — the start or restart that launched it, a readiness wait, `wtm ps`,
+`wtm logs`. It has no reverse proxy, so requests arriving at the task's own port are invisible to
+it. A task serving a browser or an API client for an hour, with nobody touching WTM meanwhile,
+reads as idle and will be suspended. Opt a task in only when a stop it did not ask for is
+acceptable; see [`docs/07`](07-process-port-runtime.md#automatic-idle-suspension).
 
 ### Shared heavy-job memory admission
 

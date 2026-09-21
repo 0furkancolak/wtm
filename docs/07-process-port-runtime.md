@@ -129,6 +129,60 @@ five-second transport deadline. Readiness has a separate bounded deadline plus l
 There is no persisted health state or periodic health monitor. See the configuration and CLI
 references for durations and result/error states.
 
+## Automatic idle suspension
+
+A managed task can opt into being stopped after a period with no WTM interaction, per task, in its
+own configuration (`[tasks.<name>.idle]`, see
+[`docs/03`](03-configuration-spec.md#automatic-idle-suspension)):
+
+```toml
+[tasks.dev.idle]
+enabled = true
+timeout = "30m"
+```
+
+Off unless written. There is no root `[runtime.idle]` table, for the same reason stated at the top
+of this document: the root config schema is strict and has no `runtime` table, and automatic
+lifecycle decisions are per task rather than per workspace.
+
+How it works, and what it deliberately reuses:
+
+- A periodic sweep in the daemon compares, for each `RUNNING` managed process whose task opted in,
+  how long it is since WTM last observed that task against the configured window.
+- Suspension goes through the supervisor's ordinary stop path — SIGTERM, grace period, SIGKILL,
+  the same process-group and identity verification — and the process ends in the existing
+  `STOPPED` state. There is no new lifecycle state, no new terminal condition, and
+  `[events."runtime.stopped"]` fires as it does for `wtm stop`.
+- **Resume needs no new mechanism.** A singleton task that is not running is started by the next
+  `wtm start <task>` or `wtm restart <task>`; that is the resume path, and it is the only one.
+  Resume is never triggered by traffic or by a proxy — WTM has no reverse proxy.
+- The reason is written as one line into the task's own log stream, so `wtm logs <task>` says the
+  task was stopped for inactivity and cites the window it exceeded. Nothing new appears in
+  `wtm ps` or `wtm status`: a suspended task is a stopped task.
+- The activity clocks live in daemon memory only. There is no new table, no new column and no
+  migration. A daemon restart therefore restarts every window from the moment the sweep next sees
+  the process — an accepted tradeoff, not a defect: it errs towards leaving a task running.
+
+Two populations are outside this by construction rather than by exception. `wtm run` and
+`wtm exec` foreground processes are not supervised at all — they run in the CLI's own process and
+have no managed-process record for a sweep to find. Heavy-queue jobs cannot carry an idle window,
+because the configuration schema refuses `idle` beside `queue = true` and the policy reader refuses
+it again; a queued job ends inside its own finite timeout and is the heavy-job queue's business.
+
+### What WTM can actually observe
+
+**Idleness here means "no WTM interaction", not "no traffic".** The daemon sees a start, a restart,
+a readiness wait, a `wtm ps` and a `wtm logs`. It does not see HTTP requests arriving at the task's
+own port, because nothing of WTM's sits in front of that port: there is no reverse proxy, and one
+is a separate, later piece of work. A task that serves a browser or an API client steadily for an
+hour, while nobody runs a WTM command, is idle as far as this feature is concerned and will be
+stopped.
+
+This is the same class of statement as the one the heavy-job queue makes about memory below: the
+mechanism is honest about what it measures, and documentation and messages must not imply a
+traffic-aware idleness WTM does not have. Opt a task in when an unasked-for stop is acceptable and
+`wtm start` is a cheap way back; leave interactive and debug tasks opted out, which is the default.
+
 ## Logs
 
 Managed task stdout/stderr is redirected to WTM log files. `wtm logs` reads from disk; the daemon does not accumulate unlimited output in memory.
