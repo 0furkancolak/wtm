@@ -58,3 +58,20 @@ export type CiCommand = keyof typeof ciArgumentSchemas;
 
 export const ciWatchAcceptanceSchema = z.object({ watch: ciWatchSchema, reused: z.boolean() }).strict();
 export const ciUnwatchResultSchema = z.object({ stopped: z.boolean(), watch: ciWatchSchema.nullable() }).strict();
+
+/**
+ * The one-shot `wtm status --pr` lookup, distinct from `ciWatch`'s persistent poll: nothing here
+ * is stored, so it has no `watchId`/`startedAt`/history, only the PR's current facts. `checks`
+ * reuses `CiVerdict`'s vocabulary (`packages/core/src/ci/aggregate.ts`) rather than
+ * `ciWatchStateSchema`'s, because it is filled the same way — `aggregateCiRuns` over the PR's
+ * head commit's runs — and omitted rather than `'unknown'` when that lookup itself fails, so a
+ * transient error is never confused with "no checks have run yet".
+ */
+export const prSummarySchema = z.object({
+  number: z.number().int().positive(),
+  url: z.string().min(1).max(2048),
+  state: z.enum(['open', 'closed', 'merged']),
+  mergeable: z.enum(['mergeable', 'conflicting', 'unknown']),
+  checks: z.enum(['none', 'pending', 'success', 'failure', 'cancelled']).optional(),
+}).strict();
+export type PrSummary = z.infer<typeof prSummarySchema>;

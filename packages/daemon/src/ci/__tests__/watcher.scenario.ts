@@ -72,6 +72,7 @@ function fakeProvider(script: Script) {
       if (script.logAnswers !== undefined) return script.logAnswers.length > 1 ? script.logAnswers.shift()! : script.logAnswers[0]!;
       return { ok: true, value: script.log ?? '##[error]boom' };
     },
+    findPr: async () => { calls.push('pr'); return { ok: true, value: null }; },
   };
   return { calls, provider };
 }
@@ -449,6 +450,7 @@ async function tickSkipsWatchCancelledMidTick() {
     },
     listJobs: async (_repository, runId) => { calls.push(`jobs:${runId}`); return { ok: true, value: [job('success')] }; },
     failedJobLog: async (_repository, runId, jobId) => { calls.push(`log:${runId}:${jobId}`); return { ok: true, value: '##[error]boom' }; },
+    findPr: async () => { calls.push('pr'); return { ok: true, value: null }; },
   };
   const watcher = new CiWatcher({ store: store.ci, registration, provider, clock });
   const request = (command: string, args: unknown): IpcRequest => ({ protocol: { major: 1, minor: 0 }, id: 'r', command, arguments: args });

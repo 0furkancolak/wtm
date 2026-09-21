@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { CiProvider, CiProviderFailure, CiProviderResult, CiRepository } from '@wtm/core';
+import type { CiProvider, CiProviderFailure, CiProviderResult, CiRepository, PrLookup } from '@wtm/core';
 import type { CiJob, CiRun } from '@wtm/protocol';
 import type { GhCommandResult, GhCommandRunner } from './gh-runner';
 
@@ -20,6 +20,13 @@ const jobListSchema = z.object({
     conclusion: z.string().nullable(),
     url: z.string(),
   }).passthrough()),
+}).passthrough();
+
+const prViewSchema = z.object({
+  number: z.number().int().positive(),
+  url: z.string(),
+  state: z.enum(['OPEN', 'CLOSED', 'MERGED']),
+  mergeable: z.string(),
 }).passthrough();
 
 const firstLine = (text: string) => text.trim().split('\n')[0]?.slice(0, 300) ?? '';
@@ -85,6 +92,25 @@ export function createGitHubProvider(run: GhCommandRunner): CiProvider {
     async failedJobLog(repository, runId, jobId) {
       const result = await run(['run', 'view', String(runId), '--repo', repository.slug, '--job', String(jobId), '--log-failed']);
       return parsed(result, (stdout) => stdout);
+    },
+
+    async findPr(repository, branch) {
+      const result = await run(['pr', 'view', branch, '--repo', repository.slug, '--json', 'number,url,state,mergeable']);
+      // `gh` exits 1 with this exact message, not a distinct exit code, when the branch has no PR
+      // at all — the normal case for most branches, not a provider failure.
+      if (result.outcome === 'failure' && /no pull requests found/i.test(result.stderr)) {
+        return { ok: true, value: null };
+      }
+      return parsed(result, (stdout): PrLookup | null => {
+        const view = prViewSchema.safeParse(JSON.parse(stdout));
+        if (!view.success) return null;
+        return {
+          number: view.data.number,
+          url: view.data.url,
+          state: view.data.state.toLowerCase() as 'open' | 'closed' | 'merged',
+          mergeable: view.data.mergeable === 'MERGEABLE' ? 'mergeable' : view.data.mergeable === 'CONFLICTING' ? 'conflicting' : 'unknown',
+        };
+      });
     },
   };
 }

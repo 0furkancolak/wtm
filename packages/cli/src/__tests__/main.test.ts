@@ -299,6 +299,30 @@ describe('Commander CLI', () => {
     expect(envelope.data.workspaces[0].state).toBe('UNKNOWN');
   });
 
+  test('passes --pr through to status alone, and only when given', async () => {
+    const seen: Array<{ pr?: boolean } | undefined> = [];
+    const prSource: DiagnosticDataSource = {
+      ...source(),
+      readStatus: async (workspace, options) => {
+        seen.push(options);
+        return (await source().readStatus(workspace));
+      },
+    };
+
+    const withoutFlag = capture();
+    expect(await runCli(['status', '--json'], { dataSource: prSource, cwd: '/registered/demo', ...withoutFlag.io })).toBe(0);
+    expect(seen.at(-1)).toEqual({ pr: false });
+
+    const withFlag = capture();
+    expect(await runCli(['status', '--pr', '--json'], { dataSource: prSource, cwd: '/registered/demo', ...withFlag.io })).toBe(0);
+    expect(seen.at(-1)).toEqual({ pr: true });
+
+    // `--pr` is status's own flag: every other diagnostic command refuses it as unknown.
+    const otherCommand = capture();
+    const exitCode = await runCli(['doctor', '--pr', '--json'], { dataSource: prSource, cwd: '/registered/demo', ...otherCommand.io });
+    expect(exitCode).not.toBe(0);
+  });
+
   test('supports selector and global scope options for every command', async () => {
     for (const command of ['status', 'doctor', 'explain', 'plan', 'env', 'ports']) {
       const output = capture();

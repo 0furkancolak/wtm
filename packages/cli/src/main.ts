@@ -248,7 +248,13 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   for (const [name, description, runner] of commands) {
     const command = program.command(`${name} [selector]`).description(description);
     addScopeOptions(command);
-    command.action(async (selector: string | undefined, options: ScopeOptions) => {
+    // Item 13 (K4): PR awareness is an opt-in section of `status` alone, gated by its own flag
+    // rather than `--json`'s always-on scope options, because it is the one thing here that
+    // reaches the network — every other field above answers from local state.
+    if (name === 'status') {
+      command.option('--pr', 'Include this worktree\'s pull request, looked up live over the network.');
+    }
+    command.action(async (selector: string | undefined, options: ScopeOptions & { pr?: boolean }) => {
       const rootOptions = program.opts<ScopeOptions>();
       const json = options.json === true || rootOptions.json === true;
       const global = options.global === true || rootOptions.global === true;
@@ -256,6 +262,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
         cwd,
         ...(selector === undefined ? {} : { selector }),
         ...(global ? { global: true } : {}),
+        ...(options.pr === true ? { pr: true } : {}),
       }, source);
       stdout(`${renderEnvelope(envelope, { json })}\n`);
       hooks.setExitCode?.(exitCodeForEnvelope(envelope));
