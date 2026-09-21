@@ -14,7 +14,9 @@ import {
   parenthesisedCommStat, procListing, procStat,
 } from '../../../platform/src/process/__tests__/proc-fixtures';
 import { ManagedLogStore } from '../logs';
-import { anchorProtocolTimeoutMs, ManagedProcessError, ManagedProcessSupervisor } from '../process-supervisor';
+import {
+  anchorProtocolTimeoutMs, groupAbsenceTimeoutMs, ManagedProcessError, ManagedProcessSupervisor,
+} from '../process-supervisor';
 import {
   anchorSource, compileAnchorReaders, type AnchorObservedIdentity, type AnchorReaders,
 } from '../process-anchor';
@@ -344,6 +346,23 @@ describe('the supervisor tells the anchor the platform it selected', () => {
     // The platforms that were already green keep exactly the bound they had.
     expect(anchorProtocolTimeoutMs('darwin')).toBe(10_000);
     expect(anchorProtocolTimeoutMs('linux')).toBe(10_000);
+  });
+
+  /**
+   * The same inequality one layer down, for the wait that asks whether a signalled process group
+   * has gone away. Its floor was a flat 2 000 ms, which is one `ps` plus slack on the platforms
+   * that wrote it and less than a *single* observation on win32 — so the loop took one sample,
+   * found its deadline already blown by the cost of taking it, and answered `alive` for a group it
+   * had only just started looking at. A stop that reports `GROUP_REMAINED_ALIVE` on a tree that
+   * died leaves the job `PROCESS_TREE_STILL_RUNNING` and never terminal.
+   */
+  test('waits longer on group absence than one observation of that group can take', () => {
+    for (const platform of ['darwin', 'linux', 'win32'] as const) {
+      expect(groupAbsenceTimeoutMs(platform)).toBeGreaterThan(processObservationBudgetFor(platform));
+    }
+    // The platforms that were already green keep exactly the floor they had.
+    expect(groupAbsenceTimeoutMs('darwin')).toBe(2_000);
+    expect(groupAbsenceTimeoutMs('linux')).toBe(2_000);
   });
 });
 

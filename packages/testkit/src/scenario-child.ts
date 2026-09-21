@@ -20,6 +20,35 @@ export interface RunScenarioOptions extends Omit<SpawnSyncOptions, 'timeout' | '
 }
 
 /**
+ * The slack between a scenario's own bound and the per-test bound of the test that spawned it.
+ *
+ * The two deadlines are not interchangeable and only one of them can fire usefully. `runScenario`
+ * drives the child with `spawnSync`, which blocks the thread a test runner's per-test timeout
+ * would have to fire on, so the per-test bound cannot interrupt the call it is bounding: it can
+ * only report, afterwards, that the test took too long. The scenario bound is the one that
+ * actually ends the child, and it is the one that names it — "scenario did not finish inside
+ * 120000ms and was killed: node --import tsx ...heavy-job-native-lifecycle.scenario.ts cancel".
+ *
+ * So a per-test bound *below* the scenario bound buys nothing and costs the diagnosis: the run
+ * blocks for the scenario's full bound anyway and then reports a bare per-test timeout with no
+ * command in it. That inversion is what the win32 leg reported for the 9e cluster — three test
+ * files whose scenarios were "killed at 30000ms" by a bound that had never been set to measure
+ * anything, on a platform where one process observation is budgeted at 15 s
+ * (`processObservationBudgetFor`) against POSIX's 1 s.
+ */
+export const scenarioTestSlackMs = 10_000;
+
+/**
+ * The per-test bound to pair with a `runScenario` call, so the scenario's own deadline fires first.
+ *
+ * Pass the same `timeoutMs` the call passes, or nothing when the call takes
+ * {@link scenarioTimeoutMs} as it should.
+ */
+export function scenarioTestTimeoutMs(scenarioBoundMs: number = scenarioTimeoutMs): number {
+  return scenarioBoundMs + scenarioTestSlackMs;
+}
+
+/**
  * Runs a scenario child and returns its parsed stdout, or throws.
  *
  * `spawnSync`'s `timeout` sends `killSignal` and then keeps waiting for the child to exit —
