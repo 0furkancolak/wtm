@@ -125,6 +125,8 @@ export interface AdapterTrustRecord extends AdapterTrustInput {
 export interface AdapterTrustStateStore {
   upsertAdapterTrust(input: AdapterTrustInput): AdapterTrustRecord;
   listAdapterTrust(): AdapterTrustRecord[];
+  /** Every trust record for `adapterId`, whatever path they were trusted under. Returns how many were removed. */
+  deleteAdapterTrust(adapterId: string): number;
 }
 
 export type ManagedProcessState =

@@ -44,6 +44,33 @@ async function sqlitePersistence() {
   }
 }
 
+async function untrustPersistence() {
+  const root = await mkdtemp(join(tmpdir(), 'wtm-adapter-command-'));
+  const adapter = await createFakeAdapter({ type: 'response', response: {} });
+  try {
+    const databasePath = join(root, 'state.db');
+    const trusted = await runAdapterCommand({
+      action: 'trust', adapterId: 'fake', executablePath: adapter.executablePath, databasePath, fileTrust,
+    });
+    if (!trusted.ok) throw new Error('Adapter trust command unexpectedly failed');
+
+    const revoked = await runAdapterCommand({ action: 'untrust', adapterId: 'fake', databasePath, fileTrust });
+    const revokedAgain = await runAdapterCommand({ action: 'untrust', adapterId: 'fake', databasePath, fileTrust });
+    const listed = await runAdapterCommand({ action: 'list', databasePath, fileTrust });
+    if (!revoked.ok || revoked.data === null || !revokedAgain.ok || revokedAgain.data === null || !listed.ok || listed.data === null || !('adapters' in listed.data)) {
+      throw new Error('Adapter untrust command unexpectedly failed');
+    }
+    return {
+      removed: 'removed' in revoked.data ? revoked.data.removed : null,
+      removedAgain: 'removed' in revokedAgain.data ? revokedAgain.data.removed : null,
+      recordCount: listed.data.adapters.length,
+    };
+  } finally {
+    await adapter.cleanup();
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 async function concurrentTrust() {
   const root = await mkdtemp(join(tmpdir(), 'wtm-adapter-command-'));
   const first = await createFakeAdapter({ type: 'response', response: {} });
@@ -139,6 +166,7 @@ async function rejectsNestedSymlinkAndParentReplacement() {
 
 const scenarios: Record<string, () => Promise<unknown>> = {
   'sqlite-persistence': sqlitePersistence,
+  'untrust-persistence': untrustPersistence,
   'concurrent-trust': concurrentTrust,
   'creates-missing-private-parent': createsMissingPrivateParent,
   'rejects-unsafe-private-parents': rejectsUnsafePrivateParents,

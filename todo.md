@@ -2821,7 +2821,24 @@ oluyor, yeni bir kod protokole eklenmiyor.
       açıkça söylüyor); ikinci bir minor tanımlandığında eşitlik kontrolü genişletilmeli. Yeni kod
       yazılmadı, yalnızca bu madde işaretlendi.
 - [ ] Adapter test harness.
-- [ ] Trust UX iyileştirmesi.
+- [x] Trust UX iyileştirmesi. — **Not (2026-09-21, W10-3):** kapsam plan belgesinde
+      detaylandırılmamıştı, bu yüzden gerçek boşluk mevcut kod okunarak belirlendi: `assertTrusted`
+      zaten adapterId+SHA-256 eşleşmesiyle çalışıyor, yani değişen/bozulmuş bir binary zaten
+      otomatik reddediliyor — güvenlik boşluğu yok. Asıl eksik, kasıtlı bir güveni geri almanın
+      hiçbir CLI yolunun olmamasıydı. **Karar:** `wtm adapter untrust <adapter-id>` eklendi
+      (`AdapterTrustStateStore.deleteAdapterTrust`, `AdapterTrustStore.untrust`,
+      `packages/cli/src/commands/adapter.ts`, `main.ts`), CLI genelindeki mevcut
+      "boolean sonuç" deseni izlenerek (`wtm ci unwatch` → `{stopped}`, `wtm task unset` →
+      `{removed}`) `{removed: boolean}` döndürüyor, hiçbir şey yoksa asla hata vermiyor — neden:
+      tutarlılık, ayrı bir envelope hata koduna gerek yok. Migration yok (yeni sütun/tablo yok,
+      var olan `adapter_trust` tablosundan silme). `docs/04-cli-reference.md`'ye ilk kez bir
+      "Adapters" bölümü eklendi (daha önce `wtm adapter` hiç belgelenmemişti),
+      `docs/06-adapter-protocol.md`'nin Trust model bölümü ve `skills/wtm/SKILL.md` güncellendi.
+      Yanlışsa bedeli: düşük — yalnızca yerel SQLite tablosundan satır silen, ağa çıkmayan, geriye
+      dönük uyumluluğu bozmayan katkısal bir CLI komutu; K3'ün "ayrı bir trust ledger yok, `wtm
+      task set` erişim kontrollü local socket üzerinden zaten güven kararı" ilkesiyle çelişmiyor,
+      çünkü bu adapter trust'ı (K3'ün task override konusu değil) ve zaten var olan tabloyu
+      yönetiyor.
 - [ ] Community adapter registry ancak ihtiyaç oluşursa.
 
 ---
