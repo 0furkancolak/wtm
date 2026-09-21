@@ -39,8 +39,9 @@ import { ManagedLogStore } from './logs';
 import { HeavyJobQueue, type ResolvedHeavyJob } from './heavy-job-queue';
 import { IdleRuntimeSuspender } from './idle-runtime';
 import { ManagedProcessSupervisor, type RuntimeInvocation } from './process-supervisor';
+import { devOverlayHtmlInjector } from './dev-overlay';
 import { defaultProxyPort, ProxyServer } from './proxy';
-import { globalProxyPolicy } from './proxy-policy';
+import { globalDevOverlayPolicy, globalProxyPolicy } from './proxy-policy';
 import { buildProxyRoutes } from './proxy-routes';
 import { DaemonRuntimeController, type DaemonRuntimeResolver } from './runtime-controller';
 import {
@@ -333,11 +334,19 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     });
   }
   const proxyPolicy = await globalProxyPolicy(paths.globalConfigPath);
+  // The dev overlay (todo item 46, W10-4) is only ever consulted when the proxy itself starts:
+  // reading it unconditionally, but wiring it into `ProxyServer` only inside this branch, is what
+  // makes `[dev-overlay] enabled = true` with `[proxy]` off inert rather than an error — there is
+  // no proxy response path here to inject into.
+  const devOverlayPolicy = proxyPolicy.enabled === true
+    ? await globalDevOverlayPolicy(paths.globalConfigPath)
+    : {};
   const proxy = proxyPolicy.enabled === true ? new ProxyServer({
     port: proxyPolicy.port ?? defaultProxyPort,
     resolveRoute: (hostname) => buildProxyRoutes(stateStore).get(hostname) ?? null,
     ...(options.proxyHosts === undefined ? {} : { hosts: options.proxyHosts }),
     onError,
+    ...(devOverlayPolicy.enabled === true ? { htmlInjector: devOverlayHtmlInjector(stateStore) } : {}),
   }) : null;
   const taskOverrides = stateStore.taskOverrides === undefined ? null : new TaskOverridesHandler({
     store: stateStore.taskOverrides,

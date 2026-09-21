@@ -565,6 +565,30 @@ Once enabled, every active endpoint lease is reachable at
 collision rule, and — stated plainly, not buried — what binding a fixed, non-privileged port
 instead of port 80 means for the URL a person actually types.
 
+## Dev overlay
+
+Todo item 46's MVP slice, next to `[proxy]` above because it is injected by it:
+
+```toml
+[proxy]
+enabled = true
+
+[dev-overlay]
+enabled = true
+```
+
+`enabled` defaults to `false`, the same explicit opt-in as `[proxy]` and `[jobs]`. Read from the
+same global configuration file, restart-to-apply, for the same daemon-wide reason `[proxy]` is:
+this is not a per-workspace setting.
+
+`[dev-overlay]` only has anything to act on wherever `[proxy]` is actually running — the fragment
+is injected by the proxy's own response handling, not by a separate listener. `[dev-overlay]
+enabled = true` with `[proxy]` disabled or unset is not a configuration error: it is simply inert,
+since there is no proxied response left for it to inject into. See
+[`docs/07`](07-process-port-runtime.md#dev-overlay) for what the injected fragment shows, exactly
+what response types it never touches, and what part of todo item 46 this slice does not
+implement.
+
 ## Resource budgets
 
 In the daemon's global configuration, optionally cap how many processes WTM will supervise at

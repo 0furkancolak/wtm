@@ -105,7 +105,7 @@ export { resolveWorkspaceConfig, builtInConfig } from './config/load';
 export { stripByteOrderMark } from './config/toml-text';
 export { mergeConfigLayers, applyTaskOverrides } from './config/merge';
 export { parseWtmConfig, wtmConfigSchema, taskSchema, WtmConfigError } from './config/schema';
-export type { CorsConfig, GitConfig, PortConfig, PortsConfig, ProxyConfig, RepoConfig, ResourceConfig, TaskConfig, WtmConfig } from './config/schema';
+export type { CorsConfig, DevOverlayConfig, GitConfig, PortConfig, PortsConfig, ProxyConfig, RepoConfig, ResourceConfig, TaskConfig, WtmConfig } from './config/schema';
 export { repoEnvironment, resolveRepoScope } from './config/repos';
 export type { RepoScopeInput, ResolvedRepoScope } from './config/repos';
 export { collectProvenance } from './config/provenance';

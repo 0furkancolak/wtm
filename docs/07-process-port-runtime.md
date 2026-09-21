@@ -139,6 +139,51 @@ observe — the proxy forwards bytes, it does not touch a task's activity clock,
 never triggered by traffic. A task reached only through the proxy, with nobody running a WTM
 command, is still idle as far as that feature is concerned.
 
+### Dev overlay
+
+Todo item 46's MVP slice: with `[dev-overlay] enabled = true` (see
+[`docs/03`](03-configuration-spec.md#dev-overlay)), the proxy injects a small, unobtrusive HTML
+fragment into every proxied `text/html` response — a fixed-position, closed-by-default `<details>`
+element naming the repository, branch, worktree number and directory, and service, plus links to
+every other active endpoint sharing the same feature: the same workspace *and* the same branch
+(including sibling repositories'), so a developer looking at three or four running `web`s at once
+can tell which tab is which and jump between the endpoints of the one feature that tab belongs to.
+Sibling resolution is feature identity, not a port scan or a whole-workspace listing — a worktree
+elsewhere in the workspace on an unrelated branch is never shown, and a detached-`HEAD` worktree
+(no branch to share) is only ever a sibling of itself. Off by default, like `[proxy]` itself.
+
+The injection point is the proxy's own response handling in `packages/daemon/src/proxy.ts`
+(`ProxyServer`'s `htmlInjector` option), not a per-framework adapter (Astro integration, Vite
+plugin, Next dev middleware) — decided this way specifically to keep the mechanism
+framework-agnostic and single-point, resolving the "enjeksiyon katmanı" decision todo item 46 left
+open. Because the fragment is injected by the proxy, `[dev-overlay]` only has anything to act on
+wherever `[proxy]` itself is running: `[dev-overlay] enabled = true` with `[proxy]` disabled or
+unset is not a configuration error, it is simply inert — there is no proxied response for it to
+inject into.
+
+**What stays untouched, on purpose:**
+
+- Any response whose `content-type` is not `text/html` — JSON, assets, anything else — is
+  streamed straight through exactly as it always was, byte-for-byte, with no buffering. Only an
+  HTML response is buffered whole (to splice text in before `</body>`), and only when the overlay
+  is enabled.
+- A response whose `content-encoding` names a compression scheme (`gzip`, `br`, ...) is left
+  untouched even when the overlay is enabled: splicing text into a compressed body would corrupt
+  it, and a dev server overwhelmingly serves HTML uncompressed in practice.
+- With `[dev-overlay]` disabled (the default), a proxied HTML response is identical to what
+  `ProxyServer` produced before this feature existed — same streaming code path, nothing buffered.
+- The overlay's own data is sourced from the same state-store queries the proxy's routing table
+  already reads (`listWorktrees`, `listEndpointLeases`, via `buildProxyRoutes`), plus
+  `listRepositories` for a display name and the store's existing managed-process query for a
+  read-only "currently supervised" task list — there is no new contract parallel to `wtm status
+  --json`'s shape, and no new SQLite table. See `packages/daemon/src/dev-overlay.ts`.
+
+**What this slice does not implement:** the two-way test-step checklist todo item 46 also
+describes — an agent writing a checklist through `wtm` that the overlay shows and the user checks
+off, persisted back into WTM's state. That checklist's own text says it belongs on the persisted
+task-record surface todo item 49 defines rather than a separate store, which is real, separate
+schema and protocol work; it stays future work. The overlay in this slice is read-only.
+
 ## Process ownership
 
 Only processes started through WTM are managed.

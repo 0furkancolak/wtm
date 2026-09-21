@@ -2,6 +2,7 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { connect as netConnect } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { isWtmProxyHostname } from '@wtm/core';
+import { injectBeforeBodyClose, isHtmlContentType } from './dev-overlay';
 import type { ProxyRoute } from './proxy-routes';
 
 /**
@@ -31,6 +32,24 @@ export interface ProxyServerOptions {
    */
   hosts?: readonly string[];
   onError?(error: unknown): void;
+  /**
+   * The dev overlay's injection hook (todo item 46, W10-4 MVP slice). When set, a backend
+   * response whose `content-type` is `text/html` is buffered, has the string this callback
+   * returns for the matched `route` spliced in before `</body>` (or appended), and is sent on
+   * with `content-length` recomputed. Returning `null` for a given route sends the response on
+   * untouched.
+   *
+   * Left unset (the default, matching `[dev-overlay] enabled = false`), or for any response whose
+   * `content-type` is not `text/html`, the response is streamed straight through exactly as
+   * before this hook existed — same code path, same byte stream, nothing buffered. See
+   * `dev-overlay.ts` for the fragment this builds and `docs/07`'s "Local reverse proxy" section
+   * for the prod-non-leak guarantee this is testing against.
+   *
+   * A response whose `content-encoding` is set to anything other than `identity` is left
+   * untouched even when this hook is configured: splicing text into a compressed body would
+   * corrupt it, and dev servers overwhelmingly serve HTML uncompressed in practice.
+   */
+  htmlInjector?(route: ProxyRoute): string | null;
 }
 
 /** Why a request was refused before any backend was contacted. */
@@ -50,6 +69,7 @@ export class ProxyServer {
   readonly #port: number;
   readonly #hosts: readonly string[];
   readonly #onError: (error: unknown) => void;
+  readonly #htmlInjector: ProxyServerOptions['htmlInjector'];
   readonly #servers: Server[] = [];
   #started = false;
 
@@ -58,6 +78,7 @@ export class ProxyServer {
     this.#port = options.port;
     this.#hosts = options.hosts ?? defaultProxyHosts;
     this.#onError = options.onError ?? (() => {});
+    this.#htmlInjector = options.htmlInjector;
   }
 
   /**
@@ -165,6 +186,19 @@ export class ProxyServer {
         'x-forwarded-proto': 'http',
       },
     }, (backendResponse) => {
+      // The dev-overlay hook (todo item 46) only ever looks at an HTML response, and only when
+      // configured at all — every other response takes the exact same streaming path this proxy
+      // has always taken, untouched: no buffering, no header rewrite, same `pipe`. This is what
+      // keeps a disabled overlay, and every non-HTML response even when it is enabled, byte-for-
+      // byte identical to a proxy built with no knowledge of the feature.
+      if (
+        this.#htmlInjector !== undefined
+        && isHtmlContentType(backendResponse.headers['content-type'])
+        && isUncompressed(backendResponse.headers['content-encoding'])
+      ) {
+        this.#proxyHtmlResponse(response, backendResponse, route, this.#htmlInjector);
+        return;
+      }
       response.writeHead(backendResponse.statusCode ?? 502, backendResponse.headers);
       backendResponse.pipe(response);
     });
@@ -179,6 +213,44 @@ export class ProxyServer {
     });
     request.on('error', () => outgoing.destroy());
     request.pipe(outgoing);
+  }
+
+  /**
+   * The only path that ever buffers a response body whole: an HTML document has to be, since the
+   * fragment is spliced into text already sent by the time a stream would otherwise have reached
+   * `</body>`. Dev server HTML is small (a handful of KB to a few hundred), so this costs nothing
+   * a developer would notice — it is not taken for anything but a `text/html`, uncompressed
+   * response, which every other response (JSON, assets, WebSocket upgrades, compressed HTML) never
+   * enters.
+   */
+  #proxyHtmlResponse(
+    response: ServerResponse,
+    backendResponse: IncomingMessage,
+    route: ProxyRoute,
+    htmlInjector: (route: ProxyRoute) => string | null,
+  ): void {
+    const chunks: Buffer[] = [];
+    backendResponse.on('data', (chunk: Buffer) => chunks.push(chunk));
+    backendResponse.on('error', (error) => {
+      this.#onError(error);
+      if (!response.headersSent) {
+        response.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
+        response.end(`WTM proxy lost the response from ${route.hostname}: ${errorMessage(error)}`);
+      } else {
+        response.destroy();
+      }
+    });
+    backendResponse.on('end', () => {
+      const fragment = htmlInjector(route);
+      const body = Buffer.concat(chunks).toString('utf8');
+      const html = fragment === null ? body : injectBeforeBodyClose(body, fragment);
+      const headers = { ...backendResponse.headers };
+      // The body just changed length; a stale `content-length` would either truncate the overlay
+      // or hang the client waiting for bytes that never come. Node recomputes it from `html`.
+      delete headers['content-length'];
+      response.writeHead(backendResponse.statusCode ?? 502, headers);
+      response.end(html);
+    });
   }
 
   #handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
@@ -226,4 +298,11 @@ function statusText(status: number): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Whether a `content-encoding` header names no compression, so injecting text stays safe. */
+function isUncompressed(contentEncoding: string | string[] | undefined): boolean {
+  if (contentEncoding === undefined) return true;
+  const value = Array.isArray(contentEncoding) ? contentEncoding[0] : contentEncoding;
+  return value === undefined || value.trim() === '' || value.trim().toLowerCase() === 'identity';
 }
