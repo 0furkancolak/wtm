@@ -7,6 +7,7 @@
 import { describe, expect, test } from 'bun:test';
 import { windowsPlatformPaths } from '../../paths';
 import {
+  createWindowsProcessInspector,
   renderScheduledTaskXml,
   runSchtasks,
   scheduledTaskCommands,
@@ -165,5 +166,69 @@ describe('scheduled task managed directories', () => {
       { path: 'C:\\Users\\test\\AppData\\Local\\WTM\\service', ownerOnly: true },
       { path: 'C:\\Users\\test\\AppData\\Local\\WTM\\logs', ownerOnly: true },
     ]);
+  });
+});
+
+/**
+ * `windowsProcessInspector` used to report `unknown` for every PID unconditionally, which made
+ * `current()` throw `LAUNCHD_OPERATION_BUSY` on every call -- `process/windows.ts`'s
+ * `readStartTime` was a D2 TODO when this file was written and the inspector was never revisited
+ * once it landed. `createWindowsProcessInspector` takes the same query seam
+ * `createWindowsProcessPlatform` does, so this proves the wiring without a real Windows host.
+ */
+describe('windows process inspector', () => {
+  function queryReturning(json: string) {
+    return async () => ({ stdout: json });
+  }
+
+  test('reports its own process live once the query names it, unlike the unconditional stand-in it replaced', async () => {
+    const inspector = createWindowsProcessInspector({
+      runQuery: queryReturning(JSON.stringify({
+        ProcessId: process.pid,
+        ParentProcessId: 4,
+        CreationDate: '2026-09-04T10:00:00.0000000-07:00',
+        Name: 'wtm.exe',
+        CommandLine: 'wtm.exe __wtm_internal_anchor deadbeef',
+      })),
+    });
+
+    const owner = await inspector.current();
+
+    expect(owner).toEqual({ pid: process.pid, startIdentity: '2026-09-04T10:00:00.0000000-07:00' });
+  });
+
+  test('refuses to claim the lock when its own process cannot be found, the same as an unreadable identity', async () => {
+    const inspector = createWindowsProcessInspector({ runQuery: queryReturning('[]') });
+
+    await expect(inspector.current()).rejects.toMatchObject({ code: 'LAUNCHD_OPERATION_BUSY' });
+  });
+
+  test('refuses to claim the lock when the query itself fails, rather than treating that as absence', async () => {
+    const inspector = createWindowsProcessInspector({
+      runQuery: async () => { throw new Error('powershell unavailable'); },
+    });
+
+    await expect(inspector.current()).rejects.toMatchObject({ code: 'LAUNCHD_OPERATION_BUSY' });
+  });
+
+  test('caches the current-process observation the same way darwin and linux do', async () => {
+    let calls = 0;
+    const inspector = createWindowsProcessInspector({
+      runQuery: async () => {
+        calls += 1;
+        return { stdout: JSON.stringify({ ProcessId: process.pid, ParentProcessId: 4, CreationDate: 'x', Name: 'wtm.exe', CommandLine: 'wtm.exe' }) };
+      },
+    });
+
+    await inspector.current();
+    await inspector.current();
+
+    expect(calls).toBe(1);
+  });
+
+  test('reports an absent other process as dead rather than unknown', async () => {
+    const inspector = createWindowsProcessInspector({ runQuery: queryReturning('[]') });
+
+    await expect(inspector.inspect(999999)).resolves.toEqual({ state: 'dead', startIdentity: null });
   });
 });

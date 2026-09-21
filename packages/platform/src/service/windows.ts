@@ -34,7 +34,9 @@ import { execFile, type ExecException } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path/win32';
 import { windowsPlatformPaths } from '../paths';
+import { createWindowsProcessPlatform } from '../process';
 import type { ServiceDefinitionOptions } from '../ports';
+import type { WindowsProcessPlatformOptions } from '../process';
 import { ServiceLifecycleError, configurationError } from './errors';
 import { assertPrintableValue, sanitizeCommandOutput } from './text';
 import type {
@@ -354,23 +356,47 @@ export async function runSchtasks(argv: readonly string[]): Promise<ServiceComma
   });
 }
 
-let currentProcessInspection: Promise<ServiceProcessInspection> | undefined;
-
 /**
- * A stand-in, not a Windows implementation: `createWindowsProcessPlatform` (`process/windows.ts`)
- * is a D2 TODO (spec D8 — no fixture equivalent exists for a live process inspection the way one
- * exists for parsed text), so this inspector reports `unknown` for every PID rather than calling a
- * port that would throw. `unknown` is the safe answer the lock semantics already define for "this
- * cannot be observed": a lock whose owner cannot be observed is left alone, never stolen.
+ * The lock owner, read through the platform's own WMI-backed port -- the same pattern
+ * `linuxProcessInspector` uses over `/proc`, now that there is a real port to call. This used to
+ * be a stand-in that reported `unknown` for every PID unconditionally: `createWindowsProcessPlatform`
+ * was a D2 TODO when this file was written, so `current()` could never observe its own process as
+ * `live` and *every* lifecycle operation that takes the operation lock -- install, uninstall,
+ * enable, disable, status -- failed with `LAUNCHD_OPERATION_BUSY` before a single `schtasks.exe`
+ * command ran. That TODO closed once `process/windows.ts` gained a working `readStartTime`
+ * (Increment 9d), and this inspector had never been revisited to use it.
+ *
+ * `readStartTime` resolves `null` for an absent process and throws for anything else it cannot
+ * read -- the same three-way answer `linuxProcessInspector`'s own comment describes, and the one
+ * `ServiceProcessInspection` exists to carry: a process that cannot be observed is `unknown`, and
+ * an unknown owner's lock is never stolen.
  */
-export const windowsProcessInspector: ServiceProcessInspector = {
-  current: async () => {
-    currentProcessInspection ??= Promise.resolve({ state: 'unknown', startIdentity: null });
-    await currentProcessInspection;
-    throw new ServiceLifecycleError('LAUNCHD_OPERATION_BUSY', 'Could not establish the lifecycle owner identity.');
-  },
-  inspect: async () => ({ state: 'unknown', startIdentity: null }),
-};
+export function createWindowsProcessInspector(
+  options: WindowsProcessPlatformOptions = {},
+): ServiceProcessInspector {
+  let currentProcessInspection: Promise<ServiceProcessInspection> | undefined;
+  const inspect = async (pid: number): Promise<ServiceProcessInspection> => {
+    try {
+      const startIdentity = await createWindowsProcessPlatform(options).readStartTime(pid);
+      return startIdentity === null ? { state: 'dead', startIdentity: null } : { state: 'live', startIdentity };
+    } catch {
+      return { state: 'unknown', startIdentity: null };
+    }
+  };
+  return {
+    current: async () => {
+      currentProcessInspection ??= inspect(process.pid);
+      const observed = await currentProcessInspection;
+      if (observed.state !== 'live' || observed.startIdentity === null) {
+        throw new ServiceLifecycleError('LAUNCHD_OPERATION_BUSY', 'Could not establish the lifecycle owner identity.');
+      }
+      return { pid: process.pid, startIdentity: observed.startIdentity };
+    },
+    inspect,
+  };
+}
+
+export const windowsProcessInspector: ServiceProcessInspector = createWindowsProcessInspector();
 
 export const windowsServiceBackend: ServiceBackend = {
   id: 'win32',
@@ -380,6 +406,11 @@ export const windowsServiceBackend: ServiceBackend = {
   definitionSuffix,
   defaultPathEnvironment,
   unsupportedPlatformMessage: 'Task Scheduler is only available on Windows',
+  // No POSIX uid backs a Scheduled Task the way one backs a launchd or systemd domain -- see
+  // `scheduledTaskCommands`'s own `void options.uid` above. Without this, `createServiceLifecycle`
+  // had no way to build a lifecycle at all on a host with no `process.getuid`: every `wtm daemon`
+  // subcommand refused before a single `schtasks.exe` argument vector was built.
+  usesUid: false,
   resolvePaths: windowsPlatformPaths,
   labelFor: scheduledTaskLabelFor,
   definitionPath: ({ serviceRoot, label }) => join(serviceRoot, `${label}${definitionSuffix}`),
