@@ -4,12 +4,15 @@ import {
   measureDaemonSocketPath,
   publishedDaemonSocketPath,
 } from '@wtm/platform/socket';
-import { selectPlatformRuntime } from '@wtm/platform';
+import { executablePathResolverFor, selectPlatformRuntime } from '@wtm/platform';
 import type { PlatformRuntime } from '@wtm/platform/ports';
 import {
+  aggregateCiRuns,
   containsPath,
+  parseCiRemote,
   parsePortRange,
   resolveWorkspaceConfig,
+  type CiProvider,
   type DaemonStateStore,
   type WorkspaceRecord,
   type WorktreeRecord,
@@ -17,6 +20,7 @@ import {
 import type { ServicePaths } from '@wtm/daemon/service-lifecycle';
 import {
   adapterContext,
+  branchName,
   execEnvironment,
   findRegistration,
   inspectAdapters,
@@ -25,6 +29,8 @@ import {
   type AdapterReport,
   type WorktreeRuntime,
 } from '@wtm/daemon';
+import { createGhRunner, createGitHubProvider } from '@wtm/daemon/ci';
+import type { PrSummary } from '@wtm/protocol';
 import { planChanges } from './changes';
 import { createDaemonStartupDiagnostic } from './daemon-startup-diagnostic';
 import { formatRemediation, hostDaemonStatusPath } from './daemon-status';
@@ -72,6 +78,13 @@ export interface StateDiagnosticOptions {
    * half of the report can be tested at all before C2.
    */
   selectPlatform?: () => PlatformRuntime;
+  /**
+   * The CI provider `wtm status --pr` (item 13) resolves a PR through. Defaults to a live `gh`
+   * invocation, resolved the same way the daemon's `CiWatcher` resolves it
+   * (`packages/daemon/src/runtime-factory.ts`) — this is the seam tests fake, since `--pr` must
+   * never run a real `gh` or reach the network in a test.
+   */
+  ciProvider?: (runtime: PlatformRuntime) => CiProvider;
 }
 
 /**
@@ -83,6 +96,10 @@ export interface StateDiagnosticOptions {
  * the failure this warning exists to arrive before.
  */
 const socketPathWarningHeadroomBytes = 16;
+
+function defaultGitHubProvider(runtime: PlatformRuntime): CiProvider {
+  return createGitHubProvider(createGhRunner({ executable: executablePathResolverFor(runtime.id)('gh') }));
+}
 
 export function createStateDiagnosticDataSource(
   store: DaemonStateStore,
@@ -180,6 +197,31 @@ export function createStateDiagnosticDataSource(
       globalConfigPath: options.globalConfigPath,
       ...(allocate ? {} : { allocate: false }),
     });
+
+  /**
+   * `wtm status --pr` (item 13, K4): a one-shot, unpersisted lookup, unlike `ci.watch`'s polling
+   * record. Uses the same `CiProvider` seam and `gh` resolution the daemon's `CiWatcher` uses
+   * (`runtime-factory.ts`), but runs directly from the CLI process — `wtm status` already answers
+   * without the daemon running, and this must not become the one section that requires it.
+   */
+  const prLookup = async (workspace: RegisteredWorkspace, worktree: WorktreeRecord | undefined): Promise<NonNullable<StatusDiagnostic['pr']>> => {
+    const branch = worktree?.branch === null || worktree?.branch === undefined ? null : branchName(worktree.branch);
+    if (worktree === undefined || branch === null) {
+      return { summary: null, detail: 'This worktree has no branch to look up a pull request for.' };
+    }
+    const repository = store.listRepositories(workspace.id).find(({ id }) => id === worktree.repositoryId);
+    const remote = repository === undefined ? null : parseCiRemote(repository.remoteIdentity);
+    if (remote === null) return { summary: null, detail: 'No CI provider for this repository\'s remote.' };
+    const runtime = platform().runtime;
+    if (runtime === null) return { summary: null, detail: 'No platform runtime is available to run the GitHub CLI (gh).' };
+    const provider = (options.ciProvider ?? defaultGitHubProvider)(runtime);
+    const found = await provider.findPr(remote, branch);
+    if (!found.ok) return { summary: null, detail: found.failure.detail };
+    if (found.value === null) return { summary: null };
+    const runs = worktree.headOid === null ? null : await provider.listRuns(remote, worktree.headOid);
+    const summary: PrSummary = { ...found.value, ...(runs?.ok === true ? { checks: aggregateCiRuns(runs.value) } : {}) };
+    return { summary };
+  };
 
   const adapters = async (runtime: WorktreeRuntime): Promise<AdapterReport[]> => {
     try {
@@ -613,7 +655,7 @@ export function createStateDiagnosticDataSource(
     // A database with no workspace left in it (every one forgotten) is the same question as no
     // database at all, and gets the same answer.
     readDaemonStartupFailure: () => startup.failureItem(),
-    readStatus: async (workspace) => {
+    readStatus: async (workspace, statusOptions) => {
       const worktree = currentWorktree(workspace.id);
       const processes = worktree === undefined ? [] : store.listManagedProcesses({ worktreeId: worktree.id }).map((process) => ({
         task: process.taskName,
@@ -650,6 +692,7 @@ export function createStateDiagnosticDataSource(
         resources: worktree !== undefined && containsPath(worktree.path, options.cwd)
           ? await declaredResources()
           : [],
+        ...(statusOptions?.pr === true ? { pr: await prLookup(workspace, worktree) } : {}),
       } satisfies StatusDiagnostic;
     },
     readDoctor: async (workspace) => ({ workspace, findings: await diagnose(workspace) }),

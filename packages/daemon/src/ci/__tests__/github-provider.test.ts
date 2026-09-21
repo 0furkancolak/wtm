@@ -102,4 +102,30 @@ describe('GitHub CI provider', () => {
     const answer = await provider.listRuns(repository, 'a'.repeat(40));
     expect(answer).toMatchObject({ ok: false, failure: { kind: 'transient' } });
   });
+
+  test('finds the open PR for a branch', async () => {
+    const { calls, provider } = recording([ok(JSON.stringify({ number: 42, url: 'https://github.com/acme/widgets/pull/42', state: 'OPEN', mergeable: 'MERGEABLE' }))]);
+    expect(await provider.findPr(repository, 'feat/x')).toEqual({
+      ok: true, value: { number: 42, url: 'https://github.com/acme/widgets/pull/42', state: 'open', mergeable: 'mergeable' },
+    });
+    expect(calls).toEqual([['pr', 'view', 'feat/x', '--repo', 'github.com/acme/widgets', '--json', 'number,url,state,mergeable']]);
+  });
+
+  test('maps a conflicting and an unknown mergeable state', async () => {
+    const { provider } = recording([ok(JSON.stringify({ number: 1, url: 'https://x/1', state: 'CLOSED', mergeable: 'CONFLICTING' }))]);
+    expect(await provider.findPr(repository, 'feat/x')).toEqual({ ok: true, value: { number: 1, url: 'https://x/1', state: 'closed', mergeable: 'conflicting' } });
+    const { provider: unknownProvider } = recording([ok(JSON.stringify({ number: 1, url: 'https://x/1', state: 'MERGED', mergeable: 'UNKNOWN' }))]);
+    expect(await unknownProvider.findPr(repository, 'feat/x')).toEqual({ ok: true, value: { number: 1, url: 'https://x/1', state: 'merged', mergeable: 'unknown' } });
+  });
+
+  test('a branch with no PR answers null rather than a failure', async () => {
+    const { provider } = recording([fail('no pull requests found for branch "feat/x"')]);
+    expect(await provider.findPr(repository, 'feat/x')).toEqual({ ok: true, value: null });
+  });
+
+  test('findPr still classifies every other gh failure the same way listRuns does', async () => {
+    const { provider } = recording([fail('', 'not-found')]);
+    const answer = await provider.findPr(repository, 'feat/x');
+    expect(answer).toMatchObject({ ok: false, failure: { kind: 'unavailable', reason: 'missing' } });
+  });
 });
