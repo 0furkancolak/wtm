@@ -1469,9 +1469,21 @@ NTFS junction/symlink semantics
 - [ ] PID reuse kontrolü için process creation time. — `ProcessPlatform.readStartTime` Windows'ta
       `CreationDate` (round-trip ISO) okuyor; ağaç yürüyüşü de aynı alanla parent pid yeniden
       kullanımına karşı korunuyor (yukarıdaki madde). Gerçek bir Windows'ta ölçülmedi.
-- [ ] Windows path canonicalization.
-- [ ] Drive letter / UNC path desteği.
-- [ ] NTFS junction, symlink ve reparse point güvenliği.
+- [ ] Windows path canonicalization. — Kısmen: `wtm forget`'in seçici çözümü `node:path`
+      `isAbsolute`/`resolve` kullanacak şekilde düzeltildi ve `@wtm/core/paths`'e ayırıcı/büyük-küçük
+      harf duyarlı `samePath` eklendi (W3-3/9h, yukarıdaki log). Bilerek eksik bırakılan:
+      `samePath` bir `realpath` değil — junction/8.3 kısa ad/symlink hâlâ hedefiyle eşit saymıyor
+      (kayıt zaten silinmiş bir dizini sorabilir, bu yüzden dosya sistemine dokunmuyor).
+- [ ] Drive letter / UNC path desteği. — `windowsPlatformPaths` zaten `node:path/win32` kullanıyor
+      (yapısal olarak sürücü harfi/UNC'yi tanır), ama somut bir hata/başarısızlık raporu yok; bu
+      satır "ölçülmedi", "bozuk" değil.
+- [ ] NTFS junction, symlink ve reparse point güvenliği. — **2026-09-20'de bilerek kod
+      yazılmadı** (yukarıdaki log: "9h'nin başlığındaki junction ve reparse point güvenliği için
+      win32 bacağından ölçüm yok... Tahminle kod yazılmadı"). **2026-09-21 P2/P3 taraması:** bu
+      politika hâlâ geçerli — bir güvenlik sınırının doğrulanamayan davranışı doğrulanmış gibi
+      yazılmaması gerekir (koordinatör talimatı). Bu satır (a) değil (b) kovasında: gerçek bir
+      Windows NTFS üzerinde bir junction/reparse-point saldırı senaryosu ölçülmeden kod yazmak
+      spekülasyon olur. Kanıt borcu olarak kalıyor.
 - [x] `LOCALAPPDATA` / `APPDATA` tabanlı WTM paths. — `windowsPlatformPaths`, `node:path/win32`
       ile inşa edildi (varsayılan `node:path` bu Mac'te POSIX'tir ve `C:\...` yolunu tanımaz —
       Increment D1'in kendi bulgusu), env injection ile test edildi.
