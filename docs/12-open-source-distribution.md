@@ -141,12 +141,20 @@ gh workflow run CI --ref <branch> -f win32_test_filter="packages/x/src/__tests__
 
 Leaving the input empty (or triggering CI any other way) runs the full suite on every leg as before.
 
-The current tag workflow publishes `wtm-darwin-arm64.tar.gz`, `wtm-darwin-x64.tar.gz` and
-`SHA256SUMS`. The verified published prerelease `v0.1.0-rc.1` has those macOS assets. There is no
-published Linux or Windows archive in that verified release. Linux users can build from source;
-Windows contributor builds must be assessed against the experimental backend's remaining gates.
-Expanding publication requires a platform-specific artifact and signing/notarization policy;
-the current combined release gate expects the two Darwin archives and matching signing evidence.
+The tag workflow publishes `wtm-darwin-arm64.tar.gz`, `wtm-darwin-x64.tar.gz`,
+`wtm-linux-x64.tar.gz`, `wtm-linux-arm64.tar.gz` and `SHA256SUMS`. The verified published
+prerelease `v0.1.0-rc.1` carries the two macOS assets only: it was tagged before the Linux legs
+existed, and no tag has been cut since, so the Linux half is workflow wiring that no release run
+has exercised yet. Linux users build from source until a tag carries those archives. There is no
+published Windows archive at all; Windows contributor builds must be assessed against the
+experimental backend's remaining gates.
+
+Signing and notarization are scoped to the platform family that has them. `codesign`, the notary
+service and Gatekeeper are macOS facts, so the Linux legs run none of them and report
+`not-applicable` for both. `scripts/verify-release.ts` accepts that answer only for a selection
+holding no macOS archive: a macOS archive claiming it is refused, and so is a Linux leg claiming a
+signature it could not have produced. The combined gate over all four archives still requires a
+signed, notarized macOS build before a stable tag publishes.
 
 Local archive construction supports Linux x64 and arm64: after `bun run build:binary`, run
 `bun run release:artifacts` on that native host to produce `dist/release/wtm-linux-x64.tar.gz`
@@ -156,8 +164,7 @@ checks a bounded ELF header against the declared architecture (x86-64 or AArch64
 archive ownership and writes checksums. Both Linux CI legs separately archive and extract the
 freshly built SEA, verify exact bytes, ownership, executable mode and checksums, and execute
 `--version`. Fixture header tests alone are not native execution evidence. Windows archive
-construction is not enabled. Local Linux support does not change the two required published
-Darwin targets or their signing policy.
+construction is not enabled, and no Windows target is published.
 
 The npm registry publication, dist-tags and provenance have not been verified. A successful
 `package:verify` is a build and dry-run tarball check, not proof that a registry installation works.

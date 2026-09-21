@@ -2975,12 +2975,32 @@ wtm-windows-x64.zip
 SHA256SUMS
 ```
 
-- [~] Artifact names stable contract olsun. — mevcut üç yerel hedef ortak katalogda;
-      Linux ARM64 ve Windows ZIP ile yayımlama hedeflerinin tamamlanması açık.
-- [ ] Her platform smoke tested.
-- [ ] Checksums tüm platformları kapsasın.
-- [ ] Build provenance tüm artifact'lar için üret.
-- [ ] Release gate tüm required platformları görmeden publish etmesin.
+**2026-09-21 Linux yayımlama dilimi (29a):** `publishedReleaseTargets` artık dört hedef —
+Darwin arm64/x64 ve Linux x64/arm64 — ve `release.yml` bunları ayrı bir `verify-linux` job'ıyla
+(`ubuntu-24.04`, `ubuntu-24.04-arm`) üretip gerçek release asset'i olarak yayımlıyor. Signing ve
+notarization platform ailesine göre kapsandı: Linux bacakları `codesign`/`notarytool`/`spctl`
+çalıştırmaz ve ikisi için de `not-applicable` bildirir; `verify-release.ts` bu cevabı yalnızca
+macOS arşivi içermeyen bir seçim için kabul eder, macOS arşivinin aynı cevabı vermesini ve Linux
+bacağının üretemeyeceği bir imzayı iddia etmesini reddeder. **Hiçbir CI çalışması yok:** GitHub
+Actions hesap düzeyinde kesintide (2026-09-21), dolayısıyla yeni YAML'ın tek kanıtı yerel birim
+testleri ve gerçek `release:gate` betiğinin her job'ın env şekliyle elle koşturulmasıdır; gerçek
+bir tag'de Linux arşivinin üretilip yayımlandığı görülmedi.
+
+- [~] Artifact names stable contract olsun. — dört yayımlanan hedef (Darwin arm64/x64, Linux
+      x64/arm64) ortak katalogda ve release workflow'unu sürüyor; adlar
+      `publishedReleaseTargets`'tan türetiliyor ve yapısal test workflow ile katalogun
+      ayrışmasını engelliyor. Windows ZIP açık.
+- [~] Her platform smoke tested. — Linux bacakları da SEA smoke suite'ini çalıştırıp sonucu
+      gate'e veri olarak veriyor (macOS'taki gibi). Gerçek tag çalışması yok (Actions kesintisi);
+      Windows yayımlanmıyor.
+- [~] Checksums tüm platformları kapsasın. — `SHA256SUMS` dört arşivin birleşimi ve gate
+      eksik/fazla girdiyi reddediyor (yerel olarak doğrulandı). Windows açık.
+- [~] Build provenance tüm artifact'lar için üret. — `attest-build-provenance` zaten
+      `dist/release/*.tar.gz` glob'u; dört tarball'u da kapsıyor ve yapısal test glob'un listeye
+      dönüşmesini engelliyor. Gerçek attestation çalışması görülmedi.
+- [~] Release gate tüm required platformları görmeden publish etmesin. — birleşik gate dört
+      arşivin tamamını istiyor; biri eksikken `SHA256SUMS does not list <ad>` ile reddediyor
+      (yerel koşumla doğrulandı). "Required" küme Windows'u henüz içermiyor.
 
 ---
 
