@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
-  chmod,
   link,
   lstat,
   mkdtemp,
@@ -15,8 +14,13 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { createWindowsFileTrustPolicy } from '@wtm/platform';
+import { createWindowsFileTrustPolicy, selectPlatformRuntime } from '@wtm/platform';
 import type { FileTrustPolicy } from '@wtm/platform/ports';
+import {
+  grantForeignDirectoryAccess,
+  grantForeignDirectoryWrite,
+} from '../../../../testkit/src/directory-access';
+import { isWindowsTestHost } from '../../../../testkit/src/platform';
 import {
   canonicalSkillPathForModule,
   createFilesystemSkillInstaller,
@@ -25,6 +29,19 @@ import {
 } from '../skill';
 
 const canonicalSkillPath = resolve(import.meta.dir, '../../../../../skills/wtm/SKILL.md');
+
+/**
+ * The policy `main.ts` selects, selected here for the same reason.
+ *
+ * `createFilesystemSkillInstaller`'s own fallback is `@wtm/core`'s POSIX-only default, whose
+ * `currentIdentityAvailable()` is `process.getuid?.() !== undefined` -- always false on win32. A
+ * test that injected nothing was not exercising the installer there: `directoryIdentity` refused
+ * the anchor on its first question, so every case below reported
+ * `Agent Skill destination contains an unsafe path component` whatever it had set up, and the two
+ * cases that expect exactly that message passed for a reason unrelated to what they name. Only the
+ * stub-injecting tests further down pick a different policy, deliberately.
+ */
+const hostFileTrust: FileTrustPolicy = selectPlatformRuntime().fileTrust;
 const temporaryRoots: string[] = [];
 
 afterEach(async () => {
@@ -66,6 +83,7 @@ describe('Agent Skill command', () => {
       localSkills,
       globalAnchor: root,
       globalSkills,
+      fileTrust: hostFileTrust,
     });
     const expected = await readFile(canonicalSkillPath, 'utf8');
 
@@ -79,12 +97,18 @@ describe('Agent Skill command', () => {
     expect(await readFile(local.path, 'utf8')).toBe(expected);
     expect(await readFile(global.path, 'utf8')).toBe(expected);
     const localStat = await lstat(local.path);
-    const uid = process.getuid?.();
-    if (uid === undefined) throw new Error('POSIX uid is unavailable in the test runtime');
     expect(localStat.isFile()).toBe(true);
-    expect(localStat.uid).toBe(uid);
     expect(localStat.nlink).toBe(1);
-    expect(localStat.mode & 0o777).toBe(0o644);
+    // Owner and mode are the POSIX half of "the file it published is the file it meant to".
+    // Windows records neither -- `uid` is hardcoded `0` and `mode` comes from the read-only
+    // attribute -- so asserting them there measures Node's synthesis, not the installer. The two
+    // lines above are the part that means the same thing on every platform, and they stay.
+    if (!isWindowsTestHost) {
+      const uid = process.getuid?.();
+      if (uid === undefined) throw new Error('POSIX uid is unavailable in the test runtime');
+      expect(localStat.uid).toBe(uid);
+      expect(localStat.mode & 0o777).toBe(0o644);
+    }
   });
 
   test('updates only the selected SKILL.md and never creates or modifies AGENTS.md', async () => {
@@ -92,19 +116,23 @@ describe('Agent Skill command', () => {
     const project = join(root, 'project');
     const agentsPath = join(project, 'AGENTS.md');
     await mkdir(project, { recursive: true });
-    await chmod(project, 0o755);
+    await grantForeignDirectoryAccess(project);
     await writeFile(agentsPath, 'user-owned instructions\n');
     const installer = createFilesystemSkillInstaller({
       localAnchor: project,
       localSkills: join(project, '.vendor', 'skills'),
       globalAnchor: root,
       globalSkills: join(root, 'global-skills'),
+      fileTrust: hostFileTrust,
     });
 
     await runSkillInstallCommand({ scope: 'local', installer });
 
     expect(await readFile(agentsPath, 'utf8')).toBe('user-owned instructions\n');
-    expect((await stat(project)).mode & 0o777).toBe(0o755);
+    // The anchor's own permissions are the caller's, not the installer's to tighten. Only the
+    // POSIX half of that is readable from a mode; on Windows the equivalent evidence is the ACL,
+    // which this test has no reason to read when `AGENTS.md` above already pins the intent.
+    if (!isWindowsTestHost) expect((await stat(project)).mode & 0o777).toBe(0o755);
     expect(await readFile(join(project, '.vendor', 'skills', 'wtm', 'SKILL.md'), 'utf8')).toContain(
       '# WTM Worktree Runtime',
     );
@@ -126,6 +154,7 @@ describe('Agent Skill command', () => {
         localSkills,
         globalAnchor: root,
         globalSkills: join(root, 'global'),
+        fileTrust: hostFileTrust,
       }),
     })).rejects.toThrow('Agent Skill destination is unsafe.');
 
@@ -152,6 +181,7 @@ describe('Agent Skill command', () => {
         localSkills: join(project, '.agents', 'skills'),
         globalAnchor: root,
         globalSkills: join(root, 'global-skills'),
+        fileTrust: hostFileTrust,
       });
 
       await expect(runSkillInstallCommand({ scope: 'local', installer })).rejects.toThrow(
@@ -169,6 +199,7 @@ describe('Agent Skill command', () => {
       localSkills,
       globalAnchor: root,
       globalSkills: join(root, 'global-skills'),
+      fileTrust: hostFileTrust,
     });
 
     await expect(installer.install({
@@ -187,6 +218,7 @@ describe('Agent Skill command', () => {
       localSkills,
       globalAnchor: root,
       globalSkills: join(root, 'global'),
+      fileTrust: hostFileTrust,
     });
 
     await expect(installer.install({ name: 'wtm', scope: 'local', content: 'different bytes' })).rejects.toThrow(
@@ -201,13 +233,21 @@ describe('Agent Skill command', () => {
       const project = join(root, 'project');
       const intermediate = join(project, '.agents');
       await mkdir(intermediate, { recursive: true });
-      await chmod(project, insecure === 'anchor' ? 0o777 : 0o755);
-      await chmod(intermediate, insecure === 'intermediate' ? 0o777 : 0o755);
+      // `0o777` and `0o755` in each platform's own terms: the insecure one is writable by a
+      // principal that is neither the owner nor trusted, which fails the `0o022` mask this call
+      // site asks, and the other is readable by one, which passes it. On win32 a `chmod` said
+      // neither -- it left both directories owner-only, so the loop asserted a refusal that had
+      // nothing to refuse.
+      await (insecure === 'anchor'
+        ? grantForeignDirectoryWrite(project) : grantForeignDirectoryAccess(project));
+      await (insecure === 'intermediate'
+        ? grantForeignDirectoryWrite(intermediate) : grantForeignDirectoryAccess(intermediate));
       const installer = createFilesystemSkillInstaller({
         localAnchor: project,
         localSkills: join(intermediate, 'skills'),
         globalAnchor: root,
         globalSkills: join(root, 'global'),
+        fileTrust: hostFileTrust,
       });
 
       await expect(runSkillInstallCommand({ scope: 'local', installer })).rejects.toThrow(
@@ -229,6 +269,7 @@ describe('Agent Skill command', () => {
       hooks: {
         afterTemporarySync: async ({ temporaryPath }) => link(temporaryPath, hardlinkPath),
       },
+      fileTrust: hostFileTrust,
     });
 
     await expect(runSkillInstallCommand({ scope: 'local', installer })).rejects.toThrow(
@@ -256,6 +297,7 @@ describe('Agent Skill command', () => {
           await writeFile(temporaryPath, 'raced replacement', { flag: 'wx' });
         },
       },
+      fileTrust: hostFileTrust,
     });
 
     await expect(runSkillInstallCommand({ scope: 'local', installer })).rejects.toThrow(
@@ -282,6 +324,7 @@ describe('Agent Skill command', () => {
           await symlink(outside, targetDirectory);
         },
       },
+      fileTrust: hostFileTrust,
     });
 
     await expect(runSkillInstallCommand({ scope: 'local', installer })).rejects.toThrow(
@@ -306,6 +349,7 @@ describe('Agent Skill command', () => {
           await symlink(outside, targetDirectory);
         },
       },
+      fileTrust: hostFileTrust,
     });
 
     await expect(runSkillInstallCommand({ scope: 'local', installer })).rejects.toThrow(
