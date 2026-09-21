@@ -191,6 +191,15 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/core/src/runtime/__tests__/proxy-hostname.test.ts
   ```
 
+### #60 — feat(daemon,core): join proxy hostnames into the CORS allowlist (W10-1 / 12c CORS half)
+- Commit: `6ccaf1a` (öncesi) → merge sonrası güncel head · Unit: W10-1 / 12c (CORS yarısı)
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası). Yalnızca yerel gate ile doğrulandı.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/daemon/src/__tests__/proxy-cors-integration.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
