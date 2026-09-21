@@ -14,7 +14,10 @@ WTM (Worktree Runtime Manager) runs many Git worktrees of a workspace side by si
 - A per-user **daemon** (launchd, systemd user service, or experimental Windows Scheduled Task)
   supervises managed processes and owns the SQLite state store.
 - Each feature gets its own **ports** and resolved **environment**; tasks come from `wtm.toml`,
-  from each worktree's `Makefile` (`make:<target>`) and the workspace root's (`workspace:<target>`).
+  from each worktree's `Makefile` (`make:<target>`), the workspace root's run at the workspace root
+  (`workspace:<target>`), and the workspace root's run *in this worktree* instead
+  (`workspace-here:<target>` — for a root target whose recipe shells into a specific repository,
+  when you want that repository to be this worktree's checkout rather than the workspace's own).
 - Heavy finite tasks go through a machine-wide **job queue** with concurrency and memory admission.
 - **Removal** refuses whenever work would be lost.
 
@@ -113,8 +116,8 @@ initialization is part of the request, run `wtm init --yes --json`.
 
 Run `wtm resolve <name> --json` with the most likely name. An unknown name fails with
 `errors[0].context.knownTasks`, which lists every task of this worktree; pick from it. This covers
-`wtm.toml`, `make:<target>` and `workspace:<target>` tasks, so you do not need to read `wtm.toml`,
-a `Makefile` or `package.json` to find task names.
+`wtm.toml`, `make:<target>`, `workspace:<target>` and `workspace-here:<target>` tasks, so you do
+not need to read `wtm.toml`, a `Makefile` or `package.json` to find task names.
 
 ## New worktrees
 

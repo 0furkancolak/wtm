@@ -14,9 +14,13 @@ experimental while its native validation is being completed.
 [![Linux](https://img.shields.io/badge/Linux-x64-lightgrey.svg)](#platform-support)
 [![Windows](https://img.shields.io/badge/Windows-experimental-yellow.svg)](#platform-support)
 [![Latest release](https://img.shields.io/github/v/release/0furkancolak/wtm?include_prereleases)](https://github.com/0furkancolak/wtm/releases)
+[![npm version](https://img.shields.io/npm/v/worktree-runtime-manager.svg)](https://www.npmjs.com/package/worktree-runtime-manager)
 [![CI](https://github.com/0furkancolak/wtm/actions/workflows/ci.yml/badge.svg)](https://github.com/0furkancolak/wtm/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D24-green.svg)](#requirements)
 [![JSON output](https://img.shields.io/badge/output-stable%20JSON-orange.svg)](#json-output-for-scripts-and-agents)
+
+_The npm badge reads "not found" until the package's first real publish — see [npm package:
+publication awaiting verification](#npm-package-publication-awaiting-verification)._
 
 Powered by [nafru.com](https://nafru.com).
 
