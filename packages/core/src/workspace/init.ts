@@ -4,6 +4,7 @@ import { link, mkdir, open, realpath, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { parse } from 'smol-toml';
 import { parseWtmConfig, WtmConfigError, type WtmConfig } from '../config/schema';
+import { stripByteOrderMark } from '../config/toml-text';
 import { renderConfigDraft, type OutOfRangePort } from '../detect/config-draft';
 import { detectWorkspaceServices, type WorkspaceDetection } from '../detect/service-detection';
 import type { ReconcileResult, RepositoryRecord, StateStore, WorkspaceRecord } from '../state/store';
@@ -138,7 +139,11 @@ async function ensureMinimalConfig(input: MinimalConfigInput): Promise<{
 }> {
   const { path } = input;
   const snapshot = await readConfigSnapshot(path);
-  const original = snapshot.state === 'present' ? snapshot.content : '';
+  // Stripped here rather than left for `parseConfigToml`: `original` is also the text the rewrite
+  // below is built from, and a leading marker has to be out of the way of both. It only reaches
+  // the write path when the file was absent — a present file is either already conformant or
+  // reported as needing a change — so no existing file loses its marker to this.
+  const original = snapshot.state === 'present' ? stripByteOrderMark(snapshot.content) : '';
 
   const existing = original.length === 0
     ? parseWtmConfig({}, path)

@@ -1922,10 +1922,62 @@ wtm-windows-arm64.exe
       plan tablosundaki kod alanı — kümeleme dokümanı bu alt-alanlar için hiçbir gözlemlenen
       hata kaydetmiyor (`platform/src/service/__tests__` win32'de hiç koşmadı); yeni kanıt
       olmadan spekülatif bir düzeltme yazılmadı.
-- [ ] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
-- [ ] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
+- [x] Aynı `wtm.toml` mümkün olduğunca üç OS'ta da çalışıyor.
+      **2026-09-21 (W5-3 / 9m):** burada gerçek bir hata vardı. UTF-8 dosyayı okumak byte order
+      mark'ı `U+FEFF` olarak string'in içinde bırakıyor, TOML'un onu atlayan bir kuralı yok, yani
+      mark'ı varsayılan olarak yazan editörlerin kaydettiği her `wtm.toml` — yazarına göre aynı
+      yapılandırma — ilk anahtarın ilk karakterinde sözdizimi hatasıyla reddediliyordu; üstelik
+      hiçbir editörün göstermediği bir karakter için gözle bakınca doğru görünen bir satırı
+      işaret eden bir mesajla. `stripByteOrderMark` (`packages/core/src/config/toml-text.ts`)
+      yalnızca *baştaki* mark'ı siliyor ve diskteki dosyayı hiç yeniden yazmıyor; kullanıcının
+      yazdığı bir TOML dosyasını diskten okuyan dört yere de uygulandı (config yükleyici,
+      `wtm init`, `wtm detect`, `wtm changes`). Yeni `packages/core/src/config/__tests__/
+      cross-platform-config.test.ts` dört kodlamayı (LF, CRLF ve her ikisinin mark'lı hali) hem
+      ayrıştırıcıdan hem gerçek yükleyiciden geçiriyor, değerleri birbirleriyle değil yazılı bir
+      beklentiyle karşılaştırıyor (hepsinin aynı şekilde yanlış olması hâli görünür kalsın diye)
+      ve `wtm explain`'in gösterdiği provenance satır numaralarının kodlamadan bağımsız olduğunu
+      sabitliyor. Dosyanın ortasındaki bir mark hâlâ sözdizimi hatası.
+      Bilinçli olarak *düzeltilmeyen* tek fark yazıya geçti ve testle sabitlendi: çok satırlı bir
+      temel dizenin (`"""…"""`) *içindeki* satır sonu ayırıcı değil değerin kendisi, dolayısıyla
+      dosyayla birlikte yolculuk ediyor (CRLF kopya `\r\n`, LF kopya `\n` veriyor). Normalleştirmek
+      tırnak içindeki bir değeri yeniden yazmak olurdu; `docs/03-configuration-spec.md`'nin yeni
+      "File encoding" bölümü bunu ve taşınabilir yazımın `\n` kaçışı olduğunu söylüyor.
+      Kanıt durumu: kodlama testleri fixture (baytlar burada kurgulanıyor, gerçek bir editörden
+      gelmiyor — ama `U+FEFF` ve `\r\n` dizileri OS'a değil kendi spesifikasyonlarına bağlı).
+      Yol biçimi tarafı zaten `scripts/__tests__/examples-portability.test.ts` ile POSIX ve win32
+      path flavor'ları üzerinden kapsanıyordu; buna ek olarak yeni dosyanın son testi host'un kendi
+      `node:path`'iyle iç içe workspace katmanlamasını okuyor, yani onu çalıştıran her CI
+      bacağında native kanıt — win32 bacağı onu Windows kanıtı yapan şey. Bu oturumda yalnızca
+      Linux'ta koştu; GitHub Actions hesap çapında kesintide olduğu için gerçek bir macOS/Windows
+      koşusu yok. Dokunulmayan tek okuma yeri `packages/daemon/src/runtime-factory.ts:355`
+      (`globalJobPolicy`) — bu dalgada başka bir birimin alanı, ve mark'lı bir global
+      `config.toml` orada hâlâ reddedilir; ayrı bir birim olarak kapatılmalı.
+- [x] JSON contract platformlar arasında aynı kalıyor. — `definitionPath` her platformda var;
       `plistPath` macOS'a özel bir ek alan olarak bilerek duruyor (D11), kaldırılması daemon JSON
       sözleşmesini kırmak için bağımsız bir nedeni olan ilk artıma programlandı.
+      **2026-09-21 (W5-3 / 9m):** ölçüt artık bir cümle değil bir test.
+      `packages/cli/src/commands/__tests__/daemon.test.ts` zarfı darwin, linux ve win32 için
+      kuruyor ve yayımlanan *anahtar kümelerini* doğrudan karşılaştırıyor — alan alan karşılaştırma
+      asıl önemli hata biçimini, yani tek bir platformda sessizce beliren bir anahtarı, göremez.
+      linux ile win32 birebir aynı; darwin aynı küme artı yalnızca `plistPath` (harfi harfine
+      yazıldı, yani istisnanın büyümesi bu testi düzenlemeyi ve D13/D11'i yeniden okumayı
+      gerektirir). Anahtarlar JSON'dan geri okunuyor, böylece `undefined` bir anahtar okuyucunun
+      gördüğü gibi "yok" sayılıyor. `ok: false` yarısı da üç platformda aynı şekli ve tek bir kodu
+      koruyor; yalnızca servis yöneticisini adlandıran mesaj değişiyor. `published()`'ın kapısı
+      `id === 'darwin'` olduğu için win32 yapı gereği linux tarafına düşüyor; bunu sabitlemenin
+      değeri mutasyonla doğrulandı (kapı `id !== 'linux'` yapıldığında iki yeni test kırmızıya
+      dönüyor). Dördüncü test `label`/`definitionPath` biçimlerini sabitliyor ve
+      `docs/04-cli-reference.md`'de gerçek bir sapma yakaladı: tablo Linux etiketini
+      `wtm-daemon-<digest>.service` diye veriyordu — sonek tanım *dosyasına* ait, etikete değil —
+      ve Windows tabloda hiç yoktu; ikisi de düzeltildi.
+      `plistPath`'e dokunulmadı: C1'in D13'ü ile C2'nin D11'i aynı sonuca ayrı ayrı vardı, bu
+      artımın onu kırmak için bağımsız bir nedeni yok. Kutu D13'ün "kaldırılana kadar işaretsiz
+      kalır" notuna rağmen işaretlendi, çünkü onu D11 geçersiz kıldı: taşınabilir bir tüketicinin
+      ihtiyacı olan özellik `definitionPath`'in her platformda bulunması ve bu artık kanıtlı.
+      Kanıt durumu: fixture — üç `PlatformRuntime` kimliğe göre kuruluyor, gerçek bir macOS/Windows
+      çekirdeğinde ölçüm değil. `schtasks.exe`'in aynı backend'in kurduğu argüman vektörlerini
+      kabul ettiği hakkında hiçbir şey söylemiyor; o hâlâ hedefli bir `win32_test_filter` koşusu
+      istiyor.
 - [x] CLI command names platforma göre değişmiyor. — aynı komut listesi iki platformda da
       `main.test.ts` tarafından sabitleniyor.
 - [x] Platform-specific farklar `wtm doctor` ile açıkça raporlanıyor.
@@ -3142,6 +3194,88 @@ events
 
 dokümanda anlatıldığı gibi çalışıyor mu test edilmeli.
 
+**35a değerlendirmesi (2026-09-21):** beş alandan dördü kapatıldı, biri (resource lifecycle) bir
+notla kapatıldı; `events` tamamen yeni kanıtla kapatıldı, o yüzden üstteki satır hâlâ `[ ]`
+bırakıldı -- tek bir "hepsi bitti" imzası, aşağıdaki notu okumadan geçilmemesi için.
+
+- **remove lifecycle — zaten kapalı.** PR #11 zaten `### [x] Removal` ve `### [x] Remote safety`
+  bölümlerini kapatmıştı (satır 3129-3159); o kanıt burada tekrarlanmıyor. Bu oturum ek bir şey
+  bulmadı.
+- **cleanup candidates — kapalı, küçük bir boşluk kapatıldı.**
+  `packages/core/src/analysis/__tests__/cleanup-ranking.test.ts` (20 test) ve
+  `packages/cli/src/__tests__/cleanup-ranking.test.ts` +
+  `packages/cli/src/__tests__/cleanup-ranking.scenario.ts` (gerçek Git fixture'ı üzerinden CLI
+  seviyesinde) zaten `docs/10-git-safety-worktree-analysis.md`'nin ["Cleanup
+  candidates"](docs/10-git-safety-worktree-analysis.md#cleanup-candidates) bölümündeki 7 tier'i
+  (readiness, running, unsettled work, persistence strength, idleness, prunable, reclaimable
+  estimate), path tie-break'i, `score`'un sıralamayla hiç çelişmediğini ve `BLOCKED`'ın listeden
+  düşürülmeden en sona konduğunu tek tek doğruluyordu -- madde 12'nin ("cleanup candidate ranking
+  ekle") kendisi de zaten `[x]`. Eksik olan tek şey: tier 5 ("longest since the last WTM activity
+  *first*, then since the last commit") için mevcut testlerin hepsi diğer zaman damgasını sabit
+  tutuyordu, yani runtime-idleness'ın commit-idleness'a gerçekten üstün geldiğini (ikisi
+  çeliştiğinde) hiçbiri kanıtlamıyordu. Yeni test: `cleanup-ranking.test.ts`, "runtime idleness
+  outranks commit idleness when the two disagree" -- bir aday yakın zamanda çalıştırılmış ama
+  commit'i çok eski, diğeri tam tersi; birincisi hâlâ ikinciden daha kötü (daha az temizlenmeye
+  aday) sıralanıyor. `bun test packages/core/src/analysis/__tests__/cleanup-ranking.test.ts`: 20/20
+  yeşil. Platform: bu sandbox'ta yalnızca Linux üzerinde çalıştırıldı; çapraz platform CI kanıtı
+  iddia edilmiyor (zaten platformdan bağımsız saf mantık).
+- **performance gate — zaten kapalı, kod değişikliği gerekmedi.**
+  `scripts/__tests__/verify-release.test.ts`, `docs/12-open-source-distribution.md`'nin "Release
+  operations" bölümünün tam olarak iddia ettiği üç davranışı ayrı ayrı doğruluyor: "rejects a
+  stable release with a performance blocker" (stable + 1 blocker -> reddedilir), "accepts a stable
+  release with performance warnings but no blockers" (stable + yalnızca warning -> kabul edilir,
+  yani warning hiçbir zaman blocker gibi davranmıyor) ve "accepts a prerelease despite a
+  performance blocker" (prerelease + blocker -> kabul edilir, tam muafiyet). Bunlara ek olarak
+  "rejects a release without performance results", "a negative report cannot cancel another
+  architecture's blocker" ve "reports combined blocker counts exactly even above the safe number
+  range" da `verifyPerformance`'ın (`scripts/verify-release.ts`) genel doğruluğunu kanıtlıyor. Bu
+  zaten "implementation-detail unit testleri" değil, dokümanın kendi cümleleriyle bire bir eşleşen
+  davranış testleri -- madde 4 ve release checklist'teki "Performance workflow/docs parity" satırı
+  da zaten `[x]`. `bun test scripts/__tests__/verify-release.test.ts` yeşil.
+- **resource lifecycle — büyük ölçüde kapalı; bir dokümantasyon/implementasyon uyuşmazlığı not
+  edildi, test boşluğu değil.** `docs/07-process-port-runtime.md`'nin `DISCOVERED -> ALLOCATED ->
+  PREPARING -> READY` ve `READY/RUNNING -> ORPHANED -> CLEANING -> REMOVED` akışları ile
+  `docs/08-storage-cache-gc.md`'nin storage policy'leri (`shared`/`native-cache`/`clone`/
+  `isolated`/`symlink`/`copy`/`ephemeral`/`external`/`ignore`) zaten
+  `packages/core/src/resources/__tests__/` altında (`materializer.test.ts`,
+  `preparation.test.ts`, `removal.test.ts`, `guard.test.ts`, `guard-lifecycle.scenario.ts` +
+  `.test.ts`, `gc.test.ts`, `gc-repository-lease.test.ts`) kapsamlı şekilde test ediliyor; endpoint
+  lease'lerin `ORPHANED` worktree'de serbest bırakılması (docs/07 "Endpoint leases") zaten
+  `sqlite-store.test.ts`/`.scenario.ts` üzerinden, "port release" satırının (`### [x] Removal`)
+  kendi kanıtı. **Not:** docs/07'nin "Cleanup" tablosundaki `containers delete` / `networks
+  delete` / `volumes retain by default` satırları için `packages/core`, `packages/adapters` ve
+  `packages/daemon` içinde karşılık gelen hiçbir kod bulunamadı (`gc.ts`'teki "container" terimi
+  yalnızca GC'nin kendi dosya-sistemi karantina dizinini ifade ediyor, Docker değil) -- bu satırlar
+  muhtemelen henüz core'a bağlanmamış adapter-sahipli kaynaklar (ör. Docker Compose) için bir
+  kapsam beyanı, `docs/08`'in kendisinin de söylediği gibi ("Adapter-declared disposable build
+  outputs and adapter-native dependency cleanup plans are not part of this mode"). Var olmayan bir
+  davranış için test yazmak yerine burada açıkça not edildi; bu WTM lifecycle test kapsamının değil,
+  ayrı bir implementasyon kapsamının konusu.
+- **events — önceden yalnızca `worktree.created` gerçek bir daemon'a karşı kanıtlıydı; şimdi
+  8 olayın 8'i de kanıtlı.** `docs/03-configuration-spec.md`'nin Events tablosu sekiz olay
+  listeliyor: `workspace.discovered`, `repo.discovered`, `worktree.discovered`, `worktree.created`,
+  `worktree.ready`, `worktree.removed`, `runtime.started`, `runtime.stopped`. PR #11
+  `worktree.created`'ı gerçek bir daemon'a karşı kanıtlamıştı
+  (`create-daemon-running.scenario.ts`); geri kalan yedisi yalnızca
+  `packages/daemon/src/__tests__/events.test.ts`'in sahte `LifecycleEventDispatcher` harness'ıyla
+  (sahte `store`, sahte `start` -- gerçek supervisor, gerçek soket, gerçek reconcile yok)
+  doğrulanıyordu. Yeni `packages/cli/src/__tests__/lifecycle-events-daemon.scenario.ts` +
+  `.test.ts`, gerçek `createProductionDaemon` + gerçek `DaemonClient` + gerçek CLI ile kalan
+  yedisini tek tek kanıtlıyor: bir workspace/repository'nin ilk reconcile'ı aynı anda
+  `workspace.discovered`, `repo.discovered` ve `worktree.discovered`'ı (her biri kendi marker
+  task'ını gerçekten çalıştırarak) tetikliyor; `[prepare] mode = "eager"` ile aynı ilk reconcile
+  `worktree.ready`'yi de tetikliyor; `wtm start dev` (daemon'un gerçek supervisor'ı üzerinden)
+  `runtime.started`'ı, `wtm stop dev` `runtime.stopped`'ı tetikliyor (ve durdurulan sürecin OS'ten
+  gerçekten kaybolduğu ayrıca doğrulanıyor); ham bir `git worktree remove` (kasıtlı olarak `wtm
+  remove` değil -- o başka bir unit'in alanı ve zaten kendisi hiçbir şey dispatch etmiyor, bir
+  sonraki reconcile ediyor) + `reconcile` de `worktree.removed`'ı ana worktree'de tetikliyor, tam
+  dokümanda anlatıldığı gibi. Her assertion, ilgili event konfigürasyondan çıkarıldığında testin
+  gerçekten kırıldığı elle doğrulandı (ör. `worktree.ready` için `mode: 'lazy'`'a çevrilince test
+  zaman aşımıyla başarısız oluyor) -- yani bu testler olayların varlığını değil, gerçekten
+  çalıştığını kanıtlıyor. `bun test
+  packages/cli/src/__tests__/lifecycle-events-daemon.test.ts`: 1/1 yeşil. Platform: bu sandbox'ta
+  yalnızca Linux üzerinde çalıştırıldı; çapraz platform CI kanıtı iddia edilmiyor.
+
 ---
 
 # Testing checklist
@@ -3311,8 +3445,20 @@ birlikte 62/62 (bkz. Removal/Create parity turu). `bun run typecheck && bun run 
 - [ ] Windows path/drive-letter tests
 - [ ] Windows Named Pipe IPC tests
 - [ ] Windows Job Object/process-tree cleanup tests
-- [ ] Cross-platform config fixture tests
-- [ ] Cross-platform JSON contract parity
+- [x] Cross-platform config fixture tests — `packages/core/src/config/__tests__/cross-platform-config.test.ts`
+      (the four encodings a `wtm.toml` arrives in — LF, CRLF, and each with a leading UTF-8 byte
+      order mark — through both the parser and the real loader, with provenance line numbers and
+      the deliberate multi-line-string exception pinned) and the pre-existing
+      `scripts/__tests__/examples-portability.test.ts` (every published example resolved under a
+      POSIX path flavor and a Windows one). Fixture evidence; the last test in the first file is
+      host-native and is Windows evidence on the win32 CI leg. Run on Linux only in this session.
+- [x] Cross-platform JSON contract parity — `packages/cli/src/commands/__tests__/daemon.test.ts`,
+      `the published definition path`: the `wtm daemon install/uninstall/status` envelope built for
+      a darwin, a linux and a win32 `PlatformRuntime`, with the published key sets compared
+      directly (identical apart from the macOS-only additive `plistPath`), the `ok: false` shape
+      and error code compared too, and `label`/`definitionPath` pinned against the
+      `docs/04-cli-reference.md` table. Fixture evidence: the platform is injected by id, not
+      measured on a real kernel.
 
 ### [ ] Distribution / install
 

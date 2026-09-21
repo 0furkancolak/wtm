@@ -7,6 +7,7 @@ import {
   discoverWorkspace,
   parseWtmConfig,
   renderConfigDraft,
+  stripByteOrderMark,
   WtmConfigError,
   type ConfigDraft,
   type ConfigDraftBlock,
@@ -129,7 +130,10 @@ async function appendConfig(path: string, contents: string, additions: string): 
 async function readConfig(path: string): Promise<{ contents: string; config: WtmConfig } | null> {
   let contents: string;
   try {
-    contents = await readFile(path, 'utf8');
+    // The marker is dropped from what is parsed and from what `appendConfig` measures, never from
+    // the file: the append below is an `O_APPEND` write of the new tables alone, so a file that
+    // arrived with a marker keeps it exactly as its author saved it.
+    contents = stripByteOrderMark(await readFile(path, 'utf8'));
   } catch {
     return null;
   }

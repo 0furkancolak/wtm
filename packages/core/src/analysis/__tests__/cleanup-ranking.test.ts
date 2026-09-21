@@ -195,6 +195,19 @@ describe('rankCleanupCandidates', () => {
     ])).toEqual(['/repo/z-old', '/repo/a-unrecorded']);
   });
 
+  // docs/10-git-safety-worktree-analysis.md, tier 5: "longest since the last WTM activity
+  // *first*, then since the last commit" -- runtime idleness must win when the two disagree,
+  // not merely each in isolation (every other idleness test above holds the other timestamp
+  // equal, so neither proves which one dominates).
+  test('runtime idleness outranks commit idleness when the two disagree', () => {
+    expect(order([
+      // Recently run, but its last commit is ancient: the recent run should still keep it below
+      // a worktree WTM has not touched in ages, even though that one committed only yesterday.
+      candidate('/repo/a-recently-run-ancient-commit', { lastRuntimeAt: daysAgo(0), lastCommitAt: daysAgo(45) }),
+      candidate('/repo/z-idle-runtime-recent-commit', { lastRuntimeAt: daysAgo(45), lastCommitAt: daysAgo(0) }),
+    ])).toEqual(['/repo/z-idle-runtime-recent-commit', '/repo/a-recently-run-ancient-commit']);
+  });
+
   test('a prunable worktree ranks above an otherwise identical present one', () => {
     expect(order([
       candidate('/repo/a-present'),

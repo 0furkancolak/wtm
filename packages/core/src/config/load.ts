@@ -5,6 +5,7 @@ import { defaultAllowedRemoteRefs } from '../analysis/remote-persistence';
 import { mergeConfigLayers, type ConfigLayer } from './merge';
 import { collectProvenance, type ResolvedConfig } from './provenance';
 import { parseWtmConfig, WtmConfigError, type WtmConfig } from './schema';
+import { stripByteOrderMark } from './toml-text';
 
 export const builtInConfig: WtmConfig = {
   version: 1,
@@ -21,7 +22,7 @@ export const builtInConfig: WtmConfig = {
 async function loadConfigFile(path: string): Promise<ConfigLayer | undefined> {
   let toml: string;
   try {
-    toml = await readFile(path, 'utf8');
+    toml = stripByteOrderMark(await readFile(path, 'utf8'));
   } catch (error) {
     if (isMissingFile(error)) return undefined;
     throw error;

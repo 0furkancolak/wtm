@@ -102,6 +102,7 @@ export type {
   RepositoryOperationSession,
 } from './analysis/operation-lease';
 export { resolveWorkspaceConfig, builtInConfig } from './config/load';
+export { stripByteOrderMark } from './config/toml-text';
 export { mergeConfigLayers } from './config/merge';
 export { parseWtmConfig, wtmConfigSchema, WtmConfigError } from './config/schema';
 export type { CorsConfig, GitConfig, PortConfig, PortsConfig, RepoConfig, ResourceConfig, WtmConfig } from './config/schema';
