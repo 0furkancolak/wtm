@@ -1,8 +1,9 @@
-import { chmod, lstat, mkdir, mkdtemp, rename, rm, symlink } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, rename, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { selectPlatformRuntime } from '@wtm/platform';
 import type { FileTrustPolicy } from '@wtm/platform/ports';
+import { grantForeignDirectoryAccess } from '../../../../testkit/src/directory-access';
 import { createFakeAdapter } from '../../../../testkit/src/fake-adapter';
 import { runAdapterCommand } from '../adapter';
 
@@ -87,7 +88,9 @@ async function rejectsUnsafePrivateParents() {
   try {
     const insecure = join(root, 'insecure');
     await mkdir(insecure, { mode: 0o700 });
-    await chmod(insecure, 0o755);
+    // Not `chmod(insecure, 0o755)`: on win32 that changes nothing an ACL check can see, so this
+    // half asserted a refusal of a directory that was still private. See the helper.
+    await grantForeignDirectoryAccess(insecure);
     const actual = join(root, 'actual');
     await mkdir(actual, { mode: 0o700 });
     const aliased = join(root, 'aliased');
