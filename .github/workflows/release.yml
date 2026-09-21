@@ -317,9 +317,19 @@ jobs:
   # cannot reuse the `release:verify` composite script for that reason: it runs the same steps in
   # the same order, but with the wider bound and whole-run budget ci.yml's own win32 leg already
   # established as necessary, not a new guess.
+  #
+  # `continue-on-error` for the same reason `validate`'s win32 leg carries it above: CLAUDE.md
+  # states win32 CI as informational until todo item 9 lands, and item 9 has not landed. This job
+  # runs the full suite (`release:verify`'s own scope, not a targeted smoke check), so it can hit
+  # the same still-open native failures that leg does. `publish` still lists this job in `needs`
+  # -- so a real failure here is visible and blocks nothing silently -- but `requiredReleaseTargets`
+  # (`artifact-targets.ts`) is what actually keeps a failed or absent Windows archive from blocking
+  # macOS and Linux: this flag only keeps that failure from being reported as the run itself
+  # cancelled or errored, the same distinction CLAUDE.md's CI section draws for `validate`.
   verify-windows:
     name: Verify ${{ matrix.platform }} ${{ matrix.arch }}
     timeout-minutes: 30
+    continue-on-error: true
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -481,8 +491,14 @@ jobs:
           # this job from some other build. The gate refuses that too, but it never sees these
           # files -- it is handed the macOS values above -- so the claim is refused here.
           test "$(cat staged/wtm-linux-*/SIGNING staged/wtm-linux-*/NOTARIZATION | sort -u)" = 'not-applicable'
-          # Same claim, same reason, for the Windows leg's PE executable.
-          test "$(cat staged/wtm-win32-*/SIGNING staged/wtm-win32-*/NOTARIZATION | sort -u)" = 'not-applicable'
+          # Same claim, same reason, for the Windows leg's PE executable -- guarded, because
+          # `verify-windows` is optional (`continue-on-error`, `requiredReleaseTargets`): a failed
+          # or cancelled run before its own upload step leaves no `staged/wtm-win32-*` directory at
+          # all, which must read as "nothing to check" rather than fail this whole job under
+          # `set -e` on a glob that matched nothing.
+          if compgen -G 'staged/wtm-win32-*' > /dev/null; then
+            test "$(cat staged/wtm-win32-*/SIGNING staged/wtm-win32-*/NOTARIZATION | sort -u)" = 'not-applicable'
+          fi
           # The name the gate reads. Exporting it as anything else leaves the gate with no smoke
           # evidence at all, which it refuses.
           {
@@ -530,6 +546,13 @@ jobs:
           set -euo pipefail
           prerelease=''
           case "${{ github.ref_name }}" in *-*) prerelease='--prerelease';; esac
+          # The four required archives are named explicitly: none of them may silently go missing
+          # from a release. The Windows archive is optional (`requiredReleaseTargets`) until todo
+          # item 9 lands, so it is attached only when `verify-windows` actually produced one --
+          # `dist/release/*.zip` expands to nothing and drops out of the argument list entirely
+          # under `nullglob` rather than reaching `gh` as a literal, nonexistent path.
+          shopt -s nullglob
+          zip_archives=(dist/release/*.zip)
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" \
             --notes-file CHANGELOG.md \
@@ -538,7 +561,7 @@ jobs:
             dist/release/wtm-darwin-x64.tar.gz \
             dist/release/wtm-linux-x64.tar.gz \
             dist/release/wtm-linux-arm64.tar.gz \
-            dist/release/wtm-windows-x64.zip \
+            "${zip_archives[@]}" \
             dist/release/SHA256SUMS
 
       - name: Publish to npm with provenance

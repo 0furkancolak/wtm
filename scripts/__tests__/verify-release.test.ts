@@ -470,6 +470,73 @@ describe('release artifact gate', () => {
   });
 });
 
+describe('the Windows archive is optional in the whole-release gate', () => {
+  // CLAUDE.md states win32 CI as informational until todo item 9 lands, and item 9 has not
+  // landed: a real tag whose Windows leg fails must still let macOS and Linux ship.
+  const windowsZip = 'wtm-windows-x64.zip';
+  function withoutWindows(): Readonly<Record<string, string>> {
+    const { [windowsZip]: _omitted, ...rest } = payloads;
+    return rest;
+  }
+
+  test('the whole release still passes with no Windows archive at all', () => {
+    const directory = stage(withoutWindows());
+
+    const manifest = verifyReleaseArtifacts(request(directory));
+
+    expect(manifest.archives.map(({ name }) => name)).toEqual([
+      'wtm-darwin-arm64.tar.gz',
+      'wtm-darwin-x64.tar.gz',
+      'wtm-linux-arm64.tar.gz',
+      'wtm-linux-x64.tar.gz',
+    ]);
+  });
+
+  test('still refuses the whole release if a required (non-Windows) archive is missing', () => {
+    const missingLinux = Object.fromEntries(
+      Object.entries(withoutWindows()).filter(([name]) => name !== 'wtm-linux-x64.tar.gz'),
+    );
+    const directory = stage(missingLinux);
+
+    expect(() => verifyReleaseArtifacts(request(directory)))
+      .toThrow('SHA256SUMS does not list wtm-linux-x64.tar.gz');
+  });
+
+  test('fully verifies a Windows archive when one is present', () => {
+    const directory = stage();
+
+    const manifest = verifyReleaseArtifacts(request(directory));
+
+    expect(manifest.archives.map(({ name }) => name)).toContain(windowsZip);
+    expect(manifest.archives.find(({ name }) => name === windowsZip)?.sha256)
+      .toBe(digest(payloads[windowsZip] as string));
+  });
+
+  test('rejects a present but tampered Windows archive rather than silently dropping it', () => {
+    const directory = stage(payloads, checksums({ ...payloads, [windowsZip]: 'tampered payload' }));
+
+    expect(() => verifyReleaseArtifacts(request(directory))).toThrow(
+      `${windowsZip} has SHA-256 ${digest(payloads[windowsZip] as string)} but SHA256SUMS lists ${digest('tampered payload')}`,
+    );
+  });
+
+  test("a win32 leg's own gate stays exactly as strict as any other single-leg gate", () => {
+    // The leniency above applies only to the whole-release default. An explicit selection (what a
+    // single leg's own `release:gate` call always passes) is unaffected: still exactly that one
+    // archive, required and verified, same as `linuxArm64`'s own gate already proves.
+    const directory = stage({ [windowsZip]: payloads[windowsZip] as string });
+
+    const manifest = verifyReleaseArtifacts(request(directory, {
+      archives: [windowsZip], signing: releaseNotApplicable, notarization: releaseNotApplicable,
+    }));
+
+    expect(manifest.archives.map(({ name }) => name)).toEqual([windowsZip]);
+    expect(() => verifyReleaseArtifacts(request(stage({}), {
+      archives: [windowsZip], signing: releaseNotApplicable, notarization: releaseNotApplicable,
+    }))).toThrow(`SHA256SUMS does not list ${windowsZip}`);
+  });
+});
+
 describe('Apple evidence outside the darwin family', () => {
   /** What a Linux leg gates: its own archive, with no signature and no notarization ticket. */
   function linuxRequest(directory: string, overrides: Partial<ReleaseVerification> = {}): ReleaseVerification {
