@@ -2767,13 +2767,13 @@ Rust yalnızca profiler bunun gerçek bottleneck olduğunu gösterirse düşün�
 
 ## P3 — Sonraki dönem
 
-### [ ] 19. Resource budgets
+### [x] 19. Resource budgets
 
 **Öncelik güncellemesi (2026-09-09):** Ağır iş eşzamanlılığı ve RAM'e göre kuyruktan iş
 başlatma kısmı P1 madde 50'ye taşındı. Bu madde genel process/disk bütçeleri ve platforma
 özel sert sınırları kapsar; madde 50 ile aynı kaynak muhasebesini kullanmalı.
 
-Opsiyonel config taslağı (henüz uygulanmadı):
+**Not (2026-09-21, W9-1):** Bu maddenin eski opsiyonel config taslağı şuydu:
 
 ```toml
 [runtime.budgets]
@@ -2781,6 +2781,58 @@ max_processes = 20
 max_memory = "4GiB"
 max_disk = "20GiB"
 ```
+
+**Karar 1 — isimlendirme:** kök `[runtime]` tablosu diye bir şey yok; W8-3 bunu docs/07'de
+kural olarak kurdu ("no root `runtime` table"). Taslağı körlemesine kopyalamak yerine
+`[jobs]`/`[proxy]`'nin izlediği örneği izleyerek kök seviyede dar, amaca özel yeni bir tablo
+açtım: `[budgets]`. Yanlışsa bedeli: `wtm.toml`'da `[runtime.budgets]` bekleyen biri hatasız
+sessizce yoksayılırdı (zod `.strict()` bilinmeyen anahtarı reddeder, ama farklı bir kök tablo
+adı aynı kısıtlamaya tabi değil) — bu yüzden isim değişikliği burada, günlükte, açıkça yazılı.
+
+**Karar 2 — `max_memory` alanı yerine `min_available_memory_mib`:** taslağın `max_memory =
+"4GiB"` çerçevesi WTM'nin kendi süreç ağacının bellek kullanımına bir tavan koyduğunu ima
+ediyor. WTM bunu ölçmüyor — RSS'i süreç ağacında toplamıyor (docs/07 "Heavy job memory
+admission" bölümünde zaten gerekçelendirilmiş: maliyet + shared/COW sayfaların çift sayılması).
+Böyle bir ölçüm yapmadan "kullanım tavanı" diye bir alan sunmak, WTM'nin almadığı bir ölçümü
+varmış gibi belgelemek olurdu — bu oturum boyunca tekrarlanan "ölçülmemişi ölçülmüş gibi
+sunma" kuralına aykırı. Bunun yerine dürüst yeniden çerçeveleme: host'un raporladığı
+*mevcut* (available) bellek için bir taban (`min_available_memory_mib`), madde 50'nin ağır iş
+kuyruğunun kullandığı aynı `readHostJobMemory`/`job-memory.ts` muhasebesini yeniden kullanarak
+(K7 kararı: iki ayrı bütçe, tek paylaşılan kaynak muhasebesi, ikinci bir scheduler yok).
+Ölçüm mevcut değilse (`availableBytes: null`) kontrol açık kalır (fail open) — sahip olmadığı
+bir sayıyla bir başlatmayı reddetmez. Yanlışsa bedeli: gerçek bir kullanım tavanı isteyen biri
+bunun yerine bir taban buluyor — ama bu belgelerde (docs/03, docs/07, docs/18) açıkça yazılı,
+sessiz bir davranış farkı değil.
+
+**Karar 3 — kapsam dışı bırakılanlar:** disk bütçesi ve platforma özel OS-zorunlu sert sınırlar
+(cgroup/Job Object/rlimit) bu birimde YOK. Disk için process-start'takine benzer tek bir kabul
+noktası yok — disk kullanımı bir görevin tüm ömrü boyunca yazılıyor, WTM'nin reddedebileceği tek
+bir an değil; gelecekteki bir birim `packages/cli/src/commands/resource-production.ts`'in zaten
+var olan `measure()` fonksiyonunu (disk kullanımı raporlamak için zaten kullanılıyor) yeniden
+kullanmalı, ikinci bir muhasebe eklememeli. Platforma özel sert sınırlar hiç inşa/doğrulanmadı;
+iddia etmek madde 50'nin kendi "OS-enforced hard limit değildir" uyarısını tam olarak ihlal
+ederdi. Yanlışsa bedeli: bir sonraki birim disk/sert-sınır işini sıfırdan tasarlamak zorunda —
+ama bu zaten böyle bir tasarımın gerektirdiği düşünme kalitesini hak ediyor, process-start
+kapısına yamanamaz.
+
+**Uygulama:** `packages/core/src/config/schema.ts` — kök `budgetsSchema`
+(`max_processes`, `min_available_memory_mib`, ikisi de opsiyonel, `.strict()`).
+`packages/protocol/src/errors.ts` — iki yeni kod: `RUNTIME_PROCESS_BUDGET_EXCEEDED`,
+`RUNTIME_MEMORY_BUDGET_EXCEEDED` (`docs/18-errors-json-contract.md`'de belgelendi, ikisi de
+exit 1, her RUNTIME_* kodu gibi). `packages/daemon/src/runtime-factory.ts` —
+`globalBudgetsPolicy()` (`globalJobPolicy`/`globalProxyPolicy` ile aynı okuma deseni),
+`DaemonRuntimeController`'ın kurulmasından önce okunuyor (constructor'a geçmesi gerektiği
+için `jobs`/`proxy`'den farklı olarak daha erken). `packages/daemon/src/runtime-controller.ts`
+— `handle()`'ın `start`/`restart` dalına, `#supervisor.start`/`.restart` çağrısından hemen
+önce bir kontrol eklendi; yalnızca hedef görev şu an aktif DEĞİLSE çalışır (`list(worktreeId)`
+üzerinden `STARTING`/`RUNNING`/`STOPPING` kontrolü) — böylece zaten çalışan bir görevi
+yeniden başlatmak asla bütçeye takılmaz, çünkü host'un süreç sayısını artırmıyor.
+Testler: `packages/core/src/config/__tests__/schema.test.ts` (şema), `packages/daemon/src/
+__tests__/runtime-controller.test.ts` (yeni `DaemonRuntimeController budgets` describe bloğu —
+her iki bütçe, fail-open, restart muafiyeti), `packages/daemon/src/__tests__/
+budgets-composition.{scenario,test}.ts` (gerçek `createProductionDaemon` + global config
+dosyası + production SQLite ile uçtan uca telleme kanıtı — hiçbir gerçek süreç başlatmadan,
+çünkü reddetme `ManagedProcessSupervisor.start`'a ulaşmadan önce gerçekleşiyor).
 
 ---
 

@@ -299,6 +299,7 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     // task cannot be waiting on the start that is waiting on it.
     void events.dispatchForWorktree('worktree.ready', worktreeId).catch(onError);
   }, platformRuntime.fileTrust);
+  const budgetsPolicy = await globalBudgetsPolicy(paths.globalConfigPath);
   const controller = new DaemonRuntimeController({
     supervisor,
     logs,
@@ -310,6 +311,12 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
       void events.dispatchForWorktree(event, worktreeId).catch(onError);
     },
     onTaskActivity: (worktreeId, taskName) => { idle.touch(worktreeId, taskName); },
+    budgets: {
+      ...(budgetsPolicy.max_processes === undefined ? {} : { maxProcesses: budgetsPolicy.max_processes }),
+      ...(budgetsPolicy.min_available_memory_mib === undefined ? {} : {
+        minAvailableMemoryBytes: budgetsPolicy.min_available_memory_mib * 1024 * 1024,
+      }),
+    },
   });
   if (stateStore.jobs !== undefined) {
     const jobPolicy = await globalJobPolicy(paths.globalConfigPath);
@@ -402,6 +409,21 @@ async function globalJobPolicy(path: string): Promise<NonNullable<WtmConfig['job
     throw error;
   }
   return parseWtmConfig(parse(value), path).jobs ?? {};
+}
+
+/**
+ * The `[budgets]` admission limits (todo item 19), read from the same global configuration file
+ * `[jobs]` and `[proxy]` are: process/host-memory limits are daemon-wide facts about the one
+ * machine, not per-workspace settings. See `docs/07`'s "Resource budgets" section.
+ */
+async function globalBudgetsPolicy(path: string): Promise<NonNullable<WtmConfig['budgets']>> {
+  let value: string;
+  try { value = await readFile(path, 'utf8'); }
+  catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return {};
+    throw error;
+  }
+  return parseWtmConfig(parse(value), path).budgets ?? {};
 }
 
 /**

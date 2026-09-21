@@ -115,6 +115,26 @@ const proxySchema = z.object({
   port: z.number().int().min(1).max(65535).optional(),
 }).strict();
 
+/**
+ * General process/host-memory budgets (todo item 19). Daemon-wide, like `[jobs]` and `[proxy]`:
+ * a process count and a memory floor are facts about the one machine the daemon runs on, not
+ * about any single workspace, so this stays a narrow root table rather than living under a
+ * `[runtime]` table WTM does not have (see `docs/07`'s "no root `runtime` table" rule).
+ *
+ * `max_processes` counts every process the daemon is currently managing
+ * (`ManagedProcessSupervisor.list()`), host-wide. `min_available_memory_mib` is a floor on host
+ * *available* memory, not a cap on WTM's own usage: WTM does not sum RSS across a process tree
+ * (the heavy-job queue's own memory admission, `packages/daemon/src/job-memory.ts`, avoids that
+ * for the same cost/shared-page-accuracy reasons — see `docs/07`'s "Heavy job memory admission"
+ * section), so a "max_memory" usage cap would promise a measurement WTM does not take. Both
+ * checks reuse that same job-memory accounting rather than adding a second one, per the todo
+ * item 19/50 resource-accounting note.
+ */
+const budgetsSchema = z.object({
+  max_processes: z.number().int().min(1).max(10_000).optional(),
+  min_available_memory_mib: z.number().int().min(1).max(1_048_576).optional(),
+}).strict();
+
 const repoSchema = z.object({
   /**
    * Where the repository sits, relative to the workspace root. Left unset, the table's own
@@ -194,6 +214,7 @@ export const wtmConfigSchema = z.object({
   ports: portsSchema.optional(),
   cors: corsSchema.optional(),
   proxy: proxySchema.optional(),
+  budgets: budgetsSchema.optional(),
   repos: z.record(z.string(), repoSchema).optional(),
   environment: z.record(z.string(), z.string()).optional(),
   tasks: z.record(z.string(), taskSchema).optional(),
@@ -211,6 +232,7 @@ export type PortConfig = z.infer<typeof portSchema>;
 export type GitConfig = z.infer<typeof gitSchema>;
 export type CorsConfig = z.infer<typeof corsSchema>;
 export type ProxyConfig = z.infer<typeof proxySchema>;
+export type BudgetsConfig = z.infer<typeof budgetsSchema>;
 export type RepoConfig = z.infer<typeof repoSchema>;
 export type ResourceConfig = z.infer<typeof resourceSchema>;
 export type PortsConfig = {
