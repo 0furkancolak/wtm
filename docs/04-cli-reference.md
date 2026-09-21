@@ -971,6 +971,11 @@ collision rule, and the honest limitation that binding a fixed port rather than 
 port number in the URL. There is no separate CLI command for it: the proxy is a daemon-level
 listener, started and stopped only by the daemon itself, not by any single `wtm` invocation.
 
+Opt in to the dev overlay the same proxy injects into HTML responses with `[dev-overlay] enabled
+= true` (see [`docs/03`](03-configuration-spec.md#dev-overlay) and
+[`docs/07`](07-process-port-runtime.md#dev-overlay)) — also no separate CLI command, and inert
+unless `[proxy]` is enabled too.
+
 ## Skill
 
 ```bash

@@ -1,0 +1,334 @@
+import { describe, expect, it } from 'bun:test';
+import type { EndpointLease, ManagedProcessRecord, RepositoryRecord, WorktreeRecord } from '@wtm/core';
+import {
+  devOverlayHtmlInjector,
+  gatherDevOverlayData,
+  injectBeforeBodyClose,
+  isHtmlContentType,
+  renderDevOverlayFragment,
+  type DevOverlaySource,
+} from '../dev-overlay';
+import type { ProxyRoute } from '../proxy-routes';
+
+function worktree(overrides: Partial<WorktreeRecord> = {}): WorktreeRecord {
+  return {
+    id: 'worktree-1',
+    repositoryId: 'repo-web',
+    numericId: 1,
+    path: '/repo/worktrees/auth',
+    branch: 'feature/auth',
+    headOid: 'deadbeef',
+    isMain: false,
+    isLocked: false,
+    state: 'RUNNING',
+    createdAt: '2026-09-21T09:00:00.000Z',
+    lastSeenAt: '2026-09-21T09:00:00.000Z',
+    lastRuntimeAt: null,
+    ...overrides,
+  };
+}
+
+function repository(overrides: Partial<RepositoryRecord> = {}): RepositoryRecord {
+  return {
+    id: 'repo-web',
+    workspaceId: 'workspace-1',
+    commonGitDir: '/repo/.git',
+    mainRoot: '/home/dev/code/storefront-web',
+    remoteIdentity: null,
+    createdAt: '2026-09-21T09:00:00.000Z',
+    lastReconciledAt: null,
+    ...overrides,
+  };
+}
+
+function lease(overrides: Partial<EndpointLease> = {}): EndpointLease {
+  return {
+    id: 'lease-1',
+    worktreeId: 'worktree-1',
+    name: 'web',
+    protocol: 'tcp',
+    host: '127.0.0.1',
+    port: 23_671,
+    state: 'ACTIVE',
+    allocatedAt: '2026-09-21T09:00:00.000Z',
+    lastVerifiedAt: '2026-09-21T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function managedProcess(overrides: Partial<ManagedProcessRecord> = {}): ManagedProcessRecord {
+  return {
+    id: 'process-1',
+    worktreeId: 'worktree-1',
+    taskName: 'dev',
+    pid: 4242,
+    pgid: 4242,
+    processStartTime: '2026-09-21T09:00:00.000Z',
+    commandFingerprint: 'fp',
+    state: 'RUNNING',
+    startedAt: '2026-09-21T09:00:00.000Z',
+    stoppedAt: null,
+    stdoutPath: '/tmp/stdout.log',
+    stderrPath: '/tmp/stderr.log',
+    cleanupRequired: false,
+    ...overrides,
+  };
+}
+
+function source(input: {
+  worktrees: WorktreeRecord[];
+  repositories?: RepositoryRecord[];
+  leases: EndpointLease[];
+  processes?: ManagedProcessRecord[];
+}): DevOverlaySource {
+  return {
+    listWorktrees: () => input.worktrees,
+    listRepositories: () => input.repositories ?? [],
+    listEndpointLeases: (query) => input.leases
+      .filter((entry) => query?.states === undefined || query.states.includes(entry.state)),
+    ...(input.processes === undefined ? {} : {
+      listManagedProcesses: (query) => input.processes!.filter((entry) =>
+        (query?.worktreeId === undefined || entry.worktreeId === query.worktreeId)
+        && (query?.states === undefined || query.states.includes(entry.state))),
+    }),
+  };
+}
+
+function currentRoute(overrides: Partial<ProxyRoute> = {}): ProxyRoute {
+  return {
+    hostname: 'web.feature-auth.wtm.localhost',
+    host: '127.0.0.1',
+    port: 23_671,
+    worktreeId: 'worktree-1',
+    service: 'web',
+    ...overrides,
+  };
+}
+
+describe('isHtmlContentType', () => {
+  it('matches text/html', () => { expect(isHtmlContentType('text/html')).toBe(true); });
+  it('matches text/html with a charset parameter', () => {
+    expect(isHtmlContentType('text/html; charset=utf-8')).toBe(true);
+  });
+  it('is case-insensitive', () => { expect(isHtmlContentType('Text/HTML')).toBe(true); });
+  it('rejects application/json', () => { expect(isHtmlContentType('application/json')).toBe(false); });
+  it('rejects a missing header', () => { expect(isHtmlContentType(undefined)).toBe(false); });
+  it('takes the first value of a duplicated header', () => {
+    expect(isHtmlContentType(['text/html', 'text/plain'])).toBe(true);
+  });
+});
+
+describe('injectBeforeBodyClose', () => {
+  it('inserts the fragment immediately before </body>', () => {
+    expect(injectBeforeBodyClose('<html><body>hi</body></html>', '<X/>'))
+      .toBe('<html><body>hi<X/></body></html>');
+  });
+
+  it('matches </body> case-insensitively, as browsers tolerate', () => {
+    expect(injectBeforeBodyClose('<html><BODY>hi</BODY></html>', '<X/>'))
+      .toBe('<html><BODY>hi<X/></BODY></html>');
+  });
+
+  it('appends the fragment when there is no closing body tag', () => {
+    expect(injectBeforeBodyClose('<html><body>hi', '<X/>')).toBe('<html><body>hi<X/>');
+  });
+});
+
+describe('gatherDevOverlayData', () => {
+  it('returns worktree identity and repo name derived the same way the CLI does (basename of mainRoot)', () => {
+    const data = gatherDevOverlayData(
+      source({ worktrees: [worktree()], repositories: [repository()], leases: [lease()] }),
+      currentRoute(),
+    );
+    expect(data).not.toBeNull();
+    expect(data?.repoName).toBe('storefront-web');
+    expect(data?.branch).toBe('feature/auth');
+    expect(data?.worktreeNumber).toBe(1);
+    expect(data?.worktreePath).toBe('/repo/worktrees/auth');
+    expect(data?.service).toBe('web');
+    expect(data?.hostname).toBe('web.feature-auth.wtm.localhost');
+  });
+
+  it('returns null when the route names a worktree the store no longer has', () => {
+    const data = gatherDevOverlayData(
+      source({ worktrees: [], repositories: [], leases: [] }),
+      currentRoute(),
+    );
+    expect(data).toBeNull();
+  });
+
+  it('falls back to the worktree\'s repositoryId when the repository record is missing', () => {
+    const data = gatherDevOverlayData(
+      source({ worktrees: [worktree()], repositories: [], leases: [lease()] }),
+      currentRoute(),
+    );
+    expect(data?.repoName).toBe('repo-web');
+  });
+
+  it('lists this route itself as a "current" sibling alongside another service of the same worktree', () => {
+    const data = gatherDevOverlayData(
+      source({
+        worktrees: [worktree()],
+        repositories: [repository()],
+        leases: [
+          lease({ id: 'l1', name: 'web', port: 23_671 }),
+          lease({ id: 'l2', name: 'api', port: 23_672 }),
+        ],
+      }),
+      currentRoute(),
+    );
+    expect(data?.siblings).toHaveLength(2);
+    const web = data?.siblings.find((entry) => entry.service === 'web');
+    const api = data?.siblings.find((entry) => entry.service === 'api');
+    expect(web?.current).toBe(true);
+    expect(api?.current).toBe(false);
+  });
+
+  it('includes a sibling repository\'s endpoints when it is in the same workspace ("kardeş repolar dahil")', () => {
+    const apiWorktree = worktree({ id: 'worktree-2', repositoryId: 'repo-api', branch: 'feature/auth' });
+    const apiRepository = repository({ id: 'repo-api', workspaceId: 'workspace-1', mainRoot: '/home/dev/code/storefront-api' });
+    const data = gatherDevOverlayData(
+      source({
+        worktrees: [worktree(), apiWorktree],
+        repositories: [repository(), apiRepository],
+        leases: [
+          lease({ id: 'l1', worktreeId: 'worktree-1', name: 'web' }),
+          lease({ id: 'l2', worktreeId: 'worktree-2', name: 'api', port: 23_680 }),
+        ],
+      }),
+      currentRoute(),
+    );
+    expect(data?.siblings.map((entry) => entry.service).sort()).toEqual(['api', 'web']);
+  });
+
+  it('excludes a worktree in a different workspace entirely', () => {
+    const otherWorktree = worktree({ id: 'worktree-2', repositoryId: 'repo-other', branch: 'feature/other' });
+    const otherRepository = repository({ id: 'repo-other', workspaceId: 'workspace-2', mainRoot: '/home/dev/code/other' });
+    const data = gatherDevOverlayData(
+      source({
+        worktrees: [worktree(), otherWorktree],
+        repositories: [repository(), otherRepository],
+        leases: [
+          lease({ id: 'l1', worktreeId: 'worktree-1', name: 'web' }),
+          lease({ id: 'l2', worktreeId: 'worktree-2', name: 'web', port: 23_680 }),
+        ],
+      }),
+      currentRoute(),
+    );
+    expect(data?.siblings).toHaveLength(1);
+    expect(data?.siblings[0]?.worktreeId).toBe('worktree-1');
+  });
+
+  it('excludes a worktree in the same workspace but a different feature branch — feature identity, not a workspace-wide scan', () => {
+    const unrelatedWorktree = worktree({ id: 'worktree-2', repositoryId: 'repo-web', branch: 'feature/unrelated' });
+    const data = gatherDevOverlayData(
+      source({
+        worktrees: [worktree(), unrelatedWorktree],
+        repositories: [repository()],
+        leases: [
+          lease({ id: 'l1', worktreeId: 'worktree-1', name: 'web' }),
+          lease({ id: 'l2', worktreeId: 'worktree-2', name: 'web', port: 23_680 }),
+        ],
+      }),
+      currentRoute(),
+    );
+    expect(data?.siblings).toHaveLength(1);
+    expect(data?.siblings[0]?.worktreeId).toBe('worktree-1');
+  });
+
+  it('a detached-HEAD worktree (branch null) is only ever a sibling of itself', () => {
+    const detached = worktree({ branch: null });
+    const otherDetached = worktree({ id: 'worktree-2', branch: null });
+    const data = gatherDevOverlayData(
+      source({
+        worktrees: [detached, otherDetached],
+        repositories: [repository()],
+        leases: [
+          lease({ id: 'l1', worktreeId: 'worktree-1', name: 'web' }),
+          lease({ id: 'l2', worktreeId: 'worktree-2', name: 'web', port: 23_680 }),
+        ],
+      }),
+      currentRoute(),
+    );
+    expect(data?.siblings).toHaveLength(1);
+    expect(data?.siblings[0]?.worktreeId).toBe('worktree-1');
+  });
+
+  it('omits running tasks when the store does not offer listManagedProcesses', () => {
+    const data = gatherDevOverlayData(
+      source({ worktrees: [worktree()], repositories: [repository()], leases: [lease()] }),
+      currentRoute(),
+    );
+    expect(data?.runningTasks).toEqual([]);
+  });
+
+  it('lists this worktree\'s RUNNING/STARTING managed processes when the store offers them', () => {
+    const data = gatherDevOverlayData(
+      source({
+        worktrees: [worktree()],
+        repositories: [repository()],
+        leases: [lease()],
+        processes: [
+          managedProcess({ id: 'p1', taskName: 'dev', state: 'RUNNING' }),
+          managedProcess({ id: 'p2', taskName: 'worker', state: 'STOPPED' }),
+          managedProcess({ id: 'p3', taskName: 'db', worktreeId: 'some-other-worktree', state: 'RUNNING' }),
+        ],
+      }),
+      currentRoute(),
+    );
+    expect(data?.runningTasks).toEqual([{ taskName: 'dev', state: 'RUNNING' }]);
+  });
+});
+
+describe('renderDevOverlayFragment', () => {
+  const baseData = {
+    repoName: 'storefront-web',
+    branch: 'feature/auth',
+    worktreeNumber: 3,
+    worktreePath: '/repo/worktrees/auth',
+    service: 'web',
+    hostname: 'web.feature-auth.wtm.localhost',
+    siblings: [],
+    runningTasks: [],
+  };
+
+  it('renders the repo name, branch and worktree number', () => {
+    const html = renderDevOverlayFragment(baseData);
+    expect(html).toContain('storefront-web');
+    expect(html).toContain('feature/auth');
+    expect(html).toContain('worktree #3');
+    expect(html).toContain('id="wtm-dev-overlay"');
+  });
+
+  it('shows "(detached)" for a null branch', () => {
+    expect(renderDevOverlayFragment({ ...baseData, branch: null })).toContain('(detached)');
+  });
+
+  it('HTML-escapes a branch name containing markup, so it cannot break out of the fragment', () => {
+    const html = renderDevOverlayFragment({ ...baseData, branch: '<script>alert(1)</script>' });
+    expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('links a sibling by its hostname and marks the current one without a link', () => {
+    const html = renderDevOverlayFragment({
+      ...baseData,
+      siblings: [
+        { hostname: 'web.feature-auth.wtm.localhost', service: 'web', worktreeId: 'worktree-1', current: true },
+        { hostname: 'api.feature-auth.wtm.localhost', service: 'api', worktreeId: 'worktree-2', current: false },
+      ],
+    });
+    expect(html).toContain('http://api.feature-auth.wtm.localhost');
+    expect(html).toContain('this page');
+  });
+});
+
+describe('devOverlayHtmlInjector', () => {
+  it('returns a fragment for a known route and null for one the store no longer knows', () => {
+    const injector = devOverlayHtmlInjector(
+      source({ worktrees: [worktree()], repositories: [repository()], leases: [lease()] }),
+    );
+    expect(injector(currentRoute())).toContain('storefront-web');
+    expect(injector(currentRoute({ worktreeId: 'gone' }))).toBeNull();
+  });
+});

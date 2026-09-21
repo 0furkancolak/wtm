@@ -115,6 +115,22 @@ const proxySchema = z.object({
   port: z.number().int().min(1).max(65535).optional(),
 }).strict();
 
+/**
+ * The dev overlay (todo item 46, W10-4 MVP slice): a small HTML fragment `[proxy]` injects into
+ * an HTML response it proxies, showing the worktree/branch/service a running dev server belongs
+ * to. Daemon-wide and off by default for the same reason `[proxy]` above is; read from the same
+ * global configuration file, restart-to-apply.
+ *
+ * It only makes sense wherever `[proxy]` itself runs — there is nowhere else the fragment would
+ * be injected from. `enabled = true` here with `[proxy]` disabled or unset is not a configuration
+ * error: it is simply inert, since the proxy that would act on it never starts. See `docs/03`'s
+ * "Dev overlay" section.
+ */
+const devOverlaySchema = z.object({
+  /** Off by default, and inert unless `[proxy] enabled = true` too — see this table's own doc. */
+  enabled: z.boolean().optional(),
+}).strict();
+
 const repoSchema = z.object({
   /**
    * Where the repository sits, relative to the workspace root. Left unset, the table's own
@@ -194,6 +210,7 @@ export const wtmConfigSchema = z.object({
   ports: portsSchema.optional(),
   cors: corsSchema.optional(),
   proxy: proxySchema.optional(),
+  'dev-overlay': devOverlaySchema.optional(),
   repos: z.record(z.string(), repoSchema).optional(),
   environment: z.record(z.string(), z.string()).optional(),
   tasks: z.record(z.string(), taskSchema).optional(),
@@ -211,6 +228,7 @@ export type PortConfig = z.infer<typeof portSchema>;
 export type GitConfig = z.infer<typeof gitSchema>;
 export type CorsConfig = z.infer<typeof corsSchema>;
 export type ProxyConfig = z.infer<typeof proxySchema>;
+export type DevOverlayConfig = z.infer<typeof devOverlaySchema>;
 export type RepoConfig = z.infer<typeof repoSchema>;
 export type ResourceConfig = z.infer<typeof resourceSchema>;
 export type PortsConfig = {

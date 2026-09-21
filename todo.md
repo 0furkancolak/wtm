@@ -2620,30 +2620,71 @@ yazabilmeli, overlay bunu maddeler halinde göstermeli, kullanıcı işaretleyin
 DB'sine geri yazılmalı. Kalıcı task kaydı yüzeyi 49. maddede tanımlanıyor; kontrol listesi de aynı
 yerde durmalı, ayrı bir depolama icat edilmemeli.
 
+**2026-09-21 (W10-4, MVP slice):** Enjeksiyon mekanizması ve prod'a sızmama testi teslim edildi —
+kontrol listesi (ajan yazar/kullanıcı işaretler, iki yönlü uç) hariç. `[proxy]` zaten daha önce
+(K10) framework-agnostik, tek noktalı enjeksiyon lehine karar verilmişti; bu birim o kararı
+uyguluyor: `packages/daemon/src/proxy.ts`'nin kendi response-handling akışına yeni bir
+`htmlInjector` seçeneği eklendi (`ProxyServerOptions`), sadece `content-type: text/html` ve
+sıkıştırılmamış (`content-encoding` yok/`identity`) yanıtlar `</body>`'den önce (yoksa sona)
+enjekte ediliyor; her başka yanıt tipi eskisi gibi hiç buffer'lanmadan, byte-for-byte akıyor.
+Overlay'in kendi verisi (`packages/daemon/src/dev-overlay.ts`) `wtm status --json`'a paralel yeni
+bir kontrat DEĞİL — proxy'nin zaten okuduğu `listWorktrees`/`listEndpointLeases`
+(`buildProxyRoutes` üzerinden), artı `listRepositories` (repo adı için, CLI'nin
+`basename(mainRoot)` kuralıyla aynı) ve opsiyonel `listManagedProcesses` (sadece store zaten
+sunuyorsa, "o an supervised çalışan task'lar" için, salt-okunur — yeni bir sorgu/plumbing
+eklenmedi). Kardeş endpoint'ler port taramasıyla değil feature identity ile çözülüyor: aynı
+workspace VE aynı branch (`FeatureRecord`'ın kendi `(workspaceId, branch)` anahtarıyla örtüşen bir
+eşleşme) — workspace'teki alakasız bir feature'ın worktree'si asla sızmıyor, detached-`HEAD`
+worktree'ler sadece kendi kardeşi. `[dev-overlay]` global config tablosu (`[proxy]` ile aynı
+kalıp, `enabled` dışında alan yok) eklendi ve `runtime-factory.ts`'ye `[proxy] enabled = true`
+olduğu sürece koşullu olarak bağlandı — `[proxy]` kapalıyken `[dev-overlay] enabled = true` hata
+değil, sadece etkisiz (enjekte edecek bir proxy response akışı yok). Repo bazında kapatma
+uygulanmadı — global açık/kapalıdan başka bir kapsam yok, bu bilinçli bir MVP daralması (aşağıya
+bakın). Detaylar: `docs/07-process-port-runtime.md`'in "Dev overlay" bölümü ve
+`docs/03-configuration-spec.md`'in aynı adlı bölümü.
+
+Kasıtlı olarak kapsam dışı bırakılan, ayrı bir birim gerektiren: ajanın `wtm` üzerinden yazdığı
+test adımı kontrol listesi ve kullanıcının işaretlemesi — bu, kendi kalıcı kaydını ve iki yönlü
+wire protokolünü gerektiriyor, madde 49'un task-kaydı yüzeyine oturmalı (maddenin kendi metninin
+söylediği gibi), bu birime sığmayacak kadar büyük; ayrı, sonraki bir birim. Repo bazında
+etkinleştirme/kapatma da aynı nedenle bu slice'a girmedi (yalnızca global açık/kapalı var).
+
 #### Karara bağlanacaklar
 
-- [ ] Enjeksiyon katmanı: framework başına adapter (Astro integration, Vite plugin, Next dev
+- [x] Enjeksiyon katmanı: framework başına adapter (Astro integration, Vite plugin, Next dev
       middleware) mı, yoksa 12. maddedeki local reverse proxy'de HTML'e tek noktadan enjeksiyon mu?
       İkincisi framework-agnostik. Bu madde 12'yi beklemeli mi, yoksa proxy gelene kadar adapter
-      yolundan mı yürünmeli — karar maddeye yazılsın.
-- [ ] Opt-in mi opt-out mu (`[dev-overlay] enabled = true`), ve repo bazında kapatma.
-- [ ] Overlay'in veri kaynağı `wtm status --json` ile aynı kontrat olmalı; overlay'e özel ikinci bir
-      şema doğmamalı.
+      yolundan mı yürünmeli — karar maddeye yazılsın. **(2026-09-21, K10 + W10-4: proxy'de tek
+      noktalı enjeksiyon.)**
+- [ ] Opt-in mi opt-out mu (`[dev-overlay] enabled = true`), ve repo bazında kapatma. **Kısmen:**
+      opt-in kısmı W10-4'te karara bağlandı (global, `[proxy]`'yle aynı kalıp); repo bazında
+      kapatma hâlâ açık.
+- [x] Overlay'in veri kaynağı `wtm status --json` ile aynı kontrat olmalı; overlay'e özel ikinci bir
+      şema doğmamalı. **(2026-09-21, W10-4.)**
 
 #### Yapılacaklar
 
-- [ ] Enjeksiyon katmanı kararını uygula; hangi yol seçilirse seçilsin enjeksiyon yalnızca dev
-      modunda ve yalnızca loopback bind'de çalışsın.
-- [ ] Prod build'e sızma yolu olmadığını gösteren test yaz — bu, özelliğin kabul şartı.
-- [ ] Overlay veri ucu: `wtm status --json` şemasının bir alt kümesi, ayrı contract değil.
-- [ ] Ajanın kontrol listesi yazması ve kullanıcının işaretlemesi için iki yönlü uç.
-- [ ] Kardeş repoların endpoint'leri feature identity üzerinden çözülsün, port taramasıyla değil.
-- [ ] Konfigürasyon: global ve repo bazında etkinleştirme/kapatma.
-- [ ] `docs/03-configuration-spec.md`'ye `[dev-overlay]` bölümü.
-- [ ] `docs/04-cli-reference.md`'ye overlay ile ilgili komut/bayrak parity'si.
-- [ ] Adapter yolu seçilirse `docs/06-adapter-protocol.md`'ye enjeksiyon sözleşmesi.
+- [x] Enjeksiyon katmanı kararını uygula; hangi yol seçilirse seçilsin enjeksiyon yalnızca dev
+      modunda ve yalnızca loopback bind'de çalışsın. **(2026-09-21, W10-4 — proxy zaten yalnızca
+      loopback'e bağlanıyor, W9-4 kararı 3.)**
+- [x] Prod build'e sızma yolu olmadığını gösteren test yaz — bu, özelliğin kabul şartı.
+      **(2026-09-21, W10-4: `packages/daemon/src/__tests__/proxy-dev-overlay.test.ts`.)**
+- [x] Overlay veri ucu: `wtm status --json` şemasının bir alt kümesi, ayrı contract değil.
+      **(2026-09-21, W10-4.)**
+- [ ] Ajanın kontrol listesi yazması ve kullanıcının işaretlemesi için iki yönlü uç. **Ertelendi —
+      madde 49'un task-kaydı yüzeyini bekliyor, yukarıdaki nota bakın.**
+- [x] Kardeş repoların endpoint'leri feature identity üzerinden çözülsün, port taramasıyla değil.
+      **(2026-09-21, W10-4: aynı workspace + aynı branch eşleşmesi.)**
+- [ ] Konfigürasyon: global ve repo bazında etkinleştirme/kapatma. **Kısmen — yalnızca global
+      (2026-09-21, W10-4); repo bazında kapatma bu slice'a girmedi.**
+- [x] `docs/03-configuration-spec.md`'ye `[dev-overlay]` bölümü. **(2026-09-21, W10-4.)**
+- [ ] `docs/04-cli-reference.md`'ye overlay ile ilgili komut/bayrak parity'si. **Yeni bir CLI
+      komutu/bayrağı yok — `docs/04`'e kısa bir referans satırı eklendi ("Local reverse proxy"
+      bölümünün hemen altına), parity uygulanacak bir komut yok.**
+- [ ] Adapter yolu seçilirse `docs/06-adapter-protocol.md`'ye enjeksiyon sözleşmesi. **Adapter yolu
+      seçilmedi (bkz. K10 kararı yukarıda), bu yüzden uygulanmadı.**
 - [ ] `docs/11-ai-first-skill-integration.md` ve `skills/wtm/SKILL.md`'ye ajanın kontrol listesi
-      yazma akışı.
+      yazma akışı. **Kontrol listesiyle birlikte ertelendi.**
 
 #### Kabul kriterleri
 

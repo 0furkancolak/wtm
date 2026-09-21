@@ -68,4 +68,23 @@ describe('parseWtmConfig', () => {
     expect(() => parseWtmConfig({ proxy: { port: 0 } })).toThrow();
     expect(() => parseWtmConfig({ proxy: { port: 65_536 } })).toThrow();
   });
+
+  it('accepts a well-formed [dev-overlay] table', () => {
+    const config = parseWtmConfig({ 'dev-overlay': { enabled: true } });
+    expect(config['dev-overlay']).toEqual({ enabled: true });
+  });
+
+  it('[dev-overlay] is optional and defaults to nothing', () => {
+    expect(parseWtmConfig({})['dev-overlay']).toBeUndefined();
+  });
+
+  it('rejects an unknown key in [dev-overlay]', () => {
+    expect(() => parseWtmConfig({ 'dev-overlay': { enabled: true, checklist: true } })).toThrow();
+  });
+
+  it('accepts [dev-overlay] enabled alongside [proxy] disabled — validated independently, wired inert by the daemon', () => {
+    const config = parseWtmConfig({ 'dev-overlay': { enabled: true }, proxy: { enabled: false } });
+    expect(config['dev-overlay']).toEqual({ enabled: true });
+    expect(config.proxy).toEqual({ enabled: false });
+  });
 });
