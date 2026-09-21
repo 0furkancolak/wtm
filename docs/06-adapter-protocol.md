@@ -4,6 +4,11 @@
 
 A new language, framework or build system must be supportable without rebuilding the WTM daemon.
 
+Writing an external adapter by hand means implementing the stdin/stdout loop and the response
+shapes below yourself. `@wtm/adapter-sdk` (`packages/adapter-sdk`) wraps that loop and re-exports
+the schemas so an author only writes the five handler functions; see
+[`docs/19-adapter-authoring-guide.md`](19-adapter-authoring-guide.md) for a full walkthrough.
+
 ## Adapter kinds
 
 Adapters can describe capabilities such as:

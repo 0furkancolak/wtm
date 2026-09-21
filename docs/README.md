@@ -67,8 +67,9 @@ WTM is not a replacement for Git, Make, Bun, npm, pnpm, uv, Cargo, Go, Gradle, D
 16. `16-implementation-plan.md` — TDD-oriented implementation plan.
 17. `17-reference-configs.md` — practical configuration examples.
 18. `18-errors-json-contract.md` — machine-readable output and stable error model.
-19. `99-references.md` — official references used while designing WTM.
-20. `adr/` — architecture decision records.
+19. `19-adapter-authoring-guide.md` — writing an external adapter with `@wtm/adapter-sdk`.
+20. `99-references.md` — official references used while designing WTM.
+21. `adr/` — architecture decision records.
 
 ## Recommended first milestone
 
