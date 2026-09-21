@@ -156,6 +156,28 @@ export interface FileTrustPolicy {
    * through an inherited descriptor rather than by the filesystem's say-so.
    */
   isExecutable(stat: NodeJsStats, path: string): Promise<boolean>;
+  /**
+   * Whether this host could read `path`'s ownership and access rules *at all*, asked only to
+   * classify a refusal one of the predicates above has already produced (todo item 51, M3).
+   *
+   * The four predicates fail closed, which is right: an unreadable answer is not a safe answer.
+   * What fails closed cannot also say *why*, and the difference decides whether a supervised
+   * daemon stops or retries. On Windows those answers come from `powershell.exe`, so the reader
+   * returning nothing can mean "the ACL says someone else owns it" or "the session died, timed
+   * out, or the query lost a contended runner" — and `@wtm/core`'s private-directory check read
+   * every negative as the first, reported "belongs to another user", and stopped the daemon for
+   * good on what may have been a passing failure.
+   *
+   * Optional, and absent is the POSIX answer: a `stat` that was already read cannot become
+   * unreadable, so there is nothing to ask. A caller treats an absent method as "the answer was
+   * readable" and changes nothing.
+   *
+   * It re-reads, so the answer can differ from the one being classified. That is acceptable here
+   * and nowhere else: it decides a refusal's *class*, never whether to proceed. The worst outcomes
+   * are retrying something permanent, which a person still sees in the log, and reporting a
+   * transient failure as permanent, which is exactly what happens today.
+   */
+  ownershipReadable?(path: string): Promise<boolean>;
 }
 
 /**

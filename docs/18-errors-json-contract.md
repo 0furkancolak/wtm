@@ -153,15 +153,20 @@ instead of restarting forever. It is a condition a person has to clear, so it ex
 
 `WTM_PRIVATE_DIRECTORY_UNSAFE` means one of the directories WTM keeps private to the current user
 (its data root, its database directory, or the daemon's socket directory) is one it will not use.
-The directory is either a symbolic link, not a directory, owned by another user, or open to others
-(any group or other permission bit set, reported as "readable by others"). WTM never repairs such a
-directory itself. `context` carries `path` and `reason`. When the directory is only open to others,
-the remediation is `chmod 700 <path>`. There is none for the other reasons, because what to do
-depends on why the path is that way. A daemon run by launchd or systemd stops retrying on this code.
+The directory is either a symbolic link, not a directory, owned by another user, open to others
+(any group or other permission bit set, reported as "readable by others"), reached through a path
+component that is a file rather than a directory, or reached through a symbolic link loop. WTM
+never repairs such a directory itself. `context` carries `path` and `reason`. When the directory is
+only open to others, the remediation is `chmod 700 <path>`. There is none for the other reasons,
+because what to do depends on why the path is that way. A daemon run by launchd or systemd stops
+retrying on this code.
 
 Some failures are not reported with this code, because they may clear on its own:
 - a directory that could not be read at all;
 - a directory that changed while WTM was checking it;
+- a directory whose ownership or permissions this host could not read at all, reported as
+  "ownership could not be read". On Windows those answers come from `powershell.exe`, so a query
+  that fails is not evidence that anybody else owns the directory;
 - a directory WTM has yet to create whose nearest existing parent belongs to another user, such as a
   home directory on a volume that is not mounted yet.
 

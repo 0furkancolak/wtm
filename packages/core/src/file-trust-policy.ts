@@ -51,6 +51,13 @@ export interface FileTrustPolicy {
    * check does — `@wtm/platform`'s `FileTrustPolicy` carries the full reasoning.
    */
   isExecutable(stat: CoreFileStat, path: string): Promise<boolean>;
+  /**
+   * Whether this host could read `path`'s ownership and access rules at all — asked only to decide
+   * whether a refusal the predicates above produced is one a person has to clear or one a retry
+   * may clear (todo item 51, M3). Absent is the POSIX answer: nothing there can make an already-read
+   * `stat` unreadable. `@wtm/platform`'s `FileTrustPolicy` carries the full reasoning.
+   */
+  ownershipReadable?(path: string): Promise<boolean>;
 }
 
 /**

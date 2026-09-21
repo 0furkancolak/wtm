@@ -122,10 +122,23 @@ export function createWindowsFileTrustPolicy(options: WindowsFileTrustPolicyOpti
     return stat.nlink === 1;
   }
 
+  /**
+   * The classification question the four fail-closed predicates cannot answer: was there an answer
+   * to read? `readAcl` resolves `undefined` for a missing path *and* for a `powershell.exe` that
+   * failed, and that conflation is harmless here — by the time a caller asks this, it has already
+   * `lstat`-ed the path successfully, so a path that is now missing vanished mid-check, which is
+   * the same retryable class as a failed read.
+   */
+  async function ownershipReadable(path: string): Promise<boolean> {
+    const [acl, currentSid] = await Promise.all([readAcl(path), currentUserSid()]);
+    return acl !== undefined && currentSid !== null;
+  }
+
   return {
     isOwnedByCurrentUser,
     isWritableOnlyByOwner,
     isNotSharedByHardLink,
+    ownershipReadable,
     // A caller-facing "is identity available at all" check cannot itself be async without
     // changing the port's shape for every platform, so this answers it optimistically (Windows
     // always has *a* current-user SID) and lets `isOwnedByCurrentUser`/`isWritableOnlyByOwner`'s

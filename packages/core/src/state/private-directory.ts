@@ -67,6 +67,46 @@ function unsafeDirectory(path: string, reason: string): PrivateDirectoryError {
 }
 
 /**
+ * The two lookup failures a retry cannot clear (todo item 51, M2).
+ *
+ * Every `lstat`, `realpath` and `open` below used to map anything that was not `ENOENT` onto the
+ * uncoded class, which a supervised daemon retries every ten seconds. `ENOTDIR` and `ELOOP` are
+ * not that kind of failure: the first says a component of the path is a file rather than a
+ * directory, the second that the path walks a symbolic-link cycle. Both stay true until a person
+ * changes something — the same criterion this file already applies to a symlinked or another
+ * user's directory — so retrying them forever reports nothing and fixes nothing.
+ *
+ * Returns `undefined` for every other errno, leaving the caller's own uncoded refusal exactly as
+ * it was. A "cannot be read" that might be a volume arriving late is still retried.
+ */
+function permanentLookupFailure(path: string, error: unknown): PrivateDirectoryError | undefined {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  if (code === 'ENOTDIR') return unsafeDirectory(path, 'has a path component that is not a directory');
+  if (code === 'ELOOP') return unsafeDirectory(path, 'is reached through a symbolic link loop');
+  return undefined;
+}
+
+/**
+ * Whether an ownership or permission refusal is one a person has to clear (todo item 51, M3).
+ *
+ * The port's predicates fail closed, so a `false` from them can mean "the answer is no" or "there
+ * was no answer to read". On POSIX only the first exists — an already-read `stat` cannot become
+ * unreadable — and `ownershipReadable` is absent, which is why the default here is `true` and
+ * nothing changes for the platforms this code grew up on. On Windows the answers come from
+ * `powershell.exe`, so a session that died, timed out or lost a contended runner produces the
+ * second; reading it as the first told the user their directory belongs to somebody else and
+ * stopped a supervised daemon permanently on a failure that may well have passed.
+ */
+async function ownershipWasReadable(fileTrust: FileTrustPolicy, path: string): Promise<boolean> {
+  return fileTrust.ownershipReadable === undefined || await fileTrust.ownershipReadable(path);
+}
+
+/** The refusal to raise when the host could not answer the ownership question at all. */
+function ownershipUnreadable(path: string): PrivateDirectoryError {
+  return new PrivateDirectoryError(path, 'ownership could not be read');
+}
+
+/**
  * The one refusal with a single obvious remedy, which the message already names. `@wtm/core`
  * does not know the operating system, so the remediation is exactly as platform-blind as that
  * message has always been.
@@ -97,7 +137,7 @@ export async function ensurePrivateDirectory(
   while (true) {
     const stat = await lstat(anchor).catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return undefined;
-      throw new PrivateDirectoryError();
+      throw permanentLookupFailure(anchor, error) ?? new PrivateDirectoryError();
     });
     if (stat !== undefined) {
       // An anchor above the target is only where WTM would create its directory. See
@@ -108,7 +148,8 @@ export async function ensurePrivateDirectory(
       for (const component of components.reverse()) {
         current = join(current, component);
         await mkdir(current, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
-          if (error.code !== 'EEXIST') throw new PrivateDirectoryError();
+          if (error.code === 'EEXIST') return;
+          throw permanentLookupFailure(current, error) ?? new PrivateDirectoryError();
         });
         identities.push(await inspectPrivateDirectory(current, fileTrust));
       }
@@ -133,7 +174,7 @@ async function assertNoSymlinkComponents(target: string, fileTrust: FileTrustPol
     current = join(current, component);
     const stat = await lstat(current).catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return undefined;
-      throw new PrivateDirectoryError();
+      throw permanentLookupFailure(current, error) ?? new PrivateDirectoryError();
     });
     if (stat === undefined) return;
     const ownedByCurrentUser = await fileTrust.isOwnedByCurrentUser(stat, current);
@@ -142,8 +183,14 @@ async function assertNoSymlinkComponents(target: string, fileTrust: FileTrustPol
     }
     if (belowPrivateAnchor) {
       if (!stat.isDirectory()) throw unsafeDirectory(current, 'is not a directory');
-      if (!ownedByCurrentUser) throw unsafeDirectory(current, 'belongs to another user');
-      if (!(await fileTrust.isWritableOnlyByOwner(stat, current, 0o077))) throw readableByOthers(current, stat);
+      if (!ownedByCurrentUser) {
+        if (!(await ownershipWasReadable(fileTrust, current))) throw ownershipUnreadable(current);
+        throw unsafeDirectory(current, 'belongs to another user');
+      }
+      if (!(await fileTrust.isWritableOnlyByOwner(stat, current, 0o077))) {
+        if (!(await ownershipWasReadable(fileTrust, current))) throw ownershipUnreadable(current);
+        throw readableByOthers(current, stat);
+      }
     }
     // macOS exposes /var as a root-owned system symlink. System ancestors are
     // outside WTM's authority; once an owned 0700 anchor is reached, every
@@ -161,8 +208,8 @@ export async function verifyPrivateDirectory(
   directory: PrivateDirectory,
   fileTrust: FileTrustPolicy = defaultCoreFileTrustPolicy,
 ): Promise<void> {
-  const stat = await lstat(directory.path).catch(() => {
-    throw new PrivateDirectoryError();
+  const stat = await lstat(directory.path).catch((error: unknown) => {
+    throw permanentLookupFailure(directory.path, error) ?? new PrivateDirectoryError();
   });
   const current = await inspectPrivateDirectory(directory.path, fileTrust, stat);
   if (!sameDirectory(directory.identity, current.identity)) throw new PrivateDirectoryError();
@@ -174,16 +221,17 @@ async function inspectPrivateDirectory(
   initial?: Stats,
   options: { ancestor?: boolean } = {},
 ): Promise<PrivateDirectory> {
-  const before = initial ?? await lstat(path).catch(() => {
-    throw new PrivateDirectoryError(path, 'cannot be read');
+  const before = initial ?? await lstat(path).catch((error: unknown) => {
+    throw permanentLookupFailure(path, error) ?? new PrivateDirectoryError(path, 'cannot be read');
   });
   await assertPrivateDirectory(before, fileTrust, path, options);
-  const canonicalPath = await realpath(path).catch(() => {
-    throw new PrivateDirectoryError(path, 'cannot be resolved');
+  const canonicalPath = await realpath(path).catch((error: unknown) => {
+    throw permanentLookupFailure(path, error) ?? new PrivateDirectoryError(path, 'cannot be resolved');
   });
-  const handle = await open(canonicalPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW).catch(() => {
-    throw new PrivateDirectoryError();
-  });
+  const handle = await open(canonicalPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+    .catch((error: unknown) => {
+      throw permanentLookupFailure(canonicalPath, error) ?? new PrivateDirectoryError();
+    });
   try {
     const opened = await handle.stat().catch(() => {
       throw new PrivateDirectoryError();
@@ -228,11 +276,15 @@ async function assertPrivateDirectory(
   if (!fileTrust.currentIdentityAvailable()) throw new PrivateDirectoryError();
   if (!stat.isDirectory()) throw unsafeDirectory(path, 'is not a directory');
   if (!(await fileTrust.isOwnedByCurrentUser(stat, path))) {
+    if (!(await ownershipWasReadable(fileTrust, path))) throw ownershipUnreadable(path);
     throw options.ancestor === true
       ? new PrivateDirectoryError(path, 'belongs to another user, so WTM cannot create its directory there yet')
       : unsafeDirectory(path, 'belongs to another user');
   }
-  if (!(await fileTrust.isWritableOnlyByOwner(stat, path, 0o077))) throw readableByOthers(path, stat);
+  if (!(await fileTrust.isWritableOnlyByOwner(stat, path, 0o077))) {
+    if (!(await ownershipWasReadable(fileTrust, path))) throw ownershipUnreadable(path);
+    throw readableByOthers(path, stat);
+  }
 }
 
 function sameDirectoryStats(left: Stats, right: Stats): boolean {
