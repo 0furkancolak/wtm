@@ -155,7 +155,9 @@ export { HeavyJobError, maxPendingHeavyJobs, maxRetainedHeavyJobs, heavyJobReten
 export type { HeavyJobRecord, HeavyJobStore, HeavyJobEnqueueInput, HeavyJobFinishInput } from './state/jobs';
 export { captureSourceSnapshot } from './jobs/source-snapshot';
 export type { SourceSnapshot } from './jobs/source-snapshot';
-export { queueTaskTimeoutMs } from './config/task-timeout';
+export { idleTimeoutMs, queueTaskTimeoutMs } from './config/task-timeout';
+export { idlePolicies, idleSchema, taskIdlePolicy } from './config/idle';
+export type { IdleConfig, IdlePolicy, IdleTaskView } from './config/idle';
 export { ensurePrivateDirectory, PrivateDirectoryError, verifyPrivateDirectory } from './state/private-directory';
 export type { PrivateDirectory, PrivateDirectoryIdentity } from './state/private-directory';
 export type {

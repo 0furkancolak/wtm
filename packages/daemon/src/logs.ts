@@ -139,6 +139,24 @@ export class ManagedLogStore {
     };
   }
 
+  /**
+   * One line from WTM itself into a task's own stderr stream, so that `wtm logs <task>` can say
+   * why something happened to a process the person did not stop by hand.
+   *
+   * It opens the current file through exactly the same guarded path a launch does — same
+   * directory chain, same `O_APPEND|O_NOFOLLOW` open, same identity assertions — and deliberately
+   * does *not* rotate on the way in: the live anchor owns rotation, and rotating a file it is
+   * writing to in order to add a note would be the note costing more than it is worth. For the
+   * same reason it is best effort in the eye of its caller: if the anchor rotates between this
+   * open and this write, the line lands in the generation that was current, which is where the
+   * rest of that run's output is anyway.
+   */
+  async appendNote(worktreeId: string, taskName: string, line: string): Promise<void> {
+    const opened = await this.#open(worktreeId, taskName, false);
+    try { await opened.stderr.write(`${line.replace(/[\r\n]+/g, ' ')}\n`); }
+    finally { await opened.close(); }
+  }
+
   async #open(worktreeId: string, taskName: string, rotateBeforeOpen: boolean): Promise<OpenedManagedLogs> {
     assertSafeIdentifier(worktreeId);
     assertSafeIdentifier(taskName);

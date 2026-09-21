@@ -67,6 +67,27 @@ describe('ManagedLogStore', () => {
     expect(await lstat(`${first.stdoutPath}.4`).then(() => true, () => false)).toBe(false);
   });
 
+  /**
+   * Idle suspension (todo item 14) has no state of its own and no new command: the only place it
+   * says why a task stopped is the task's own stream, so the note has to land beside that run's
+   * output rather than rotating it away or starting a fresh generation.
+   */
+  test('appends an operational note to the task stream without rotating what is there', async () => {
+    const logRoot = await root();
+    const logs = new ManagedLogStore({ root: logRoot, rotationBytes: 8, retainedFiles: 3 });
+    const opened = await logs.open('worktree-1', 'dev');
+    await opened.stderr.write('server listening\n');
+    await opened.close();
+
+    await logs.appendNote('worktree-1', 'dev', '[wtm] stopped dev\rafter 30m\nof inactivity');
+
+    expect(await readFile(opened.stderrPath, 'utf8'))
+      .toBe('server listening\n[wtm] stopped dev after 30m of inactivity\n');
+    // The bound is well under what was written; only the anchor rotates.
+    expect(await lstat(`${opened.stderrPath}.1`).then(() => true, () => false)).toBe(false);
+    await expect(logs.appendNote('../outside', 'dev', 'note')).rejects.toThrow('Unsafe managed log identifier');
+  });
+
   test('rejects traversal identifiers plus symlink and hardlink log targets', async () => {
     const logRoot = await root();
     const logs = new ManagedLogStore({ root: logRoot });
