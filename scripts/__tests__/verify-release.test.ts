@@ -7,6 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { runScenario } from '../../packages/testkit/src/scenario-child';
 import {
   buildReleaseManifest,
+  releaseArchiveFor,
+  releaseArchiveNames,
+  releaseNotApplicable,
   verifyReleaseArtifacts,
   verifyReleaseTag,
   type ReleasePerformanceReport,
@@ -17,7 +20,11 @@ import {
 const payloads: Readonly<Record<string, string>> = {
   'wtm-darwin-arm64.tar.gz': 'arm64 archive payload',
   'wtm-darwin-x64.tar.gz': 'x64 archive payload',
+  'wtm-linux-arm64.tar.gz': 'linux arm64 archive payload',
+  'wtm-linux-x64.tar.gz': 'linux x64 archive payload',
 };
+/** The one archive a single Linux leg builds, gated on its own the way a single darwin leg is. */
+const linuxArm64 = 'wtm-linux-arm64.tar.gz';
 const smoke: readonly ReleaseSmokeCheck[] = [{ name: 'wtm --version', passed: true }];
 const performance: readonly ReleasePerformanceReport[] = [{ blockers: 0, warnings: 0 }];
 const temporaries: string[] = [];
@@ -123,19 +130,37 @@ describe('release artifact gate', () => {
     expect(verifyReleaseArtifacts(request(directory))).toEqual({
       version: '1.2.3',
       tag: 'v1.2.3',
-      archives: [
-        {
-          name: 'wtm-darwin-arm64.tar.gz',
-          bytes: Buffer.byteLength(payloads['wtm-darwin-arm64.tar.gz'] as string),
-          sha256: digest(payloads['wtm-darwin-arm64.tar.gz'] as string),
-        },
-        {
-          name: 'wtm-darwin-x64.tar.gz',
-          bytes: Buffer.byteLength(payloads['wtm-darwin-x64.tar.gz'] as string),
-          sha256: digest(payloads['wtm-darwin-x64.tar.gz'] as string),
-        },
-      ],
+      archives: Object.keys(payloads)
+        .sort((left, right) => left.localeCompare(right))
+        .map((name) => ({
+          name,
+          bytes: Buffer.byteLength(payloads[name] as string),
+          sha256: digest(payloads[name] as string),
+        })),
     });
+  });
+
+  test('publishes both macOS and both Linux archives', () => {
+    // Item 29's Linux half: a tagged release carries the Linux archives as real assets, not only
+    // as something `bun run release:artifacts` can build on a contributor's own machine.
+    expect(releaseArchiveNames).toEqual([
+      'wtm-darwin-arm64.tar.gz',
+      'wtm-darwin-x64.tar.gz',
+      'wtm-linux-x64.tar.gz',
+      'wtm-linux-arm64.tar.gz',
+    ]);
+  });
+
+  test('names one archive per published platform and architecture, never by architecture alone', () => {
+    // Two published targets share each architecture now, so an arch-only lookup would hand a Linux
+    // leg the darwin archive name and fail a build that did nothing wrong.
+    expect(releaseArchiveFor('darwin', 'arm64')).toBe('wtm-darwin-arm64.tar.gz');
+    expect(releaseArchiveFor('linux', 'arm64')).toBe(linuxArm64);
+    expect(releaseArchiveFor('darwin', 'x64')).toBe('wtm-darwin-x64.tar.gz');
+    expect(releaseArchiveFor('linux', 'x64')).toBe('wtm-linux-x64.tar.gz');
+    for (const [platform, arch] of [['linux', 'ia32'], ['win32', 'x64'], ['', 'arm64'], ['linux', '']] as const) {
+      expect(() => releaseArchiveFor(platform, arch)).toThrow('No release archive is defined for');
+    }
   });
 
   test('rejects a staged release without SHA256SUMS', () => {
@@ -149,7 +174,7 @@ describe('release artifact gate', () => {
     const directory = stage(payloads, `${checksums(payloads)}not-a-checksum-line\n`);
 
     expect(() => verifyReleaseArtifacts(request(directory))).toThrow(
-      'SHA256SUMS line 3 is malformed: "not-a-checksum-line"',
+      `SHA256SUMS line ${Object.keys(payloads).length + 1} is malformed: "not-a-checksum-line"`,
     );
   });
 
@@ -200,7 +225,9 @@ describe('release artifact gate', () => {
     const name = 'wtm-darwin-arm64.tar.gz';
     expect(() => verifyReleaseArtifacts(request(stage({ [name]: payloads[name]! }), { archives: [name, name] })))
       .toThrow('Release archive selection must be a non-empty, unique subset');
-    const unpublished = 'wtm-linux-x64.tar.gz';
+    // Linux is published now; Windows is not, and a target the catalog does not publish is still
+    // refused rather than quietly gated.
+    const unpublished = 'wtm-win32-x64.zip';
     expect(() => verifyReleaseArtifacts(request(stage({ [unpublished]: 'local archive' }), { archives: [unpublished] })))
       .toThrow('Release archive selection must be a non-empty, unique subset');
   });
@@ -299,6 +326,8 @@ describe('release artifact gate', () => {
     expect(manifest.archives.map(({ name }) => name)).toEqual([
       'wtm-darwin-arm64.tar.gz',
       'wtm-darwin-x64.tar.gz',
+      'wtm-linux-arm64.tar.gz',
+      'wtm-linux-x64.tar.gz',
     ]);
   });
 
@@ -434,6 +463,93 @@ describe('release artifact gate', () => {
     }));
 
     expect(manifest.tag).toBe('v1.2.3-rc.1');
+  });
+});
+
+describe('Apple evidence outside the darwin family', () => {
+  /** What a Linux leg gates: its own archive, with no signature and no notarization ticket. */
+  function linuxRequest(directory: string, overrides: Partial<ReleaseVerification> = {}): ReleaseVerification {
+    return request(directory, {
+      archives: [linuxArm64],
+      signing: releaseNotApplicable,
+      notarization: releaseNotApplicable,
+      ...overrides,
+    });
+  }
+
+  test('accepts a stable Linux archive that is neither signed nor notarized', () => {
+    // The whole point of the scoping: `codesign`, `notarytool` and Gatekeeper are Apple facts. A
+    // Linux archive has none of them and no equivalent to satisfy, so requiring `signed` and
+    // `notarized` of it would refuse every stable release the moment Linux joins the matrix.
+    const directory = stage({ [linuxArm64]: payloads[linuxArm64] as string });
+
+    const manifest = verifyReleaseArtifacts(linuxRequest(directory));
+
+    expect(manifest.tag).toBe('v1.2.3');
+    expect(manifest.archives.map(({ name }) => name)).toEqual([linuxArm64]);
+  });
+
+  test('refuses Apple evidence attached to archives that cannot have it', () => {
+    // A Linux leg reporting `signed` or `notarized` did not sign anything: the evidence reached
+    // the gate from somewhere else, which is the wiring bug an absent status is already refused
+    // for. Claiming it must not be the cheaper path than admitting it does not apply.
+    const directory = stage({ [linuxArm64]: payloads[linuxArm64] as string });
+
+    expect(() => verifyReleaseArtifacts(linuxRequest(directory, { signing: 'signed' })))
+      .toThrow(`signing status must be "${releaseNotApplicable}"`);
+    expect(() => verifyReleaseArtifacts(linuxRequest(directory, { signing: 'adhoc' })))
+      .toThrow(`signing status must be "${releaseNotApplicable}"`);
+    expect(() => verifyReleaseArtifacts(linuxRequest(directory, { notarization: 'notarized' })))
+      .toThrow(`notarization status must be "${releaseNotApplicable}"`);
+    expect(() => verifyReleaseArtifacts(linuxRequest(directory, { notarization: 'skipped' })))
+      .toThrow(`notarization status must be "${releaseNotApplicable}"`);
+  });
+
+  test('still refuses a Linux archive with no evidence at all', () => {
+    // `not-applicable` is a status the workflow states, exactly as `skipped` is. An absent value
+    // remains what it has always been -- the evidence went missing on the way to the gate.
+    const directory = stage({ [linuxArm64]: payloads[linuxArm64] as string });
+
+    expect(() => verifyReleaseArtifacts(linuxRequest(directory, { signing: undefined })))
+      .toThrow('found no status at all');
+    expect(() => verifyReleaseArtifacts(linuxRequest(directory, { notarization: undefined })))
+      .toThrow('found no status at all');
+  });
+
+  test('never lets "not-applicable" excuse a release that ships macOS archives', () => {
+    // The bypass this design has to refuse: `not-applicable` is accepted for its own platform
+    // family only. A darwin leg -- or the combined gate, which covers every published archive --
+    // claiming it would publish an unsigned, unnotarized macOS binary through a stable tag.
+    const whole = stage();
+    const darwinOnly = stage({ 'wtm-darwin-arm64.tar.gz': payloads['wtm-darwin-arm64.tar.gz'] as string });
+
+    for (const overrides of [{ signing: releaseNotApplicable }, { notarization: releaseNotApplicable }]) {
+      expect(() => verifyReleaseArtifacts(request(whole, overrides)))
+        .toThrow(`publishes macOS archives, so "${releaseNotApplicable}"`);
+      expect(() => verifyReleaseArtifacts(request(darwinOnly, {
+        archives: ['wtm-darwin-arm64.tar.gz'],
+        ...overrides,
+      }))).toThrow(`publishes macOS archives, so "${releaseNotApplicable}"`);
+      // A prerelease tolerates `adhoc` and `skipped`; it does not tolerate a macOS archive
+      // pretending macOS signing is not a thing that applies to it.
+      expect(() => verifyReleaseArtifacts(request(whole, {
+        release: { tag: 'v1.2.3-rc.1', version: '1.2.3-rc.1', prerelease: true },
+        packageVersion: '1.2.3-rc.1',
+        ...overrides,
+      }))).toThrow(`publishes macOS archives, so "${releaseNotApplicable}"`);
+    }
+  });
+
+  test('gates the whole release on the macOS evidence the darwin legs reported', () => {
+    // The combined gate in `publish` covers all four archives at once. Linux riding along does not
+    // dilute the macOS requirement: the stable-release rules still decide the release.
+    const directory = stage();
+
+    expect(() => verifyReleaseArtifacts(request(directory, { signing: 'adhoc' })))
+      .toThrow('Stable release v1.2.3 requires a signed executable, found adhoc');
+    expect(() => verifyReleaseArtifacts(request(directory, { notarization: 'skipped' })))
+      .toThrow('Stable release v1.2.3 requires a notarized executable, found skipped');
+    expect(verifyReleaseArtifacts(request(directory)).archives).toHaveLength(4);
   });
 });
 
