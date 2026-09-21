@@ -263,6 +263,18 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/adapters/src/__tests__/make-plan.test.ts
   ```
 
+### #69 — feat(core,protocol,daemon,cli): add the dev-overlay checklist (W11-1 / 46b)
+- Commit: (bu PR'ın head'i) · Unit: W11-1 / 46b — madde 46'nın son açık parçası, kapatıyor.
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası). Yalnızca yerel gate ile doğrulandı.
+- Bu PR'a özgü ayrı bir kanıt boşluğu: yeni proxy-native HTTP ucu (`/__wtm/checklist`) ve overlay'in
+  ilk gerçek inline `<script>`'i yalnızca sahte bir backend'e karşı, bu Linux sandbox'ında test
+  edildi — gerçek bir tarayıcıda (checkbox tıklama, fetch() davranışı) hiç çalıştırılmadı.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/core/src/state/__tests__/checklist.test.ts packages/protocol/src/__tests__/checklist.test.ts packages/daemon/src/__tests__/checklist-handler.test.ts packages/daemon/src/__tests__/proxy-checklist-api.test.ts packages/daemon/src/__tests__/dev-overlay.test.ts packages/cli/src/commands/__tests__/checklist.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
