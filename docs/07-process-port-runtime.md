@@ -183,3 +183,13 @@ volumes      retain by default
 Persistent volumes are never deleted by default.
 
 If Docker or another provider is unavailable, state becomes `DEGRADED_CLEANUP`; the resource ownership record is retained for retry rather than forgotten.
+
+**Implementation status, 2026-09-21:** `processes` and `ports` are WTM-classified resources core
+directly owns and cleans up today. `containers`/`networks`/`volumes` describe adapter-declared,
+adapter-native resources — the same category [`docs/08`](08-storage-cache-gc.md#gc-scope) scopes
+out of V1's GC mode ("Adapter-declared disposable build outputs and adapter-native dependency
+cleanup plans are not part of this mode"). No adapter in this repo declares Docker
+containers/networks/volumes as resources today, so there is no code path that deletes one, and
+`DEGRADED_CLEANUP` has no Docker-provider trigger to reach it from. This table records the
+intended shape once an adapter declares such resources, not current behavior; `todo.md` has no
+item tracking the adapter-side work yet.
