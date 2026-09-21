@@ -344,6 +344,49 @@ support is promised until it is actually built and verified there. General proce
 budget on a separate schedule; item 19 does not get a second scheduler; both currently avoid
 process-tree measurement for the same cost/accuracy reasons above.
 
+## Resource budgets
+
+Todo item 19. `[budgets]` (config in
+[`docs/03`](03-configuration-spec.md#resource-budgets), codes in
+[`docs/18`](18-errors-json-contract.md)) is a daemon-wide, host-scoped admission gate on
+`start`/`restart`, in the same class as `[jobs]` and `[proxy]` above — a fact about the one
+machine the daemon runs on, not about any one workspace. There is no root `[runtime]` table;
+each of these three stays its own narrow root key.
+
+Two independent limits, both optional and both off unless configured:
+
+- **`max_processes`** counts every process the daemon is currently managing, host-wide
+  (`ManagedProcessSupervisor.list()`, every worktree). A `start`/`restart` that would raise this
+  count above the limit is refused with `RUNTIME_PROCESS_BUDGET_EXCEEDED`.
+- **`min_available_memory_mib`** is a floor on host *available* memory — not a cap on WTM's own
+  usage. WTM does not sum RSS across a process tree (the same cost/accuracy reasons the heavy-job
+  queue's own memory admission avoids it, above), so there is no honest way to promise a usage
+  cap; a floor on what the host reports as available is the number WTM actually has. It reuses
+  the identical host-memory reading the heavy-job queue uses
+  (`packages/daemon/src/job-memory.ts`'s `readHostJobMemory`), per the shared-accounting decision
+  above — this is not a second scheduler or a second measurement, only a second caller of the
+  same one. A `start`/`restart` that would leave available memory under the floor is refused with
+  `RUNTIME_MEMORY_BUDGET_EXCEEDED`. When the reading is unavailable (`availableBytes: null`), the
+  check fails open rather than refuse a start on a number the daemon does not have.
+
+Both checks run only when a `start`/`restart` would create a **net-new** managed process — a
+restart that replaces an already-active instance of the same task does not raise the host's
+process count, so it is never refused by either limit; refusing it would block routine restarts
+of a task already running well inside budget.
+
+Explicitly out of scope for this unit, for the same "never claim a measurement WTM does not
+take" reason as the OS-enforced-hard-limit disclaimer above:
+
+- **Disk budgets.** Unlike a process start, there is no single admission choke point disk usage
+  passes through — data is written throughout a task's run, not at one moment WTM could refuse.
+  A meaningful disk budget needs its own design (a periodic sweep? a per-write check?) rather
+  than reusing the process-start gate, and `packages/cli/src/commands/resource-production.ts`'s
+  existing `measure()` function (already real, already used to report per-resource disk usage)
+  is the accounting a future unit should read rather than add a second one.
+- **Platform-specific OS-enforced hard limits** (cgroups, Job Objects, `rlimit`). No per-platform
+  hard-limit support has been built or verified here; claiming one would repeat exactly the
+  mistake the heavy-job queue's own disclaimer above warns against.
+
 ## Docker Compose namespace
 
 A worktree-specific environment value is recommended:

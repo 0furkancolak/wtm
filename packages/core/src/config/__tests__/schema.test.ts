@@ -87,4 +87,25 @@ describe('parseWtmConfig', () => {
     expect(config['dev-overlay']).toEqual({ enabled: true });
     expect(config.proxy).toEqual({ enabled: false });
   });
+
+  it('accepts a well-formed [budgets] table', () => {
+    const config = parseWtmConfig({ budgets: { max_processes: 20, min_available_memory_mib: 512 } });
+    expect(config.budgets).toEqual({ max_processes: 20, min_available_memory_mib: 512 });
+  });
+
+  it('[budgets] is optional and defaults to nothing', () => {
+    expect(parseWtmConfig({}).budgets).toBeUndefined();
+  });
+
+  it('rejects an unknown key in [budgets]', () => {
+    expect(() => parseWtmConfig({ budgets: { max_processes: 20, max_disk: '20GiB' } })).toThrow();
+  });
+
+  it('rejects a [budgets] max_processes below 1', () => {
+    expect(() => parseWtmConfig({ budgets: { max_processes: 0 } })).toThrow();
+  });
+
+  it('rejects a [budgets] min_available_memory_mib below 1', () => {
+    expect(() => parseWtmConfig({ budgets: { min_available_memory_mib: 0 } })).toThrow();
+  });
 });

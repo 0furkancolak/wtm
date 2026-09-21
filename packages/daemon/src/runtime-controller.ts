@@ -27,6 +27,7 @@ import {
 } from './process-supervisor';
 import type { ManagedProcessCompletion } from './logs';
 import { observeReadiness, uncheckedReadiness, type ReadinessFetch } from './readiness';
+import { readHostJobMemory, type HostJobMemory } from './job-memory';
 
 /**
  * Raised when a request names a directory that no registered workspace, repository, or
@@ -140,6 +141,18 @@ export interface DaemonRuntimeControllerOptions {
    * means all of them.
    */
   onTaskActivity?(worktreeId: string, taskName?: string): void;
+  /**
+   * The `[budgets]` admission limits (todo item 19). Both are checked only when a start/restart
+   * would create a net-new managed process — a restart that replaces an already-active one does
+   * not raise the host's process count, so it is never refused by either limit. Left unset,
+   * neither check runs.
+   */
+  budgets?: { maxProcesses?: number; minAvailableMemoryBytes?: number };
+  /**
+   * Reuses the heavy-job queue's own host-memory reading (`./job-memory`) rather than a second
+   * accounting: both are host-headroom facts about the one machine, never a per-process RSS sum.
+   */
+  readMemory?: () => HostJobMemory;
 }
 
 export class DaemonRuntimeController {
@@ -150,6 +163,8 @@ export class DaemonRuntimeController {
   readonly #readinessFetch: ReadinessFetch | undefined;
   readonly #onRuntimeEvent: NonNullable<DaemonRuntimeControllerOptions['onRuntimeEvent']>;
   readonly #onTaskActivity: NonNullable<DaemonRuntimeControllerOptions['onTaskActivity']>;
+  readonly #budgets: NonNullable<DaemonRuntimeControllerOptions['budgets']>;
+  readonly #readMemory: () => HostJobMemory;
 
   constructor(options: DaemonRuntimeControllerOptions) {
     this.#supervisor = options.supervisor;
@@ -159,11 +174,49 @@ export class DaemonRuntimeController {
     this.#readinessFetch = options.readinessFetch;
     this.#onRuntimeEvent = options.onRuntimeEvent ?? (() => {});
     this.#onTaskActivity = options.onTaskActivity ?? (() => {});
+    this.#budgets = options.budgets ?? {};
+    this.#readMemory = options.readMemory ?? readHostJobMemory;
   }
 
   /** Never allowed to fail a request: an activity clock is a convenience, not a contract. */
   #observeActivity(worktreeId: string, taskName?: string): void {
     try { this.#onTaskActivity(worktreeId, taskName); } catch {}
+  }
+
+  /**
+   * Only called when a start/restart would create a net-new managed process. Returns `null`
+   * when both budgets are unset, unmeasurable, or satisfied — an unmeasurable reading fails
+   * open rather than refuse a start on a number the daemon does not actually have.
+   */
+  #checkBudgets(worktreeId: string, taskName: string): WtmError | null {
+    const { maxProcesses, minAvailableMemoryBytes } = this.#budgets;
+    if (maxProcesses !== undefined) {
+      const current = this.#supervisor.list().length;
+      if (current >= maxProcesses) {
+        return {
+          code: 'RUNTIME_PROCESS_BUDGET_EXCEEDED',
+          message: 'Starting this task would exceed the configured process budget.',
+          severity: 'error',
+          context: { taskName, worktreeId, limit: maxProcesses, current },
+        };
+      }
+    }
+    if (minAvailableMemoryBytes !== undefined) {
+      const { availableBytes } = this.#readMemory();
+      if (availableBytes !== null && availableBytes < minAvailableMemoryBytes) {
+        return {
+          code: 'RUNTIME_MEMORY_BUDGET_EXCEEDED',
+          message: 'Starting this task would drop host available memory below the configured floor.',
+          severity: 'error',
+          context: {
+            taskName, worktreeId,
+            floorMib: Math.floor(minAvailableMemoryBytes / (1024 * 1024)),
+            availableMib: Math.floor(availableBytes / (1024 * 1024)),
+          },
+        };
+      }
+    }
+    return null;
   }
 
   async handle(request: IpcRequest, context?: { signal?: AbortSignal }): Promise<JsonEnvelope<unknown>> {
@@ -198,6 +251,12 @@ export class DaemonRuntimeController {
             code: 'RUNTIME_READINESS_ABORTED', message: 'Readiness observation was cancelled.',
             severity: 'error', context: { taskName },
           });
+        }
+        const alreadyActive = this.#supervisor.list(resolved.worktreeId)
+          .some((record) => record.taskName === taskName && ['STARTING', 'RUNNING', 'STOPPING'].includes(record.state));
+        if (!alreadyActive) {
+          const budgetError = this.#checkBudgets(resolved.worktreeId, taskName);
+          if (budgetError !== null) return failure(request.command, budgetError);
         }
         const input = processStartInput(resolved.worktreeId, taskName, resolved.task);
         const result = request.command === 'start'

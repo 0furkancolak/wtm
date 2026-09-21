@@ -589,6 +589,34 @@ since there is no proxied response left for it to inject into. See
 what response types it never touches, and what part of todo item 46 this slice does not
 implement.
 
+## Resource budgets
+
+In the daemon's global configuration, optionally cap how many processes WTM will supervise at
+once and set a floor on host available memory (todo item 19):
+
+```toml
+[budgets]
+max_processes = 20
+min_available_memory_mib = 512
+```
+
+Both fields are optional and independent; leaving either out leaves that limit unenforced. Like
+`[jobs]` and `[proxy]` above, `[budgets]` is a daemon-wide setting read once from the global
+configuration file — restart the daemon to apply a change, and a workspace's own `wtm.toml`
+cannot raise or lower it.
+
+`max_processes` counts every process the daemon is currently managing, across every worktree —
+not per-workspace. `min_available_memory_mib` uses MiB (1,048,576 bytes) and is a floor on the
+host's reported *available* memory, reusing the same host-memory reading `[jobs.memory]` uses
+above; it is not a cap on WTM's own memory usage; see
+[`docs/07`](07-process-port-runtime.md#resource-budgets) for why a usage cap is not something
+WTM can honestly promise. Both checks run only on a `start`/`restart` that would create a
+net-new managed process — replacing an already-running instance of the same task never counts
+against either limit — and refuse with `RUNTIME_PROCESS_BUDGET_EXCEEDED` or
+`RUNTIME_MEMORY_BUDGET_EXCEEDED` respectively (see
+[`docs/18`](18-errors-json-contract.md)). Disk usage and OS-enforced hard limits (cgroups, Job
+Objects, `rlimit`) are explicitly out of scope for this table; see `docs/07` for why.
+
 ## Events
 
 An event runs the tasks named in its table, in the worktree the event is about, resolved

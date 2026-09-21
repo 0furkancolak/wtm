@@ -73,7 +73,9 @@ describe('DaemonRuntimeController', () => {
 
     expect(envelopes.every((envelope) => jsonEnvelopeSchema.safeParse(envelope).success)).toBe(true);
     expect(envelopes.map(({ command }) => command)).toEqual(['start', 'restart', 'stop', 'stop', 'ps', 'logs']);
-    expect(calls[0]).toEqual(['start', {
+    // A budget admission check reads `list()` before `start`, so `start` is no longer
+    // necessarily the very first recorded call.
+    expect(calls.find(([name]) => name === 'start')).toEqual(['start', {
       worktreeId: 'worktree-7',
       taskName: 'dev',
       argv: ['node', 'server.js'],
@@ -448,6 +450,98 @@ describe('DaemonRuntimeController', () => {
         resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
       },
       onTaskActivity: () => { throw new Error('idle bookkeeping failed'); },
+    });
+
+    const envelope = await controller.handle(request('start', { cwd: '/repo/wt', taskName: 'dev' }));
+
+    expect(envelope.ok).toBe(true);
+  });
+});
+
+describe('DaemonRuntimeController budgets', () => {
+  function resolver() {
+    return {
+      resolveTask: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }),
+      resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
+      resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
+    };
+  }
+
+  test('refuses a start that would exceed the configured process budget', async () => {
+    const controller = new DaemonRuntimeController({
+      supervisor: noProcesses(),
+      logs: { read: async () => '' },
+      resolver: resolver(),
+      budgets: { maxProcesses: 0 },
+    });
+
+    const envelope = await controller.handle(request('start', { cwd: '/repo/wt', taskName: 'dev' }));
+
+    expect(envelope.ok).toBe(false);
+    expect(envelope.errors[0]).toMatchObject({
+      code: 'RUNTIME_PROCESS_BUDGET_EXCEEDED',
+      context: { taskName: 'dev', worktreeId: 'worktree-7', limit: 0, current: 0 },
+    });
+  });
+
+  test('never refuses a restart of an already-active task on the process budget', async () => {
+    let started = false;
+    const controller = new DaemonRuntimeController({
+      supervisor: {
+        ...noProcesses(),
+        restart: async () => { started = true; return { record: processRecord, existing: true }; },
+        list: () => [processRecord],
+      },
+      logs: { read: async () => '' },
+      resolver: resolver(),
+      // The one already-active process (`processRecord`, task "dev") is exactly at the limit,
+      // so a fresh start would be refused, but replacing it in place must not be.
+      budgets: { maxProcesses: 1 },
+    });
+
+    const envelope = await controller.handle(request('restart', { cwd: '/repo/wt', taskName: 'dev' }));
+
+    expect(envelope.ok).toBe(true);
+    expect(started).toBe(true);
+  });
+
+  test('refuses a start that would drop host available memory below the configured floor', async () => {
+    const controller = new DaemonRuntimeController({
+      supervisor: noProcesses(),
+      logs: { read: async () => '' },
+      resolver: resolver(),
+      budgets: { minAvailableMemoryBytes: 512 * 1024 * 1024 },
+      readMemory: () => ({ availableBytes: 100 * 1024 * 1024, totalBytes: 1024 * 1024 * 1024 }),
+    });
+
+    const envelope = await controller.handle(request('start', { cwd: '/repo/wt', taskName: 'dev' }));
+
+    expect(envelope.ok).toBe(false);
+    expect(envelope.errors[0]).toMatchObject({
+      code: 'RUNTIME_MEMORY_BUDGET_EXCEEDED',
+      context: { taskName: 'dev', worktreeId: 'worktree-7', floorMib: 512, availableMib: 100 },
+    });
+  });
+
+  test('fails open when the host memory reading is unavailable', async () => {
+    const controller = new DaemonRuntimeController({
+      supervisor: noProcesses(),
+      logs: { read: async () => '' },
+      resolver: resolver(),
+      budgets: { minAvailableMemoryBytes: 512 * 1024 * 1024 },
+      readMemory: () => ({ availableBytes: null, totalBytes: null }),
+    });
+
+    const envelope = await controller.handle(request('start', { cwd: '/repo/wt', taskName: 'dev' }));
+
+    expect(envelope.ok).toBe(true);
+  });
+
+  test('leaves both budgets unenforced when neither is configured', async () => {
+    const controller = new DaemonRuntimeController({
+      supervisor: noProcesses(),
+      logs: { read: async () => '' },
+      resolver: resolver(),
     });
 
     const envelope = await controller.handle(request('start', { cwd: '/repo/wt', taskName: 'dev' }));

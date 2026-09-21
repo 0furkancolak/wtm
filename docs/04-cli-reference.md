@@ -466,6 +466,11 @@ disconnect ends the observation and leaves the managed service running. Use `wtm
 to stop it. Readiness describes that instant; it does not guarantee future health or that
 another process could not answer the configured endpoint.
 
+A `start` that would create a net-new managed process is refused before launch when it would
+exceed the global configuration's `[budgets]` limits (see
+[`docs/03`](03-configuration-spec.md#resource-budgets)): `RUNTIME_PROCESS_BUDGET_EXCEEDED` or
+`RUNTIME_MEMORY_BUDGET_EXCEEDED`. Neither is configured by default.
+
 ### `wtm stop [task]`
 
 Stops one task or all WTM-managed tasks for the target worktree.
@@ -488,7 +493,9 @@ repository, only that repository. An ambiguous selector is refused, never guesse
 
 Accepts the same `--wait` and `--timeout` options as start. A missing or invalid healthcheck
 is rejected before stopping an existing service. An observation never holds the lifecycle
-lock, so another session can stop or replace the task while a client waits.
+lock, so another session can stop or replace the task while a client waits. Replacing an
+already-running task never counts against `[budgets]`; only a `restart` of a task that is not
+currently active can be refused by it, the same as `start` above.
 
 ### `wtm resolve <task>`
 
