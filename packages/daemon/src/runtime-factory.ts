@@ -39,6 +39,8 @@ import { ManagedLogStore } from './logs';
 import { HeavyJobQueue, type ResolvedHeavyJob } from './heavy-job-queue';
 import { IdleRuntimeSuspender } from './idle-runtime';
 import { ManagedProcessSupervisor, type RuntimeInvocation } from './process-supervisor';
+import { defaultProxyPort, ProxyServer } from './proxy';
+import { buildProxyRoutes } from './proxy-routes';
 import { DaemonRuntimeController, type DaemonRuntimeResolver } from './runtime-controller';
 import {
   execEnvironment,
@@ -74,6 +76,12 @@ export interface ProductionDaemonOptions {
   runtimeInvocation?: RuntimeInvocation;
   /** How often opted-in managed tasks are checked for idleness. See `idle-runtime.ts`. */
   idleSweepIntervalMs?: number;
+  /**
+   * The loopback addresses the local reverse proxy binds, when `[proxy] enabled = true`.
+   * Defaults to `ProxyServer`'s own default (`127.0.0.1` and `::1`). Injectable so a test can
+   * bind `127.0.0.1` alone on a sandbox without IPv6, the same reason `platformRuntime` above is.
+   */
+  proxyHosts?: readonly string[];
 }
 
 export interface ProductionDaemonRuntime {
@@ -87,6 +95,8 @@ export interface ProductionDaemonRuntime {
   jobs: HeavyJobQueue | null;
   ci: CiWatcher | null;
   taskOverrides: TaskOverridesHandler | null;
+  /** `null` unless `[proxy] enabled = true` in the global configuration. See `proxy.ts`. */
+  proxy: ProxyServer | null;
   start(): Promise<void>;
   close(): Promise<void>;
 }
@@ -314,6 +324,13 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
       resolveTask: async (cwd, taskName) => resolveHeavyJob(stateStore, paths.globalConfigPath, cwd, taskName),
     });
   }
+  const proxyPolicy = await globalProxyPolicy(paths.globalConfigPath);
+  const proxy = proxyPolicy.enabled === true ? new ProxyServer({
+    port: proxyPolicy.port ?? defaultProxyPort,
+    resolveRoute: (hostname) => buildProxyRoutes(stateStore).get(hostname) ?? null,
+    ...(options.proxyHosts === undefined ? {} : { hosts: options.proxyHosts }),
+    onError,
+  }) : null;
   const taskOverrides = stateStore.taskOverrides === undefined ? null : new TaskOverridesHandler({
     store: stateStore.taskOverrides,
     registration: stateStore,
@@ -334,7 +351,7 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     socketPath: paths.socketPath,
     processSupervisor: {
       recover: async () => supervisor.recover(),
-      close: async () => { await idle.close(); await ci?.close(); await jobs?.close(); await supervisor.close(); },
+      close: async () => { await idle.close(); await proxy?.close(); await ci?.close(); await jobs?.close(); await supervisor.close(); },
     },
     runtimeHandler: async (request, context) => (
       ciCommandNames.has(request.command) && ci !== null ? ci.handle(request)
@@ -365,7 +382,8 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     jobs,
     ci,
     taskOverrides,
-    start: async () => { await daemon.start(); await jobs?.start(); await ci?.start(); idle.start(); },
+    proxy,
+    start: async () => { await daemon.start(); await jobs?.start(); await ci?.start(); idle.start(); await proxy?.start(); },
     close: async () => {
       if (closed) return;
       closed = true;
@@ -383,6 +401,21 @@ async function globalJobPolicy(path: string): Promise<NonNullable<WtmConfig['job
     throw error;
   }
   return parseWtmConfig(parse(value), path).jobs ?? {};
+}
+
+/**
+ * The local reverse proxy's policy, read from the same global configuration file `[jobs]` is —
+ * it opens one machine-wide loopback listener, which is a daemon setting rather than a
+ * per-workspace one (decision 6 in the W9-4 plan; `docs/03`'s "Local reverse proxy" section).
+ */
+async function globalProxyPolicy(path: string): Promise<NonNullable<WtmConfig['proxy']>> {
+  let value: string;
+  try { value = await readFile(path, 'utf8'); }
+  catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return {};
+    throw error;
+  }
+  return parseWtmConfig(parse(value), path).proxy ?? {};
 }
 
 /**

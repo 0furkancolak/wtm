@@ -105,7 +105,7 @@ export { resolveWorkspaceConfig, builtInConfig } from './config/load';
 export { stripByteOrderMark } from './config/toml-text';
 export { mergeConfigLayers, applyTaskOverrides } from './config/merge';
 export { parseWtmConfig, wtmConfigSchema, taskSchema, WtmConfigError } from './config/schema';
-export type { CorsConfig, GitConfig, PortConfig, PortsConfig, RepoConfig, ResourceConfig, TaskConfig, WtmConfig } from './config/schema';
+export type { CorsConfig, GitConfig, PortConfig, PortsConfig, ProxyConfig, RepoConfig, ResourceConfig, TaskConfig, WtmConfig } from './config/schema';
 export { repoEnvironment, resolveRepoScope } from './config/repos';
 export type { RepoScopeInput, ResolvedRepoScope } from './config/repos';
 export { collectProvenance } from './config/provenance';
@@ -134,6 +134,16 @@ export {
 export type { EndpointPlanInput, ObservedEndpoint, ResolvedEndpoints } from './runtime/endpoint-plan';
 export { corsDeclarationFiles, corsVariablePattern, detectCorsVariables, resolveCors } from './runtime/cors';
 export type { CorsResolutionInput, ResolvedCors } from './runtime/cors';
+export {
+  assignProxySlugs,
+  canonicalProxyHostname,
+  isWtmProxyHostname,
+  proxyHostname,
+  slugifyBranchLabel,
+  worktreeSlugSuffix,
+  wtmLocalhostSuffix,
+} from './runtime/proxy-hostname';
+export type { ProxyHostnameWorktree } from './runtime/proxy-hostname';
 export { declarationFiles, exampleDeclarationFiles, readDeclaredNames, readEnvDeclarations } from './detect/declarations';
 export type { EnvDeclaration } from './detect/declarations';
 export { composeFiles, parseComposeServices, readComposeFile } from './detect/compose';

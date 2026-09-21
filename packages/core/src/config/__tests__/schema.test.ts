@@ -50,4 +50,22 @@ describe('parseWtmConfig', () => {
       ]);
     }
   });
+
+  it('accepts a well-formed [proxy] table', () => {
+    const config = parseWtmConfig({ proxy: { enabled: true, port: 19999 } });
+    expect(config.proxy).toEqual({ enabled: true, port: 19999 });
+  });
+
+  it('[proxy] is optional and defaults to nothing', () => {
+    expect(parseWtmConfig({}).proxy).toBeUndefined();
+  });
+
+  it('rejects an unknown key in [proxy]', () => {
+    expect(() => parseWtmConfig({ proxy: { enabled: true, host: '0.0.0.0' } })).toThrow();
+  });
+
+  it('rejects a [proxy] port outside 1-65535', () => {
+    expect(() => parseWtmConfig({ proxy: { port: 0 } })).toThrow();
+    expect(() => parseWtmConfig({ proxy: { port: 65_536 } })).toThrow();
+  });
 });
