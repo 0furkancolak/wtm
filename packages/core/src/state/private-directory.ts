@@ -206,9 +206,18 @@ async function assertNoSymlinkComponents(target: string, fileTrust: FileTrustPol
         if (!(await ownershipWasReadable(fileTrust, current))) throw ownershipUnreadable(current);
         throw unsafeDirectory(current, 'belongs to another user');
       }
-      if (!(await fileTrust.isWritableOnlyByOwner(stat, current, 0o077))) {
+      // Only the final `target` is the directory WTM actually owns, held to the strict "no
+      // group/other access at all" mask (`assertPrivateDirectory`'s `ancestor: false` case).
+      // Every component before it on this walk is merely traversed, never created or owned by
+      // WTM, and gets the same relaxed "no group/other write" question `assertPrivateDirectory`
+      // already asks of an ancestor (see its doc comment, and #99). Demanding the strict mask of
+      // every component below any owned 0700 directory refused a merely-traversed ancestor like
+      // `~/.local` sitting beneath an incidentally-0700 `$HOME` — #99's bug, reproduced here
+      // through this separate walk rather than through `assertPrivateDirectory`.
+      const mask: OwnerOnlyMask = current === target ? 0o077 : 0o022;
+      if (!(await fileTrust.isWritableOnlyByOwner(stat, current, mask))) {
         if (!(await ownershipWasReadable(fileTrust, current))) throw ownershipUnreadable(current);
-        throw readableByOthers(current, stat);
+        throw readableByOthers(current, stat, mask);
       }
     }
     // macOS exposes /var as a root-owned system symlink. System ancestors are
