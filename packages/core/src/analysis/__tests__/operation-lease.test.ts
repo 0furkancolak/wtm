@@ -330,6 +330,32 @@ test('reports an abandoned lease with the stage it stopped at and a --resume rem
   expect(store.readRepositoryOperationLease(key)?.stage).toBe('release-endpoints');
 });
 
+test('reports an abandoned gc lease with no --resume remediation, since gc has no --resume flag', async () => {
+  // Regression: `conflictFrom` used to suggest `wtm <operation> --resume` for any abandoned
+  // same-operation collision, without checking that `<operation>`'s CLI command actually has a
+  // `--resume` flag. `gc` and `repair` don't (only `remove`/`create` do, per `main.ts`), so a
+  // real `wtm gc` hitting this path used to suggest a remediation command that
+  // `commander.unknownOption` rejects outright.
+  const store = new FakeLeaseStore();
+  const gcKey: RepositoryOperationLeaseKey = { repositoryId, operation: 'gc' };
+  seedHolder(store, { operation: 'gc', token: 'gc-token', stage: 'quarantine' });
+  const reader = scriptedReader(new Map([[holderPid, null]]));
+
+  const thrown = await withRepositoryOperationLease(
+    { store, readProcessStartTime: reader.read, hostId: myHostId, repositoryId, operation: 'gc', now: clockAt('2026-08-31T10:17:00.000Z') },
+    async () => {},
+  ).then(() => null, (error: unknown) => error);
+
+  expect(thrown).toBeInstanceOf(RepositoryOperationConflictError);
+  const conflict = thrown as RepositoryOperationConflictError;
+  expect(conflict.abandoned).toBe(true);
+  expect(conflict.context.holderOperation).toBe('gc');
+  expect(conflict.context.operation).toBe('gc');
+  expect(conflict.remediation).toEqual([]);
+  // The row is still the untouched holder's, keyed under its own operation.
+  expect(store.readRepositoryOperationLease(gcKey)?.stage).toBe('quarantine');
+});
+
 test('adopts an abandoned lease and reports the stage it resumed from', async () => {
   const store = new FakeLeaseStore();
   seedHolder(store, { stage: 'release-endpoints' });
