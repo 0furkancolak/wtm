@@ -2330,8 +2330,17 @@ function isRuntimeInvocation(argv: readonly string[]): boolean {
   // through the daemon's live task-override/checklist state, not local `wtm.toml` — omitting
   // them left `runtimeClient` `undefined` and every invocation reported `WTM_DAEMON_UNAVAILABLE`
   // regardless of whether a daemon was actually running.
+  //
+  // `create` is here because `reconciledByDaemon` (`commands/create.ts`) decides whether the new
+  // worktree's `registration` is reported as `"daemon"` or `"local"` by calling
+  // `input.client.request('reconcile')` — and `input.client` is `dependencies.runtimeClient`.
+  // Omitting `create` meant that client was always `undefined`, so every `wtm create` reported
+  // `registration: "local"` and a `WTM_DAEMON_UNAVAILABLE` warning even against a healthy,
+  // reachable daemon — silently skipping the reconcile that fires `worktree.created` hooks and
+  // applies `[prepare] mode = "eager"` (docs/04-cli-reference.md's documented contract for what
+  // `"daemon"` registration means).
   return command !== undefined && (
-    ['start', 'stop', 'restart', 'ps', 'logs', 'exec', 'init', 'remove', 'jobs', 'task', 'checklist'].includes(command)
+    ['start', 'stop', 'restart', 'ps', 'logs', 'exec', 'init', 'remove', 'jobs', 'task', 'checklist', 'create'].includes(command)
     || command === 'run' && hasOptionIntent(argv, '--enqueue')
     // `ci status` deliberately reads local state only (its own doc says so) and stays daemon-free;
     // only `watch`/`unwatch` register/unregister a live daemon-side watch and need the client.
