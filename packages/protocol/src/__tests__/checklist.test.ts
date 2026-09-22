@@ -26,6 +26,17 @@ describe('checklist protocol', () => {
     }).success).toBe(false);
   });
 
+  // A whitespace-only item passes the plain `.min(1)` length check on its raw text, then the
+  // store trims it away to `""` and drops it -- but `checklist.set` deletes the whole existing
+  // list unconditionally before inserting, so this used to silently wipe a checklist down to zero
+  // items instead of erroring. See `checklistItemTextSchema`'s own doc comment.
+  test('refuses a checklist item that is only whitespace', () => {
+    expect(checklistArgumentSchemas['checklist.set'].safeParse({ cwd: '/repo', items: [' '] }).success).toBe(false);
+    expect(checklistArgumentSchemas['checklist.set'].safeParse({ cwd: '/repo', items: ['\t\n'] }).success).toBe(false);
+    expect(checklistArgumentSchemas['checklist.set'].safeParse({ cwd: '/repo', items: ['Check it', ' '] }).success).toBe(false);
+    expect(checklistArgumentSchemas['checklist.set'].safeParse({ cwd: '/repo', items: [' Check it '] }).success).toBe(true);
+  });
+
   test('validates a checklist item and the per-command results', () => {
     expect(checklistItemSchema.safeParse(item).success).toBe(true);
     expect(checklistItemSchema.safeParse({ ...item, extra: true }).success).toBe(false);

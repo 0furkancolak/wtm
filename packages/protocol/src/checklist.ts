@@ -8,6 +8,19 @@ import { z } from 'zod';
  * the checklist should reuse that pattern rather than invent a second one.
  */
 
+/**
+ * A `checklist.set` item's text, checked the same way the store
+ * (`packages/core/src/state/checklist-store.ts`) will use it: trimmed. `checklist.set` replaces
+ * the whole list unconditionally (it deletes every existing row before inserting), so an item
+ * that is only whitespace -- passing the plain `.min(1)` bound on its raw, untrimmed length --
+ * used to reach the store, get trimmed to `""`, and get filtered out there, silently wiping any
+ * prior checklist down to zero items with no warning and no error. Checking the trimmed length
+ * here, before that delete ever runs, turns that into an ordinary WTM_DAEMON_INVALID_REQUEST
+ * instead.
+ */
+const checklistItemTextSchema = z.string().min(1).max(500)
+  .refine((value) => value.trim().length > 0, { message: 'A checklist item must not be only whitespace.' });
+
 export const checklistItemSchema = z.object({
   position: z.number().int().min(0),
   text: z.string().min(1).max(500),
@@ -22,7 +35,7 @@ export const checklistArgumentSchemas = {
   'checklist.list': z.object({ cwd: z.string().min(1).max(4096) }).strict(),
   'checklist.set': z.object({
     cwd: z.string().min(1).max(4096),
-    items: z.array(z.string().min(1).max(500)).min(1).max(100),
+    items: z.array(checklistItemTextSchema).min(1).max(100),
   }).strict(),
   'checklist.clear': z.object({ cwd: z.string().min(1).max(4096) }).strict(),
 } as const;
