@@ -12,7 +12,7 @@ import {
   type ManagedProcessRecord,
   type ResolvedTask,
 } from '@wtm/core';
-import { DaemonRegistrationError, DaemonRuntimeController } from '../runtime-controller';
+import { DaemonRegistrationError, DaemonRuntimeController, type DaemonRuntimeResolver } from '../runtime-controller';
 
 const processRecord: ManagedProcessRecord = {
   id: 'process-1',
@@ -547,6 +547,46 @@ describe('DaemonRuntimeController budgets', () => {
     const envelope = await controller.handle(request('start', { cwd: '/repo/wt', taskName: 'dev' }));
 
     expect(envelope.ok).toBe(true);
+  });
+
+  test('does not admit two concurrent starts past the process budget (TOCTOU regression)', async () => {
+    // `supervisor.list()` never grows here on purpose — it stays `[]` for the whole test, so the
+    // only thing that can make the second concurrent request see the first one is the
+    // controller's own in-flight reservation. Without it, both requests read the same `length: 0`
+    // between their `resolveTask` await and their `supervisor.start` await, and both are admitted
+    // against a budget of 1.
+    let concurrentStarts = 0;
+    let maxConcurrentStarts = 0;
+    const controller = new DaemonRuntimeController({
+      supervisor: {
+        ...noProcesses(),
+        start: async () => {
+          concurrentStarts += 1;
+          maxConcurrentStarts = Math.max(maxConcurrentStarts, concurrentStarts);
+          await Promise.resolve();
+          concurrentStarts -= 1;
+          return { record: processRecord, existing: false };
+        },
+      },
+      logs: { read: async () => '' },
+      resolver: {
+        resolveTask: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
+        resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
+      } satisfies DaemonRuntimeResolver,
+      budgets: { maxProcesses: 1 },
+    });
+
+    const [first, second] = await Promise.all([
+      controller.handle(request('start', { cwd: '/repo/wt', taskName: 'dev' })),
+      controller.handle(request('start', { cwd: '/repo/wt', taskName: 'build' })),
+    ]);
+    const outcomes = [first, second];
+
+    expect(outcomes.filter((envelope) => envelope.ok)).toHaveLength(1);
+    const refused = outcomes.find((envelope) => !envelope.ok);
+    expect(refused?.errors[0]).toMatchObject({ code: 'RUNTIME_PROCESS_BUDGET_EXCEEDED' });
+    expect(maxConcurrentStarts).toBeLessThanOrEqual(1);
   });
 });
 

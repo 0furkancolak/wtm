@@ -78,6 +78,16 @@ export function mergeConfigLayers(layers: ConfigLayer[]): ResolvedConfig<WtmConf
  * earlier one's array or string leaves in {@link mergeConfigLayers} — so a stale provenance entry
  * from the file-defined task cannot survive under a field the override left out and be picked up
  * by `wtm explain` as if it still applied.
+ *
+ * Known narrow gap, not fixed here: the provenance purge below matches on the string prefix
+ * `tasks.<name>.`, so a task literally named with a dot (TOML permits a quoted key like
+ * `[tasks."a.b"]`) can have its provenance cross-purged by an override of a same-prefixed task —
+ * overriding `a` would also purge `tasks.a.b.*`, which is really task `"a.b"`'s own provenance.
+ * Task names are unrestricted strings and this is not rejected anywhere. Left as a ledger line
+ * rather than fixed: no shipped example or test uses a dotted task name, a real fix needs a
+ * proper key-path parser instead of prefix matching, and the failure mode is `wtm explain`
+ * showing stale provenance for an unrelated task, not a wrong task definition — cost if wrong is
+ * a confusing `explain` output, not a misconfigured runtime.
  */
 export function applyTaskOverrides(resolved: ResolvedConfig<WtmConfig>, overrides: Record<string, TaskConfig>): ResolvedConfig<WtmConfig> {
   const names = Object.keys(overrides);
