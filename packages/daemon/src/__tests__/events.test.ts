@@ -157,6 +157,27 @@ describe('lifecycle event dispatch', () => {
     expect(harness.errors).toHaveLength(1);
   });
 
+  it('withdraws its announcement when a resource the event depends on could not be created', async () => {
+    // `prepareRuntimeResources` never throws for a resource that failed to materialize (a
+    // missing source, here) -- it reports `degraded` and returns normally. Before this fix, that
+    // left the dispatch's own try/catch with nothing to catch, so the event fired (and its task
+    // ran) exactly as if the resource had been there, contradicting the documented contract that
+    // a resource that could not be created withdraws the announcement.
+    const harness = createHarness({
+      tasks: { 'deps.install': { run: ['make', 'deps'], cwd: '/projects/demo' } },
+      events: { 'worktree.created': { tasks: ['deps.install'] } },
+      resources: { env: { policy: 'copy', source: '.env.example', path: '.env' } },
+    });
+
+    const result = await harness.dispatcher.dispatch({ event: 'worktree.created', worktree });
+
+    expect(result.announced).toBe(false);
+    expect(harness.claims).toEqual([]);
+    expect(harness.started).toEqual([]);
+    expect(harness.errors).toHaveLength(1);
+    expect((harness.errors[0] as Error).message).toContain('Resource "env" could not be created');
+  });
+
   it('keeps its announcement when the event ran and the task itself failed', async () => {
     const harness = createHarness(installTask, { failStart: true });
 
@@ -274,6 +295,20 @@ describe('lifecycle event dispatch', () => {
 
     expect(harness.claims).toContain('worktree:worktree-1:worktree.ready');
     expect(harness.allocations.slice(0, 2)).toEqual([false, true]);
+  });
+
+  it('does not announce an eager worktree as ready when its resources could not be created', async () => {
+    const harness = createHarness({
+      prepare: { mode: 'eager' },
+      tasks: {},
+      resources: { env: { policy: 'copy', source: '.env.example', path: '.env' } },
+    });
+
+    await harness.dispatcher.prepareDiscovered(worktree);
+
+    expect(harness.claims).not.toContain('worktree:worktree-1:worktree.ready');
+    expect(harness.errors).toHaveLength(1);
+    expect((harness.errors[0] as Error).message).toContain('Resource "env" could not be created');
   });
 });
 
