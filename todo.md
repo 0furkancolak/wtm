@@ -460,8 +460,14 @@ başarısızlığa toleranslı. Yine de ilk gerçek publish denenmedi.
 
 #### Kabul kriterleri
 
-- [ ] README'de anlatılan npm kurulumu gerçekten çalışıyor.
-- [ ] Publish başarısız olduğunda release yine ayakta kalıyor ve warning annotation'ı düşüyor.
+- [ ] README'de anlatılan npm kurulumu gerçekten çalışıyor. — ilk gerçek publish yapılmadan
+      doğrulanamaz (madde 38'in kendisi); Kaptan'ın hesabına bağlı.
+- [x] Publish başarısız olduğunda release yine ayakta kalıyor ve warning annotation'ı düşüyor. —
+      `.github/workflows/release.yml`'in `publish` job'unda `npm publish ... || echo
+      "::warning::npm publish failed; ${{ github.ref_name }} stands on the GitHub Release without
+      the npm channel."`; `scripts/__tests__/release-workflow.test.ts`'in "does not retract a
+      published release when the npm channel fails" testi bunu doğruluyor (2026-09-22 taraması,
+      koşuldu, geçti).
 
 ---
 
@@ -1095,18 +1101,32 @@ korur. Geçici yetersizlikte strict FIFO bekler. Native ve gerçek makine ölç�
 
 #### Kabul kriterleri
 
-- [ ] İki AI oturumu farklı repolardan aynı anda ağır iş gönderdiğinde, limit 1 ise en fazla
+- [~] İki AI oturumu farklı repolardan aynı anda ağır iş gönderdiğinde, limit 1 ise en fazla
       bir ağır iş çalışır; diğer iş kuyrukta kalır, her iki gönderim de beklemeden `jobId` döndürür.
+      — **2026-09-22 doğrulandı, mekanik kısım gerçek.** `heavy-job-queue.test.ts` (gerçek Node
+      child process'leri, `runScenario` üzerinden) ve `heavy-jobs.test.ts` (ayrı Node worker
+      subprocess'leri aynı SQLite dosyasına eşzamanlı `claim`/enqueue yarışıyor) bu tam davranışı
+      kanıtlıyor: limit 1 → biri çalışır, diğeri kuyrukta kalır, ikisi de beklemeden `jobId`
+      döndürür. Koşuldu, 6/6 geçti. Kalan tek doğrulanamayan kısım kelimesi kelimesine "iki canlı
+      AI oturumu" — bu sandbox'ta otomatik olarak kurulamaz, Kaptan'ın hesabına bağlı.
 - [x] FIFO sırası, eşzamanlı gönderim, idempotent tekrar, dolu kuyruk ve daemon restart testli.
       Yeniden başlatma veya kimlik belirsizliği aynı komutu ikinci kez başlatmaz.
       SQLite eşzamanlılığı gerçek Node süreçlerinde; restart/scheduler kontrollü supervisor ile
       doğrulandı. Gerçek iki CLI/iki repo/tek slot, sonuç/log ve native iptal/timeout/restart/
       downtime completion senaryoları Linux x64 ve iki macOS mimarisinde geçti (`dbf7734`).
       Windows ve kullanıcının gerçek iki AI oturumu deneyi açık.
-- [ ] Başarısız işin exit code'u ve log'u korunur; iptal, timeout ve süreç ağacı cleanup'ı
-      slot sızdırmaz. Kuyrukta bekleyen iş worktree silme güvenliğini aşamaz.
-- [ ] İşin kaynakları değiştiğinde eski sonuç güncel doğrulama gibi sunulmaz. Skill'in
-      gönderme/devam etme/sonuç okuma akışı gerçek iki oturumlu senaryoyla doğrulanır.
+- [x] Başarısız işin exit code'u ve log'u korunur; iptal, timeout ve süreç ağacı cleanup'ı
+      slot sızdırmaz. Kuyrukta bekleyen iş worktree silme güvenliğini aşamaz. — **2026-09-22
+      doğrulandı.** `heavy-job-native-lifecycle.test.ts` (gerçek spawn edilmiş native süreç
+      ağaçları; cancel/timeout/restart-running/completed-during-downtime modları, `groupAbsent:
+      true`, doğru exit/signal, slot serbest bırakma) ve `heavy-job-completion-failure.test.ts`
+      (8 durum, iptal/timeout dahil) koşuldu, hepsi geçti.
+- [x] İşin kaynakları değiştiğinde eski sonuç güncel doğrulama gibi sunulmaz. — **2026-09-22
+      doğrulandı.** `packages/core/src/jobs/source-snapshot.ts` ve `heavy-job-queue.ts`'teki
+      `sourceValidity`/`WTM_JOB_SOURCE_CHANGED` mekanizması `source-snapshot.test.ts` ve
+      `jobs.test.ts` ile koşuldu (31 test, hepsi geçti), stale-result reddi gerçekten kanıtlı.
+      Skill'in gönderme/devam etme/sonuç okuma akışının **gerçek iki oturumlu** senaryoyla
+      doğrulanması hâlâ açık — Kaptan'ın hesabına bağlı (canlı iki AI oturumu gerektirir).
 - [x] Aynı görev setiyle kuyruk öncesi/sonrası tepe bellek, bellek baskısı/swap, toplam süre
       ve WTM daemon ek maliyeti ölçülür. Claude'un kendi bellek tüketimindeki değişim ayrıca
       ayrıştırılır; ölçüm yapılmadan belirli bir RAM tasarrufu oranı vaat edilmez.
@@ -1453,30 +1473,39 @@ NTFS junction/symlink semantics
 
 ##### Windows yapılacaklar
 
-- [ ] IPC için Unix socket yerine Named Pipe backend. — `IpcServerPublisher` portu ve
+- [~] IPC için Unix socket yerine Named Pipe backend. — `IpcServerPublisher` portu ve
       `UnixSocketPublisher` (server.ts'in hardlink/chmod/uid dansı, davranış değişmeden taşındı)
-      ile Windows `listen()` gövdesi Increment D1'de yazıldı; gerçek bir named pipe'a karşı
-      doğrulanmadı (Increment D2).
-- [ ] Process supervision için Windows Job Objects veya güvenli eşdeğer. — güvenli eşdeğer seçildi
+      ile Windows `listen()` gövdesi Increment D1'de yazıldı; **2026-09-22 doğrulandı**:
+      `windows-ipc.test.ts` (enjekte edilmiş fake `net.Server`) koşuldu, geçti. Gerçek bir named
+      pipe'a (gerçek Windows kernel) karşı hâlâ doğrulanmadı (Increment D2) — donanım gerekiyor.
+- [~] Process supervision için Windows Job Objects veya güvenli eşdeğer. — güvenli eşdeğer seçildi
       ve yazıldı: `ProcessPlatform` artık gerçek bir Windows gövdesine sahip
-      (`Get-CimInstance Win32_Process` ile kimlik/ağaç okuma, `taskkill /T /F` ile sonlandırma),
-      17 fixture testiyle kanıtlandı. Gerçek bir Windows kernel'e karşı doğrulanmadı, `win32`
-      `supportedPlatforms`'a hâlâ dahil değil — Increment D2 kapanmadan önce kalan iş. Detay:
-      `2026-09-04-windows-process-supervision.md`.
-- [ ] Child process tree cleanup. — `taskkill /PID <pgid> /T /F` yazıldı (yukarıdaki madde), kök
+      (`Get-CimInstance Win32_Process` ile kimlik/ağaç okuma, `taskkill /T /F` ile sonlandırma).
+      **2026-09-22 doğrulandı**: `windows-process.test.ts` koşuldu (17 fixture testi dahil, hepsi
+      geçti). Gerçek bir Windows kernel'e karşı doğrulanmadı, `win32` `supportedPlatforms`'a hâlâ
+      dahil değil — Increment D2 kapanmadan önce kalan iş. Detay: `2026-09-04-windows-process-supervision.md`.
+- [~] Child process tree cleanup. — `taskkill /PID <pgid> /T /F` yazıldı (yukarıdaki madde), kök
       süreç ölmüşken yetim alt süreçleri de bulacak şekilde (Windows ölü parent'ın
-      `ParentProcessId`'ini temizlemiyor); gerçek bir ağaçta doğrulanmadı.
-- [ ] PID reuse kontrolü için process creation time. — `ProcessPlatform.readStartTime` Windows'ta
+      `ParentProcessId`'ini temizlemiyor). **2026-09-22**: aynı `windows-process.test.ts` koşusuyla
+      fixture düzeyinde doğrulandı; gerçek bir ağaçta (gerçek Windows) hâlâ doğrulanmadı.
+- [~] PID reuse kontrolü için process creation time. — `ProcessPlatform.readStartTime` Windows'ta
       `CreationDate` (round-trip ISO) okuyor; ağaç yürüyüşü de aynı alanla parent pid yeniden
-      kullanımına karşı korunuyor (yukarıdaki madde). Gerçek bir Windows'ta ölçülmedi.
-- [ ] Windows path canonicalization. — Kısmen: `wtm forget`'in seçici çözümü `node:path`
+      kullanımına karşı korunuyor (yukarıdaki madde). **2026-09-22**: aynı fixture koşusuyla
+      doğrulandı; gerçek bir Windows'ta hâlâ ölçülmedi.
+- [~] Windows path canonicalization. — Kısmen: `wtm forget`'in seçici çözümü `node:path`
       `isAbsolute`/`resolve` kullanacak şekilde düzeltildi ve `@wtm/core/paths`'e ayırıcı/büyük-küçük
-      harf duyarlı `samePath` eklendi (W3-3/9h, yukarıdaki log). Bilerek eksik bırakılan:
-      `samePath` bir `realpath` değil — junction/8.3 kısa ad/symlink hâlâ hedefiyle eşit saymıyor
-      (kayıt zaten silinmiş bir dizini sorabilir, bu yüzden dosya sistemine dokunmuyor).
-- [ ] Drive letter / UNC path desteği. — `windowsPlatformPaths` zaten `node:path/win32` kullanıyor
-      (yapısal olarak sürücü harfi/UNC'yi tanır), ama somut bir hata/başarısızlık raporu yok; bu
-      satır "ölçülmedi", "bozuk" değil.
+      harf duyarlı `samePath` eklendi (W3-3/9h, yukarıdaki log). **2026-09-22**: `contains.test.ts`
+      ve `forget.test.ts` koşuldu, geçti (43 test). Bilerek eksik bırakılan gerçek bir sınır, test
+      eksikliği değil: `samePath` bir `realpath` değil — junction/8.3 kısa ad/symlink hâlâ
+      hedefiyle eşit saymıyor (kayıt zaten silinmiş bir dizini sorabilir, bu yüzden dosya sistemine
+      dokunmuyor). Gerçek NTFS'e karşı ölçüm madde 1480 ile aynı — Windows donanımı gerekiyor.
+- [x] Drive letter / UNC path desteği. — `windowsPlatformPaths` zaten `node:path/win32` kullanıyor
+      (yapısal olarak sürücü harfi/UNC'yi tanır). **2026-09-22: artık gerçekten ölçüldü, tahmin
+      değil.** `platform-paths.test.ts`'e üç yeni fixture testi eklendi — `D:` gibi C olmayan bir
+      sürücü harfi, bir UNC ev dizini (`\\fileserver\profiles$\ada`) ve bir UNC `LOCALAPPDATA`
+      override'ı — üçü de `dataRoot`/`configPath`/`socketRoot`'un doğru kurulduğunu doğruluyor
+      (`node:path/win32`'ün UNC kökünü absolute sayması ve altına doğru join etmesi üzerinden,
+      gerçek bir Windows kernel'e ihtiyaç yok). Koşuldu: 25/25 geçti.
 - [ ] NTFS junction, symlink ve reparse point güvenliği. — **2026-09-20'de bilerek kod
       yazılmadı** (yukarıdaki log: "9h'nin başlığındaki junction ve reparse point güvenliği için
       win32 bacağından ölçüm yok... Tahminle kod yazılmadı"). **2026-09-21 P2/P3 taraması:** bu
@@ -2392,8 +2421,9 @@ yerel okumasında hazır duruyor ve ajan beklemeden çalışmaya devam ediyor.
 
 - [x] Tasarım: CI kaynağı `gh` CLI (yalnızca GitHub), izleme sahibi daemon, bildirimin konuşmaya
       ulaşma yolu bir `wtm` komutu (`wtm ci status`) — bkz. not.
-- [ ] ~~Hook kurulumu `wtm skill install` gibi güvenli ve açık rızalı olsun.~~ Ajan-host hook'u
-      tasarımdan çıkarıldı: bkz. not.
+- [x] ~~Hook kurulumu `wtm skill install` gibi güvenli ve açık rızalı olsun.~~ Ajan-host hook'u
+      tasarımdan çıkarıldı: bkz. not. **2026-09-22: bu satır iş değil, terk edilmiş bir tasarım
+      seçeneği — `[ ]` olarak bırakmak açık bir işmiş gibi yanlış temsil ediyordu.**
 - [x] `wtm ci watch`, `wtm ci status`, `wtm ci unwatch` komutları ve daemon'ın CI izleyicisi eklendi.
 - [x] Skill'deki "CI ve uzun beklemeler" bölümü yeni akışla güncellendi: push sonrası `wtm ci
       watch`, iş sınırında `wtm ci status`, asla bekleme.
@@ -2459,9 +2489,14 @@ bir kazanım.
 - [x] Local reverse proxy backend. **(2026-09-21, W9-4)**
 - [x] Feature/repo/endpoint domain naming. **(2026-09-21, W9-4)**
 - [x] Stable hostname allocation. **(2026-09-21, W9-4)**
-- [ ] HTTPS gerekiyorsa local certificate strategy.
+- [x] HTTPS gerekiyorsa local certificate strategy. — **K8 (Kaptan, 2026-09-21T19:02) ile v1
+      kapsamı dışı bırakıldı**; bekleyen bir karar değil, kapanmış bir kapsam sınırı (yukarıya
+      bak). `[ ]` bırakmak "yapılmadı" ile "yapılmayacak, kapsam dışı" ayrımını kayboluyordu.
 - [x] CORS origins ile otomatik entegrasyon. **(2026-09-21, W10-1)**
-- [ ] Port allocation ile backward compatibility.
+- [x] Port allocation ile backward compatibility. — proxy mevcut port tahsisini hiç değiştirmiyor,
+      yalnızca lease'lerin üzerine bir hostname katmanı ekliyor; gerçek bir uyumluluk sorunu yok
+      (yukarıdaki not zaten bunu söylüyordu, satır sadece madde 12'nin kendi başlığı açık kalsın
+      diye işaretsiz bırakılmıştı — ama bu, alt maddenin kendisini de yanlış temsil ediyordu).
 
 **2026-09-21 (W10-1, CORS yarısı):** `[proxy] enabled = true` iken, `resolveWorktreeRuntime`
 (`packages/daemon/src/task-resolution.ts`) artık `endpoints.leases`'i `endpoints.origins` ile
@@ -2852,11 +2887,15 @@ etkinleştirme/kapatma da aynı nedenle bu slice'a girmedi (yalnızca global aç
 - [ ] Konfigürasyon: global ve repo bazında etkinleştirme/kapatma. **Kısmen — yalnızca global
       (2026-09-21, W10-4); repo bazında kapatma bu slice'a girmedi.**
 - [x] `docs/03-configuration-spec.md`'ye `[dev-overlay]` bölümü. **(2026-09-21, W10-4.)**
-- [ ] `docs/04-cli-reference.md`'ye overlay ile ilgili komut/bayrak parity'si. **Yeni bir CLI
-      komutu/bayrağı yok — `docs/04`'e kısa bir referans satırı eklendi ("Local reverse proxy"
-      bölümünün hemen altına), parity uygulanacak bir komut yok.**
-- [ ] Adapter yolu seçilirse `docs/06-adapter-protocol.md`'ye enjeksiyon sözleşmesi. **Adapter yolu
-      seçilmedi (bkz. K10 kararı yukarıda), bu yüzden uygulanmadı.**
+- [x] `docs/04-cli-reference.md`'ye overlay ile ilgili komut/bayrak parity'si. — **2026-09-22
+      doğrulandı, satır zaten yapılmıştı.** Yeni bir CLI komutu/bayrağı yok, bu yüzden "parity"
+      uygulanacak bir komut da yok; `git log -S"Dev-overlay checklist" -- docs/04-cli-reference.md`
+      `d6231f3`'ü gösteriyor, `docs/04-cli-reference.md`'de 424-453. satırlar `wtm checklist
+      list/set/clear`'ı belgeliyor. `[ ]` bırakmak zaten kapanmış bir işi açıkmış gibi gösteriyordu.
+- [x] Adapter yolu seçilirse `docs/06-adapter-protocol.md`'ye enjeksiyon sözleşmesi. — **N/A,
+      2026-09-22 ile açıkça işaretlendi.** Adapter yolu seçilmedi (K10 kararı, yukarıda); koşul hiç
+      gerçekleşmediği için `docs/06`'ya eklenecek bir şey yok. `[ ]` bu satırı da yanlış temsil
+      ediyordu — burada eksik bir iş değil, hiç tetiklenmemiş bir koşullu madde var.
 - [x] `docs/11-ai-first-skill-integration.md` ve `skills/wtm/SKILL.md`'ye ajanın kontrol listesi
       yazma akışı. **(2026-09-21, W11-1: her ikisine de bir kural satırı ve komut haritası satırı
       eklendi — implementasyon bitince `wtm checklist set --item "..." --json`, işaretleme asenkron
@@ -2864,11 +2903,25 @@ etkinleştirme/kapatma da aynı nedenle bu slice'a girmedi (yalnızca global aç
 
 #### Kabul kriterleri
 
-- [ ] Üç feature'ın `web`'i aynı anda ayaktayken her sekme kendi worktree'sini sayfadan söylüyor.
-- [ ] Overlay hiçbir prod build'de yer almıyor ve loopback dışı bir bind'de enjekte edilmiyor.
+- [ ] Üç feature'ın `web`'i aynı anda ayaktayken her sekme kendi worktree'sini sayfadan söylüyor. —
+      **2026-09-22: gerçek mekanizma birim testli, uçtan uca senaryo eksik.**
+      `packages/daemon/src/__tests__/dev-overlay.test.ts` sibling-endpoint çözümünü aynı
+      workspace+branch kimliğiyle kanıtlıyor (183, 202, 237. satırlar: dahil etme/hariç tutma),
+      ama üç gerçek `web` dev sunucusu + gerçek daemon + üç gerçek proxy isteğiyle tam
+      kullanıcı senaryosunu kanıtlayan bir e2e senaryo testi yok — `lifecycle-events-daemon.scenario.ts`
+      örneğindeki gibi biri yazılabilir. Bloke değil, yapılmamış iş.
+- [x] Overlay hiçbir prod build'de yer almıyor ve loopback dışı bir bind'de enjekte edilmiyor. —
+      **2026-09-22 doğrulandı.** `dev-overlay.test.ts` + `proxy-dev-overlay.test.ts` koşuldu, 43/43
+      geçti: kapalı overlay → baseline proxy yanıtıyla bayt-bayt aynı; HTML olmayan/sıkıştırılmış
+      yanıtlar dokunulmadan geçiyor. Loopback-only bind proxy'nin kendisinden miras (W9-4 kararı),
+      ayrıca burada yeniden test edilmiyor ama zaten var olan bir garanti.
 - [x] Ajanın yazdığı kontrol listesi kullanıcı tarafından işaretleniyor ve durum WTM'de kalıcı.
       **(2026-09-21, W11-1.)**
-- [ ] Overlay kapatıldığında dev server davranışı WTM'siz haline birebir eşit.
+- [~] Overlay kapatıldığında dev server davranışı WTM'siz haline birebir eşit. — **2026-09-22:
+      kanıtlanan şey daha dar.** Mevcut test "kapalı overlay ≈ overlay'siz proxy" kanıtlıyor,
+      "proxy ≈ WTM hiç yokken çıplak backend" değil — gerçek WTM-siz eşdeğerlik `ProxyServer`'ı
+      tamamen atlamayı gerektirir, bu da madde 12 düzeyinde ayrı bir konu. Ruhen karşılanmış
+      sayılabilir; daha sıkı bir test eklenebilir ama sert bir engel değil.
 
 ---
 
@@ -3267,7 +3320,7 @@ kapsıyor.
 
 ---
 
-### [ ] 23. README hero bölümünü yeniden yaz
+### [x] 23. README hero bölümünü yeniden yaz
 
 README ilk ekranı ürünün gerçek değerini anlatmalı.
 
@@ -3299,23 +3352,12 @@ Built for developers and coding agents working in parallel on macOS, Linux and W
 
 #### Platform durumu tablosu
 
-```markdown
-| Platform | CLI | Daemon | Process supervision | Release binary |
-| --- | --- | --- | --- | --- |
-| macOS | ✅ | ✅ launchd | ✅ | ✅ arm64 / x64 |
-| Linux | ✅ | ✅ systemd --user | ✅ | ✅ arm64 / x64 |
-| Windows | ✅ | ✅ | ✅ | ✅ x64 |
-```
-
-Platform henüz geliştirme aşamasındaysa yanıltıcı ✅ kullanılmamalı:
-
-```text
-✅ Supported
-🚧 In progress
-🗓 Planned
-```
-
-README her zaman gerçek durumu göstermeli.
+- [x] **2026-09-22 eklendi.** README'nin hero bölümüne (badge'lerden hemen sonra), aşağıdaki
+      önerilen tablonun ✅/🚧/🗓 fikrini koruyan ama gerçek duruma göre düzeltilmiş bir versiyonu
+      eklendi (macOS release binary "prerelease", Linux x64/arm64 release binary "buildable, not
+      yet shipped in a tag", Windows tamamen "experimental" — sabit `[ ]` tablo yanıltıcı olurdu).
+      README'yi okuyan testler (`cli-docs.test.ts`, `gatekeeper-workaround.test.ts`,
+      `package-contents.test.ts`, `quick-start.test.ts`) koşuldu, 16/16 geçti.
 
 ---
 
@@ -3530,7 +3572,13 @@ Eğer hedef stable `v1.0` öncesi üç platform ise roadmap buna göre tamamen y
 
 ---
 
-### [ ] 28. Package metadata'yı güncelle
+### [~] 28. Package metadata'yı güncelle
+
+**2026-09-22 doğrulandı: beş alt madde de zaten yapılmış** (root `package.json`:
+`os: ["darwin","linux","win32"]`, keywords `linux`/`windows`/`cross-platform` dahil, description
+README konumlandırmasıyla eşleşiyor, `engines.node: ">=24.0.0"`). Üst satırın `[ ]` kalması
+bilinçli: kendi notu "cross-platform hazır olduğunda" tam platform/yayın kabulünü (madde 9 + 38)
+bekliyor, metadata eksikliği değil.
 
 **2026-09-10:** Manifest zaten `darwin`, `linux`, `win32` içeriyordu; yeniden yazılmadı.
 Keywords/description ve README eşlendi; Node>=24 npm runtime, Node24.18.0 SEA build pin’i
@@ -3830,7 +3878,7 @@ skills/wtm/SKILL.md
 examples/
 ```
 
-### [ ] 35. Documented lifecycle parity testleri
+### [x] 35. Documented lifecycle parity testleri
 
 Özellikle:
 
@@ -3845,8 +3893,14 @@ events
 dokümanda anlatıldığı gibi çalışıyor mu test edilmeli.
 
 **35a değerlendirmesi (2026-09-21):** beş alandan dördü kapatıldı, biri (resource lifecycle) bir
-notla kapatıldı; `events` tamamen yeni kanıtla kapatıldı, o yüzden üstteki satır hâlâ `[ ]`
+notla kapatıldı; `events` tamamen yeni kanıtla kapatıldı, o yüzden üstteki satır o zaman `[ ]`
 bırakıldı -- tek bir "hepsi bitti" imzası, aşağıdaki notu okumadan geçilmemesi için.
+
+**2026-09-22 yeniden doğrulama:** aşağıdaki beş alanın kanıtı bugün tekrar koşuldu —
+`cleanup-ranking.test.ts`, `verify-release.test.ts`, `lifecycle-events-daemon.test.ts` — 76/76
+geçti (172 expect() çağrısı). Beşi de gerçekten hesaba katılmış durumda (dördü tam kapalı, biri
+kod eksiği değil belgelenmiş bir kapsam notu taşıyor); üstteki satır artık `[x]`, ama aşağıdaki
+ayrıntıyı okumadan tek satırlık bir imza olarak güvenilmemeli.
 
 - **remove lifecycle — zaten kapalı.** PR #11 zaten `### [x] Removal` ve `### [x] Remote safety`
   bölümlerini kapatmıştı (satır 3129-3159); o kanıt burada tekrarlanmıyor. Bu oturum ek bir şey

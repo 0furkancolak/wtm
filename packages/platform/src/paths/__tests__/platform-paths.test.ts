@@ -174,6 +174,32 @@ describe('Windows paths', () => {
 
     expect(platformPathsFor('win32', input)).toEqual(windowsPlatformPaths(input));
   });
+
+  test('resolves under a drive letter other than C:', () => {
+    const paths = windowsPlatformPaths({ home: 'D:\\Users\\ada', env: {} });
+
+    expect(paths.dataRoot).toBe('D:\\Users\\ada\\AppData\\Local\\WTM');
+  });
+
+  test('resolves a UNC home path (a roaming profile on a file server)', () => {
+    // `node:path/win32` treats `\\server\share\...` as absolute and joins under it like any other
+    // root; nothing here is WTM-specific, but todo.md item 9 flagged UNC as "not measured" and
+    // this is the measurement — no real Windows host is needed to exercise `path.win32.join`.
+    const paths = windowsPlatformPaths({ home: '\\\\fileserver\\profiles$\\ada', env: {} });
+
+    expect(paths.dataRoot).toBe('\\\\fileserver\\profiles$\\ada\\AppData\\Local\\WTM');
+    expect(paths.configPath).toBe('\\\\fileserver\\profiles$\\ada\\AppData\\Local\\WTM\\config.toml');
+    expect(paths.socketRoot.startsWith('\\\\.\\pipe\\wtm-')).toBe(true);
+  });
+
+  test('honours a UNC LOCALAPPDATA override', () => {
+    const paths = windowsPlatformPaths({
+      home: windowsHome,
+      env: { LOCALAPPDATA: '\\\\fileserver\\profiles$\\ada\\Local' },
+    });
+
+    expect(paths.dataRoot).toBe('\\\\fileserver\\profiles$\\ada\\Local\\WTM');
+  });
 });
 
 describe('both platforms', () => {
