@@ -120,7 +120,13 @@ export class CiWatcher {
     // probe: nothing new is started, so there is nothing for `gh` to vouch for.
     const reusable = this.#options.store.latestForWorktree(registration.worktree.id);
     if (reusable !== null && reusable.state === 'pending' && reusable.headSha === args.headSha) {
-      return success(command, { watch: publicCiWatch(reusable), reused: true });
+      // A `--pr <n>` for the same commit a pending watch already follows still records it: the
+      // reused watch is returned unchanged otherwise, but a supplied PR number must not be
+      // silently dropped just because nothing new was started.
+      const watch = args.pr !== undefined && args.pr !== reusable.pr
+        ? this.#options.store.update(reusable.watchId, { now: this.#iso(now), pr: args.pr }) ?? reusable
+        : reusable;
+      return success(command, { watch: publicCiWatch(watch), reused: true });
     }
     // Corrections while planning (9): a transient or throttled answer here still accepts the
     // watch — only a missing `gh` or an unauthenticated host refuses. `unavailableRefusal`
