@@ -307,6 +307,12 @@ async function readProcessStartIdentity(
  * One process can hold two of them, taken in the same millisecond by the same PID, and matching
  * the wrong one would apply a verdict measured from one row to a different row's owner.
  */
+// Only these two `RepositoryOperation` variants have a `--resume` flag on their CLI command
+// (`packages/cli/src/main.ts`'s `create`/`remove` actions). `gc` and `repair` have no resume
+// path today, so suggesting `wtm gc --resume` is a remediation for a flag that does not exist —
+// `commander.unknownOption` rejects it outright.
+const RESUMABLE_OPERATIONS: ReadonlySet<RepositoryOperation> = new Set(['remove', 'create']);
+
 function isSameHolder(
   measured: RepositoryOperationLeaseHolder,
   observed: RepositoryOperationLeaseHolder,
@@ -355,8 +361,9 @@ function conflictFrom(
       // Resuming is only ever an offer to finish the caller's *own* half-done operation. A dead
       // `gc` row is cleared out of a `remove`'s way by `--resume`, but suggesting
       // `wtm remove --resume` for a stage `gc` wrote would be offering to continue work this
-      // command has no journal for.
-      remediation: abandoned && sameOperation
+      // command has no journal for. And the caller's own operation has to actually have a
+      // `--resume` flag to resume with — `gc`/`repair` don't, so there is nothing to suggest.
+      remediation: abandoned && sameOperation && RESUMABLE_OPERATIONS.has(key.operation)
         ? [{ kind: 'command-suggestion', argv: ['wtm', key.operation, '--resume'] }]
         : [],
     },
