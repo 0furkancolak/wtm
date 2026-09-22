@@ -377,6 +377,14 @@ function unavailableRefusal(failure: Extract<CiProviderFailure, { kind: 'unavail
       remediation: [{ kind: 'command-suggestion', argv: ['gh', 'auth', 'login', '--hostname', repository.host] }],
     };
   }
+  if (failure.reason === 'forbidden') {
+    return {
+      code: 'WTM_CI_UNAVAILABLE',
+      message: `The GitHub CLI is logged in to ${repository.host} but does not have permission to read ${repository.slug}'s CI data (HTTP 403).`,
+      severity: 'error',
+      context: { provider: 'github', host: repository.host, repo: repository.slug, detail: failure.detail },
+    };
+  }
   return null;
 }
 

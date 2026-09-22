@@ -10,7 +10,7 @@ export type PrLookup = Omit<PrSummary, 'checks'>;
  * `throttled` and `transient` only delay the next poll.
  */
 export type CiProviderFailure =
-  | { kind: 'unavailable'; reason: 'missing' | 'unauthenticated' | 'not-found'; detail: string }
+  | { kind: 'unavailable'; reason: 'missing' | 'unauthenticated' | 'not-found' | 'forbidden'; detail: string }
   | { kind: 'throttled'; detail: string }
   | { kind: 'transient'; detail: string };
 

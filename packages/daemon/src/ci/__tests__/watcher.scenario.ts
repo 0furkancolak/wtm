@@ -293,16 +293,19 @@ async function refusals() {
   const unsupportedRemote = setup({ runs: [] }, 'https://gitlab.com/g/s/p.git');
   const missingGh = setup({ runs: [], available: { ok: false, failure: { kind: 'unavailable', reason: 'missing', detail: 'no gh' } } });
   const unauthenticated = setup({ runs: [], available: { ok: false, failure: { kind: 'unavailable', reason: 'unauthenticated', detail: 'login' } } });
+  const forbidden = setup({ runs: [], available: { ok: false, failure: { kind: 'unavailable', reason: 'forbidden', detail: 'HTTP 403: Resource not accessible by integration' } } });
   try {
     return {
       unsupportedRemote: await unsupportedRemote.watch(),
       missingGh: await missingGh.watch(),
       unauthenticated: await unauthenticated.watch(),
+      forbidden: await forbidden.watch(),
     };
   } finally {
     unsupportedRemote.store.close();
     missingGh.store.close();
     unauthenticated.store.close();
+    forbidden.store.close();
   }
 }
 
