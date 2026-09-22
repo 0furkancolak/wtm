@@ -8,11 +8,16 @@ export interface CiRepository {
 
 const segment = /^[A-Za-z0-9_.-]+$/;
 
+// A DNS hostname (dotted labels) or a bracketed IPv6 literal, the two shapes `new URL(...).hostname`
+// and the scp-style `user@host:` syntax can produce. `owner`/`name` are allowlisted the same way;
+// `host` must be too, since it flows into `gh`'s `--hostname`/`--repo` argv unvalidated otherwise.
+const hostPattern = /^\[[0-9A-Fa-f:.]+\]$|^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+
 function repository(host: string, path: string): CiRepository | null {
   const parts = path.replace(/^\/+|\/+$/g, '').replace(/\.git$/, '').split('/');
   if (parts.length !== 2) return null;
   const [owner, name] = parts as [string, string];
-  if (!segment.test(owner) || !segment.test(name) || host.length === 0) return null;
+  if (!segment.test(owner) || !segment.test(name) || !hostPattern.test(host)) return null;
   const lower = host.toLowerCase();
   return { host: lower, owner, name, slug: `${lower}/${owner}/${name}` };
 }
