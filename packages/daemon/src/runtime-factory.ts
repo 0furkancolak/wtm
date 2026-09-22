@@ -187,7 +187,16 @@ export function resolveProductionRuntimePaths(
       ?? (options.dataRoot === undefined ? defaults.socketPath
         : join(platformRuntime.id === 'win32' ? windowsNamedPipeRootFor(dataRoot) : dataRoot, daemonSocketFileName))),
     logRoot: resolve(options.logRoot ?? defaults.logRoot),
-    globalConfigPath: resolve(options.globalConfigPath ?? join(dataRoot, 'config.toml')),
+    // Same reasoning as `socketPath` just above: the untouched default reads the platform's own
+    // documented config location (`docs/03`'s XDG/macOS/Windows paths), which is not generally
+    // `dataRoot`-relative (Linux keeps them in different directories entirely). Only a caller who
+    // explicitly relocated `dataRoot` gets `globalConfigPath` moved with it, as isolation
+    // convenience — this was the one path here that fell back to `join(dataRoot, ...)`
+    // unconditionally, which meant a real `wtm daemon serve` (no `dataRoot` override, the actual
+    // production call) silently read global config from the wrong directory and never enforced
+    // `[budgets]`/`[jobs]`/`[proxy]` from the documented `~/.config/wtm/config.toml`.
+    globalConfigPath: resolve(options.globalConfigPath
+      ?? (options.dataRoot === undefined ? defaults.globalConfigPath : join(dataRoot, 'config.toml'))),
   };
 }
 
