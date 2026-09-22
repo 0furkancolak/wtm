@@ -320,6 +320,21 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/cli/src/tui/__tests__/logs-view.test.ts packages/cli/src/tui/__tests__/render.test.ts packages/cli/src/__tests__/main.test.ts
   ```
 
+### #76 — feat(core): record decision K12, drop the dead resources table
+- Commit: `00fd59d` · Unit: K12 kararı + ölü `resources` tablosu temizliği (migration 018).
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası, main'in kendi son push'u `#75`/`b9434aa` de aynı şekilde
+  düşüyor). Yalnızca yerel gate ile doğrulandı (275 dosya, bilinen 2 uid-0 hatası hariç).
+- Bu PR'a özgü ayrı bir kanıt boşluğu: migration 018'in gerçek bir SEA (single-executable
+  application) binary'sinde embed edilip edilmediği yalnızca `scripts/build-sea.ts`'in kendi
+  tutarlılık kontrolüyle (embedded asset sayısı == `migrationFileNames.length`) doğrulandı, gerçek
+  bir `binary:verify` koşusuyla değil — o CONTRIBUTING.md'nin release gate listesinde, bu PR'ın
+  kapsamında değil.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/core/src/state/__tests__/assets.test.ts packages/core/src/state/__tests__/sqlite-store.test.ts packages/cli/src/__tests__/main.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
