@@ -2590,7 +2590,7 @@ alan bir task da askıya alınır. Doküman ve mesajlar bundan fazlasını iddia
 
 ---
 
-### [ ] 15. TUI / Menu Bar
+### [x] 15. TUI / Menu Bar
 
 CLI olgunlaştıktan sonra.
 
@@ -2699,6 +2699,49 @@ Dokunulan dosyalar: `packages/cli/src/tui/resources-view.ts` (yeni),
 
 Kasıtlı olarak dışarıda bırakılan: log tail görünümü (birim 3) — madde metninin kendisinin ayırdığı
 gibi, ayrı bir birim.
+
+**2026-09-22 (birim 3/3, log tail görünümü):** Teslim edildi, ve madde 15'in kendisi tamamlandı.
+
+Bu birimin kendi kısıtı, `ps` kısıtından daha az net: `wtm logs`'un daemon handler'ı
+(`packages/daemon/src/runtime-controller.ts`, `request.command === 'logs'`) döndürdüğü her kayıt
+için `#observeActivity` çağırıyor — `ps`'le aynı yan etki, idle-suspension'ı (madde 14) besliyor.
+`status`/`doctor`/`disk`/`gc --dry-run`'ın aksine, `logs` içeriğini okuyan yan-etkisiz bir stabil
+protokol komutu bugün yok. Ama `ps`'i arka planda sessizce pollamak gerçek kullanıcı etkileşimi
+değilken, bir log görünümünü bilerek açıp okuyan biri idle-suspension'ın tam olarak saptamaya
+çalıştığı şeye ("şu an biri bu worktree'yi gerçekten kullanıyor mu") çok daha yakın.
+
+Karar: log tail, `defaultTuiPanels`'e eklenen pasif bir panel **değil** — `l` tuşuyla girilen,
+`l` (tekrar) ya da Escape ile çıkılan ayrı bir görünüm/mod (`packages/cli/src/tui/loop.ts`'e yeni
+`mode: 'dashboard' | 'logs'` durumu). `wtm logs` (`readLogs`) yalnızca `'logs'` modu ekrandayken ve
+o mod kendi tetiklediği her refresh'te çağrılıyor — asıl dashboard'un pasif `status`/`doctor`/
+kaynak refresh döngüsünün hiçbir yerinde değil. Sonuç: dashboard'u açık bırakıp uzaklaşmak (birim
+1'in `ps` kararının önlediği senaryo) hâlâ hiçbir zaman `logs`'a dokunmuyor; yalnızca kasıtlı olarak
+log görünümüne geçen biri bu dar, savunulabilir yan etkiye maruz kalıyor.
+
+Veri toplama `wtm logs`'un zaten kullandığı aynı derleme — `runLogsCommand`
+(`packages/cli/src/commands/logs.ts`), `dependencies.runtimeClient` üzerinden, `main.ts`'teki
+`tui` komutunun `readLogs`'u da aynısını çağırıyor — ikinci bir log okuma yolu icat edilmedi.
+Log view'ın hangi worktree'yi sorgulayacağı da yeni bir seçici çözümleme mekanizması gerektirmedi:
+dashboard'un son `status` fetch'inin çözdüğü `model.worktree.path` saklanıp (`loop.ts`'te
+`lastWorktreeCwd`) log fetch'inde yeniden kullanılıyor, `[selector]`'ı ikinci kez çözmek yerine.
+
+Birden fazla görev olduğunda seçim/cycle yerine en basit okunabilir düzen seçildi: tüm görevlerin
+stdout/stderr'i art arda (stacked) gösteriliyor, her akış son N satıra (`logs-view.ts`'te
+`defaultMaxLinesPerStream = 200`) kırpılıyor — `logs`'un kendi IPC-frame bütçesi zaten toplam
+payload'ı küçük tutuyor, bu yalnızca okunabilirlik için. Yeni saf modül
+`packages/cli/src/tui/logs-view.ts`: `buildTuiLogsView()`, `wtm logs`'un zarfını `TuiLogsView`'e
+dönüştürüyor — `resources-view.ts`'le aynı kalıp. `render.ts`'e ayrı bir `renderTuiLogsFrame()`
+eklendi (mevcut `renderTuiFrame`'in panel listesine değil).
+
+Dokunulan dosyalar: `packages/cli/src/tui/logs-view.ts` (yeni),
+`packages/cli/src/tui/{render,loop}.ts`, `packages/cli/src/main.ts` (`tui` komutuna `readLogs`,
+komut açıklaması), `packages/cli/src/tui/__tests__/{logs-view.test.ts (yeni), render.test.ts}`;
+`docs/04-cli-reference.md` ("Interactive dashboard" bölümü, yeni `l` keybinding'i ve tasarım
+kararının kısa açıklaması).
+
+Madde metninin "Gösterebilecekleri" listesindeki sekiz öğe (workspace, worktrees, running tasks,
+ports, health, disk usage, cleanup candidates, logs) üç birimle birlikte tamamen karşılandı; madde
+15'in üst seviye kutucuğu bu yüzden işaretlendi.
 
 ---
 

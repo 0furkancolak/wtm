@@ -707,7 +707,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   });
 
   const tui = program.command('tui [selector]')
-    .description('Interactive terminal dashboard: worktree, running tasks, ports, health, disk usage and cleanup candidates.');
+    .description('Interactive terminal dashboard: worktree, running tasks, ports, health, disk usage, cleanup candidates and a log tail (`l`).');
   tui.option('--interval <ms>', 'refresh interval in milliseconds (default 3000, minimum 250)');
   tui.action(async (selector: string | undefined, options: { interval?: string }) => {
     const refusal = tuiNonInteractiveRefusal(process.stdout);
@@ -751,6 +751,13 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
         gcEnvelope: gcEnvelope as JsonEnvelope<GcCommandResult | null>,
       };
     };
+    // The log-tail view (unit 3) reuses `runLogsCommand` unchanged — the exact same assembly
+    // `wtm logs` itself calls, through the same `dependencies.runtimeClient` — never a second way
+    // to read log content. Unlike `readResources`, this is only ever invoked by `loop.ts` while the
+    // log view is the one on screen, never from the passive dashboard refresh: see `logs-view.ts`'s
+    // doc comment for why `logs` cannot be polled the way `status`/`doctor`/`disk`/`gc` are.
+    const readLogs = async (targetCwd: string): Promise<JsonEnvelope<unknown>> =>
+      await runLogsCommand({ cwd: targetCwd }, dependencies.runtimeClient);
     const result = await runTuiLoop({
       cwd,
       ...(selector === undefined ? {} : { selector }),
@@ -759,6 +766,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       stdout: process.stdout,
       intervalMs,
       readResources,
+      readLogs,
       ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
     });
     hooks.setExitCode?.(result.exitCode);

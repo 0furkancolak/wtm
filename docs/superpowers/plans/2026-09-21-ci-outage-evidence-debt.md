@@ -305,6 +305,21 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/cli/src/tui/__tests__/resources-view.test.ts packages/cli/src/tui/__tests__/render.test.ts packages/cli/src/__tests__/main.test.ts
   ```
 
+### #74 — feat(cli): add log tail view to wtm tui (item 15, unit 3/3)
+- Commit: `0c40ce7` · Unit: madde 15, birim 3/3 — maddenin son parçası, üst kutuyu kapatıyor.
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası). Yalnızca yerel gate ile doğrulandı (275 dosya, bilinen 2
+  uid-0 hatası hariç).
+- Bu PR'a özgü ayrı bir kanıt boşluğu: `l`/Escape ile geçilen log görünümü modu ve `wtm logs`'un
+  gerçek bir daemon'a karşı canlı log tail'i hiç gerçek bir terminalde elle doğrulanmadı — yalnızca
+  saf `logs-view.ts`/`render.ts` fonksiyonları test edildi. `wtm logs`'un `#observeActivity` yan
+  etkisi nedeniyle bu görünüm kasıtlı olarak pasif panel döngüsüne değil, yalnızca kullanıcı `l`'ye
+  basınca çalışan ayrı bir moda bağlandı (`docs/04`'te gerekçesi var).
+- Hedefli `win32_test_filter`:
+  ```
+  packages/cli/src/tui/__tests__/logs-view.test.ts packages/cli/src/tui/__tests__/render.test.ts packages/cli/src/__tests__/main.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,

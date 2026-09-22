@@ -1,15 +1,18 @@
+import type { JsonEnvelope } from '@wtm/protocol';
 import { runDoctorCommand, runStatusCommand, type DiagnosticDataSource } from '../diagnostics';
-import { defaultTuiPanels, renderTuiFatalFrame, renderTuiFrame, type TuiPanel } from './render';
+import { buildTuiLogsView, type TuiLogsView } from './logs-view';
+import { defaultTuiPanels, renderTuiFatalFrame, renderTuiFrame, renderTuiLogsFrame, type TuiPanel } from './render';
 import { buildTuiResourcesView, type TuiResourceFetch, type TuiResourcesView } from './resources-view';
 import { enterTuiTerminal } from './terminal';
 import { buildTuiViewModel } from './view-model';
 
 /**
  * The polling/refresh loop: fixed-interval timer, minimal key handling (`q`/ctrl+c to quit, `r`
- * to refresh now), terminal lifecycle on every exit path. This is the untestable glue CLAUDE.md's
- * test rules expect for real process/terminal behaviour — see `terminal.ts` — so it carries no
- * assertions of its own. `view-model.ts`, `resources-view.ts` and `render.ts` hold everything here
- * that a test can mean something for.
+ * to refresh now, `l`/Escape to switch to/from the log-tail view), terminal lifecycle on every
+ * exit path. This is the untestable glue CLAUDE.md's test rules expect for real process/terminal
+ * behaviour — see `terminal.ts` — so it carries no assertions of its own. `view-model.ts`,
+ * `resources-view.ts`, `logs-view.ts` and `render.ts` hold everything here that a test can mean
+ * something for.
  *
  * It polls only `wtm status`/`wtm doctor` (via the same `DiagnosticDataSource` `wtm status --json`
  * and `wtm doctor --json` already use), never `wtm ps`. `ps`'s daemon handler marks every worktree
@@ -17,6 +20,16 @@ import { buildTuiViewModel } from './view-model';
  * suspension (todo item 14) — a dashboard that called it every tick would defeat idle suspension
  * for as long as it stayed open. `status`'s `processes` array already answers "what is running
  * for this worktree" from the daemon's process records, with no such side effect.
+ *
+ * The loop has two modes, `'dashboard'` (default) and `'logs'` (unit 3's log-tail view), entered
+ * and left with the `l`/Escape keys handled below. Exactly one mode's frame is fetched and drawn
+ * per refresh — never both — because `wtm logs` (`readLogs`) is not read-only the way
+ * `status`/`doctor`/the resources panel are: the daemon's `logs` handler calls
+ * `RuntimeController#observeActivity` for every record it returns, the same side effect `ps` has.
+ * A dashboard silently polling `ps` in the background is not real user activity, but the log view
+ * only ever polls `logs` while it is the mode actually on screen — never as part of the passive
+ * `'dashboard'`-mode refresh cycle — so leaving the dashboard open and walking away still never
+ * touches `logs`. See `logs-view.ts`'s doc comment for the full reasoning.
  */
 
 export interface RunTuiLoopOptions {
@@ -43,6 +56,16 @@ export interface RunTuiLoopOptions {
    * regardless of this count, since that is one explicit request rather than automatic polling.
    */
   readonly resourceRefreshEveryNTicks?: number;
+  /**
+   * Fetches log content for the log-tail view (unit 3): the exact same `runLogsCommand` assembly
+   * `wtm logs` already uses, wired in by `main.ts` with `dependencies.runtimeClient`. Takes the
+   * worktree cwd to read logs for (the last resolved `status` identity path — see `refreshLogs`
+   * below) and no `taskName`, since the view shows every task's logs stacked rather than one at a
+   * time. Omitted in a test that only exercises the dashboard, in which case pressing `l` shows an
+   * "unavailable" frame instead of fetching anything. Called only while the `'logs'` mode is the
+   * one on screen — see the module doc comment above for why.
+   */
+  readonly readLogs?: (cwd: string) => Promise<JsonEnvelope<unknown>>;
 }
 
 export interface TuiLoopResult {
@@ -103,8 +126,15 @@ export async function runTuiLoop(options: RunTuiLoopOptions): Promise<TuiLoopRes
 
     let resourceTick = 0;
     let resources: TuiResourcesView | null = null;
+    // The dashboard's own `status` resolves the worktree in scope (`options.cwd`/`selector`) to a
+    // concrete path (`model.worktree.path`); the log view reuses that same resolved path rather
+    // than re-resolving a selector itself, so it stays scoped to the one worktree the dashboard is
+    // already showing. Falls back to `options.cwd` until the first dashboard fetch resolves one.
+    let lastWorktreeCwd = options.cwd;
+    let mode: 'dashboard' | 'logs' = 'dashboard';
+    let logsView: TuiLogsView | null = null;
 
-    const refresh = async (trigger: 'timer' | 'manual' = 'timer'): Promise<void> => {
+    const refreshDashboard = async (trigger: 'timer' | 'manual'): Promise<void> => {
       const input = { cwd: options.cwd, ...(options.selector === undefined ? {} : { selector: options.selector }) };
       // A manual `r` press always re-fetches; an automatic tick only does on every Nth one —
       // see `defaultResourceRefreshEveryNTicks`'s doc comment for why. `resourceTick` starts at 0,
@@ -123,6 +153,7 @@ export async function runTuiLoop(options: RunTuiLoopOptions): Promise<TuiLoopRes
         const fetchedAt = now().toISOString();
         if (resourceSnapshot !== undefined) resources = buildTuiResourcesView({ ...resourceSnapshot, fetchedAt });
         const model = buildTuiViewModel({ statusEnvelope, doctorEnvelope, fetchedAt, resources });
+        if (model.worktree !== null) lastWorktreeCwd = model.worktree.path;
         options.stdout.write(renderTuiFrame(model, size(), panels));
       } catch (error) {
         if (finished) return;
@@ -130,9 +161,44 @@ export async function runTuiLoop(options: RunTuiLoopOptions): Promise<TuiLoopRes
       }
     };
 
+    // Only ever invoked while `mode === 'logs'` — see the module doc comment for why `wtm logs`
+    // (and the activity it marks) must never run as part of the passive dashboard tick.
+    const refreshLogs = async (): Promise<void> => {
+      if (options.readLogs === undefined) {
+        options.stdout.write(renderTuiLogsFrame(logsView, size(), { available: false }));
+        return;
+      }
+      try {
+        const envelope = await options.readLogs(lastWorktreeCwd);
+        if (finished) return;
+        logsView = buildTuiLogsView(envelope, now().toISOString());
+        options.stdout.write(renderTuiLogsFrame(logsView, size()));
+      } catch (error) {
+        if (finished) return;
+        options.stdout.write(renderTuiFatalFrame(error instanceof Error ? error.message : String(error), size()));
+      }
+    };
+
+    const refresh = async (trigger: 'timer' | 'manual' = 'timer'): Promise<void> => {
+      if (mode === 'logs') await refreshLogs();
+      else await refreshDashboard(trigger);
+    };
+
     const onData = (chunk: string): void => {
       if (chunk.includes('\u0003') || chunk.includes('q') || chunk.includes('Q')) {
         finish(0);
+        return;
+      }
+      // Escape only ever leaves the log view; it has no meaning on the dashboard, where it would
+      // otherwise just be the lead byte of an arrow-key sequence this loop does not handle anyway.
+      if (chunk.includes('\u001b') && mode === 'logs') {
+        mode = 'dashboard';
+        void refresh('manual');
+        return;
+      }
+      if (chunk.includes('l') || chunk.includes('L')) {
+        mode = mode === 'logs' ? 'dashboard' : 'logs';
+        void refresh('manual');
         return;
       }
       if (chunk.includes('r') || chunk.includes('R')) void refresh('manual');
