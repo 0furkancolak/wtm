@@ -355,6 +355,71 @@ async function doctorIn(root: string) {
   })).findings;
 }
 
+describe('a broken wtm.toml', () => {
+  // Regression: `readStatus`'s own `declaredResources` used to blanket-catch every failure
+  // from resolving the runtime (including a genuinely invalid `wtm.toml`) and report an empty
+  // resources list with no error at all -- the one diagnostic command that hid a real
+  // `WTM_CONFIG_INVALID` behind a swallowed exception, unlike `explain`/`plan`/`env`/`doctor`,
+  // which all surface it.
+  function sourceForBrokenConfig(root: string) {
+    const local: WorkspaceRecord = { ...workspace, root, configPath: null };
+    const repository: RepositoryRecord = {
+      ...repositories[0] as RepositoryRecord,
+      commonGitDir: join(root, 'repo/.git'),
+      mainRoot: join(root, 'repo'),
+    };
+    const only = worktree('only', repository.id, join(root, 'repo'), 1);
+    const localStore = {
+      listWorkspaces: () => [local],
+      listRepositories: () => [repository],
+      listWorktrees: () => [only],
+      listManagedProcesses: () => [],
+      listEndpointLeases: () => [],
+    } as unknown as DaemonStateStore;
+    const source = createStateDiagnosticDataSource(localStore, {
+      cwd: join(root, 'repo'),
+      globalConfigPath: join(root, 'config.toml'),
+    });
+    const registered = { id: local.id, name: local.name, root: local.root, scope: local.scope } as const;
+    return { source, registered };
+  }
+
+  it('readStatus now propagates WTM_CONFIG_INVALID instead of reporting an empty resources list', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wtm-broken-config-'));
+    try {
+      mkdirSync(join(root, 'repo'), { recursive: true });
+      writeFileSync(join(root, 'wtm.toml'), 'not valid toml {{{');
+      const { source, registered } = sourceForBrokenConfig(root);
+
+      await expect(source.readStatus(registered)).rejects.toMatchObject({
+        code: 'WTM_CONFIG_INVALID',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('readDoctor still answers every other check, with resources reported unknown rather than aborting', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wtm-broken-config-doctor-'));
+    try {
+      mkdirSync(join(root, 'repo'), { recursive: true });
+      writeFileSync(join(root, 'wtm.toml'), 'not valid toml {{{');
+      const { source, registered } = sourceForBrokenConfig(root);
+
+      const findings = (await source.readDoctor(registered)).findings;
+
+      expect(findings.find(({ check }) => check === 'config')).toMatchObject({ status: 'error' });
+      expect(findings.find(({ check }) => check === 'resources')).toMatchObject({ status: 'unknown' });
+      // Every other check still answered -- the whole point of `doctor` is that one broken
+      // check does not take the rest down with it.
+      expect(findings.find(({ check }) => check === 'git')).toMatchObject({ status: 'pass' });
+      expect(findings).toHaveLength(doctorChecks.length);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('registration', () => {
   it('tells an unreachable daemon apart from an unregistered worktree', async () => {
     // The two states have distinct codes and distinct exit codes everywhere else in WTM. A

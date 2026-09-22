@@ -238,17 +238,18 @@ export function createStateDiagnosticDataSource(
     }
   };
 
-  const declaredResources = async (): Promise<StatusDiagnostic['resources']> => {
-    try {
-      return await inspectRuntimeResources(await resolveWorktreeRuntime({
-        store,
-        cwd: options.cwd,
-        globalConfigPath: options.globalConfigPath,
-      }));
-    } catch {
-      return [];
-    }
-  };
+  // Deliberately does not catch: a broken `wtm.toml` (or any other resolution failure) is
+  // exactly the case `explain`/`plan`/`env` already surface as `WTM_CONFIG_INVALID` for the
+  // same worktree, through the same `resolveWorktreeRuntime`. `status` used to swallow it here
+  // and report an empty resources list with `ok: true` -- the one diagnostic command that hid a
+  // genuine config failure instead of reporting it, so a caller scripting against `wtm status
+  // --json` to check workspace health got a false "all clear".
+  const declaredResources = async (): Promise<StatusDiagnostic['resources']> =>
+    await inspectRuntimeResources(await resolveWorktreeRuntime({
+      store,
+      cwd: options.cwd,
+      globalConfigPath: options.globalConfigPath,
+    }));
 
 
   /**
@@ -564,7 +565,18 @@ export function createStateDiagnosticDataSource(
   };
 
   const resourceFinding = async (): Promise<DoctorDiagnostic['findings'][number]> => {
-    const resources = await declaredResources();
+    // Unlike `readStatus`'s own use of `declaredResources` below, this one still catches: a
+    // resolution failure here is already reported under its own `config` finding
+    // (`configFinding`, above), and `doctor` exists precisely to keep answering every other
+    // check when one of them cannot -- letting this throw would abort `diagnose` entirely and
+    // drop every finding that resolved fine (git, ports, process-records, platform...), which
+    // is the exact defect `doctor`'s own doc comment above was written to fix.
+    let resources: StatusDiagnostic['resources'];
+    try {
+      resources = await declaredResources();
+    } catch {
+      return { check: 'resources', status: 'unknown', message: 'Resource diagnostics are unavailable; see the config check.' };
+    }
     if (resources.length === 0) {
       return { check: 'resources', status: 'pass', message: 'This workspace declares no resources.' };
     }
