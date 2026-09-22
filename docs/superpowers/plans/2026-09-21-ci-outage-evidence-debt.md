@@ -366,6 +366,20 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/platform/src/service/__tests__/linux-service.test.ts packages/daemon/src/__tests__/systemd.test.ts packages/cli/src/__tests__/main.test.ts
   ```
 
+### #81 — docs: re-audit todo.md's remaining unchecked lines against real files/tests
+- Commit: `68f69c2` · Unit: todo.md'nin 70 işaretsiz satırının tamamının yeniden denetimi (release
+  checklist dışı), iki yeni fixture testi (UNC/drive-letter yolları), README hero platform tablosu.
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası, 3-6 saniyede 5 job'ın hepsi düştü). Yalnızca yerel gate
+  ile doğrulandı (276 dosya, bilinen 2 uid-0 hatası hariç, Node 24.18.0 ile).
+- Bu PR'a özgü ayrı bir kanıt boşluğu: yok — üretim kodu değişmedi, yalnızca dokümantasyon ve
+  `platform-paths.test.ts`'e eklenen yeni fixture testleri (gerçek Windows kernel'e ihtiyaç
+  duymadan `node:path/win32`'ü ölçüyor, zaten bu sandbox'ta koşuldu).
+- Hedefli `win32_test_filter`:
+  ```
+  packages/platform/src/paths/__tests__/platform-paths.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
