@@ -95,7 +95,9 @@ try {
       assert.deepEqual((error as { blockers: Array<{ code: string }> }).blockers.map(({ code }) => code), [symlinkCode]);
       return true;
     });
-    assert.deepEqual(stages, mode === 'block-initial' ? [] : ['stop', 'verify', 'cleanup', 'release']);
+    // The second analysis is the last gate that can still abort removal; a blocked removal must
+    // never reach release-endpoints (see the `removalStages` doc comment in remove-worktree.ts).
+    assert.deepEqual(stages, mode === 'block-initial' ? [] : ['stop', 'verify', 'cleanup']);
     assert.ok(fs.lstatSync(linkPath).isSymbolicLink());
   } else if (mode === 'replace-link') {
     context.untrackedSymlinks = 'review';

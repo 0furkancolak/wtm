@@ -347,12 +347,13 @@ test('refuses at the second gate when the cleanup stage retains what it deferred
     name: 'WorktreeRemovalBlockedError',
     blockers: [{ code: 'GIT_UNTRACKED' }],
   });
+  // `releaseEndpointLeases` runs *after* the re-analysis gate now (see `removalStages`'s doc
+  // comment), so a removal refused here never released this still-live worktree's ports.
   expect(coordinator.calls).toEqual([
     'reclaimablePaths:present',
     'stopManagedProcesses:present',
     'verifyManagedProcessesStopped:present',
     'cleanupEphemeralResources:present',
-    'releaseEndpointLeases:present',
   ]);
   expect(await pathExists(fixture.linkedWorktreePath)).toBe(true);
 });
@@ -419,11 +420,14 @@ test('blocks removal when cleanup writes an untracked file into the worktree', a
     blockers: [{ code: 'GIT_UNTRACKED' }],
   });
   // The stages before the second analysis all ran; the removal stopped at the re-analysis.
+  // Regression: `releaseEndpointLeases` used to run *before* this gate, so a removal blocked
+  // here (the worktree survives, per the `pathExists` assertion below) had already released
+  // its endpoint leases -- leaving a live worktree with no lease on its own ports, free for a
+  // different worktree's next allocation to take. It now runs only after this gate passes.
   expect(coordinator.calls).toEqual([
     'stopManagedProcesses:present',
     'verifyManagedProcessesStopped:present',
     'cleanupEphemeralResources:present',
-    'releaseEndpointLeases:present',
   ]);
   expect(await pathExists(fixture.linkedWorktreePath)).toBe(true);
 });
