@@ -22,6 +22,7 @@ const migrationFiles = [
   '015-ci-watches.sql',
   '016-task-overrides.sql',
   '017-checklist-items.sql',
+  '018-drop-dead-resources-table.sql',
 ] as const;
 const scenarioPath = fileURLToPath(new URL('./assets.scenario.ts', import.meta.url));
 
@@ -34,7 +35,7 @@ function runScenario(): Record<string, unknown> {
 }
 
 describe('filesystem migration assets', () => {
-  test('reads the seventeen canonical migrations in exact byte order', () => {
+  test('reads the eighteen canonical migrations in exact byte order', () => {
     const expected = migrationFiles.map((file) => readFileSync(new URL(`../migrations/${file}`, import.meta.url), 'utf8'));
 
     expect(filesystemMigrationAssets.readMigrations()).toEqual(expected);

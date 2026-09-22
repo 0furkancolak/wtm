@@ -93,6 +93,7 @@ Aşağıdakiler subagent'ın yapamayacağı ya da kullanıcının karar vermesi 
 | K9 | 20 presets ve 21a adapter kontrat versiyonlama | W9 öncesi |
 | K10 | 46: enjeksiyon katmanı, opt-in/opt-out, 12'yi bekleme kararı | W10 öncesi |
 | K11 | 15 (TUI/menu bar): v0.2.0 dışı mı? | W11 öncesi |
+| K12 | GC sandbox/storage-object yazma yolu (`materializer.ts`/`guard.ts`'in üretim çağrı yeri) v0.2.0 kapsamına alınsın mı? | 2026-09-22 (v0.2.0 sonrası, karar: hayır — bkz. `2026-09-21-release-readiness-audit.md`'nin "K12" bölümü) |
 
 ## 3. Dalgalar
 
