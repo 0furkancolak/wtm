@@ -14,6 +14,7 @@ import {
   resolveWorkspaceConfig,
   type CiProvider,
   type DaemonStateStore,
+  type ManagedProcessRecord,
   type WorkspaceRecord,
   type WorktreeRecord,
 } from '@wtm/core';
@@ -24,9 +25,11 @@ import {
   execEnvironment,
   findRegistration,
   inspectAdapters,
+  inspectProcessIdentity,
   inspectRuntimeResources,
   resolveWorktreeRuntime,
   type AdapterReport,
+  type ProcessIdentity,
   type WorktreeRuntime,
 } from '@wtm/daemon';
 import { createGhRunner, createGitHubProvider } from '@wtm/daemon/ci';
@@ -295,7 +298,7 @@ export function createStateDiagnosticDataSource(
     findings.push(await adapterFinding());
     findings.push(await resourceFinding());
     findings.push(portFinding(workspace, worktrees));
-    findings.push(processFinding(worktrees));
+    findings.push(await processFinding(worktrees));
     findings.push(await registrationFinding());
     findings.push(platformFinding());
     const socketPath = socketPathFinding();
@@ -631,11 +634,17 @@ export function createStateDiagnosticDataSource(
       };
   };
 
-  const processFinding = (worktrees: readonly WorktreeRecord[]): DoctorDiagnostic['findings'][number] => {
+  const processFinding = async (worktrees: readonly WorktreeRecord[]): Promise<DoctorDiagnostic['findings'][number]> => {
     const worktreeIds = new Set(worktrees.map(({ id }) => id));
     const running = store.listManagedProcesses({})
       .filter((record) => worktreeIds.has(record.worktreeId) && record.state === 'RUNNING');
-    const gone = running.filter((record) => !isAlive(record.pid));
+    // A bare `isAlive(pid)` would report "running" the moment the OS reuses a crashed task's PID
+    // for any unrelated process -- exactly the false pass the daemon's own supervisor guards
+    // against with the same four-field identity check (process-supervisor.ts's identityMatches),
+    // and exactly the case doctor exists to catch: a daemon that's down isn't reconciling stale
+    // records away.
+    const identities = await Promise.all(running.map((record) => inspectProcessIdentity(record.pid)));
+    const gone = running.filter((record, index) => !matchesLiveIdentity(record, identities[index] ?? null));
     return gone.length === 0
       ? {
         check: 'process-records',
@@ -771,6 +780,17 @@ async function isDirectory(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether `identity` is still the same process `record` started, not merely a live PID. A bare
+ * PID check can't tell "our task is still running" from "the OS handed that PID number to
+ * something else after our task died" -- `null` (inspection found nothing, or failed) and any
+ * mismatch on `pgid`/`processStartTime`/`commandFingerprint` both mean no.
+ */
+function matchesLiveIdentity(record: ManagedProcessRecord, identity: ProcessIdentity | null): boolean {
+  return identity !== null && record.pid === identity.pid && record.pgid === identity.pgid
+    && record.processStartTime === identity.processStartTime && record.commandFingerprint === identity.commandFingerprint;
 }
 
 /** Whether the operating system still knows this process, without disturbing it. */
