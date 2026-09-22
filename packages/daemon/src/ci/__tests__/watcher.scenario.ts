@@ -188,6 +188,22 @@ async function rewatchSameHeadSkipsAuthProbe() {
   }
 }
 
+// Round 11 finding: `--pr <n>` supplied against a commit a pending watch already reuses used to
+// be dropped silently, since the reuse fast-path returned the stored watch unchanged.
+async function rewatchAttachesPrToReusedWatch() {
+  const t = setup({ runs: [{ ok: true, value: [run('in_progress', null)] }] });
+  try {
+    const first = await t.watch();
+    const second = await t.watcher.handle(t.request('ci.watch', { cwd: '/w/feat/src', branch: 'feat', headSha: sha, pr: 42 }));
+    const stored = t.store.ci.latestForWorktree('wt-1');
+    // A later watch of the same commit and the same PR is still a no-op reuse.
+    const third = await t.watcher.handle(t.request('ci.watch', { cwd: '/w/feat/src', branch: 'feat', headSha: sha, pr: 42 }));
+    return { first, second, third, stored };
+  } finally {
+    t.store.close();
+  }
+}
+
 async function acceptPollAndFinish() {
   const t = setup({
     runs: [{ ok: true, value: [run('in_progress', null)] }, { ok: true, value: [run('completed', 'failure')] }],
@@ -489,6 +505,7 @@ const result = {
   noRunsPollingGrows: await noRunsPollingGrows(),
   finishingPrunesSuperseded: await finishingPrunesSuperseded(),
   rewatchSameHeadSkipsAuthProbe: await rewatchSameHeadSkipsAuthProbe(),
+  rewatchAttachesPrToReusedWatch: await rewatchAttachesPrToReusedWatch(),
 };
 
 console.log(JSON.stringify(result));

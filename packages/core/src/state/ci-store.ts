@@ -41,7 +41,16 @@ export function createCiWatchStore(database: SqliteDatabase): CiWatchStore {
     start(input) {
       return transaction(() => {
         const existing = pendingFor(input.worktreeId);
-        if (existing !== undefined && existing.head_sha === input.headSha) return { watch: record(existing), reused: true };
+        if (existing !== undefined && existing.head_sha === input.headSha) {
+          // A later `--pr <n>` for the same commit still records the PR for display, even though
+          // watching it started (and reuses) the earlier, PR-less call.
+          if (input.pr !== null && input.pr !== existing.pr) {
+            database.prepare('UPDATE ci_watches SET pr = ?, updated_at = ? WHERE watch_id = ?')
+              .run(input.pr, input.now, existing.watch_id);
+            return { watch: get(String(existing.watch_id))!, reused: true };
+          }
+          return { watch: record(existing), reused: true };
+        }
         if (existing !== undefined) {
           database.prepare(`UPDATE ci_watches SET state = 'superseded', finished_at = ?, updated_at = ? WHERE watch_id = ?`)
             .run(input.now, input.now, existing.watch_id);
@@ -78,10 +87,11 @@ export function createCiWatchStore(database: SqliteDatabase): CiWatchStore {
         const current = get(watchId);
         if (current === null || current.state !== 'pending') return current;
         const state = update.state ?? current.state;
-        database.prepare(`UPDATE ci_watches SET state = ?, detail = ?, updated_at = ?, finished_at = ?, next_poll_at = ?,
+        database.prepare(`UPDATE ci_watches SET state = ?, detail = ?, pr = ?, updated_at = ?, finished_at = ?, next_poll_at = ?,
           poll_interval_ms = ?, failure_streak = ?, saw_runs = ? WHERE watch_id = ?`).run(
           state,
           update.detail === undefined ? current.detail : update.detail,
+          update.pr === undefined ? current.pr : update.pr,
           update.now,
           state === 'pending' ? null : update.now,
           update.nextPollAt ?? current.nextPollAt,

@@ -45,6 +45,27 @@ function reuseSameCommit() {
   }
 }
 
+// Round 11 finding: a later `start()` for the same reused commit dropped a supplied `pr` on the
+// floor, since the reuse fast-path returned the stored row unexamined.
+function reuseAttachesPrWhenSupplied() {
+  const store = open();
+  try {
+    const { ci } = store;
+    const first = ci.start(input());
+    const withPr = ci.start(input({ pr: 42, now: '2026-09-14T12:01:00.000Z' }));
+    const samePrAgain = ci.start(input({ pr: 42, now: '2026-09-14T12:02:00.000Z' }));
+    return {
+      firstPr: first.watch.pr,
+      withPr: { reused: withPr.reused, watchId: withPr.watch.watchId, pr: withPr.watch.pr },
+      sameWatchId: withPr.watch.watchId === first.watch.watchId,
+      samePrAgain: { reused: samePrAgain.reused, pr: samePrAgain.watch.pr },
+      stored: ci.get(first.watch.watchId)?.pr ?? null,
+    };
+  } finally {
+    store.close();
+  }
+}
+
 function supersedeOnNewCommit() {
   const store = open();
   try {
@@ -176,6 +197,7 @@ function dropsRunWithInvalidJson() {
 const scenarios: Record<string, () => unknown> = {
   'drops-run-with-invalid-json': dropsRunWithInvalidJson,
   'reuse-same-commit': reuseSameCommit,
+  'reuse-attaches-pr-when-supplied': reuseAttachesPrWhenSupplied,
   'supersede-on-new-commit': supersedeOnNewCommit,
   'refuses-beyond-pending-limit': refusesBeyondPendingLimit,
   'updates-and-stops-after-finish': updatesAndStopsAfterFinish,

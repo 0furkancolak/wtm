@@ -32,6 +32,18 @@ describe('CI watch store', () => {
     });
   });
 
+  // Round 11 finding: a later `start()` for a commit already being watched dropped a supplied
+  // `pr` silently, since the reuse fast-path returned the stored row unexamined.
+  test('reusing a pending watch still attaches a pr supplied on a later call', () => {
+    expect(runScenario('reuse-attaches-pr-when-supplied')).toEqual({
+      firstPr: null,
+      withPr: { reused: true, watchId: expect.any(String), pr: 42 },
+      sameWatchId: true,
+      samePrAgain: { reused: true, pr: 42 },
+      stored: 42,
+    });
+  });
+
   test('a new commit supersedes the pending watch of the same worktree', () => {
     expect(runScenario('supersede-on-new-commit')).toEqual({
       oldState: 'superseded',

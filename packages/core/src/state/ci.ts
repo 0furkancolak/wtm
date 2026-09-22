@@ -39,6 +39,8 @@ export interface CiWatchUpdate {
   now: string;
   state?: CiWatchState;
   detail?: string | null;
+  /** `wtm ci watch --pr <n>` attaching a PR number to a watch the same commit already reuses. */
+  pr?: number | null;
   nextPollAt?: string;
   pollIntervalMs?: number;
   failureStreak?: number;

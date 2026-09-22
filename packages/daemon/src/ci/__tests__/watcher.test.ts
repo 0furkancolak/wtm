@@ -157,4 +157,14 @@ describe('CiWatcher', () => {
     expect(r.second).toMatchObject({ ok: true, data: { reused: true, watch: { watchId: r.first.data.watch.watchId } } });
     expect(r.callsAfterSecond).toEqual(['auth']);
   });
+
+  // Round 11 finding: `--pr` against a commit a pending watch already reuses was silently
+  // dropped, since the reuse fast-path returned the stored watch unchanged.
+  test('a later --pr for the same commit attaches to the reused watch instead of being dropped', () => {
+    const r = result.rewatchAttachesPrToReusedWatch;
+    expect(r.first.data.watch.pr).toBeUndefined();
+    expect(r.second).toMatchObject({ ok: true, data: { reused: true, watch: { watchId: r.first.data.watch.watchId, pr: 42 } } });
+    expect(r.third).toMatchObject({ ok: true, data: { reused: true, watch: { watchId: r.first.data.watch.watchId, pr: 42 } } });
+    expect(r.stored.pr).toBe(42);
+  });
 });
