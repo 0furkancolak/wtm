@@ -396,6 +396,23 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/daemon/src/__tests__/dev-overlay.test.ts packages/core/src/config/__tests__/schema.test.ts
   ```
 
+### #85 — test(cli): add a real-daemon 3-worktree dev-overlay e2e scenario (item 46)
+- Commit: `312bca3` · Unit: madde 46'nın kendi kabul kriterinin ("üç feature'ın web'i aynı anda
+  ayaktayken her sekme kendi worktree'sini söylüyor") uçtan uca kanıtı — maddenin son açık kalemi,
+  kapatıyor.
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası: 5 job 3-5 saniyede düştü, `main`'in kendi son push'u
+  `#84`/`1bb94df` de aynı şekilde düşüyor). Yalnızca yerel gate ile doğrulandı (277 dosya, bilinen
+  2 uid-0 hatası hariç, Node 24.18.0 ile). Yeni senaryonun kendisi ayrıca push'tan önce 3 kez art
+  arda koşuldu, flake gözlenmedi.
+- Bu PR'a özgü ayrı bir kanıt boşluğu yok: gerçek bir `http.Server`/gerçek `ProxyServer`'a karşı
+  test edildi (bu sandbox'ta), gerçek bir tarayıcıya karşı değil — #65'in zaten taşıdığı aynı
+  boşluğu miras alıyor, yeni bir boşluk eklemiyor.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/cli/src/__tests__/dev-overlay-three-worktrees.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
