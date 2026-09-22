@@ -77,7 +77,15 @@ const portSchema = z.object({
    * so an endpoint that serves something else — a database, a queue — says so and stays out.
    */
   origin: z.boolean().optional(),
-}).strict();
+}).strict().superRefine((port, context) => {
+  // `endpoint-plan.ts`'s `preferredPort()` only does the offset math when `preferred` is set --
+  // `strategy = "offset"` with no `preferred` silently falls back to plain "any free port in
+  // range" allocation, the same as no strategy at all, defeating the whole point of writing
+  // `offset` down. `docs/03`'s own example always pairs the two.
+  if (port.strategy === 'offset' && port.preferred === undefined) {
+    context.addIssue({ code: 'custom', path: ['preferred'], message: 'strategy = "offset" requires a preferred port to offset from' });
+  }
+});
 
 const corsSchema = z.object({
   /** Detection is on by default; this turns it off for a workspace that configures CORS itself. */
