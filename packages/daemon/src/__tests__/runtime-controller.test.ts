@@ -588,6 +588,45 @@ describe('DaemonRuntimeController budgets', () => {
     expect(refused?.errors[0]).toMatchObject({ code: 'RUNTIME_PROCESS_BUDGET_EXCEEDED' });
     expect(maxConcurrentStarts).toBeLessThanOrEqual(1);
   });
+
+  test('does not count stopped/failed history toward the process budget — only currently-active processes', async () => {
+    // `list()` never prunes: every stop/restart leaves its row behind for `wtm ps`/`wtm logs`
+    // history. A daemon whose cumulative lifetime start count has crossed the budget, but has
+    // nothing running right now, must still admit a start.
+    const history: ManagedProcessRecord[] = [
+      { ...processRecord, id: 'process-old-1', state: 'STOPPED' },
+      { ...processRecord, id: 'process-old-2', state: 'FAILED' },
+      { ...processRecord, id: 'process-old-3', state: 'STOPPED' },
+    ];
+    const controller = new DaemonRuntimeController({
+      supervisor: { ...noProcesses(), list: () => history },
+      logs: { read: async () => '' },
+      resolver: resolver(),
+      budgets: { maxProcesses: 1 },
+    });
+
+    const envelope = await controller.handle(request('start', { cwd: '/repo/wt', taskName: 'dev' }));
+
+    expect(envelope.ok).toBe(true);
+  });
+
+  test('still refuses a start once currently-active processes alone reach the budget', async () => {
+    const history: ManagedProcessRecord[] = [
+      { ...processRecord, id: 'process-old-1', state: 'STOPPED' },
+      { ...processRecord, id: 'process-active', taskName: 'build', state: 'RUNNING' },
+    ];
+    const controller = new DaemonRuntimeController({
+      supervisor: { ...noProcesses(), list: () => history },
+      logs: { read: async () => '' },
+      resolver: resolver(),
+      budgets: { maxProcesses: 1 },
+    });
+
+    const envelope = await controller.handle(request('start', { cwd: '/repo/wt', taskName: 'dev' }));
+
+    expect(envelope.ok).toBe(false);
+    expect(envelope.errors[0]).toMatchObject({ code: 'RUNTIME_PROCESS_BUDGET_EXCEEDED', context: { current: 1, limit: 1 } });
+  });
 });
 
 function noProcesses() {
