@@ -1,4 +1,4 @@
-import { resolveTemplate, WtmTemplateError, type TemplateContext } from '../templates/resolve';
+import { templateValue, WtmTemplateError, type TemplateContext } from '../templates/resolve';
 
 export interface EnvironmentResolutionInput {
   /**
@@ -55,12 +55,20 @@ export function resolveEnvironment(input: EnvironmentResolutionInput): Record<st
     resolving.push(name);
     try {
       const raw = declared[name] as string;
-      const withEnvironment = raw.replace(/\{env\.([^{}]+)\}/g, (_match, referencedName: string) =>
-        resolveName(referencedName),
-      );
-      const value = resolveTemplate(withEnvironment, {
-        ...input.context,
-        env: { ...inherited, ...resolved },
+      // One pass over the *original* text: an `{env.x}` reference resolves recursively through
+      // this same function (cycle-detected, memoized into `resolved`), everything else through
+      // the ordinary template lookup -- and either way, the value that comes back is spliced in
+      // and never re-scanned. Two passes (substitute {env.*} first, then run the whole result
+      // back through template resolution) used to mean an inherited value that itself contained
+      // a brace -- a connection string, a JSON blob, any literal `{...}` in a real environment
+      // variable -- got re-interpreted as a template placeholder the second time around: a
+      // legitimate value could throw `Unable to resolve template variable`, or worse, silently
+      // get replaced if its brace content happened to spell a real template key.
+      const value = raw.replace(/\{([^{}]+)\}/g, (match, variable: string) => {
+        if (variable.startsWith('env.')) return resolveName(variable.slice('env.'.length));
+        const resolvedValue = templateValue(variable, input.context);
+        if (resolvedValue === undefined) throw new WtmTemplateError(variable);
+        return String(resolvedValue);
       });
       resolved[name] = value;
       return value;
