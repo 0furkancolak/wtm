@@ -186,14 +186,21 @@ export function createStateDiagnosticDataSource(
    * like a workspace that declared none.
    */
   /**
-   * The runtime for the worktree the command was run in. `allocate: false` answers from the
-   * leases that exist rather than taking one, which is what a command that only reports must
-   * do — asking `wtm plan` which endpoints have no port must not give them one.
+   * The runtime for the worktree at `cwd`, defaulting to the worktree the command was run in.
+   * `allocate: false` answers from the leases that exist rather than taking one, which is what
+   * a command that only reports must do — asking `wtm plan` which endpoints have no port must
+   * not give them one.
+   *
+   * The default only ever answers correctly for *this* directory's own workspace: a `--global`
+   * caller iterating every registered workspace must pass that workspace's own current
+   * worktree's path explicitly (see `currentWorktree`), or every workspace after the first gets
+   * the same answer this one does — exactly the bug `readStatus` already avoids with the same
+   * `currentWorktree(workspace.id)` call.
    */
-  const worktreeRuntime = async (allocate: boolean): Promise<WorktreeRuntime> =>
+  const worktreeRuntime = async (allocate: boolean, cwd = options.cwd): Promise<WorktreeRuntime> =>
     await resolveWorktreeRuntime({
       store,
-      cwd: options.cwd,
+      cwd,
       globalConfigPath: options.globalConfigPath,
       ...(allocate ? {} : { allocate: false }),
     });
@@ -622,12 +629,12 @@ export function createStateDiagnosticDataSource(
   };
 
   /**
-   * Every choice in force in this worktree. Unlike `plan`, this resolves the way a task would
-   * — including leasing an endpoint that has none — because it reports what *is* decided, and
-   * `wtm env` already answers that question the same way.
+   * Every choice in force in the worktree at `cwd`. Unlike `plan`, this resolves the way a task
+   * would — including leasing an endpoint that has none — because it reports what *is* decided,
+   * and `wtm env` already answers that question the same way.
    */
-  const explain = async (): Promise<ExplainDiagnostic['decisions']> => {
-    const runtime = await worktreeRuntime(true);
+  const explain = async (cwd: string): Promise<ExplainDiagnostic['decisions']> => {
+    const runtime = await worktreeRuntime(true, cwd);
     return explainDecisions({
       runtime,
       adapters: await adapters(runtime),
@@ -636,8 +643,8 @@ export function createStateDiagnosticDataSource(
     });
   };
 
-  const proposed = async (workspace: RegisteredWorkspace): Promise<PlanDiagnostic['changes']> => {
-    const runtime = await worktreeRuntime(false);
+  const proposed = async (workspace: RegisteredWorkspace, cwd: string): Promise<PlanDiagnostic['changes']> => {
+    const runtime = await worktreeRuntime(false, cwd);
     const worktreeIds = new Set(workspaceWorktrees(workspace.id).map(({ id }) => id));
     return await planChanges({
       runtime,
@@ -696,18 +703,34 @@ export function createStateDiagnosticDataSource(
       } satisfies StatusDiagnostic;
     },
     readDoctor: async (workspace) => ({ workspace, findings: await diagnose(workspace) }),
-    readExplain: async (workspace) => ({ workspace, decisions: await explain() }),
-    readPlan: async (workspace) => ({ workspace, changes: await proposed(workspace) }),
-    readEnv: async (workspace) => ({
-      workspace,
-      // Resolving allocates whatever this worktree is owed, which is the only way the answer
-      // can name the port a task would actually be started with.
-      variables: execEnvironment(await resolveWorktreeRuntime({
-        store,
-        cwd: options.cwd,
-        globalConfigPath: options.globalConfigPath,
-      })),
-    }),
+    // Same reasoning as `readStatus`'s `resources` field above: each workspace's own current
+    // worktree, not `options.cwd`, or a `--global` caller got this directory's decisions/plan
+    // repeated verbatim under every other workspace's name (and, run from a workspace root
+    // rather than inside any worktree, every workspace failed outright with
+    // `WTM_WORKSPACE_NOT_FOUND` even though `status`/`doctor`/`ports` answered fine from the
+    // same place). A workspace this directory is nowhere near has nothing to report here either.
+    readExplain: async (workspace) => {
+      const worktree = currentWorktree(workspace.id);
+      return { workspace, decisions: worktree === undefined ? [] : await explain(worktree.path) };
+    },
+    readPlan: async (workspace) => {
+      const worktree = currentWorktree(workspace.id);
+      return { workspace, changes: worktree === undefined ? [] : await proposed(workspace, worktree.path) };
+    },
+    readEnv: async (workspace) => {
+      const worktree = currentWorktree(workspace.id);
+      if (worktree === undefined) return { workspace, variables: {} };
+      return {
+        workspace,
+        // Resolving allocates whatever this worktree is owed, which is the only way the answer
+        // can name the port a task would actually be started with.
+        variables: execEnvironment(await resolveWorktreeRuntime({
+          store,
+          cwd: worktree.path,
+          globalConfigPath: options.globalConfigPath,
+        })),
+      };
+    },
     readPorts: async (workspace) => ({
       workspace,
       leases: store.listEndpointLeases({
