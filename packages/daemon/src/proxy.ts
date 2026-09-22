@@ -253,6 +253,7 @@ export class ProxyServer {
         this.#htmlInjector !== undefined
         && isHtmlContentType(backendResponse.headers['content-type'])
         && isUncompressed(backendResponse.headers['content-encoding'])
+        && isUtf8Charset(backendResponse.headers['content-type'])
       ) {
         this.#proxyHtmlResponse(response, backendResponse, route, this.#htmlInjector);
         return;
@@ -392,4 +393,24 @@ function isUncompressed(contentEncoding: string | string[] | undefined): boolean
   if (contentEncoding === undefined) return true;
   const value = Array.isArray(contentEncoding) ? contentEncoding[0] : contentEncoding;
   return value === undefined || value.trim() === '' || value.trim().toLowerCase() === 'identity';
+}
+
+/**
+ * Whether a `content-type` header's `charset` parameter is UTF-8, or absent (HTML's own default
+ * absent a BOM or `<meta charset>`, and what every dev server this proxy has ever been pointed at
+ * uses in practice). `#proxyHtmlResponse` decodes the buffered body with `Buffer#toString('utf8')`
+ * unconditionally — safe only for those two cases. A response actually declared with a different
+ * charset (iso-8859-1, windows-1252, a UTF-16 variant) decoded as UTF-8 turns every non-ASCII byte
+ * sequence into U+FFFD replacement characters, an unrecoverable loss the client then receives
+ * under the very `content-type` header that still (correctly) names the original charset — so this
+ * gate keeps that response on the untouched pass-through path instead, the same way `isUncompressed`
+ * above keeps a compressed one off the injection path rather than risk corrupting it.
+ */
+function isUtf8Charset(contentType: string | string[] | undefined): boolean {
+  const value = Array.isArray(contentType) ? contentType[0] : contentType;
+  if (typeof value !== 'string') return true;
+  const match = /charset\s*=\s*"?([^;"]+)"?/i.exec(value);
+  if (match === null) return true;
+  const charset = match[1]?.trim().toLowerCase();
+  return charset === undefined || charset === 'utf-8' || charset === 'utf8';
 }
