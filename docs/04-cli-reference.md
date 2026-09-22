@@ -617,6 +617,7 @@ ports           this worktree's active endpoint leases
 health          wtm doctor's findings
 disk usage &    logical/allocated bytes from wtm disk (owned, unknown-ownership and
 cleanup         worktree-local), and what wtm gc --dry-run would remove
+logs            recent stdout/stderr for the worktree's managed tasks (press `l`)
 ```
 
 Workspace/worktree/running-tasks/ports/health are built entirely on `wtm status`/`wtm doctor`'s
@@ -643,8 +644,21 @@ section); the panel says so rather than implying a clean sweep. Worktree-local r
 There is no `--global`: `--global` aggregates *registered workspaces* (repositories), not the
 worktrees of one workspace, and reports this directory's own worktree in each — which would make a
 continuously refreshing dashboard misleading rather than merely redundant. `wtm tui` therefore
-stays scoped to one worktree, exactly as `wtm status`/`wtm doctor` do with no selector; a log tail
-is a separate, later addition (its own panel), not part of this view.
+stays scoped to one worktree, exactly as `wtm status`/`wtm doctor` do with no selector.
+
+Pressing `l` switches to a separate log-tail view — recent stdout/stderr for the worktree's
+managed tasks, stacked one after another — sourced from the exact same assembly `wtm logs` itself
+uses. `l` again or Escape returns to the dashboard. Unlike every other panel, the log view is
+**not** part of the dashboard's passive background refresh, and is fetched only while it is the
+view actually on screen: the daemon's `logs` handler marks every task whose log it returns as
+active (the same `RuntimeController#observeActivity` side effect `wtm ps` has, which feeds
+idle-runtime suspension), and there is no read-only way to fetch log content through the stable
+protocol today. A dashboard that quietly polled `logs` in the background, the way it never polls
+`ps`, would keep every displayed task's idle timer from ever elapsing merely because the dashboard
+was left open. Explicitly opening the log view and having it poll only while it stays open is a
+narrower, more defensible version of that same side effect — closer to what idle-suspension is
+meant to detect (someone actually watching this worktree) than a background dashboard tick would
+be.
 
 Options:
 
@@ -652,7 +666,8 @@ Options:
 --interval <ms>   refresh interval, minimum 250 (default 3000)
 ```
 
-Keybindings: `q` or Ctrl+C quits; `r` refreshes immediately without waiting for the timer.
+Keybindings: `q` or Ctrl+C quits; `r` refreshes immediately without waiting for the timer; `l`
+switches to the log-tail view (`l` again or Escape returns to the dashboard).
 
 Refuses with `WTM_CONFIG_INVALID` (exit 2) when stdout is not a TTY — piped output, a redirect, or
 CI — rather than drawing a garbled screen. It has no `--json` output of its own; script against

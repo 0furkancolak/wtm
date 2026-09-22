@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { WtmError } from '@wtm/protocol';
-import { renderTuiFatalFrame, renderTuiFrame, type TuiPanel } from '../render';
+import type { TuiLogsView } from '../logs-view';
+import { renderTuiFatalFrame, renderTuiFrame, renderTuiLogsFrame, type TuiPanel } from '../render';
 import type { TuiViewModel } from '../view-model';
 
 const emptyModel: TuiViewModel = {
@@ -157,5 +158,58 @@ describe('renderTuiFatalFrame', () => {
     expect(frame).toContain('wtm tui — refresh failed');
     expect(frame).toContain('socket ECONNREFUSED');
     expect(frame).toContain('q / ctrl+c quit   r refresh now');
+  });
+});
+
+describe('renderTuiLogsFrame', () => {
+  const logsView: TuiLogsView = {
+    fetchedAt: '2026-09-22T00:00:02.000Z',
+    entries: [
+      { processId: 'process-1', taskName: 'dev', stdoutLines: ['booted on :24007'], stderrLines: [] },
+      { processId: 'process-2', taskName: 'web', stdoutLines: [], stderrLines: ['warn: slow start'] },
+    ],
+    truncated: false,
+    errors: [],
+  };
+
+  test('opens with the alt-screen clear-and-home sequence', () => {
+    expect(renderTuiLogsFrame(logsView, size).startsWith('\x1b[H\x1b[2J')).toBe(true);
+  });
+
+  test('stacks every task\'s stdout and stderr', () => {
+    const frame = renderTuiLogsFrame(logsView, size);
+    expect(frame).toContain('== dev (process-1) ==');
+    expect(frame).toContain('booted on :24007');
+    expect(frame).toContain('== web (process-2) ==');
+    expect(frame).toContain('warn: slow start');
+    expect(frame).toContain('refreshed 2026-09-22T00:00:02.000Z');
+    expect(frame).toContain('l / esc back to dashboard   r refresh now   q / ctrl+c quit');
+  });
+
+  test('shows a placeholder rather than nothing when no tasks have recorded logs', () => {
+    const frame = renderTuiLogsFrame({ ...logsView, entries: [] }, size);
+    expect(frame).toContain('(no managed processes with recorded logs for this worktree)');
+  });
+
+  test('shows a fetching placeholder before the first fetch completes', () => {
+    const frame = renderTuiLogsFrame(null, size);
+    expect(frame).toContain('(fetching logs…)');
+  });
+
+  test('says the view is unavailable rather than pretending to fetch when readLogs is not wired in', () => {
+    const frame = renderTuiLogsFrame(null, size, { available: false });
+    expect(frame).toContain('(log tail is not available in this session)');
+  });
+
+  test('surfaces envelope-level errors', () => {
+    const errors: WtmError[] = [{ code: 'WTM_DAEMON_UNAVAILABLE', message: 'WTM daemon is unavailable.', severity: 'error' }];
+    const frame = renderTuiLogsFrame({ ...logsView, errors }, size);
+    expect(frame).toContain('== Errors ==');
+    expect(frame).toContain('[WTM_DAEMON_UNAVAILABLE] WTM daemon is unavailable.');
+  });
+
+  test('notes truncation instead of silently showing a partial tail', () => {
+    const frame = renderTuiLogsFrame({ ...logsView, truncated: true }, size);
+    expect(frame).toContain('(log output truncated to fit the response budget)');
   });
 });

@@ -1,3 +1,4 @@
+import type { TuiLogsView } from './logs-view';
 import type { TuiViewModel } from './view-model';
 
 /**
@@ -15,8 +16,10 @@ export interface TerminalSize {
  * One section of the dashboard. Each panel only turns a view model into plain content lines; the
  * frame around it (heading, clipping, footer) is `renderTuiFrame`'s job, so a later unit adds a
  * panel by adding one of these to the list passed to `renderTuiFrame` — the disk-usage /
- * cleanup-candidate view (unit 2) and the log-tail view (unit 3) are meant to arrive exactly this
- * way, without any change to `renderTuiFrame` itself.
+ * cleanup-candidate view (unit 2) arrived exactly this way, without any change to `renderTuiFrame`
+ * itself. The log-tail view (unit 3) deliberately does *not* — see `renderTuiLogsFrame` below and
+ * `logs-view.ts`'s doc comment for why it is a separate, explicitly-entered frame instead of a
+ * panel in this list.
  */
 export interface TuiPanel {
   readonly id: string;
@@ -127,7 +130,11 @@ const resourcesPanel: TuiPanel = {
   },
 };
 
-/** The panels unit 1 and unit 2 ship. Log tail (unit 3) extends this list. */
+/**
+ * The panels unit 1 and unit 2 ship. Log tail (unit 3) does *not* extend this list — it is a
+ * separate frame (`renderTuiLogsFrame`) entered by its own keybinding, not a panel that refreshes
+ * passively alongside these on every tick. See `logs-view.ts`'s doc comment.
+ */
 export const defaultTuiPanels: readonly TuiPanel[] = [
   workspacePanel, worktreePanel, processesPanel, portsPanel, healthPanel, resourcesPanel,
 ];
@@ -160,7 +167,7 @@ export function renderTuiFrame(
     lines.push('');
   }
 
-  lines.push(clip('q / ctrl+c quit   r refresh now', columns));
+  lines.push(clip('q / ctrl+c quit   r refresh now   l logs', columns));
 
   return `${enterAltScreenAndClear}${lines.slice(0, rows).join('\r\n')}`;
 }
@@ -176,6 +183,60 @@ export function renderTuiFatalFrame(message: string, size: TerminalSize): string
     clip('q / ctrl+c quit   r refresh now', columns),
   ];
   return `${enterAltScreenAndClear}${lines.slice(0, Math.max(1, size.rows)).join('\r\n')}`;
+}
+
+/**
+ * The log-tail view's own frame (unit 3): recent stdout/stderr for the worktree's managed tasks,
+ * stacked one after another rather than picked one at a time — the simplest readable layout for a
+ * first cut, per the doc comment on `TuiPanel` above. This is never called from the same tick as
+ * `renderTuiFrame`; `loop.ts` renders exactly one of the two per refresh, depending on which view
+ * is on screen.
+ *
+ * `available: false` (no `readLogs` wired in at all, e.g. a test exercising only status/doctor) is
+ * distinct from `view: null` (wired in, but no fetch has completed yet) — both show a message
+ * rather than a blank screen.
+ */
+export function renderTuiLogsFrame(
+  view: TuiLogsView | null,
+  size: TerminalSize,
+  options: { readonly available?: boolean } = {},
+): string {
+  const columns = Math.max(minColumns, size.columns);
+  const rows = Math.max(1, size.rows);
+  const lines: string[] = [];
+
+  lines.push(clip(`wtm tui — logs — refreshed ${view?.fetchedAt ?? 'never'}`, columns));
+  lines.push('');
+
+  if (options.available === false) {
+    lines.push(clip('(log tail is not available in this session)', columns));
+  } else if (view === null) {
+    lines.push(clip('(fetching logs…)', columns));
+  } else if (view.entries.length === 0) {
+    lines.push(clip('(no managed processes with recorded logs for this worktree)', columns));
+  } else {
+    for (const entry of view.entries) {
+      lines.push(clip(`== ${entry.taskName} (${entry.processId}) ==`, columns));
+      lines.push(clip('stdout:', columns));
+      if (entry.stdoutLines.length === 0) lines.push(clip('  (empty)', columns));
+      else for (const line of entry.stdoutLines) lines.push(clip(`  ${line}`, columns));
+      lines.push(clip('stderr:', columns));
+      if (entry.stderrLines.length === 0) lines.push(clip('  (empty)', columns));
+      else for (const line of entry.stderrLines) lines.push(clip(`  ${line}`, columns));
+      lines.push('');
+    }
+    if (view.truncated) lines.push(clip('(log output truncated to fit the response budget)', columns));
+  }
+
+  if (view !== null && view.errors.length > 0) {
+    lines.push(clip('== Errors ==', columns));
+    for (const error of view.errors) lines.push(clip(`[${error.code}] ${error.message}`, columns));
+    lines.push('');
+  }
+
+  lines.push(clip('l / esc back to dashboard   r refresh now   q / ctrl+c quit', columns));
+
+  return `${enterAltScreenAndClear}${lines.slice(0, rows).join('\r\n')}`;
 }
 
 function healthGlyph(status: string): string {
