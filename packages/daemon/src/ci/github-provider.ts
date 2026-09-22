@@ -5,7 +5,9 @@ import type { GhCommandResult, GhCommandRunner } from './gh-runner';
 
 const runListSchema = z.array(z.object({
   databaseId: z.number().int().nonnegative(),
-  workflowName: z.string(),
+  // `gh` prints `null` for a run whose originating workflow file was later deleted or renamed;
+  // the run itself is still real and must still be reported.
+  workflowName: z.string().nullable(),
   event: z.string(),
   status: z.string(),
   conclusion: z.string().nullable(),
@@ -72,7 +74,7 @@ export function createGitHubProvider(run: GhCommandRunner): CiProvider {
       return parsed(result, (stdout): CiRun[] | null => {
         const runs = runListSchema.safeParse(JSON.parse(stdout));
         return runs.success ? runs.data.map((entry) => ({
-          runId: entry.databaseId, workflow: entry.workflowName, event: entry.event, status: entry.status,
+          runId: entry.databaseId, workflow: entry.workflowName ?? '(deleted workflow)', event: entry.event, status: entry.status,
           conclusion: entry.conclusion === '' ? null : entry.conclusion, url: entry.url, jobs: [],
         })) : null;
       });

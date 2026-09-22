@@ -67,6 +67,21 @@ describe('GitHub CI provider', () => {
     ] });
   });
 
+  test('a run whose workflow file was deleted still lists, not just the ones around it', async () => {
+    // `gh run list --json workflowName` prints `null` for a run whose originating workflow file
+    // was later deleted or renamed. A schema that required a string failed the *entire* array
+    // parse on that one run, masking every other run in the same commit's list too.
+    const { provider } = recording([ok(JSON.stringify([
+      { databaseId: 11, workflowName: 'CI', event: 'push', status: 'completed', conclusion: 'failure', url: 'https://github.com/acme/widgets/actions/runs/11' },
+      { databaseId: 12, workflowName: null, event: 'push', status: 'completed', conclusion: 'success', url: 'https://github.com/acme/widgets/actions/runs/12' },
+    ]))]);
+    const answer = await provider.listRuns(repository, 'a'.repeat(40));
+    expect(answer).toEqual({ ok: true, value: [
+      { runId: 11, workflow: 'CI', event: 'push', status: 'completed', conclusion: 'failure', url: 'https://github.com/acme/widgets/actions/runs/11', jobs: [] },
+      { runId: 12, workflow: '(deleted workflow)', event: 'push', status: 'completed', conclusion: 'success', url: 'https://github.com/acme/widgets/actions/runs/12', jobs: [] },
+    ] });
+  });
+
   test('lists jobs and reads a failed job log', async () => {
     const { calls, provider } = recording([
       ok(JSON.stringify({ jobs: [{ databaseId: 21, name: 'test', status: 'completed', conclusion: 'failure', url: 'https://github.com/acme/widgets/actions/runs/11/job/21', steps: [] }] })),
