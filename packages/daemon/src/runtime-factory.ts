@@ -19,6 +19,7 @@ import {
   resolveTask,
   containsPath,
   HeavyJobError,
+  applyTaskOverrides,
   idlePolicies,
   parseWtmConfig,
   queueTaskTimeoutMs,
@@ -285,9 +286,10 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
   });
   const idle = new IdleRuntimeSuspender({
     supervisor,
-    // Read per sweep, from the workspace configuration alone: an idle window is a fact about a
-    // declared task, and resolving a whole runtime — endpoints, adapters, resources — to learn one
-    // duration would make the sweep cost more than what it reclaims.
+    // Read per sweep, from the workspace configuration plus any `wtm task set` override (see
+    // `readIdlePolicies`): an idle window is a fact about the *effective* declared task, and
+    // resolving a whole runtime — endpoints, adapters, resources — to learn one duration would
+    // make the sweep cost more than what it reclaims.
     readIdlePolicies: async (worktreeId) => await readIdlePolicies(stateStore, paths.globalConfigPath, worktreeId),
     note: async (record, line) => { await logs.appendNote(record.worktreeId, record.taskName, line); },
     // An idle suspension is a stop, so the workspace's `[events."runtime.stopped"]` hears about it
@@ -343,17 +345,23 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
   const devOverlayPolicy = proxyPolicy.enabled === true
     ? await globalDevOverlayPolicy(paths.globalConfigPath)
     : {};
+  // Whether the overlay needs wiring into the proxy at all: the table-level default is on, or a
+  // repository opted in on its own via `[dev-overlay.repos.<name>].enabled = true` while the
+  // default is off. Checking only `devOverlayPolicy.enabled` here would make that per-repo opt-in
+  // silently inert — `isDevOverlayEnabledForRepo` would never even run, because `htmlInjector`
+  // itself would never be constructed and handed to `ProxyServer`.
+  const devOverlayActive = devOverlayPolicy.enabled === true
+    || Object.values(devOverlayPolicy.repos ?? {}).some((repo) => repo?.enabled === true);
   // The checklist's browser-facing toggle endpoint (todo item 46b, W11-1) shares the exact same
-  // `[dev-overlay].enabled` gate `htmlInjector` above uses — there is no second config flag for
-  // this half of the overlay, since a checklist with no overlay to render it in has nothing to
-  // toggle from.
+  // gate `htmlInjector` above uses — there is no second config flag for this half of the overlay,
+  // since a checklist with no overlay to render it in has nothing to toggle from.
   const proxy = proxyPolicy.enabled === true ? new ProxyServer({
     port: proxyPolicy.port ?? defaultProxyPort,
     resolveRoute: (hostname) => buildProxyRoutes(stateStore).get(hostname) ?? null,
     ...(options.proxyHosts === undefined ? {} : { hosts: options.proxyHosts }),
     onError,
-    ...(devOverlayPolicy.enabled === true ? { htmlInjector: devOverlayHtmlInjector(stateStore, devOverlayPolicy) } : {}),
-    ...(devOverlayPolicy.enabled === true && stateStore.checklist !== undefined
+    ...(devOverlayActive ? { htmlInjector: devOverlayHtmlInjector(stateStore, devOverlayPolicy) } : {}),
+    ...(devOverlayActive && stateStore.checklist !== undefined
       ? { overlayApi: checklistApiHandler(stateStore.checklist) } : {}),
   }) : null;
   const taskOverrides = stateStore.taskOverrides === undefined ? null : new TaskOverridesHandler({
@@ -451,14 +459,19 @@ async function globalBudgetsPolicy(path: string): Promise<NonNullable<WtmConfig[
 
 /**
  * The idle windows declared for one worktree's tasks, read straight from the configuration files
- * in force there.
+ * in force there — plus any `wtm task set` override for that worktree, layered the same way
+ * `task-resolution.ts` layers it for a real start/restart. `applyTaskOverrides` replaces a
+ * task's whole definition, per its own contract, so an override with no `idle` block (the wire
+ * schema has no such field — an override cannot carry one) correctly clears any idle policy the
+ * file configuration declared for that task name, rather than leaving the sweep to suspend a task
+ * whose overridden definition the rest of WTM no longer treats as the file's own.
  *
- * Deliberately not `resolveWorktreeRuntime`: that resolves endpoints, adapters and templates, none
- * of which an idle duration depends on, and it runs on every sweep for every worktree that has a
- * managed task running. A worktree WTM no longer has on record has no policies rather than an
- * error — it is about to disappear from the sweep's own listing anyway.
+ * Deliberately not `resolveWorktreeRuntime`: that also resolves endpoints, adapters and
+ * templates, none of which an idle duration depends on, and it runs on every sweep for every
+ * worktree that has a managed task running. A worktree WTM no longer has on record has no
+ * policies rather than an error — it is about to disappear from the sweep's own listing anyway.
  */
-async function readIdlePolicies(
+export async function readIdlePolicies(
   store: DaemonStateStore,
   globalConfigPath: string,
   worktreeId: string,
@@ -471,7 +484,12 @@ async function readIdlePolicies(
     repoRoot: registration.worktree.path,
     globalConfigPath,
   });
-  return idlePolicies(config.value);
+  const overrides = store.taskOverrides?.listForWorktree(worktreeId) ?? [];
+  const withOverrides = applyTaskOverrides(
+    config,
+    Object.fromEntries(overrides.map((override) => [override.taskName, override.task])),
+  );
+  return idlePolicies(withOverrides.value);
 }
 
 async function resolveHeavyJob(store: DaemonStateStore, globalConfigPath: string, cwd: string, taskName: string): Promise<ResolvedHeavyJob> {

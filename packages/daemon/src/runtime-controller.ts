@@ -165,6 +165,15 @@ export class DaemonRuntimeController {
   readonly #onTaskActivity: NonNullable<DaemonRuntimeControllerOptions['onTaskActivity']>;
   readonly #budgets: NonNullable<DaemonRuntimeControllerOptions['budgets']>;
   readonly #readMemory: () => HostJobMemory;
+  /**
+   * Starts admitted by `#checkBudgets` but not yet reflected in `#supervisor.list()`, because
+   * `#supervisor.start`/`restart` is itself async. `handle` requests interleave on `resolveTask`'s
+   * await, so two concurrent starts can both read the same `list().length` unless the count they
+   * check against also includes admissions still in flight — this field is that reservation.
+   * Incremented synchronously in the same tick `#checkBudgets` passes (no `await` in between, so
+   * no other request can interleave), decremented once the start attempt settles either way.
+   */
+  #pendingStarts = 0;
 
   constructor(options: DaemonRuntimeControllerOptions) {
     this.#supervisor = options.supervisor;
@@ -191,7 +200,7 @@ export class DaemonRuntimeController {
   #checkBudgets(worktreeId: string, taskName: string): WtmError | null {
     const { maxProcesses, minAvailableMemoryBytes } = this.#budgets;
     if (maxProcesses !== undefined) {
-      const current = this.#supervisor.list().length;
+      const current = this.#supervisor.list().length + this.#pendingStarts;
       if (current >= maxProcesses) {
         return {
           code: 'RUNTIME_PROCESS_BUDGET_EXCEEDED',
@@ -254,14 +263,24 @@ export class DaemonRuntimeController {
         }
         const alreadyActive = this.#supervisor.list(resolved.worktreeId)
           .some((record) => record.taskName === taskName && ['STARTING', 'RUNNING', 'STOPPING'].includes(record.state));
+        let reservedStart = false;
         if (!alreadyActive) {
           const budgetError = this.#checkBudgets(resolved.worktreeId, taskName);
           if (budgetError !== null) return failure(request.command, budgetError);
+          // Reserved in the same synchronous tick the check above passed in, so a second
+          // concurrent `handle()` call cannot observe the pre-reservation count.
+          this.#pendingStarts += 1;
+          reservedStart = true;
         }
         const input = processStartInput(resolved.worktreeId, taskName, resolved.task);
-        const result = request.command === 'start'
-          ? await this.#supervisor.start(input)
-          : await this.#supervisor.restart(input);
+        let result;
+        try {
+          result = request.command === 'start'
+            ? await this.#supervisor.start(input)
+            : await this.#supervisor.restart(input);
+        } finally {
+          if (reservedStart) this.#pendingStarts -= 1;
+        }
         if (result.record.state !== 'RUNNING' || result.record.cleanupRequired) {
           return {
             ...success(request.command, {
