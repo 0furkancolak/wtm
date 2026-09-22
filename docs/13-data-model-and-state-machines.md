@@ -174,6 +174,107 @@ last_used_at
 last_verified_at
 ```
 
+### `resource_sandboxes`
+
+```text
+id UUID
+root
+generation
+dev
+ino
+uid
+created_at
+
+unique (root, generation)
+```
+
+One row per generation of a `[resources]` sandbox root (`<workspaceRoot>/.resources`, see
+[docs/08](08-storage-cache-gc.md#resource-registry)). `dev`/`ino`/`uid` pin the directory's
+on-disk identity the same way `worktrees` pins a repository's, so a root reused after the
+filesystem underneath it changed cannot silently inherit an earlier generation's rows.
+
+### `resource_storage_objects`
+
+```text
+id UUID
+sandbox_id       references resource_sandboxes(id) on delete restrict
+path
+dev / ino / uid
+kind             file|directory
+state            READY|STALE|ORPHANED|QUARANTINED|REMOVED
+retention        ephemeral|persistent
+owned
+created_at / last_used_at / last_verified_at
+logical_bytes / allocated_bytes
+
+unique (sandbox_id, path)
+```
+
+One row per physical object a sandbox's GC can account for; `state` is described under [Resource
+GC state](#resource-gc-state) below. As of this writing `registerResourceSandbox`/
+`registerResourceStorageObject` are called only by tests — no production code path (materializer,
+daemon or CLI) populates these rows yet, so a live daemon's sandbox is currently always empty and
+`wtm gc`'s sandboxed candidate list is too. The plan/apply/recovery machinery downstream of these
+rows (`buildGcPlan`, `applyGcPlan`, `recoverGcJournalEntry`) is real and exercised by its own
+tests; only the registration write path is unconnected.
+
+### `resource_references`
+
+```text
+id UUID
+storage_object_id   references resource_storage_objects(id) on delete restrict
+owner_type
+owner_id
+resource_name
+created_at
+released_at nullable
+
+unique (storage_object_id, owner_type, owner_id, resource_name) where released_at is null
+```
+
+A held reference is a row with `released_at IS NULL`. `listResourceGcEvidence`'s reference count
+is exactly this count, and it is what `buildGcPlan`'s `live-reference` exclusion checks — a
+storage object with any active reference is never a GC candidate, regardless of its own `state`.
+
+### `resource_cleanup_leases`
+
+```text
+storage_object_id primary key   references resource_storage_objects(id) on delete cascade
+token
+sandbox_id / sandbox_generation
+path / dev / ino / uid / kind
+previous_state    STALE|ORPHANED|QUARANTINED
+retention
+acquired_at
+expires_at
+```
+
+Mirrors `repository_operation_leases` above: the primary key is the resource, so acquiring the
+lease and holding it are the same row. `applyGcPlan` holds one per candidate for the whole
+quarantine-through-finalize sequence; `previous_state` is what `resource_storage_objects.state`
+reverts to if the lease is released before finishing, so a crashed GC never leaves an object stuck
+in `QUARANTINED` with no honest candidate/excluded reading in the next plan.
+
+### `resource_gc_journal`
+
+```text
+operation_id UUID primary key
+storage_object_id   references resource_storage_objects(id) on delete restrict
+phase   prepared|linked|unlinking|quarantined|deleting|deleted|finalized
+original_path
+quarantine_path nullable
+quarantine_container_path/dev/ino/uid/mode   nullable, all-or-nothing
+dev / ino / uid
+sandbox_id / sandbox_generation
+kind
+updated_at
+```
+
+The crash-recovery record for one destructive GC operation, described under [Resource GC
+state](#resource-gc-state) below. `recoverGcJournalEntry` resumes strictly from `phase`, so an
+operation interrupted mid-way never has to re-derive where it stopped from filesystem probing
+alone. Rows are never deleted — `finalized` is a terminal label, not a row removal.
+
 ### `adapter_trust`
 
 ```text
@@ -368,6 +469,36 @@ owner removed:
  -> ORPHANED
  -> RETAINED | REMOVED
 ```
+
+## Resource GC state
+
+`resource_storage_objects.state`:
+
+```text
+READY
+ -> STALE | ORPHANED   (no longer referenced; set by the resource-production layer)
+ -> QUARANTINED         (an applyGcPlan operation holds a cleanup lease on it)
+ -> REMOVED             (terminal — content deleted, cleanup lease released)
+
+QUARANTINED -> STALE | ORPHANED   (previous_state, on a lease released before finishing)
+```
+
+`resource_gc_journal.phase`, one row per destructive operation:
+
+```text
+prepared -> linked -> unlinking -> quarantined -> deleting -> deleted -> finalized
+   \                                    ^
+    \__________(directories: rename() moves straight here)__________/
+```
+
+A file is quarantined by hard-linking it into the sandbox's quarantine container (`linked`), then
+unlinking the original (`unlinking`) — two steps so a crash between them still leaves one real
+link to the content. A directory cannot be hard-linked, so `prepared` moves straight to
+`quarantined` by `rename()`. `deleting`/`deleted` remove the quarantined copy itself;
+`finalized` is reached once the now-empty quarantine container is cleaned up and the cleanup lease
+released, at which point `resource_storage_objects.state` becomes `REMOVED`.
+`recoverGcJournalEntry` resumes an interrupted operation from exactly the `phase` its journal row
+last recorded, never by re-probing the filesystem for what state it must be in.
 
 ## Process state
 
