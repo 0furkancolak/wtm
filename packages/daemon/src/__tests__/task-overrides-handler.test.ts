@@ -106,6 +106,19 @@ describe('TaskOverridesHandler', () => {
     expect(second).toMatchObject({ ok: true, data: { task: { task: { run: 'npm run dev:v2', shell: true } } } });
   });
 
+  test('set accepts and round-trips a task\'s idle config', async () => {
+    // `idle` previously had no mirror in the wire schema (`taskOverrideValueSchema`), so this
+    // request was refused as WTM_DAEMON_INVALID_REQUEST before ever reaching `taskSchema`'s own
+    // (correct) validation below.
+    const registration: Pick<StateRegistrationReader, 'listWorktrees'> = { listWorktrees: () => [worktree()] };
+    const store = fakeStore();
+    const handler = new TaskOverridesHandler({ store, registration });
+    const task = { run: 'npm run dev', shell: true, idle: { enabled: true, timeout: '10m' } };
+    const set = await handler.handle(request('task.set', { cwd: '/repo/worktree', taskName: 'dev', task }));
+    expect(set).toMatchObject({ ok: true, data: { task: { taskName: 'dev', task } } });
+    expect(store.get('wt-1', 'dev')).toMatchObject({ task });
+  });
+
   test('resolves the deepest matching worktree, ignoring orphaned and removed ones', async () => {
     const nested = worktree({ id: 'wt-nested', path: '/repo/worktree/nested' });
     const removed = worktree({ id: 'wt-removed', path: '/repo/worktree/nested', state: 'REMOVED' });

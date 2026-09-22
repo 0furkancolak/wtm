@@ -14,16 +14,22 @@ const taskHealthcheckSchema = z.object({
   }, 'Healthcheck interval must be 100ms to 30s.').optional(),
 }).strict();
 
+/** Same bounds as `packages/core/src/config/idle.ts`'s `idleSchema`. */
+const taskIdleSchema = z.object({
+  enabled: z.boolean().optional(),
+  timeout: z.string().min(1).optional(),
+}).strict();
+
 /**
  * The wire shape of a task, mirroring `packages/core/src/config/schema.ts`'s `taskSchema` (a
  * `[tasks.<name>]` block). Kept as its own schema, not an import from `@wtm/core`, because
  * `protocol` has no dependency on `core` — the layering is `protocol ← platform ← core`.
  *
  * This validates shape only; the cross-field rules `taskSchema`'s `superRefine` enforces (queue
- * requires a timeout, a string command requires `shell`, and so on) are core's business rules,
- * not wire format, so they are re-checked authoritatively where the daemon writes the override
- * (`packages/daemon/src/task-overrides-handler.ts`), the same way any other WTM_CONFIG_INVALID
- * is raised.
+ * requires a timeout, a string command requires `shell`, idle is refused alongside queue, and so
+ * on) are core's business rules, not wire format, so they are re-checked authoritatively where
+ * the daemon writes the override (`packages/daemon/src/task-overrides-handler.ts`), the same way
+ * any other WTM_CONFIG_INVALID is raised.
  */
 export const taskOverrideValueSchema = z.object({
   description: z.string().min(1).optional(),
@@ -35,6 +41,7 @@ export const taskOverrideValueSchema = z.object({
   cwd: z.string().min(1).optional(),
   background: z.boolean().optional(),
   healthcheck: taskHealthcheckSchema.optional(),
+  idle: taskIdleSchema.optional(),
   queue: z.boolean().optional(),
   memory_estimate_mib: z.number().int().min(1).max(1_048_576).optional(),
   queue_env: z.record(z.string().min(1), z.string()).optional(),
