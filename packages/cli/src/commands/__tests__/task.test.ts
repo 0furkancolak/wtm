@@ -151,6 +151,23 @@ describe('task commands', () => {
     expect(JSON.parse(out)).toMatchObject({ ok: false, command: 'task list', errors: [{ code: 'WTM_DAEMON_UNAVAILABLE' }] });
   });
 
+  test('export accepts --json after the argument, like every sibling task command, and labels it "task export"', async () => {
+    const { fixture, databasePath } = await repository();
+    let out = '';
+    const code = await runCli(['task', 'export', 'dev', '--json'], {
+      cwd: fixture.repoPath,
+      taskTargetDatabasePath: databasePath,
+      taskTargetGlobalConfigPath: join(fixture.root, 'config.toml'),
+      stdout: (value) => { out += value; },
+      stderr: () => {},
+    });
+    expect(code).toBeGreaterThan(0);
+    // Without `addJsonOption`, commander rejected `--json` here as an unknown option before the
+    // command ever ran, and `runTaskShowCommand`'s envelope (built for 'task show', its own
+    // caller-blind command name) leaked through unrelabeled when it did run.
+    expect(JSON.parse(out)).toMatchObject({ ok: false, command: 'task export', errors: [{ code: 'WTM_DAEMON_UNAVAILABLE' }] });
+  });
+
   test('task set refuses --run combined with --argv before ever contacting the daemon', async () => {
     const { fixture, databasePath } = await repository();
     let out = '';
