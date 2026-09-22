@@ -120,6 +120,84 @@ describe('registry-backed diagnostics', () => {
     expect(ports.leases.map(({ name, port }) => [name, port]).sort())
       .toEqual([['api', 4100], ['web', 4200]]);
   });
+
+  it('answers explain/plan/env with nothing, rather than throwing, outside every worktree', async () => {
+    // `readStatus` already falls back to "no worktree" outside every registered worktree
+    // (see above). `readExplain`/`readPlan`/`readEnv` used to resolve unconditionally from
+    // `options.cwd`, which meant a `--global` command run from a workspace root -- registered,
+    // but not itself inside any worktree -- threw `WTM_WORKSPACE_NOT_FOUND` for every workspace,
+    // even ones whose own worktree `status`/`doctor`/`ports` answered from just fine.
+    const source = sourceAt('/elsewhere');
+
+    await expect(source.readExplain(registered)).resolves.toEqual({ workspace: registered, decisions: [] });
+    await expect(source.readPlan(registered)).resolves.toEqual({ workspace: registered, changes: [] });
+    await expect(source.readEnv(registered)).resolves.toEqual({ workspace: registered, variables: {} });
+  });
+
+  describe('--global explain/plan/env answer per workspace, not per cwd', () => {
+    // `readExplain`/`readPlan`/`readEnv` used to resolve from `options.cwd` regardless of which
+    // workspace they were asked about, so a `--global` walk over several workspaces reported the
+    // *first* workspace's decisions/plan/environment again under every other workspace's name.
+    // `readStatus` already avoids this (`currentWorktree(workspace.id)`, tested above); these
+    // assert the other three now do too.
+    async function twoWorkspaceFixture() {
+      const root = mkdtempSync(join(tmpdir(), 'wtm-global-'));
+      cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+      mkdirSync(join(root, 'a/repo'), { recursive: true });
+      mkdirSync(join(root, 'b/repo'), { recursive: true });
+
+      const workspaceA: WorkspaceRecord = { ...workspace, id: 'workspace-a', name: 'a', root: join(root, 'a'), configPath: null };
+      const workspaceB: WorkspaceRecord = { ...workspace, id: 'workspace-b', name: 'b', root: join(root, 'b'), configPath: null };
+      const repoA: RepositoryRecord = {
+        ...repositories[0] as RepositoryRecord, id: 'repo-a', workspaceId: 'workspace-a',
+        commonGitDir: join(root, 'a/repo/.git'), mainRoot: join(root, 'a/repo'),
+      };
+      const repoB: RepositoryRecord = {
+        ...repositories[0] as RepositoryRecord, id: 'repo-b', workspaceId: 'workspace-b',
+        commonGitDir: join(root, 'b/repo/.git'), mainRoot: join(root, 'b/repo'),
+      };
+      const worktreeA = worktree('worktree-a', 'repo-a', join(root, 'a/repo'), 1);
+      const worktreeB = worktree('worktree-b', 'repo-b', join(root, 'b/repo'), 1);
+      const twoWorkspaceStore = {
+        listWorkspaces: () => [workspaceA, workspaceB],
+        listRepositories: (workspaceId?: string) => [repoA, repoB]
+          .filter((repository) => workspaceId === undefined || repository.workspaceId === workspaceId),
+        listWorktrees: (repositoryId?: string) => [worktreeA, worktreeB]
+          .filter((record) => repositoryId === undefined || record.repositoryId === repositoryId),
+        listManagedProcesses: () => [],
+        listEndpointLeases: () => [],
+      } as unknown as DaemonStateStore;
+
+      const registeredA = { id: workspaceA.id, name: workspaceA.name, root: workspaceA.root, scope: workspaceA.scope } as const;
+      const registeredB = { id: workspaceB.id, name: workspaceB.name, root: workspaceB.root, scope: workspaceB.scope } as const;
+      // Standing in workspace A's own worktree, as a `--global` walk's `cwd` would be fixed at
+      // whichever worktree the command actually ran from.
+      const source = createStateDiagnosticDataSource(twoWorkspaceStore, {
+        cwd: join(root, 'a/repo'),
+        globalConfigPath: join(root, 'config.toml'),
+      });
+      return { source, registeredA, registeredB };
+    }
+
+    it('does not report the running workspace\'s decisions under another workspace\'s name', async () => {
+      const { source, registeredA, registeredB } = await twoWorkspaceFixture();
+
+      const explainA = await source.readExplain(registeredA);
+      const explainB = await source.readExplain(registeredB);
+
+      // A's own worktree is where the command runs, so A resolves normally.
+      expect(explainA.workspace).toEqual(registeredA);
+      // B has no worktree at A's cwd: it must not receive A's decisions relabeled as its own.
+      expect(explainB).toEqual({ workspace: registeredB, decisions: [] });
+    });
+
+    it('does the same for plan and env', async () => {
+      const { source, registeredB } = await twoWorkspaceFixture();
+
+      await expect(source.readPlan(registeredB)).resolves.toEqual({ workspace: registeredB, changes: [] });
+      await expect(source.readEnv(registeredB)).resolves.toEqual({ workspace: registeredB, variables: {} });
+    });
+  });
 });
 
 describe('wtm status --pr', () => {
