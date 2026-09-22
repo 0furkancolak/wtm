@@ -4179,13 +4179,45 @@ veriyor (aşağıya bak) — bu Kaptan'ın hesabına bağlı değil, gerçek bir
       bir artifact yok (madde 36); Kaptan'ın hesabına bağlı.
 - [x] README quick start temiz bir workspace'te hatasız tamamlanıyor. — madde 37 ile aynı kanıt:
       `packages/cli/src/__tests__/quick-start.test.ts`, standart `bun run test`'in parçası, geçiyor.
-- [ ] Idle RSS ölçümü `pass` veriyor. — **Gerçek ölçüm, bu oturumda `bun run test:perf` ile alındı:
-      89.97 MiB (`target: 85`, `investigation: 110`) → durum `warning`, `pass` değil.** Blocker eşiğinin
-      altında olduğu için release gate'i engellemiyor (`release.blockers: 0`), ama checklist'in kendi
-      sözcüğü ("pass") karşılanmıyor. Bu Linux sandbox ölçümü; hedef platform macOS'ta farklı çıkabilir,
-      ama bugüne kadar bu satır hiç gerçek bir sayıyla denetlenmemişti. Kaptan'a/koordinatöre
-      bildirilmesi gereken gerçek bir mühendislik bulgusu — hedefin gevşetilmesi mi, yoksa idle RSS'in
-      gerçekten düşürülmesi mi gerektiği bir tasarım kararı.
+- [~] Idle RSS ölçümü `pass` veriyor. — **2026-09-22 profillendi ve gerçek bir düzeltme uygulandı,
+      ama bu Linux sandbox'ta hedefin tam altına inmiyor.** İlk ölçüm (`bun run test:perf`): 89.97 MiB
+      (`target: 85`, `investigation: 110`) → `warning`, `pass` değil — blocker eşiğinin altında
+      olduğu için release gate'i engellemiyor (`release.blockers: 0`), ama checklist'in "pass"
+      sözcüğü karşılanmıyor.
+
+      **Profilleme (tahmine değil, gerçek ölçüme dayalı):** çıplak Node.js süreci 42 MiB; sadece
+      `runtime-factory.ts`'in bundle'ını import etmek (daemon hiç başlamadan) 83.4 MiB; daemon
+      gerçekten başladıktan sonra 89.7-90.0 MiB. Yani WTM'nin kendi kurulum maliyeti (supervisor,
+      log store, Unix socket server, structural watcher) yalnızca ~6.5 MiB — `idle-daemon.scenario.ts`'in
+      kendi yorumunun madde 42'den aktardığı ~6 MiB'lik bulguyla birebir örtüşüyor. **Yani WTM'nin
+      kendi kodunda bir regresyon yok**; toplamın yüksek çıkmasının sebebi Node.js + zorunlu
+      bağımlılıkların (`zod` tek başına ~15 MiB, `better-sqlite3`'ün native binding'i ~4 MiB) import
+      maliyeti — hiçbiri güvenle kaldırılabilecek gereksiz bir eager import değil (ikisi de daemon'ın
+      normal çalışma yolunda kullanılıyor). `commander` bu bundle'a hiç girmiyor (denendi, ölçüldü).
+
+      **Uygulanan gerçek, güvenli kazanç:** glibc'nin varsayılan heap allocator'ı `8 * nproc` kadar
+      arena açabiliyor; bu sandbox'ta 4 CPU görünüyor. `MALLOC_ARENA_MAX=1` (uzun süre çalışan,
+      büyük ölçüde tek thread'li bir daemon için standart, yaygın kullanılan bir tuning, davranışsal
+      hiçbir etkisi yok) ile ölçülen gerçek düşüş: **89.65 → 86.55 MiB (~%3.5)**, `idle-daemon.scenario.ts`'in
+      tam kendisiyle, üç kez tekrarlanarak doğrulandı. `packages/platform/src/service/linux.ts`'teki
+      systemd unit'ine eklendi (yalnızca Linux — `darwin.ts`/`windows.ts` dokunulmadı, glibc'ye özgü
+      bir mekanizma). İki golden-string testi (`linux-service.test.ts`, dolaylı olarak `systemd.test.ts`)
+      güncellendi; `typecheck`/`lint`/tam `test` (Node 24.18.0) temiz.
+
+      **Neden tamamen kapatılmadı:** 86.55 MiB hâlâ 85'in üstünde (`warning` olarak kalıyor).
+      Kalan ~41 MiB'lik import maliyetinin geri kalanı Node.js/V8'in kendisi + zorunlu bağımlılıklar;
+      güvenle çıkarılabilecek bir eager import bulunamadı (zod, config şema doğrulaması için daemon'ın
+      normal reconcile yolunda gerçekten kullanılıyor). Asıl release gate'i yalnızca `macos-15`/
+      `macos-15-intel` runner'larında koşuyor (`.github/workflows/release.yml`'in `verify` job'u) ve
+      85/110 hedefi zaten yalnızca gerçek macOS CI ölçümlerinden (darwin arm64 73.9 MiB, darwin x64
+      63.7 MiB) kalibre edilmişti — ama `verify-linux` job'u (madde 29, `ubuntu-24.04`) da **aynı
+      eşiği** kullanıyor ve bugüne kadar hiç gerçek bir Linux ölçümü alınmamıştı. Bu, ilk kez alınan
+      gerçek Linux ölçümü. Bu sandbox konteyneri gerçek `ubuntu-24.04` GitHub runner'ıyla birebir aynı
+      olmayabileceğinden (farklı çekirdek/glibc sürümü, konteyner belleği ayırma davranışı), hedefin
+      Linux için gevşetilmesi gerekip gerekmediğine dair **kanıta dayalı bir karar** verilemedi —
+      bunun için gerçek bir `ubuntu-24.04` CI koşusu (Actions kota kesintisi bitince) gerekiyor.
+      Sandbox'ta tahmine dayalı bir eşik icat etmek, gerçek CI'da bir regresyonu maskeleme riski
+      taşırdı, o yüzden yapılmadı.
 
 ---
 

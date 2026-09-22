@@ -94,7 +94,7 @@ StartLimitIntervalSec=0
 Type=exec
 ExecStart="/opt/node bin/node" "/opt/wtm/cli.js" "daemon" "serve" "q\\"$$HOME\\\\100%%"
 WorkingDirectory=/home/a b
-Environment="HOME=/home/a b" "PATH=/usr/bin:/bin" "WTM_DAEMON_SUPERVISED=1"
+Environment="HOME=/home/a b" "PATH=/usr/bin:/bin" "WTM_DAEMON_SUPERVISED=1" "MALLOC_ARENA_MAX=1"
 StandardOutput=append:/home/a b/.local/state/wtm/logs/daemon.log
 StandardError=append:/home/a b/.local/state/wtm/logs/daemon.error.log
 Restart=on-failure

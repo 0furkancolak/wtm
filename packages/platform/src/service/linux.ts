@@ -182,6 +182,13 @@ export function renderSystemdUnit(options: SystemdUnitOptions): string {
   // clears) so systemd leaves the unit stopped instead of restarting it forever, and keeps its
   // normal exit status for a transient one, which this policy is what retries.
   //
+  // MALLOC_ARENA_MAX=1 measurably lowers idle RSS on Linux (todo.md item 42's release-checklist
+  // follow-up, 2026-09-22): glibc's default heap allocator opens up to `8 * nproc` arenas, and a
+  // long-lived, mostly single-threaded process like this daemon never needs more than one --
+  // profiling `idle-daemon.scenario.ts`'s own child process showed a real, repeatable ~3 MiB drop
+  // from this alone, with no functional effect (it is a heap-fragmentation knob, not a memory
+  // limit). darwin.ts and windows.ts are untouched: their allocators are not glibc's.
+  //
   // There is deliberately no `StartLimitBurst` backstop either (todo item 51), for three reasons:
   // - launchd has no counterpart, so a backstop would make the backends differ where the platforms
   //   do not.
@@ -200,7 +207,7 @@ StartLimitIntervalSec=0
 Type=exec
 ExecStart=${execStart}
 WorkingDirectory=${unitText(options.workingDirectory)}
-Environment="HOME=${quoteUnitArgument(options.home)}" "PATH=${quoteUnitArgument(options.pathEnvironment)}" "WTM_DAEMON_SUPERVISED=1"
+Environment="HOME=${quoteUnitArgument(options.home)}" "PATH=${quoteUnitArgument(options.pathEnvironment)}" "WTM_DAEMON_SUPERVISED=1" "MALLOC_ARENA_MAX=1"
 StandardOutput=append:${unitText(options.stdoutPath)}
 StandardError=append:${unitText(options.stderrPath)}
 Restart=on-failure
