@@ -2654,11 +2654,51 @@ Dokunulan dosyalar: `packages/cli/src/tui/{view-model,render,terminal,loop,comma
 `docs/04-cli-reference.md` ("Interactive dashboard" bölümü); `skills/wtm/SKILL.md` (komut haritası
 satırı).
 
-Kasıtlı olarak dışarıda bırakılan: disk kullanımı + cleanup-candidate görünümü (birim 2) ve log
-tail görünümü (birim 3) — madde metninin kendisinin ayırdığı gibi. `wtm tui`'nin dış döngüsü
+Kasıtlı olarak dışarıda bırakılan (o zaman): disk kullanımı + cleanup-candidate görünümü (birim 2)
+ve log tail görünümü (birim 3) — madde metninin kendisinin ayırdığı gibi. `wtm tui`'nin dış döngüsü
 (raw mode kurulumu, interval timer, key-event wiring) test edilmedi — gerçek bir TTY gerektiriyor,
 CLAUDE.md'nin native/fixture test ayrımıyla aynı sınır; yalnızca saf `view-model.ts`/`render.ts` ve
 `command.ts`'in TTY-refusal/interval-parse fonksiyonları test edildi.
+
+**2026-09-22 (birim 2/3, disk kullanımı + cleanup-candidate paneli):** Teslim edildi.
+`defaultTuiPanels`'e salt-okunur yeni bir panel eklendi ("Disk usage & cleanup candidates") —
+`wtm disk --json` ve `wtm gc --dry-run --json`'ın bugün zaten kullandığı derleme aynen yeniden
+kullanıldı (`packages/cli/src/commands/resource-production.ts`'deki
+`runProductionDiskCommand`/`runProductionGcCommand`), ikinci bir veri toplama yolu icat edilmedi.
+Panel `wtm gc --apply`'ı asla çağırmıyor: `main.ts`'teki `tui` komutu her zaman `apply: false`
+geçiyor, ve zaten `applyGcPlan`'ın dry-run dalı hiçbir kilit/karantina/silme adımına girmeden
+`'would-delete'`/`'already-absent'` sonuçları döndürüyor (`packages/core/src/resources/gc.ts`).
+
+Yeni dosya `packages/cli/src/tui/resources-view.ts`: saf `buildTuiResourcesView()`, disk/gc
+zarflarını `TuiResourcesView`'e dönüştürüyor — unit 1'in `view-model.ts`'iyle aynı kalıp.
+`view-model.ts`'e `TuiViewModel.resources: TuiResourcesView | null` alanı, `render.ts`'e
+`resourcesPanel` eklendi.
+
+Performans kararı: disk/gc-plan derlemesi gerçek dosya sistemi işi yapıyor
+(`resource-production.ts`'in kendi doc-comment'i, worktree-local kaynaklar üzerinde
+`lstat`/`readdir` gezintisi + gc dry-run'ın aday başına `lstat`'ı) — `status`/`doctor`'ın salt
+SQLite okumalarının aksine. Bu yüzden panel her tick'te değil, varsayılan 3s aralıkta her 5.
+tick'te (~15s) yenileniyor (`loop.ts`, `defaultResourceRefreshEveryNTicks`); `r` ile manuel
+yenileme her zaman anında yeniden getiriyor, çünkü o tek seferlik açık bir istek, otomatik polling
+değil. Bu ayrı, yapılandırılabilir bir ikinci interval değil — mevcut tek interval'in sabit bir
+katı, çünkü onu ayrıca ayarlanabilir kılmayı gerektiren bir durum yok.
+
+Bilinçli not: gerçek bir kurulumda bugün `gc` aday listesi büyük olasılıkla boş çıkıyor — bu
+"temiz" anlamına gelmiyor, sandbox/storage-object GC tablolarının *yazma* yolu (kayıt) henüz hiçbir
+prod kod yoluna bağlanmadı (`docs/13`'ün "Resource GC state" bölümü,
+`docs/superpowers/plans/2026-09-21-release-readiness-audit.md`). Panel boş bir listeyle sessiz
+kalmak yerine bunu söylüyor ("no ephemeral-storage GC evidence recorded yet"). Worktree-local
+kaynaklar (`docs/08`'in aynı adlı bölümü) ayrıca, doğrudan ölçülerek gösteriliyor ve gerçek sayılar
+taşıyor — bu kısıt onları etkilemiyor. Yazma yolunu bağlamak ayrı, çok daha büyük bir birim; bu
+TUI panelinin kapsamına girmiyor.
+
+Dokunulan dosyalar: `packages/cli/src/tui/resources-view.ts` (yeni),
+`packages/cli/src/tui/{view-model,render,loop}.ts`, `packages/cli/src/main.ts` (`tui` komutuna
+`readResources`), `packages/cli/src/tui/__tests__/{resources-view.test.ts (yeni), render.test.ts}`;
+`docs/04-cli-reference.md` ("Interactive dashboard" bölümü).
+
+Kasıtlı olarak dışarıda bırakılan: log tail görünümü (birim 3) — madde metninin kendisinin ayırdığı
+gibi, ayrı bir birim.
 
 ---
 

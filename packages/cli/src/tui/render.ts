@@ -84,9 +84,52 @@ const healthPanel: TuiPanel = {
   },
 };
 
-/** The panels unit 1 ships. Disk/cleanup (unit 2) and log tail (unit 3) extend this list. */
+/** How many `gc` dry-run items the panel lists before collapsing the rest into a "N more" line. */
+const maxListedGcItems = 8;
+
+const resourcesPanel: TuiPanel = {
+  id: 'resources',
+  title: 'Disk usage & cleanup candidates',
+  lines(model) {
+    if (model.resources === null) return ['(not yet fetched — this panel refreshes less often than the rest)'];
+    const lines: string[] = [];
+
+    const disk = model.resources.disk;
+    if (disk === null) {
+      lines.push('disk: (resource lifecycle state unavailable)');
+    } else {
+      lines.push(`disk total   ${formatBytes(disk.totals.logicalBytes)} logical, `
+        + `${formatBytes(disk.totals.allocatedBytes)} allocated`);
+      lines.push(`  owned      ${pad(String(disk.owned.objects), 6)} objects  ${formatBytes(disk.owned.allocatedBytes)}`);
+      lines.push(`  unknown    ${pad(String(disk.unknown.objects), 6)} objects  ${formatBytes(disk.unknown.allocatedBytes)}`);
+      lines.push(`  worktree   ${pad(String(disk.worktree.objects), 6)} objects  ${formatBytes(disk.worktree.allocatedBytes)}`);
+    }
+
+    const gc = model.resources.gc;
+    if (gc === null) {
+      lines.push('gc: (resource lifecycle state unavailable)');
+    } else if (gc.items.length === 0) {
+      // Not "no candidates found" — see `resources-view.ts`: the sandbox/storage-object GC
+      // registration write path is not wired into any production code path yet, so this is
+      // silence, not a clean bill of health. Saying so beats an empty list with no context.
+      lines.push('gc: no ephemeral-storage GC evidence recorded yet');
+    } else {
+      lines.push(`gc dry-run   ${gc.planned} candidate${gc.planned === 1 ? '' : 's'}, ${gc.excluded} excluded`);
+      for (const item of gc.items.slice(0, maxListedGcItems)) {
+        lines.push(`  ${pad(gcOutcomeGlyph(item.outcome), 14)} ${item.path}`);
+      }
+      if (gc.items.length > maxListedGcItems) lines.push(`  … ${gc.items.length - maxListedGcItems} more`);
+    }
+
+    for (const error of model.resources.errors) lines.push(`[${error.code}] ${error.message}`);
+    lines.push(`(resources refreshed ${model.resources.fetchedAt})`);
+    return lines;
+  },
+};
+
+/** The panels unit 1 and unit 2 ship. Log tail (unit 3) extends this list. */
 export const defaultTuiPanels: readonly TuiPanel[] = [
-  workspacePanel, worktreePanel, processesPanel, portsPanel, healthPanel,
+  workspacePanel, worktreePanel, processesPanel, portsPanel, healthPanel, resourcesPanel,
 ];
 
 const minColumns = 20;
@@ -140,6 +183,26 @@ function healthGlyph(status: string): string {
   if (status === 'warning') return '[!!]';
   if (status === 'error') return '[XX]';
   return '[??]';
+}
+
+function gcOutcomeGlyph(outcome: string): string {
+  if (outcome === 'would-delete') return 'would-delete';
+  if (outcome === 'already-absent') return 'already-absent';
+  return `[!!] ${outcome}`;
+}
+
+const byteUnits = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
+
+/** Filesystem-block allocation and file-length sums, both already in bytes — 1024-based display. */
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 1024) return `${bytes} B`;
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < byteUnits.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(1)} ${byteUnits[unitIndex]}`;
 }
 
 function pad(value: string, width: number): string {

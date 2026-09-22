@@ -615,20 +615,36 @@ worktree        branch, state, path, head commit
 running tasks   this worktree's managed processes (task, pid, state)
 ports           this worktree's active endpoint leases
 health          wtm doctor's findings
+disk usage &    logical/allocated bytes from wtm disk (owned, unknown-ownership and
+cleanup         worktree-local), and what wtm gc --dry-run would remove
 ```
 
-It is built entirely on `wtm status`/`wtm doctor`'s existing stable JSON data, polled on a fixed
-interval — never `wtm ps`. `ps` marks every worktree it lists as active, which feeds idle-runtime
-suspension (`[tasks.<name>.idle]`); a dashboard polling it every few seconds would keep every task
-it displays permanently awake. `status`'s own `processes` field answers "what is running here"
-from the same process records, without that side effect.
+Workspace/worktree/running-tasks/ports/health are built entirely on `wtm status`/`wtm doctor`'s
+existing stable JSON data, polled on a fixed interval — never `wtm ps`. `ps` marks every worktree
+it lists as active, which feeds idle-runtime suspension (`[tasks.<name>.idle]`); a dashboard
+polling it every few seconds would keep every task it displays permanently awake. `status`'s own
+`processes` field answers "what is running here" from the same process records, without that side
+effect.
+
+The disk-usage / cleanup-candidate panel reuses the exact same assembly `wtm disk --json` and
+`wtm gc --dry-run --json` use (`runProductionDiskCommand`/`runProductionGcCommand` in
+`packages/cli/src/commands/resource-production.ts`) — it is always a dry run and never applies a
+GC plan. Unlike the other panels, it refreshes on a slower cadence: assembling it does real
+filesystem work (an `lstat`/`readdir` walk of worktree-local resources, and a `gc` dry-run's
+per-candidate `lstat`s), unlike `status`/`doctor`'s SQLite-only reads, so it only re-fetches every
+5th tick (about 15s at the default interval) instead of every tick. Pressing `r` always re-fetches
+it immediately, since that is one explicit request rather than automatic polling. On a real
+install today, its cleanup-candidate list is typically empty — not because nothing needs cleaning,
+but because the sandbox/storage-object GC tables' *write* path (registration) is not yet wired
+into any production code path (`docs/13-data-model-and-state-machines.md`'s "Resource GC state"
+section); the panel says so rather than implying a clean sweep. Worktree-local resources
+(`docs/08`'s "Worktree-local resources" section) are measured directly and do show real numbers.
 
 There is no `--global`: `--global` aggregates *registered workspaces* (repositories), not the
 worktrees of one workspace, and reports this directory's own worktree in each — which would make a
 continuously refreshing dashboard misleading rather than merely redundant. `wtm tui` therefore
-stays scoped to one worktree, exactly as `wtm status`/`wtm doctor` do with no selector; disk usage,
-cleanup candidates and a log tail are separate, later additions (each its own panel), not part of
-this view.
+stays scoped to one worktree, exactly as `wtm status`/`wtm doctor` do with no selector; a log tail
+is a separate, later addition (its own panel), not part of this view.
 
 Options:
 

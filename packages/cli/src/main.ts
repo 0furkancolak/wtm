@@ -127,6 +127,9 @@ import { createDaemonStartupDiagnostic } from './daemon-startup-diagnostic';
 import { renderCompletionScript, validateCompletionKind, type CompletionDataKind } from './commands/completion';
 import { parseTuiIntervalMs, tuiNonInteractiveRefusal } from './tui/command';
 import { runTuiLoop } from './tui/loop';
+import type { TuiResourceFetch } from './tui/resources-view';
+import type { DiskCommandResult } from './commands/disk';
+import type { GcCommandResult } from './commands/gc';
 
 export interface CliDependencies {
   dataSource?: DiagnosticDataSource;
@@ -704,7 +707,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   });
 
   const tui = program.command('tui [selector]')
-    .description('Interactive terminal dashboard: worktree, running tasks, ports and health.');
+    .description('Interactive terminal dashboard: worktree, running tasks, ports, health, disk usage and cleanup candidates.');
   tui.option('--interval <ms>', 'refresh interval in milliseconds (default 3000, minimum 250)');
   tui.action(async (selector: string | undefined, options: { interval?: string }) => {
     const refusal = tuiNonInteractiveRefusal(process.stdout);
@@ -721,6 +724,33 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       hooks.setExitCode?.(exitCodeForError('WTM_CONFIG_INVALID'));
       return;
     }
+    // The exact same assembly `wtm disk`/`wtm gc --dry-run` use below — never `apply: true`, so
+    // this panel can never delete anything. `dependencies.diskRunner`/`gcRunner` are the same test
+    // seams those two commands already accept.
+    const readResources = async (targetCwd: string): Promise<TuiResourceFetch> => {
+      const [diskEnvelope, gcEnvelope] = await Promise.all([
+        dependencies.diskRunner === undefined
+          ? runProductionDiskCommand({
+            databasePath: dependencies.resourceDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+            globalConfigPath: defaultProductionRuntimePaths().globalConfigPath,
+            cwd: targetCwd,
+          })
+          : dependencies.diskRunner({ cwd: targetCwd }),
+        dependencies.gcRunner === undefined
+          ? runProductionGcCommand({
+            databasePath: dependencies.resourceDatabasePath ?? defaultProductionRuntimePaths().databasePath,
+            globalConfigPath: defaultProductionRuntimePaths().globalConfigPath,
+            cwd: targetCwd,
+            apply: false,
+            fileTrust: hostPlatformRuntime().fileTrust,
+          })
+          : dependencies.gcRunner({ cwd: targetCwd, apply: false }),
+      ]);
+      return {
+        diskEnvelope: diskEnvelope as JsonEnvelope<DiskCommandResult | null>,
+        gcEnvelope: gcEnvelope as JsonEnvelope<GcCommandResult | null>,
+      };
+    };
     const result = await runTuiLoop({
       cwd,
       ...(selector === undefined ? {} : { selector }),
@@ -728,6 +758,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       stdin: process.stdin,
       stdout: process.stdout,
       intervalMs,
+      readResources,
       ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
     });
     hooks.setExitCode?.(result.exitCode);
