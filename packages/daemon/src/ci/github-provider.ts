@@ -40,6 +40,12 @@ function classify(result: GhCommandResult, output: string = result.stderr): CiPr
   if (result.outcome === 'not-found') return { kind: 'unavailable', reason: 'missing', detail: 'The GitHub CLI (gh) was not found.' };
   if (result.outcome === 'timeout') return { kind: 'transient', detail: 'gh did not answer within 30 seconds.' };
   if (/rate limit|HTTP 429/i.test(stderr)) return { kind: 'throttled', detail };
+  // Any other HTTP 403 (a token that's logged in but lacks the scope this repo's Actions data
+  // needs, e.g. "Resource not accessible by integration") must count toward the failure streak
+  // the same way `unauthenticated` does — left as `transient` before this line existed, it fell
+  // through to the catch-all below and retried silently for the watch's whole 2-hour deadline,
+  // never surfacing the actionable "check gh's permissions" refusal a real scope problem needs.
+  if (/HTTP 403/i.test(stderr)) return { kind: 'unavailable', reason: 'forbidden', detail };
   if (/HTTP 5\d\d|timeout|timed out|connection|EOF|TLS|network/i.test(stderr)) return { kind: 'transient', detail };
   if (/HTTP 401|not logged in|auth login|authentication|Bad credentials|token .*invalid|invalid token|not logged into/i.test(stderr)) return { kind: 'unavailable', reason: 'unauthenticated', detail };
   if (/HTTP 404|Could not resolve to a Repository|not found/i.test(stderr)) return { kind: 'unavailable', reason: 'not-found', detail };

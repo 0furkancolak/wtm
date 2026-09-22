@@ -65,6 +65,18 @@ describe('CiWatcher', () => {
     });
   });
 
+  test('refuses a scope/permission 403 with its own message, not the "not logged in" one', () => {
+    const r = result.refusals;
+    expect(r.forbidden).toMatchObject({
+      ok: false,
+      errors: [{
+        code: 'WTM_CI_UNAVAILABLE',
+        message: "The GitHub CLI is logged in to github.com but does not have permission to read github.com/acme/widgets's CI data (HTTP 403).",
+        context: { provider: 'github', host: 'github.com', repo: 'github.com/acme/widgets' },
+      }],
+    });
+  });
+
   test('unwatch cancels and disarms; an unregistered cwd is refused', () => {
     const r = result.unwatchAndUnregisteredCwd;
     expect(r.firstUnwatch).toMatchObject({ ok: true, data: { stopped: true, watch: { state: 'cancelled' } } });

@@ -105,11 +105,22 @@ describe('GitHub CI provider', () => {
     ['HTTP 404: Not Found', 'unavailable'],
     ['GraphQL: Could not resolve to a Repository with the name', 'unavailable'],
     ['HTTP 401: Bad credentials', 'unavailable'],
+    ['HTTP 403: Resource not accessible by integration', 'unavailable'],
   ])('classifies %s', async (stderr, kind) => {
     const { provider } = recording([fail(stderr)]);
     const answer = await provider.listRuns(repository, 'a'.repeat(40));
     expect(answer.ok).toBe(false);
     if (!answer.ok) expect(answer.failure.kind).toBe(kind as 'throttled');
+  });
+
+  test('a 403 that is not a rate limit counts toward the failure streak instead of retrying forever', async () => {
+    // Before this fix, a scope/permission 403 (a token that's logged in but lacks Actions read
+    // access) matched none of classify()'s patterns and fell through to `transient`, which
+    // `CiWatcher#failed` reschedules indefinitely rather than ever reaching the terminal
+    // `unavailable` state — see github-provider.ts's own comment on the `HTTP 403` branch.
+    const { provider } = recording([fail('HTTP 403: Resource not accessible by integration')]);
+    const answer = await provider.listRuns(repository, 'a'.repeat(40));
+    expect(answer).toMatchObject({ ok: false, failure: { kind: 'unavailable', reason: 'forbidden' } });
   });
 
   test('treats unexpected output as transient', async () => {
