@@ -22,6 +22,16 @@ experimental while its native validation is being completed.
 _The npm badge reads "not found" until the package's first real publish — see [npm package:
 publication awaiting verification](#npm-package-publication-awaiting-verification)._
 
+| Platform | CLI | Daemon | Process supervision | Release binary |
+| --- | --- | --- | --- | --- |
+| macOS | ✅ | ✅ launchd | ✅ | ✅ prerelease arm64 / x64 |
+| Linux x64 | ✅ | ✅ systemd --user | ✅ | 🚧 buildable, not yet shipped in a tag |
+| Linux arm64 | ✅ | ✅ systemd --user | ✅ | 🚧 buildable, not yet shipped in a tag |
+| Windows x64 | 🚧 experimental | 🚧 experimental | 🚧 experimental | 🚧 built, CI leg informational only |
+
+✅ supported and evidenced · 🚧 in progress. See [Platform support](#platform-support) below for
+what each status is actually backed by, platform by platform.
+
 Powered by [nafru.com](https://nafru.com).
 
 ---
