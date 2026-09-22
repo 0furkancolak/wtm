@@ -211,12 +211,22 @@ unique (sandbox_id, path)
 ```
 
 One row per physical object a sandbox's GC can account for; `state` is described under [Resource
-GC state](#resource-gc-state) below. As of this writing `registerResourceSandbox`/
-`registerResourceStorageObject` are called only by tests — no production code path (materializer,
-daemon or CLI) populates these rows yet, so a live daemon's sandbox is currently always empty and
-`wtm gc`'s sandboxed candidate list is too. The plan/apply/recovery machinery downstream of these
-rows (`buildGcPlan`, `applyGcPlan`, `recoverGcJournalEntry`) is real and exercised by its own
-tests; only the registration write path is unconnected.
+GC state](#resource-gc-state) below. As of this writing `upsertResourceSandbox`/
+`registerResourceStorageObject` are called only by tests — no production code path populates these
+rows yet, so a live daemon's sandbox is currently always empty and `wtm gc`'s sandboxed candidate
+list is too. This is not a missing wire between two existing systems: `materializer.ts`/`guard.ts`
+(`planResourceMaterialization`, `applyMaterializationPlan`, `createResourceGuard`), the engine that
+would produce these rows, has zero production callers of its own — only tests and the `core/index.ts`
+re-export reference it. The real production resource path today
+(`packages/core/src/resources/preparation.ts`, driven by `wtm run`/`wtm resolve --prepare`) is a
+separate, purely filesystem-level pipeline for `[resources]`-declared worktree-local files; per
+[docs/08](08-storage-cache-gc.md) those are deliberately kept outside every sandbox and never get a
+row here. The plan/apply/recovery machinery downstream of `resource_storage_objects`
+(`buildGcPlan`, `applyGcPlan`, `recoverGcJournalEntry`) is real and exercised by its own tests;
+only the producer that would feed it live rows was never built. Closing this needs new design
+(adapter resource type → sandbox mapping, `generation` semantics, retention classification,
+reference-lifecycle ownership, concurrent-materialization races), not a single call site — see
+`todo.md`.
 
 ### `resource_references`
 

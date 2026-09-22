@@ -84,6 +84,29 @@ bağlanmamış. Bu, docs/13'ün görevi değil (belgeleme, uygulama değil) ama 
 düşüldü ki okuyan biri bunu canlı sanmasın; ayrı bir birim (kaydı üretim koduna bağlamak) olarak
 kalıyor, burada iddia edilmiyor.
 
+**2026-09-22 ikinci takip: kapsam ölçüldü, "bağlantıyı kur" değil "üretici motoru inşa et".**
+Koordinatörün talebiyle bir Explore ajanı üretim çağrı zincirini haritaladı. Sonuç, yukarıdaki
+notu düzeltiyor ve genişletiyor: bu tek bir eksik satır değil. `materializer.ts`/`guard.ts`
+(`planResourceMaterialization`, `applyMaterializationPlan`, `createResourceGuard`) — bu beş
+tabloyu üretecek motorun kendisi — hiçbir üretim çağrı yeri olmadan duruyor, yalnızca testlerden
+çağrılıyor. Bugünkü gerçek üretim kaynak yolu (`packages/core/src/resources/preparation.ts`,
+`wtm run`/`wtm resolve --prepare` tarafından tetiklenir) tamamen ayrı, saf dosya sistemi seviyeli
+bir boru hattı; docs/08'e göre `[resources]` ile bildirilen worktree-yerel dosyalar *kasıtlı
+olarak* her sandbox'ın dışında tutuluyor ve asla buraya satır yazmamalı. Ayrıca eski `resources`
+tablosu (migration 001) tamamen ölü kod — `sqlite-store.ts` içinde ne okuyan ne yazan tek bir
+store metodu var; kimse bunu bir "üstteki tablo" gibi kullanmıyor.
+
+Açık, hiçbir yerde belgelide cevabı olmayan tasarım soruları: hangi adapter kaynak tipleri hangi
+sandbox'a, ne zamanlanmış materyalize olur; `resource_sandboxes.generation` ne zaman artar;
+adapter retention politikasından ephemeral/persistent sınıflandırmasına eşleme;
+`resource_references` edinme/bırakma sahipliği; aynı sandbox'ı paylaşan worktree'ler arası eşzamanlı
+materyalizasyon yarışları (GC tarafında lease var, yazma tarafında yok). `todo.md`'nin kendi notu
+(~L2681-2688) da aynı sonucu daha önce çıkarmıştı: "yazma yolunu bağlamak ayrı, çok daha büyük bir
+birim." Bu doğrulandı — küçük bir PR'a bölünebilecek bir "eksik kablo" değil, kendi tasarım kararı
+(muhtemelen bir sonraki "K" numarası) gerektiren, v0.2.0 dalga planının dışında yeni bir özellik.
+Bu yüzden burada tek taraflı olarak inşa edilmedi; bulgu docs/13 + bu belgeye işlendi ve koordinatöre
+bildirildi.
+
 `managed_process_start_reservations` ve `lifecycle_event_dispatches` bilerek dışarıda bırakıldı:
 ikisi de kendi durum makinesi olmayan, tek amaçlı defter tabloları — biri `managed_processes`'in
 zaten belgelenmiş STARTING durumunun altındaki token+TTL dedup mekanizması (ki
