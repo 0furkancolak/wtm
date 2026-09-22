@@ -164,3 +164,59 @@ işaret ediyor. Kaptan'ın elindeki iki gerçek kapı (madde 5a — Apple notari
 tag push; madde 38a — npm 2FA + ilk `@next` publish) ve Actions kotasının dönmesi hâlâ tek gerçek
 blokaj. Bu thread bu denetimden sonra yeni bir birim almıyor; koordinatörün kendi ifadesiyle geri
 kalan her şey bu iki kapıya ve kotaya bağlı.
+
+## 2026-09-22 üçüncü takip: K12 — GC sandbox yazma yolu v0.2.0 dışında kalıyor
+
+Koordinatör, Kaptan'ın onayıyla ("Kalan işlerin tamamına devam et ve çözüm üret", 2026-09-22T15:54Z)
+GC sandbox/storage-object yazma yolunun tasarlanıp inşa edilmesini istedi; üç birim önerdi:
+`preparation.ts`'in üretim yolunu `materializer.ts`/`guard.ts` motoruna bağlamak, ölü `resources`
+tablosunun (migration 001) temizliği, ve TUI panelinin (#73) gerçek veri göstermesi. Tasarım
+kararını yazmadan önce kod tabanı ve mevcut belgeler derinlemesine incelendi; sonuç, önerilen
+birim 1 ve 3'ü geçersiz kılan iki bulgu çıkardı.
+
+**Karar (K12): sandbox/storage-object yazma yolu v0.2.0 kapsamına alınmıyor; bu, hâlâ bulunması
+gereken bir "eksik kablo" değil, docs/07 ve docs/08'in kendi imzasıyla zaten V1 dışına
+konumlandırdığı bir özellik.**
+
+- **Neden — bulgu 1 (birim 1'i geçersiz kılıyor): `preparation.ts`'i sandbox'a bağlamak, kodun
+  kendi belgelediği bir güvenlik değişmezini ihlal eder.** `preparation.ts`'in kendi doc-comment'i:
+  "The general resource guard cannot do this. It is built for a sandbox that WTM may sweep, and
+  refuses a Git working tree as one — correctly, because `gc` must never walk a repository."
+  docs/08 aynı kuralı tekrarlıyor: "The files `[resources]` creates inside a worktree are outside
+  every sandbox, deliberately... They therefore carry no lifecycle record, and `gc` will not
+  collect them at any point." `guard.ts`'nin `createResourceGuard`'ı `workspaceRoot`'u ve her
+  `repositoryRoots` girdisini `sandboxRoot` olarak açıkça reddediyor (`deny('The configured
+  resource sandbox is too broad.')`). Bu üç kanıt (docstring + doc + test edilen kod) aynı
+  yöne işaret ediyor: worktree-yerel `[resources]` hiçbir zaman sandbox'a bağlanmamalı. **Yanılırsak
+  maliyeti:** bu değişmezi ihlal eden bir "bağlantı" `gc`'nin bir Git çalışma ağacını taraması
+  anlamına gelir — repository dosyalarını silme riski taşıyan, testlerle açıkça engellenmiş bir
+  sınıf hata.
+- **Neden — bulgu 2 (birim 1 ve dolayısıyla birim 3'ü geçersiz kılıyor): sandbox'ın gerçekte neyi
+  barındıracağı hiçbir yerde belirtilmemiş, ve en olası aday (adapter'ların paylaşımlı bağımlılık
+  önbelleği) projenin kendi mimari ilkesiyle çelişiyor.** `resource-production.ts`'in yorumu
+  sandbox kökünün `.resources` (workspace altında) olduğunu söylüyor — ama bunun ne
+  materyalize edeceğine dair TEK somut ipucu bu. docs/README.md madde 6: "Native cache first. WTM
+  uses package-manager/compiler caches instead of inventing another dependency cache." docs/08,
+  "GC scope": "Adapter-declared disposable build outputs and adapter-native dependency cleanup
+  plans are not part of this [V1] mode." docs/07, aynı "adapter-declared, adapter-native
+  resources" kategorisi için (Docker container/network/volume örneğiyle) birebir aynı cümle
+  kalıbı: "This table records the intended shape once an adapter declares such resources, not
+  current behavior; `todo.md` has no item tracking the adapter-side work yet." Bugün hiçbir
+  adapter böyle bir kaynak bildirmiyor, `adapter-sdk`'da bunun için bir bildirim yüzeyi yok, hiçbir
+  ADR bu şemayı tarif etmiyor. `generation` ne zaman artar, hangi adapter tipi hangi retention'a
+  eşlenir, `resource_references` sahipliği kime ait — bunların hiçbirinin yazılı cevabı yok.
+  **Yanılırsak maliyeti:** bu semantiği burada icat etmek, "native cache first" ilkesiyle çelişen
+  ve muhtemelen atılacak bir V2 özelliğini şimdiden, yanlış varsayımlarla inşa etmek demek —
+  docs/07'nin Docker kaynaklarına yaptığı gibi, bunu açıkça V1-dışı bırakmak daha ucuz ve daha
+  doğru.
+
+**Ne yapıldı, ne yapılmadı:**
+- `preparation.ts` → `materializer.ts`/`guard.ts` bağlantısı **kurulmadı** (kasıtlı olarak, yukarıdaki
+  gerekçeyle) — bir daha yanlışlıkla denenmesin diye bu belgeye ve docs/08 + docs/13'e not düşüldü.
+  TUI paneli (#73) zaten dürüst boş-durum notu veriyor; gösterecek gerçek veri yok, o yüzden birim 3
+  de değişmedi.
+  - Ölü `resources` tablosu (migration 001) **kaldırıldı** — bu, K12'den bağımsız, kendi başına
+  güvenli bir temizlik; ayrı bir PR'da.
+- Karar `docs/superpowers/plans/2026-09-15-remaining-work-waves.md`'in 2.2 tasarım kararları
+  tablosuna K12 olarak eklendi (K11 zaten madde 15/TUI için kullanılmıştı, o karar TUI'nin
+  inşa edilmesiyle kendiliğinden çözüldü).

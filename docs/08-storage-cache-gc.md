@@ -109,9 +109,11 @@ The files `[resources]` creates inside a worktree are outside every sandbox, del
 
 `wtm disk` still counts them, under `worktree`, so the total is the whole total. A symbolic link counts as the link, not as the file in the main worktree it points at — that file belongs to the main worktree and would otherwise be counted once per branch. `wtm gc` names them in a warning, so that finding nothing to collect is not read as there being nothing else.
 
+**Decision K12 (2026-09-22):** `packages/core/src/resources/preparation.ts` (this section's worktree-local materializer, the real production path behind `[resources]`) must never call `packages/core/src/resources/materializer.ts`/`guard.ts` (the sandbox-scoped engine below `## Resource GC state` in [docs/13](13-data-model-and-state-machines.md)) — doing so would connect a worktree to a GC sandbox, exactly what this section and `guard.ts`'s own boundary checks (`createResourceGuard` refuses a workspace or repository root as `sandboxRoot`) exist to prevent. See `docs/superpowers/plans/2026-09-21-release-readiness-audit.md`'s "K12" section for the full record.
+
 ## Resource registry
 
-Storage records include:
+Conceptually, a storage record carries:
 
 ```text
 owner
@@ -126,6 +128,13 @@ last_used_at
 last_verified_at
 logical size estimate
 ```
+
+The table this vocabulary originally named (`resources`, migration 001) was never read or written
+by any code path and was removed as dead code in the same change that recorded decision K12 above.
+The live schema for the sandboxed case is `resource_storage_objects`
+([docs/13](13-data-model-and-state-machines.md#resource_storage_objects)), which carries the same
+shape (`retention`, `created_at`/`last_used_at`/`last_verified_at`, `logical_bytes`) plus the
+sandbox/state-machine fields GC needs; per K12 it has no production writer yet.
 
 ## GC scope
 

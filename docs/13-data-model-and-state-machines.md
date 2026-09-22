@@ -156,24 +156,6 @@ process stopped writing, not what it finished doing.
 `forgetWorkspace` and `forgetRepository` delete from this table explicitly. The FK cascade is
 declared as well; the explicit delete is what the tests assert.
 
-### `resources`
-
-```text
-id UUID
-owner_type
-owner_id
-adapter_id
-name
-resource_type
-path nullable
-policy
-retention
-state
-created_at
-last_used_at
-last_verified_at
-```
-
 ### `resource_sandboxes`
 
 ```text
@@ -213,20 +195,22 @@ unique (sandbox_id, path)
 One row per physical object a sandbox's GC can account for; `state` is described under [Resource
 GC state](#resource-gc-state) below. As of this writing `upsertResourceSandbox`/
 `registerResourceStorageObject` are called only by tests — no production code path populates these
-rows yet, so a live daemon's sandbox is currently always empty and `wtm gc`'s sandboxed candidate
-list is too. This is not a missing wire between two existing systems: `materializer.ts`/`guard.ts`
+rows, and by **decision K12** (2026-09-22,
+`docs/superpowers/plans/2026-09-21-release-readiness-audit.md`) none will for v0.2.0: this is not a
+missing wire between two existing systems. `materializer.ts`/`guard.ts`
 (`planResourceMaterialization`, `applyMaterializationPlan`, `createResourceGuard`), the engine that
-would produce these rows, has zero production callers of its own — only tests and the `core/index.ts`
-re-export reference it. The real production resource path today
+would produce these rows, has zero production callers of its own — only tests and the
+`core/index.ts` re-export reference it. The real production resource path today
 (`packages/core/src/resources/preparation.ts`, driven by `wtm run`/`wtm resolve --prepare`) is a
-separate, purely filesystem-level pipeline for `[resources]`-declared worktree-local files; per
-[docs/08](08-storage-cache-gc.md) those are deliberately kept outside every sandbox and never get a
-row here. The plan/apply/recovery machinery downstream of `resource_storage_objects`
-(`buildGcPlan`, `applyGcPlan`, `recoverGcJournalEntry`) is real and exercised by its own tests;
-only the producer that would feed it live rows was never built. Closing this needs new design
-(adapter resource type → sandbox mapping, `generation` semantics, retention classification,
-reference-lifecycle ownership, concurrent-materialization races), not a single call site — see
-`todo.md`.
+separate, purely filesystem-level pipeline for `[resources]`-declared worktree-local files, and per
+[docs/08](08-storage-cache-gc.md#worktree-local-resources) it must never call into this sandbox
+engine — connecting the two would defeat the tested invariant that GC never walks a Git working
+tree. The plan/apply/recovery machinery downstream of `resource_storage_objects` (`buildGcPlan`,
+`applyGcPlan`, `recoverGcJournalEntry`) is real and exercised by its own tests; what feeds it real
+rows is a still-unspecified adapter-declared shared-resource feature that docs/07 and docs/08
+already scope out of V1 (same category as the Docker container/network/volume gap docs/07
+describes) — see K12's record for the evidence and the open design questions a future unit would
+need answered first.
 
 ### `resource_references`
 

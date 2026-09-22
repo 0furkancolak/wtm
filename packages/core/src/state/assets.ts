@@ -22,6 +22,7 @@ export const migrationFileNames = [
   '015-ci-watches.sql',
   '016-task-overrides.sql',
   '017-checklist-items.sql',
+  '018-drop-dead-resources-table.sql',
 ] as const;
 
 export const filesystemMigrationAssets: MigrationAssetProvider = {

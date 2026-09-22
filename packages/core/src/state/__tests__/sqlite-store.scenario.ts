@@ -524,6 +524,9 @@ function stateEnumConstraints() {
       worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
     ]).discovered[0];
     if (worktreeRecord === undefined) throw new Error('Expected discovered worktree');
+    store.upsertResourceSandbox({
+      id: 'sandbox-1', root: '/workspace/.resources', generation: 'g1', dev: 1, ino: 1, uid: 1000,
+    });
     close();
 
     const database = new Database(path);
@@ -559,23 +562,26 @@ function stateEnumConstraints() {
     }
     try {
       database.prepare(`
-        INSERT INTO resources (
-          id, owner_type, owner_id, adapter_id, name, resource_type, path, policy,
-          retention, state, created_at, last_used_at, last_verified_at
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+        INSERT INTO resource_storage_objects (
+          id, sandbox_id, path, dev, ino, uid, kind, state, retention, owned,
+          created_at, last_used_at, last_verified_at, logical_bytes, allocated_bytes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        'invalid-resource',
-        'worktree',
-        worktreeRecord.id,
-        'docker',
-        'database',
-        'volume',
-        'managed',
-        'retain',
+        'invalid-storage-object',
+        'sandbox-1',
+        '/workspace/.resources/blob',
+        1,
+        2,
+        1000,
+        'file',
         'INVALID',
+        'ephemeral',
+        1,
         '2026-08-26T00:00:00.000Z',
         '2026-08-26T00:00:00.000Z',
         '2026-08-26T00:00:00.000Z',
+        0,
+        0,
       );
     } catch {
       rejectedResourceState = true;
