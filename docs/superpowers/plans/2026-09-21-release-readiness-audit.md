@@ -65,16 +65,33 @@ Eklenenler (`## Core tables` altına, mevcut terse şema-bloğu üslubunda): `ta
 `features`/`feature_creations`/`feature_creation_members`. Yeni durum makineleri: `## Heavy job
 state`, `## CI watch state`, `## Feature creation state`.
 
-**Kasıtlı olarak dışarıda bırakılanlar (v0.2.0 sonrası, ayrı birim):**
-`managed_process_start_reservations`, `resource_sandboxes`, `resource_storage_objects`,
-`resource_references`, `resource_cleanup_leases`, `resource_gc_journal(_next/_hardened)`,
-`lifecycle_event_dispatches`. Bunların hepsi zaten belgelenmiş bir üst tablonun (`managed_processes`,
-`resources`) saf uygulama detayı — belgenin geri kalanı da bu iç tabloları hiç ayrı bir bölüm
-olarak anmıyor (ör. `resources`'ın kendi alt tabloları da yok). Bu yedi tabloyu ayrı bölümler
-olarak eklemek, hangi iç tablonun bu belgenin okuyucu kitlesine (kullanıcı mı, katkıda bulunan
-ajan mı) göre belgelenmeye değer olduğuna dair bir tasarım kararı gerektiriyor — koordinatörün
-"tam yeniden yazım değil" sınırının tam olarak dışında kalan kısım budur, o yüzden buraya not
-düşülüp bırakıldı.
+**2026-09-22 takip: yedi tablodan beşi belgelendi, ikisi kasıtlı olarak dışarıda kaldı.**
+Koordinatörün bıraktığı tasarım kararı ("hangi iç tablonun bu belgenin okuyucu kitlesine göre
+belgelenmeye değer olduğu") şöyle verildi: `resource_sandboxes`, `resource_storage_objects`,
+`resource_references`, `resource_cleanup_leases`, `resource_gc_journal` docs/13'e eklendi (yeni
+`### `-bölümleri artı yeni bir `## Resource GC state` durum makinesi bölümü), çünkü bunlar zaten
+belgelenmiş `resources`'ın alt tablosu değil — kendi başlarına ayrı bir durum makinesine sahip
+(`READY/STALE/ORPHANED/QUARANTINED/REMOVED` artı yedi fazlı journal), zaten belgelenmiş iki komutu
+(`wtm gc`, `wtm disk`, docs/08 + docs/04) besliyorlar ve docs/'un hiçbir yerinde (docs/08 dahil) bu
+quarantine/journal mekanizması hiç anlatılmıyordu — bu gerçek bir boşluktu, saf tekrar değil.
+Kontrol ederken önemli bir bulgu çıktı ve docs/13'e not olarak eklendi: bu beş tablonun *yazma*
+tarafı (`registerResourceSandbox`/`registerResourceStorageObject`) bugün yalnızca testlerden
+çağrılıyor — `packages/core`, `packages/daemon`, `packages/cli` içinde hiçbir üretim kod yolu bu
+satırları doldurmuyor. Yani canlı bir daemon'da sandbox tablosu her zaman boş ve `wtm gc`'nin
+sandbox tabanlı aday listesi de öyle; plan/apply/recovery makinesi (`buildGcPlan`/`applyGcPlan`/
+`recoverGcJournalEntry`) gerçek ve kendi testleriyle doğrulanmış, sadece kayıt (write) yolu
+bağlanmamış. Bu, docs/13'ün görevi değil (belgeleme, uygulama değil) ama belgeye dürüstçe not
+düşüldü ki okuyan biri bunu canlı sanmasın; ayrı bir birim (kaydı üretim koduna bağlamak) olarak
+kalıyor, burada iddia edilmiyor.
+
+`managed_process_start_reservations` ve `lifecycle_event_dispatches` bilerek dışarıda bırakıldı:
+ikisi de kendi durum makinesi olmayan, tek amaçlı defter tabloları — biri `managed_processes`'in
+zaten belgelenmiş STARTING durumunun altındaki token+TTL dedup mekanizması (ki
+`repository_operation_leases`'in aksine, `managed_processes`'in kendi durumundan ayrı okunacak
+yeni bir bilgi taşımıyor), diğeri "bu olay bir daha gönderilmesin" defteri (subject/event ->
+dispatched_at, tek satırlık bir fact table, hiçbir kullanıcıya görünen komutun sözleşmesine
+bağlı değil). Belgelemeye eklemek yalnızca "bu ikisini önleyen bir token/defter var" cümlesini
+tekrar ederdi, yeni bir okur değeri katmazdı.
 
 ## Doğrulanan, bozuk olmadığı teyit edilen alanlar (negatif sonuçlar)
 
