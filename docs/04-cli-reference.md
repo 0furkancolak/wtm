@@ -601,6 +601,47 @@ repository, only that repository. An ambiguous selector is refused, never guesse
 wtm logs dev --follow
 ```
 
+## Interactive dashboard
+
+### `wtm tui [selector]`
+
+A live terminal dashboard for one worktree — the one containing the current directory, or
+`[selector]` (a branch, a worktree directory name, a registered number, or a path, the same
+selector every diagnostic command accepts). It shows:
+
+```text
+workspace       name, root, scope
+worktree        branch, state, path, head commit
+running tasks   this worktree's managed processes (task, pid, state)
+ports           this worktree's active endpoint leases
+health          wtm doctor's findings
+```
+
+It is built entirely on `wtm status`/`wtm doctor`'s existing stable JSON data, polled on a fixed
+interval — never `wtm ps`. `ps` marks every worktree it lists as active, which feeds idle-runtime
+suspension (`[tasks.<name>.idle]`); a dashboard polling it every few seconds would keep every task
+it displays permanently awake. `status`'s own `processes` field answers "what is running here"
+from the same process records, without that side effect.
+
+There is no `--global`: `--global` aggregates *registered workspaces* (repositories), not the
+worktrees of one workspace, and reports this directory's own worktree in each — which would make a
+continuously refreshing dashboard misleading rather than merely redundant. `wtm tui` therefore
+stays scoped to one worktree, exactly as `wtm status`/`wtm doctor` do with no selector; disk usage,
+cleanup candidates and a log tail are separate, later additions (each its own panel), not part of
+this view.
+
+Options:
+
+```text
+--interval <ms>   refresh interval, minimum 250 (default 3000)
+```
+
+Keybindings: `q` or Ctrl+C quits; `r` refreshes immediately without waiting for the timer.
+
+Refuses with `WTM_CONFIG_INVALID` (exit 2) when stdout is not a TTY — piped output, a redirect, or
+CI — rather than drawing a garbled screen. It has no `--json` output of its own; script against
+`wtm status --json` and `wtm doctor --json` instead.
+
 ## Worktree analysis
 
 ### `wtm analyze [selector]`
