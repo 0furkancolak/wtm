@@ -200,7 +200,13 @@ export class DaemonRuntimeController {
   #checkBudgets(worktreeId: string, taskName: string): WtmError | null {
     const { maxProcesses, minAvailableMemoryBytes } = this.#budgets;
     if (maxProcesses !== undefined) {
-      const current = this.#supervisor.list().length + this.#pendingStarts;
+      // `list()` returns every row the state store has ever recorded for history (`wtm ps`/`wtm
+      // logs`), stopped and failed ones included — never pruned. Counting all of it here would
+      // make the budget a lifetime counter that only ever climbs, refusing every start once the
+      // daemon's cumulative history crosses the limit even with nothing running. Restrict to the
+      // same active states `alreadyActive` above already filters to.
+      const current = this.#supervisor.list().filter((record) => ['STARTING', 'RUNNING', 'STOPPING'].includes(record.state)).length
+        + this.#pendingStarts;
       if (current >= maxProcesses) {
         return {
           code: 'RUNTIME_PROCESS_BUDGET_EXCEEDED',
