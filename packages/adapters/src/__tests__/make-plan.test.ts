@@ -68,6 +68,22 @@ describe('make target parsing', () => {
     const source = Array.from({ length: 200 }, (_, index) => `target${index}:\n\t@true`).join('\n');
     expect(parseMakeTargets(source)).toHaveLength(64);
   });
+
+  it('joins a backslash-continued target list the way real make does, instead of dropping the earlier names', () => {
+    expect(parseMakeTargets([
+      'foo bar \\',
+      '    baz: dep',
+      '\techo hi',
+    ].join('\n')).map((target) => target.name)).toEqual(['foo', 'bar', 'baz']);
+  });
+
+  it('still parses a prerequisite-only continuation, and a plain rule with no continuation at all', () => {
+    expect(parseMakeTargets([
+      'foo: dep1 \\',
+      '     dep2',
+      '\t@true',
+    ].join('\n')).map((target) => target.name)).toEqual(['foo']);
+  });
 });
 
 describe('make adapter plan', () => {
