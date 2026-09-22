@@ -2743,6 +2743,24 @@ Madde metninin "Gösterebilecekleri" listesindeki sekiz öğe (workspace, worktr
 ports, health, disk usage, cleanup candidates, logs) üç birimle birlikte tamamen karşılandı; madde
 15'in üst seviye kutucuğu bu yüzden işaretlendi.
 
+**2026-09-22 doğrulama (gerçek koşu):** Sekiz öğenin hepsi, tek seferlik bir script'le kurulan
+gerçek bir daemon + worktree + arka planda çalışan process + gerçek port lease'i + gerçek
+worktree-local kaynak üzerinden uçtan uca doğrulandı — `wtm tui`'nin kendisinin çağırdığı aynı
+üretim komut handler'ları (`status`, `doctor`, `disk`, `gc --dry-run`, `logs`) ve aynı saf
+view-model/render fonksiyonları (`buildTuiViewModel`, `renderTuiFrame`, `buildTuiResourcesView`,
+`buildTuiLogsView`, `renderTuiLogsFrame`) çağrıldı, sonuçta gerçek bir terminal frame'i üretildi
+(raw mode/alt-screen dış döngüsü hariç — o zaten TTY gerektirdiği için hiç test edilmemişti,
+yukarıya bak). Sekizi de doğru: workspace adı+kökü, worktree kimliği+HEAD, `dev` görevi
+`running pid=…`, gerçek port lease'i `ACTIVE`, dokuz gerçek health kontrolü, gerçek 64 KiB'lik
+worktree-local kaynağın disk paneli (`64.0 KB logical/allocated`), gc paneli ("no ephemeral-storage
+GC evidence recorded yet" — K12'nin kendisinin öngördüğü doğru davranış, boş liste değil), ve
+gerçek stdout içeren log tail'i. Doğrulama script'i kod tabanına eklenmedi (tek seferlik, silindi);
+kod değişikliği yok. Yan bulgu: `wtm run`'ın kaynak hazırlama adımı (`prepare: true`) her zaman
+gerçek üretim state veritabanını (`defaultProductionRuntimePaths()`) okuyor, CLI'ın diğer neredeyse
+her komutunun aksine enjekte edilebilir bir `databasePath` bağımlılığı kabul etmiyor — bu doğrulamayı
+etkilemedi (kaynağı doğrudan dosya sistemine yazarak aştım) ama ayrı, olası bir test-edilebilirlik
+notu olarak burada kayıtlı.
+
 ---
 
 ### [ ] 46. Dev overlay: çalışan web uygulamasına worktree kimliğini ve ajan test adımlarını bas
