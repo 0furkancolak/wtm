@@ -109,8 +109,9 @@ describe('removeWorktreeSafely', () => {
     // The window the re-analysis closes now contains the cleanup stages, so the blocker has to
     // survive them; `reconcile` never runs because Git never deleted anything. The initial
     // analysis was clean, so nothing was deferred and the coordinator was never asked what it
-    // could reclaim.
-    expect(stages).toEqual(['stop-processes', 'verify-processes', 'cleanup-resources', 'release-endpoints']);
+    // could reclaim. `releaseEndpointLeases` runs after the re-analysis gate, so a removal
+    // blocked there -- as this one is -- never reaches it either.
+    expect(stages).toEqual(['stop-processes', 'verify-processes', 'cleanup-resources']);
     expect(await pathExists(fixture.linkedWorktreePath)).toBe(true);
   });
 

@@ -86,14 +86,23 @@ export interface RemovalRuntimeCoordinator {
  * The stages of a removal, in the order they run. Each one is journalled on the repository
  * operation lease as it is *entered*, so an interrupted removal leaves behind the name of the
  * step its process died inside.
+ *
+ * `release-endpoints` runs after `reanalyze`, not before it, even though it is the runtime side's
+ * last step before Git's own. `reanalyze` is the gate that can still abort the whole removal --
+ * cleanup's own side effects (a stray log line, a flushed build artifact) or someone else moving
+ * HEAD concurrently -- and a worktree that survives that gate is still live. Releasing its
+ * endpoint leases *before* that gate handed its port to whichever worktree asked next, while this
+ * one was still running on it: an aborted removal left the surviving worktree unleased, and its
+ * next allocation for the same endpoint silently landed on a different port rather than erroring
+ * about the abort.
  */
 export const removalStages = [
   'analyze',
   'stop-processes',
   'verify-processes',
   'cleanup-resources',
-  'release-endpoints',
   'reanalyze',
+  'release-endpoints',
   'git-remove',
   'reconcile',
 ] as const;
@@ -298,9 +307,6 @@ async function runRemovalLifecycle(
     const cleanup = await coordinator.cleanupEphemeralResources(subject);
     collectedResources = cleanup.collected;
     retainedResources = [...cleanup.retained];
-
-    record('release-endpoints');
-    releasedEndpoints = (await coordinator.releaseEndpointLeases(subject)).released;
   }
 
   // The *second* analysis is the one that gates `git worktree remove`, and it deliberately runs
@@ -313,6 +319,14 @@ async function runRemovalLifecycle(
   const finalAnalysis = await analyzeWorktree(context);
   assertRemovable(finalAnalysis);
   assertIdentityUnchanged(identityToken, finalAnalysis);
+
+  if (coordinator !== undefined) {
+    // Only now, past the one gate that can still abort the whole removal: a worktree this gate
+    // refuses is still live, and releasing its endpoint leases before reaching here handed its
+    // port away while it kept running on it (see `removalStages`'s doc comment).
+    record('release-endpoints');
+    releasedEndpoints = (await coordinator.releaseEndpointLeases(removalSubject(context, finalAnalysis))).released;
+  }
 
   record('git-remove');
   await runGit(context.repoPath, ['worktree', 'remove', '--', finalAnalysis.identity.path]);
