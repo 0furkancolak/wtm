@@ -489,7 +489,10 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
    * moved, a volume gone for good — and there was no way to say so. The daemon now serves the
    * rest of the machine regardless, but `wtm doctor` still reports the absence on every run,
    * with nothing a person can do about it. Repositories, worktrees, endpoint leases and
-   * process records cascade from the workspace row, so one delete retires the whole of it.
+   * process records cascade from the workspace row, so one delete retires the whole of it. CI
+   * watches, task overrides and checklist items are worktree-scoped tables with no foreign key
+   * to worktrees at all (see their own migration comments) — `wtm remove` deletes each
+   * explicitly for that reason, and this delete must do the same for every worktree it retires.
    */
   forgetWorkspace(workspaceId: string): boolean {
     this.#assertOpen();
@@ -503,6 +506,9 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
         // Reservation rows key on a worktree without declaring a foreign key to it, so the
         // cascade does not reach them and they would outlive everything they refer to.
         this.#database.prepare('DELETE FROM managed_process_start_reservations WHERE worktree_id = ?').run(id);
+        this.ci.deleteForWorktree(id);
+        this.taskOverrides.deleteForWorktree(id);
+        this.checklist.deleteForWorktree(id);
       }
       const repositoryIds = this.#database
         .prepare('SELECT id FROM repositories WHERE workspace_id = ?')
@@ -555,7 +561,8 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
    * one of its repositories has gone: six finished migrations inside a workspace whose other
    * repositories are in daily use reported themselves as unavailable on every pass, and the
    * only thing that could have silenced them would also have retired the live ones. Worktrees,
-   * leases and process records cascade from the repository row.
+   * leases and process records cascade from the repository row; CI watches, task overrides and
+   * checklist items do not (see `forgetWorkspace`'s own comment) and are deleted explicitly here.
    */
   forgetRepository(repositoryId: string): boolean {
     this.#assertOpen();
@@ -566,6 +573,9 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
         .all(repositoryId) as Array<{ id: string }>;
       for (const { id } of worktreeIds) {
         this.#database.prepare('DELETE FROM managed_process_start_reservations WHERE worktree_id = ?').run(id);
+        this.ci.deleteForWorktree(id);
+        this.taskOverrides.deleteForWorktree(id);
+        this.checklist.deleteForWorktree(id);
       }
       this.#database
         .prepare('DELETE FROM repository_operation_leases WHERE repository_id = ?')
