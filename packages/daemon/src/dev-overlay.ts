@@ -309,11 +309,31 @@ function pathnameOf(url: string | undefined): string {
   return question === -1 ? url : url.slice(0, question);
 }
 
-/** Buffers a small request body whole and returns it as a UTF-8 string. */
+/**
+ * The largest checklist-toggle request body this endpoint accepts. A real body is
+ * `{position, checked}` — a few dozen bytes — so this is generous headroom, not a working limit;
+ * it exists only to bound what `readRequestBody` will buffer before `originMatchesHost` has even
+ * run its course, since a request with no `Origin` header (deliberately let through, see that
+ * function's own comment) reaches this from any local process with no size check otherwise.
+ */
+const maxChecklistRequestBytes = 64 * 1024;
+
+class RequestBodyTooLarge extends Error {}
+
+/** Buffers a small request body whole and returns it as a UTF-8 string, up to {@link maxChecklistRequestBytes}. */
 function readRequestBody(request: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    let bytes = 0;
+    request.on('data', (chunk: Buffer) => {
+      bytes += chunk.length;
+      if (bytes > maxChecklistRequestBytes) {
+        request.destroy();
+        reject(new RequestBodyTooLarge(`Request body exceeded ${maxChecklistRequestBytes} bytes.`));
+        return;
+      }
+      chunks.push(chunk);
+    });
     request.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     request.on('error', reject);
   });
@@ -346,7 +366,8 @@ export function checklistApiHandler(store: ChecklistStore): (route: ProxyRoute, 
     let raw: unknown;
     try {
       raw = JSON.parse(await readRequestBody(request));
-    } catch {
+    } catch (error) {
+      if (error instanceof RequestBodyTooLarge) return { status: 413, body: { error: error.message } };
       return { status: 400, body: { error: 'Request body is not valid JSON.' } };
     }
     const parsed = checklistToggleRequestSchema.safeParse(raw);
