@@ -84,8 +84,13 @@ export function resolveTask(input: TaskResolutionInput): ResolvedTask {
     ...input.context,
     env: { ...input.context.env, ...envDelta },
   };
+  // A `shell: true` task's resolved argv[0] is handed to `/bin/sh -c`/`cmd.exe` whole (see the
+  // spawn sites in daemon/cli). `{branch}` is the one template variable git lets an outside
+  // contributor choose (docs/14-testing-performance-security.md classifies branch names as
+  // untrusted) — `branch.slug` is already shell-safe by construction, so only the raw form needs
+  // a guard, and only when the result will actually reach a shell.
   const argv = (typeof command === 'string' ? [command] : command)
-    .map((argument) => resolveTemplate(argument, context));
+    .map((argument) => resolveTemplate(argument, context, task.shell === true ? assertShellSafeBranch(input.taskName) : undefined));
   const rawCwd = task.cwd ?? input.context.worktree?.root;
   if (rawCwd === undefined) {
     throw new WtmTaskResolutionError(`Task ${input.taskName} has no resolvable working directory.`, {
@@ -176,6 +181,27 @@ function editDistance(left: string, right: string): number {
     previous = current;
   }
   return previous[right.length] ?? 0;
+}
+
+/**
+ * Conservative allowlist rather than a denylist of shell metacharacters, since a denylist is only
+ * ever as safe as the last character someone remembered to add to it. Covers the characters a
+ * real git branch name commonly needs (letters, digits, `._/-`); anything else — `;&|$` `<>()\`
+ * quotes, whitespace, control characters — is refused rather than risk it reaching `/bin/sh -c`
+ * or `cmd.exe` unescaped.
+ */
+const shellSafe = /^[A-Za-z0-9._/-]*$/;
+
+function assertShellSafeBranch(taskName: string): (variable: string, value: string) => void {
+  return (variable, value) => {
+    if (variable !== 'branch' || shellSafe.test(value)) return;
+    throw new WtmTaskResolutionError(
+      `Task ${taskName} runs through a shell and its command uses {branch}, but the current branch `
+      + `name contains characters that are unsafe to place unescaped in a shell command. Use `
+      + '{branch.slug} instead, which is shell-safe by construction.',
+      { taskName, variable: 'branch' },
+    );
+  };
 }
 
 /** Code-unit order, which is the same on every machine — `localeCompare` is not. */
