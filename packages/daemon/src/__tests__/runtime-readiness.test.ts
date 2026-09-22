@@ -166,6 +166,23 @@ describe('runtime controller readiness', () => {
     expect(calls).toEqual(['start', 'runtime.started']);
   });
 
+  // The idle-activity clock (`IdleRuntimeSuspender.touch`, fed by `onTaskActivity`) used to be
+  // dated only from the touch just before the wait began and the one just after it ended — never
+  // from anything in between. A wait that outlived a task's own `idle.timeout` let the sweep read
+  // that stale clock mid-wait and stop the very process this call is polling.
+  test('keeps the idle-activity clock fresh through every readiness poll attempt, not only before and after the wait', async () => {
+    const { options } = fixture({ task: { ...task, healthcheck: { ...task.healthcheck!, timeoutMs: 1000, intervalMs: 100 } } });
+    let attempts = 0;
+    options.readinessFetch = async () => { attempts += 1; return new Response(null, { status: attempts >= 3 ? 200 : 503 }); };
+    let touches = 0;
+    options.onTaskActivity = () => { touches += 1; };
+    const result = await new DaemonRuntimeController(options).handle(request());
+    expect(result.ok).toBe(true);
+    expect(attempts).toBe(3);
+    // One touch before the wait began, one per poll attempt, and one after the wait ended.
+    expect(touches).toBeGreaterThanOrEqual(attempts + 2);
+  });
+
   test('wait without a trusted completion reader fails closed', async () => {
     const { options, calls } = fixture();
     delete options.logs.readCompletion;

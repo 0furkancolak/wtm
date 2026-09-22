@@ -316,6 +316,9 @@ export class DaemonRuntimeController {
           ...(args.waitTimeoutMs === undefined ? {} : { timeoutMs: args.waitTimeoutMs }),
           ...(context?.signal === undefined ? {} : { signal: context.signal }),
           inspectProcess: this.#inspectProcess,
+          // Keeps the idle-activity clock fresh for the whole wait, not just its two endpoints
+          // (the touches below) — see `onAttempt`'s own doc comment in `readiness.ts`.
+          onAttempt: () => this.#observeActivity(resolved.worktreeId, taskName),
           ...(this.#logs.readCompletion === undefined ? {} : {
             readCompletion: async (path: string, pid: number) => this.#logs.readCompletion!(path, pid),
           }),
