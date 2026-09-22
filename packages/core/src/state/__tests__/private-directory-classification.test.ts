@@ -133,6 +133,40 @@ describe.skipIf(isWindowsTestHost)('private directory refusals', () => {
     expect(error.remediation).toEqual([{ kind: 'command-suggestion', argv: ['chmod', 'go-w', state] }]);
   });
 
+  test('a merely-traversed ancestor below an owned 0700 root is accepted by the symlink walk too, not only by assertPrivateDirectory', async () => {
+    // Sibling to #99, one call site over. `assertNoSymlinkComponents` runs its own walk before
+    // `ensurePrivateDirectory` ever reaches the ancestor-aware `assertPrivateDirectory` check, and
+    // it did not know about #99's relaxation: once the walk crosses any owned 0700 directory
+    // (`belowPrivateAnchor`), it held *every* deeper existing component -- ancestor or not -- to
+    // the same strict "no group/other access at all" mask. A real `$HOME` locked to 0700 (common
+    // for `/root`) with a merely-traversed `~/.local` (0755, created by an installer, never WTM's
+    // own) beneath it reproduces #99's exact refusal through this separate walk. `state` here
+    // stands in for such an ancestor; unlike the `looseAncestorRoot` tests above, `root` itself
+    // must be an owned 0700 anchor for this walk's `belowPrivateAnchor` branch to engage at all.
+    const root = await privateRoot();
+    const state = join(root, 'state');
+    await mkdir(state);
+    await chmod(state, 0o755);
+
+    const created = await ensurePrivateDirectory(join(state, 'nested'), defaultCoreFileTrustPolicy);
+
+    expect(created.path).toBe(await realpath(join(state, 'nested')));
+  });
+
+  test('an ancestor below an owned 0700 root that is writable by others is still permanent, with a chmod go-w remedy', async () => {
+    const root = await privateRoot();
+    const state = join(root, 'state');
+    await mkdir(state);
+    await chmod(state, 0o757);
+
+    const error = await refusal(join(state, 'nested'));
+
+    expectPermanent(error, state);
+    expect(error.message).toContain('mode 757');
+    expect(error.message).toContain('writable by others');
+    expect(error.remediation).toEqual([{ kind: 'command-suggestion', argv: ['chmod', 'go-w', state] }]);
+  });
+
   test('a symbolic link is permanent', async () => {
     const root = await privateRoot();
     await mkdir(join(root, 'real'), { mode: 0o700 });

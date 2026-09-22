@@ -86,10 +86,11 @@ try {
   // `create` walks up from `target/nested` (which does not exist yet) and finds `target` itself
   // as the nearest existing ancestor -- `inspectPrivateDirectory`'s ancestor-aware check asks the
   // relaxed "no group/other *write*" question (0o022) there, not the strict 0o077 a directory WTM
-  // actually owns gets. `target` also still gets independent strict (0o077) checks from
-  // `assertNoSymlinkComponents`'s unrelated "is this the private anchor" walk, and `nested` --
-  // WTM's own, freshly created leaf -- is always strict. Every other mode's target already exists
-  // at the exact path requested, so it is never an ancestor and every check on it stays strict.
+  // actually owns gets. `assertNoSymlinkComponents`'s own separate walk asks `target` the same
+  // relaxed question now too, since `target` is not the final path it was called with (`nested`
+  // is); `nested` -- WTM's own, freshly created leaf -- is the one path either check ever holds
+  // to the strict mask. Every other mode's target already exists at the exact path requested, so
+  // it is never an ancestor and every check on it stays strict.
   if (mode === 'create') {
     assert.ok(accessChecks.some((check) => check.path === target && check.mask === 0o022), JSON.stringify(accessChecks));
   } else {
