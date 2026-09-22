@@ -69,4 +69,34 @@ describe('renderEnvelope, human output', () => {
     const value = envelope({ a: 1 });
     expect(renderEnvelope(value as never, { json: true })).toBe(JSON.stringify(value));
   });
+
+  test('a null field prints as none, not the literal word null', () => {
+    const rendered = renderEnvelope(envelope({ branch: null, pid: null }) as never, { json: false });
+    expect(rendered).toBe(['status: ok', 'branch: none', 'pid: none'].join('\n'));
+  });
+
+  test('an error carries its context and remediation into the human-readable output', () => {
+    const rendered = renderEnvelope({
+      schemaVersion: 1,
+      ok: false,
+      command: 'run',
+      data: null,
+      warnings: [],
+      errors: [{
+        code: 'WTM_CONFIG_INVALID',
+        message: 'Unknown task: nope',
+        severity: 'error',
+        context: { task: 'nope', available: ['dev', 'build'] },
+        remediation: [{ kind: 'command-suggestion', argv: ['wtm', 'run', 'dev'] }],
+      }],
+    } as never, { json: false });
+    expect(rendered).toBe([
+      'run: failed',
+      'errors:',
+      '  [WTM_CONFIG_INVALID] Unknown task: nope',
+      '    task: nope',
+      '    available: ["dev","build"]',
+      '    try: wtm run dev',
+    ].join('\n'));
+  });
 });
