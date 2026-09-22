@@ -82,7 +82,19 @@ try {
   }
   assert.equal(openedTarget, true, JSON.stringify({ root, target, ownershipPaths, accessChecks, reason: 'must open the actual target descriptor' }));
   assert.equal(ownershipPaths.includes(''), false, 'descriptor checks need the same canonical ACL path');
-  assert.ok(accessChecks.every((check) => check.path !== '' && check.mask === 0o077));
+  assert.ok(accessChecks.every((check) => check.path !== '' && (check.mask === 0o077 || check.mask === 0o022)));
+  // `create` walks up from `target/nested` (which does not exist yet) and finds `target` itself
+  // as the nearest existing ancestor -- `inspectPrivateDirectory`'s ancestor-aware check asks the
+  // relaxed "no group/other *write*" question (0o022) there, not the strict 0o077 a directory WTM
+  // actually owns gets. `target` also still gets independent strict (0o077) checks from
+  // `assertNoSymlinkComponents`'s unrelated "is this the private anchor" walk, and `nested` --
+  // WTM's own, freshly created leaf -- is always strict. Every other mode's target already exists
+  // at the exact path requested, so it is never an ancestor and every check on it stays strict.
+  if (mode === 'create') {
+    assert.ok(accessChecks.some((check) => check.path === target && check.mask === 0o022), JSON.stringify(accessChecks));
+  } else {
+    assert.ok(accessChecks.every((check) => check.mask === 0o077), JSON.stringify(accessChecks));
+  }
   assert.equal(fs.readFileSync(join(mode === 'replaced' ? retired : target, 'preserved'), 'utf8'), 'original');
   if (mode === 'replaced') assert.equal(fs.readFileSync(join(target, 'preserved'), 'utf8'), 'replacement');
   console.log(JSON.stringify({ mode, verified: true }));

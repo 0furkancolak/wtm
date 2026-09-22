@@ -3,7 +3,7 @@ import { lstat, mkdir, open, realpath } from 'node:fs/promises';
 import { basename, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import type { Stats } from 'node:fs';
 import type { Remediation } from '@wtm/protocol';
-import { defaultCoreFileTrustPolicy, type FileTrustPolicy } from '../file-trust-policy';
+import { defaultCoreFileTrustPolicy, type FileTrustPolicy, type OwnerOnlyMask } from '../file-trust-policy';
 
 export interface PrivateDirectory {
   path: string;
@@ -110,12 +110,24 @@ function ownershipUnreadable(path: string): PrivateDirectoryError {
  * The one refusal with a single obvious remedy, which the message already names. `@wtm/core`
  * does not know the operating system, so the remediation is exactly as platform-blind as that
  * message has always been.
+ *
+ * `mask` decides which remedy is right, not just which check failed: `0o700` is correct for a
+ * directory WTM owns (`mask === 0o077`), but suggesting it for a merely-traversed ancestor
+ * (`mask === 0o022`, e.g. `~/.local`) would tell a reader to lock a directory shared with every
+ * other application on the machine out of its own group/other *read*, when only the group/other
+ * *write* the check actually failed on needs clearing.
  */
-function readableByOthers(path: string, stat: Stats): PrivateDirectoryError {
+function readableByOthers(path: string, stat: Stats, mask: OwnerOnlyMask = 0o077): PrivateDirectoryError {
+  const strict = mask === 0o077;
   return new PrivateDirectoryError(
     path,
-    `is readable by others (mode ${(stat.mode & 0o7777).toString(8)}); run chmod 700 on it`,
-    { unsafe: true, remediation: [{ kind: 'command-suggestion', argv: ['chmod', '700', path] }] },
+    strict
+      ? `is readable by others (mode ${(stat.mode & 0o7777).toString(8)}); run chmod 700 on it`
+      : `is writable by others (mode ${(stat.mode & 0o7777).toString(8)}); run chmod go-w on it`,
+    {
+      unsafe: true,
+      remediation: [{ kind: 'command-suggestion', argv: strict ? ['chmod', '700', path] : ['chmod', 'go-w', path] }],
+    },
   );
 }
 
@@ -142,20 +154,27 @@ export async function ensurePrivateDirectory(
     if (stat !== undefined) {
       // An anchor above the target is only where WTM would create its directory. See
       // `assertPrivateDirectory` for why that changes what another user's ownership means.
-      const established = await inspectPrivateDirectory(anchor, fileTrust, stat, { ancestor: components.length > 0 });
+      const wasAncestor = components.length > 0;
+      const established = await inspectPrivateDirectory(anchor, fileTrust, stat, { ancestor: wasAncestor });
       let current = established.path;
-      const identities = [established];
+      // Paired with `ancestor`, not just the identity: the revalidation pass below has to ask
+      // each directory the same question `inspectPrivateDirectory` asked it the first time, or an
+      // ancestor accepted above under the relaxed mask gets refused again here under the strict
+      // one -- undoing the whole point of relaxing it.
+      const identities: Array<{ directory: PrivateDirectory; ancestor: boolean }> = [
+        { directory: established, ancestor: wasAncestor },
+      ];
       for (const component of components.reverse()) {
         current = join(current, component);
         await mkdir(current, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
           if (error.code === 'EEXIST') return;
           throw permanentLookupFailure(current, error) ?? new PrivateDirectoryError();
         });
-        identities.push(await inspectPrivateDirectory(current, fileTrust));
+        identities.push({ directory: await inspectPrivateDirectory(current, fileTrust), ancestor: false });
       }
       await assertNoSymlinkComponents(target, fileTrust);
-      for (const directory of identities) await verifyPrivateDirectory(directory, fileTrust);
-      return identities.at(-1)!;
+      for (const { directory, ancestor } of identities) await verifyPrivateDirectory(directory, fileTrust, ancestor);
+      return identities.at(-1)!.directory;
     }
     const parent = dirname(anchor);
     if (parent === anchor) throw new PrivateDirectoryError();
@@ -204,14 +223,21 @@ async function assertNoSymlinkComponents(target: string, fileTrust: FileTrustPol
   }
 }
 
+/**
+ * `ancestor` defaults to `false`, matching every external caller: they always revalidate the
+ * final, WTM-owned directory `ensurePrivateDirectory` returned, never one of the ancestors it
+ * merely climbed over. Only `ensurePrivateDirectory`'s own revalidation pass ever passes `true`,
+ * and only for the identity it established with `{ ancestor: true }` in the first place.
+ */
 export async function verifyPrivateDirectory(
   directory: PrivateDirectory,
   fileTrust: FileTrustPolicy = defaultCoreFileTrustPolicy,
+  ancestor = false,
 ): Promise<void> {
   const stat = await lstat(directory.path).catch((error: unknown) => {
     throw permanentLookupFailure(directory.path, error) ?? new PrivateDirectoryError();
   });
-  const current = await inspectPrivateDirectory(directory.path, fileTrust, stat);
+  const current = await inspectPrivateDirectory(directory.path, fileTrust, stat, { ancestor });
   if (!sameDirectory(directory.identity, current.identity)) throw new PrivateDirectoryError();
 }
 
@@ -281,9 +307,20 @@ async function assertPrivateDirectory(
       ? new PrivateDirectoryError(path, 'belongs to another user, so WTM cannot create its directory there yet')
       : unsafeDirectory(path, 'belongs to another user');
   }
-  if (!(await fileTrust.isWritableOnlyByOwner(stat, path, 0o077))) {
+  // An ancestor is only where WTM's own 0700 directory would be *created*, not a directory WTM
+  // owns today -- it may be `$HOME` itself, or `~/.local`, shared with every other application on
+  // the machine and created by `install.sh`'s plain `mkdir -p` at the OS's own umask-derived mode
+  // (0755 is standard). Demanding full 0077 (no group/other access at all) of a directory WTM
+  // never created refused every first install on a stock Linux host. `0o022` (no group/other
+  // *write*) is the load-bearing question for an ancestor -- it is what stops another user
+  // planting something WTM would later create inside -- exactly the distinction already applied
+  // to the daemon's own service directories, see `linuxDirectories`'s doc comment in
+  // `@wtm/platform/service/linux.ts`. The directory WTM actually creates and owns keeps the
+  // stricter 0o077.
+  const mask = options.ancestor === true ? 0o022 : 0o077;
+  if (!(await fileTrust.isWritableOnlyByOwner(stat, path, mask))) {
     if (!(await ownershipWasReadable(fileTrust, path))) throw ownershipUnreadable(path);
-    throw readableByOthers(path, stat);
+    throw readableByOthers(path, stat, mask);
   }
 }
 
