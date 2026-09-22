@@ -175,6 +175,14 @@ describe('SQLiteStateStore', () => {
     });
   });
 
+  test('refuses a process start reservation while a repository-operation lease is held on that worktree', () => {
+    expect(runScenario('managed-process-reservation-blocked-by-repository-lease')).toEqual({
+      blockedOnLeasedWorktree: true,
+      otherRepositoryUnaffected: true,
+      admittedAfterRelease: true,
+    });
+  });
+
   test('migrates the newest v4 cleanup candidate with its reservation ownership', () => {
     expect(runScenario('managed-process-v4-cleanup-upgrade')).toEqual({
       newestFailedCleanupRequired: true,
