@@ -58,10 +58,22 @@ function ownTemplateValue<T extends string | number>(values: Record<string, T | 
   return values[name];
 }
 
-export function resolveTemplate(value: string, context: TemplateContext): string {
+/**
+ * `guard`, when given, runs on every substituted variable's resolved value before it is spliced
+ * in — never on the literal text around it. A caller building a command a shell will interpret
+ * uses this to reject an unsafe value at the one point that still knows which text came from an
+ * untrusted source and which the task author wrote themselves.
+ */
+export function resolveTemplate(
+  value: string,
+  context: TemplateContext,
+  guard?: (variable: string, resolvedValue: string) => void,
+): string {
   return value.replace(/\{([^{}]+)\}/g, (match, variable: string) => {
     const resolved = templateValue(variable, context);
     if (resolved === undefined) throw new WtmTemplateError(variable);
-    return String(resolved);
+    const text = String(resolved);
+    guard?.(variable, text);
+    return text;
   });
 }

