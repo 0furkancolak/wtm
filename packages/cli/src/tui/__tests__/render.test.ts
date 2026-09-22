@@ -12,6 +12,7 @@ const emptyModel: TuiViewModel = {
   health: [],
   statusErrors: [],
   doctorErrors: [],
+  resources: null,
 };
 
 const filledModel: TuiViewModel = {
@@ -34,6 +35,21 @@ const filledModel: TuiViewModel = {
   ],
   statusErrors: [],
   doctorErrors: [],
+  resources: {
+    fetchedAt: '2026-09-22T00:00:00.000Z',
+    disk: {
+      totals: { logicalBytes: 3_145_728, allocatedBytes: 4_194_304 },
+      owned: { objects: 12, logicalBytes: 1_048_576, allocatedBytes: 1_048_576 },
+      unknown: { objects: 1, logicalBytes: 2_097_152, allocatedBytes: 2_097_152 },
+      worktree: { objects: 3, logicalBytes: 1_048_576, allocatedBytes: 1_048_576 },
+    },
+    gc: {
+      planned: 1,
+      excluded: 2,
+      items: [{ path: '/registered/demo/.resources/cache-1', outcome: 'would-delete' }],
+    },
+    errors: [],
+  },
 };
 
 const size = { columns: 80, rows: 40 };
@@ -51,6 +67,7 @@ describe('renderTuiFrame', () => {
     expect(frame).toContain('(no managed processes recorded for this worktree)');
     expect(frame).toContain('(no active endpoint leases)');
     expect(frame).toContain('(no doctor findings)');
+    expect(frame).toContain('(not yet fetched — this panel refreshes less often than the rest)');
     expect(frame).toContain('q / ctrl+c quit   r refresh now');
   });
 
@@ -66,6 +83,42 @@ describe('renderTuiFrame', () => {
     expect(frame).toContain('[ok]');
     expect(frame).toContain('[!!]');
     expect(frame).toContain('refreshed 2026-09-22T00:00:01.000Z');
+  });
+
+  test('renders disk totals and gc dry-run candidates', () => {
+    const frame = renderTuiFrame(filledModel, size);
+    expect(frame).toContain('disk total');
+    expect(frame).toContain('3.0 MB logical');
+    expect(frame).toContain('4.0 MB allocated');
+    expect(frame).toContain('gc dry-run   1 candidate, 2 excluded');
+    expect(frame).toContain('would-delete');
+    expect(frame).toContain('/registered/demo/.resources/cache-1');
+    expect(frame).toContain('resources refreshed 2026-09-22T00:00:00.000Z');
+  });
+
+  test('is honest about empty gc evidence instead of implying a clean sweep', () => {
+    const model: TuiViewModel = {
+      ...filledModel,
+      resources: { ...filledModel.resources!, gc: { planned: 0, excluded: 0, items: [] } },
+    };
+    const frame = renderTuiFrame(model, size);
+    expect(frame).toContain('no ephemeral-storage GC evidence recorded yet');
+  });
+
+  test('reports resource-lifecycle unavailability instead of a blank section', () => {
+    const model: TuiViewModel = {
+      ...emptyModel,
+      resources: {
+        fetchedAt: '2026-09-22T00:00:00.000Z',
+        disk: null,
+        gc: null,
+        errors: [{ code: 'WTM_NOT_INITIALIZED', message: 'Resource lifecycle state is unavailable.', severity: 'error' }],
+      },
+    };
+    const frame = renderTuiFrame(model, size);
+    expect(frame).toContain('disk: (resource lifecycle state unavailable)');
+    expect(frame).toContain('gc: (resource lifecycle state unavailable)');
+    expect(frame).toContain('[WTM_NOT_INITIALIZED] Resource lifecycle state is unavailable.');
   });
 
   test('surfaces envelope-level errors from either command', () => {

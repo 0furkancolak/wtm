@@ -1,5 +1,6 @@
 import type { WtmError } from '@wtm/protocol';
 import type { DiagnosticCommandEnvelope, DoctorDiagnostic, StatusDiagnostic } from '../diagnostics';
+import type { TuiResourcesView } from './resources-view';
 
 /**
  * The pure data-aggregation step of `wtm tui`.
@@ -72,6 +73,13 @@ export interface TuiViewModel {
   readonly statusErrors: readonly WtmError[];
   /** Envelope-level errors from `doctor`, surfaced verbatim rather than swallowed. */
   readonly doctorErrors: readonly WtmError[];
+  /**
+   * The disk-usage / cleanup-candidate panel's own data (unit 2). `null` until the first resource
+   * fetch completes, or when one has not been wired in at all (e.g. a test exercising only
+   * status/doctor). Unlike every field above, this is not rebuilt on every poll — see `loop.ts` for
+   * why disk/GC-plan assembly refreshes on a slower cadence than `status`/`doctor`'s SQLite reads.
+   */
+  readonly resources: TuiResourcesView | null;
 }
 
 export interface TuiSnapshot {
@@ -79,6 +87,8 @@ export interface TuiSnapshot {
   readonly doctorEnvelope: DiagnosticCommandEnvelope<DoctorDiagnostic>;
   /** ISO timestamp of this poll, supplied by the caller so the view model stays deterministic. */
   readonly fetchedAt: string;
+  /** The last resources view built by `buildTuiResourcesView`, carried over between polls. */
+  readonly resources?: TuiResourcesView | null;
 }
 
 export function buildTuiViewModel(snapshot: TuiSnapshot): TuiViewModel {
@@ -118,5 +128,6 @@ export function buildTuiViewModel(snapshot: TuiSnapshot): TuiViewModel {
     })),
     statusErrors: snapshot.statusEnvelope.errors,
     doctorErrors: snapshot.doctorEnvelope.errors,
+    resources: snapshot.resources ?? null,
   };
 }
