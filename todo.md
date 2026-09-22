@@ -4114,31 +4114,60 @@ birlikte 62/62 (bkz. Removal/Create parity turu). `bun run typecheck && bun run 
 
 Hedef `v0.2.0` tag'i aşağıdakiler tamamlanmadan çıkarılmamalı:
 
-- [ ] P0 maddelerinin tamamı bitmiş.
+**2026-09-22 satır satır denetim:** her madde dosyalardan ve gerçek yerel koşulardan doğrulandı
+(Actions kotası kapalıyken sandbox'ta koşulabilen her şey koşuldu). "Kaptan bekliyor" sanılan ama
+bizim yapabileceğimiz iki madde bulundu ve kapatıldı (JSON contract + migration/upgrade testleri,
+README/Skill parity testleri) — bunlar zaten yazılıydı, sadece hiç bu listeden çalıştırılıp
+işaretlenmemişlerdi. Bir madde gerçek ölçümle **açığa çıktı**: idle RSS `pass` değil, `warning`
+veriyor (aşağıya bak) — bu Kaptan'ın hesabına bağlı değil, gerçek bir mühendislik bulgusu.
+
+- [ ] P0 maddelerinin tamamı bitmiş. — **Hâlâ açık.** P0'da üç madde kapanmadı: 5 ve 36
+      (Developer ID + notarization + Gatekeeper — Apple credential secret'ları gerekiyor), 38
+      (npm ilk publish + `@next` doğrulaması). Üçü de yalnızca repo sahibinin hesabıyla yapılabilir;
+      geri kalan tüm P0 maddeleri (1-4, 37, 39-45) kapalı.
 - [x] `wtm remove` runtime-aware.
 - [x] Cross-process destructive operation lease mevcut.
 - [x] Remote freshness semantics net.
 - [x] Performance workflow/docs parity sağlanmış. — Madde 4; gerçek platform performance sonucu ayrı gate olarak kalır.
-- [ ] Stable macOS binary Developer ID signed.
-- [ ] Stable macOS binary notarized.
-- [ ] macOS ARM64 CI green.
-- [ ] macOS x64 CI green.
-- [ ] Linux x64 CI green.
-- [ ] Linux ARM64 build/smoke green.
-- [ ] Windows x64 CI green.
-- [ ] E2E green.
-- [ ] Binary smoke tests green.
-- [ ] Package verification green.
-- [ ] JSON contract compatibility testleri green.
-- [ ] Migration/upgrade testleri green.
-- [ ] README ile CLI parity doğrulanmış.
-- [ ] Agent Skill ile CLI parity doğrulanmış.
-- [ ] Changelog hazırlanmış.
-- [ ] Homebrew stable install doğrulanmış.
-- [ ] npm stable `latest` dist-tag doğrulanmış.
-- [ ] Tarayıcıyla indirilen macOS binary Gatekeeper tarafından çalıştırılabiliyor.
-- [ ] README quick start temiz bir workspace'te hatasız tamamlanıyor.
-- [ ] Idle RSS ölçümü `pass` veriyor.
+- [ ] Stable macOS binary Developer ID signed. — Kaptan'ın hesabına bağlı (madde 5); kod ve gate hazır.
+- [ ] Stable macOS binary notarized. — Kaptan'ın hesabına bağlı (madde 5); kod ve gate hazır.
+- [ ] macOS ARM64 CI green. — Actions kotası 2026-09-21'den beri kapalı; en son gerçek koşu kanıtı yok.
+- [ ] macOS x64 CI green. — aynı sebep.
+- [ ] Linux x64 CI green. — en son bilinen gerçek koşu: `75a8626`, run 34457543774 (CHANGELOG'da
+      kayıtlı); sonraki commit'ler için taze CI kanıtı kota dönene kadar yok, yalnızca yerel gate var.
+- [ ] Linux ARM64 build/smoke green. — bu sandbox'ta arm64 runner yok, doğrulanamadı.
+- [ ] Windows x64 CI green. — win32 leg CLAUDE.md gereği informational; gerçek native kanıt madde 9'u bekliyor.
+- [x] E2E green. — `bun run test:e2e` bu oturumda gerçekten koşturuldu (full-workflow, jobs-workflow,
+      readiness-workflow), hepsi geçti. CI değil ama gerçek yerel kanıt.
+- [x] Binary smoke tests green. — `bun run binary:verify` (SEA build + `sea-smoke.test.ts`) bu
+      oturumda koşturuldu, 10/10 geçti (Node 24.18.0 pinlenerek).
+- [x] Package verification green. — `bun run package:verify` bu oturumda koşturuldu, geçti.
+- [x] JSON contract compatibility testleri green. — `packages/protocol/src/__tests__/json-envelope.test.ts`
+      ve `ipc.test.ts` bu denetimde bulunup koşturuldu (18/18 dosya genelinde geçti); daha önce bu
+      checklist satırından hiç işaretlenmemişlerdi.
+- [x] Migration/upgrade testleri green. — `sqlite-store.test.ts` (migration 1→18 sırayla uygulanan
+      `migrationVersions` dizileri) ve `assets.test.ts` (on sekiz migration'ın byte-sırası kontrolü)
+      bu denetimde koşturuldu, 26/26 geçti.
+- [x] README ile CLI parity doğrulanmış. — `scripts/__tests__/cli-docs.test.ts` ("detects drift in
+      root commands, subcommands, and options") bu denetimde koşturuldu, geçti.
+- [x] Agent Skill ile CLI parity doğrulanmış. — `packages/cli/src/__tests__/skill-reference.test.ts`
+      ("names every visible top-level command and subcommand") bu denetimde koşturuldu, geçti.
+- [~] Changelog hazırlanmış. — Unreleased bölümüne bu oturumda eksik olan iki girdi eklendi: dead
+      `resources` table kaldırma (K12/#76) ve Scoop manifest desteği (#77). İçerik tag'e hazır;
+      tag anında sürüm başlığı/tarihi hâlâ eklenmeli (mevcut süreç zaten öyle çalışıyor).
+- [ ] Homebrew stable install doğrulanmış. — gerçek `v*` tag'i ve tap repo push'u gerekiyor; Kaptan'ın hesabına bağlı.
+- [ ] npm stable `latest` dist-tag doğrulanmış. — ilk publish henüz yapılmadı (madde 38); Kaptan'ın hesabına bağlı.
+- [ ] Tarayıcıyla indirilen macOS binary Gatekeeper tarafından çalıştırılabiliyor. — notarize edilmiş
+      bir artifact yok (madde 36); Kaptan'ın hesabına bağlı.
+- [x] README quick start temiz bir workspace'te hatasız tamamlanıyor. — madde 37 ile aynı kanıt:
+      `packages/cli/src/__tests__/quick-start.test.ts`, standart `bun run test`'in parçası, geçiyor.
+- [ ] Idle RSS ölçümü `pass` veriyor. — **Gerçek ölçüm, bu oturumda `bun run test:perf` ile alındı:
+      89.97 MiB (`target: 85`, `investigation: 110`) → durum `warning`, `pass` değil.** Blocker eşiğinin
+      altında olduğu için release gate'i engellemiyor (`release.blockers: 0`), ama checklist'in kendi
+      sözcüğü ("pass") karşılanmıyor. Bu Linux sandbox ölçümü; hedef platform macOS'ta farklı çıkabilir,
+      ama bugüne kadar bu satır hiç gerçek bir sayıyla denetlenmemişti. Kaptan'a/koordinatöre
+      bildirilmesi gereken gerçek bir mühendislik bulgusu — hedefin gevşetilmesi mi, yoksa idle RSS'in
+      gerçekten düşürülmesi mi gerektiği bir tasarım kararı.
 
 ---
 

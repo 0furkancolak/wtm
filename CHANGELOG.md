@@ -461,8 +461,25 @@ coverage): internal test-infrastructure corrections that make the win32 CI leg m
 platform accurately, not new user-facing behavior on their own. See `CLAUDE.md`'s CI section for
 the win32 leg's current (informational) status.
 
+### Changed
+
+- The unused `resources` table (migration 001) is dropped by migration 018. It had no production
+  writer: the real resource-GC schema is `resource_sandboxes`/`resource_storage_objects`
+  (migration 006), and connecting a writer to it is out of scope for this release (docs/13's
+  "decision K12") because the only production resource pipeline, worktree-local `[resources]`
+  preparation, must never call into the sandbox engine that a writer would need — doing so would
+  let `gc` walk a Git working tree, which the sandbox guard explicitly refuses. No behavior change
+  for any documented command.
+
 ### Added
 
+- Scoop manifest rendering (`bun run scoop:render`, `scripts/render-scoop-manifest.ts`), mirroring
+  the existing Homebrew formula pipeline: a checked-in template substituted from a real release
+  checksum, JSON-validated before it is written, and a new `scoop-manifest` release job that
+  renders it from the Windows archive's SHA-256 and pushes it to a bucket repository only when
+  `SCOOP_BUCKET_TOKEN` is configured. Since `verify-windows` is informational, the job skips
+  gracefully (with a warning) when a tag's Windows leg produced no archive; no Scoop bucket repo
+  exists yet, so today the rendered manifest is only ever a build artifact.
 - A dev overlay (`[dev-overlay]`, off by default, inert unless `[proxy]` is also enabled): the
   local reverse proxy injects a small identity/sibling-endpoints fragment into an HTML response,
   so a browser tab open on one of several worktrees' `web` services can be told apart from the
