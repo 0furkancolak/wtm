@@ -2319,13 +2319,23 @@ export function defaultDaemonSocketPath(home = homedir()): string {
  * creating a worktree in it discovered nothing at all until the daemon happened to restart.
  */
 function isRuntimeInvocation(argv: readonly string[]): boolean {
-  const command = argv.find((argument) => !argument.startsWith('-'));
+  const nonFlags = argv.filter((argument) => !argument.startsWith('-'));
+  const command = nonFlags[0];
   // `remove` is here because stopping this worktree's managed processes is the daemon's job and
   // no other process may do it: the supervisor holds the child handle, the start reservation and
   // the identity quadruple its escalation ladder depends on.
+  //
+  // `task`/`checklist` are here because every one of their subcommands (`list`/`show`/`set`/
+  // `unset`/`export`, `list`/`set`/`clear`) takes `dependencies.runtimeClient` and reads/writes
+  // through the daemon's live task-override/checklist state, not local `wtm.toml` — omitting
+  // them left `runtimeClient` `undefined` and every invocation reported `WTM_DAEMON_UNAVAILABLE`
+  // regardless of whether a daemon was actually running.
   return command !== undefined && (
-    ['start', 'stop', 'restart', 'ps', 'logs', 'exec', 'init', 'remove', 'jobs'].includes(command)
+    ['start', 'stop', 'restart', 'ps', 'logs', 'exec', 'init', 'remove', 'jobs', 'task', 'checklist'].includes(command)
     || command === 'run' && hasOptionIntent(argv, '--enqueue')
+    // `ci status` deliberately reads local state only (its own doc says so) and stays daemon-free;
+    // only `watch`/`unwatch` register/unregister a live daemon-side watch and need the client.
+    || command === 'ci' && (nonFlags[1] === 'watch' || nonFlags[1] === 'unwatch')
   );
 }
 
