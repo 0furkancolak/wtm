@@ -368,6 +368,13 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
       const orphaned: WorktreeRecord[] = [];
       let nextNumericId = existingRows.reduce((maximum, row) => Math.max(maximum, row.numeric_id), 0) + 1;
 
+      const cleanupOwnedStates = new Set<WorktreeState>([
+        'ORPHANED',
+        'CLEANING',
+        'REMOVED',
+        'DEGRADED_CLEANUP',
+      ]);
+
       for (const snapshotRecord of orderedSnapshot) {
         const existing = existingByPath.get(snapshotRecord.path);
         if (existing === undefined) {
@@ -395,6 +402,24 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
           continue;
         }
 
+        // Git keeps listing a worktree whose working directory is gone -- `rm -rf`, a vanished
+        // network mount -- as `prunable` until something runs `git worktree prune`/`remove
+        // --force`. It is "present" in this snapshot exactly as much as a directory that no
+        // longer exists can be. Treated as an ordinary update, the record (and its endpoint
+        // leases) would sit at whatever state it last had -- often READY/RUNNING -- forever,
+        // since only full absence from the snapshot (the loop below) used to trigger release.
+        // Skip mid-teardown states: something else already owns releasing their leases.
+        if (snapshotRecord.prunableReason !== null && !cleanupOwnedStates.has(existing.state)) {
+          this.#database.prepare(`
+            UPDATE endpoint_leases SET state = 'RELEASED' WHERE worktree_id = ? AND state = 'ACTIVE'
+          `).run(existing.id);
+          this.#database.prepare("UPDATE worktrees SET state = 'ORPHANED', last_seen_at = ? WHERE id = ?")
+            .run(timestamp, existing.id);
+          const row = this.#database.prepare('SELECT * FROM worktrees WHERE id = ?').get(existing.id) as WorktreeRow;
+          orphaned.push(worktreeFromRow(row));
+          continue;
+        }
+
         const nextState = existing.state === 'ORPHANED' ? 'DISCOVERED' : existing.state;
         this.#database.prepare(`
           UPDATE worktrees SET
@@ -414,12 +439,6 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
       }
 
       const presentPaths = new Set(uniqueSnapshot.keys());
-      const cleanupOwnedStates = new Set<WorktreeState>([
-        'ORPHANED',
-        'CLEANING',
-        'REMOVED',
-        'DEGRADED_CLEANUP',
-      ]);
       // Absence is settled for these two; the other cleanup-owned states are mid-teardown and
       // their ports belong to whatever is still tearing them down.
       const settledAbsentStates = new Set<WorktreeState>(['ORPHANED', 'REMOVED']);

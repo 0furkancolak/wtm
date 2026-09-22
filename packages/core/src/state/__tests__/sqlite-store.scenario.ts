@@ -1632,6 +1632,60 @@ function worktreeEndpointRelease() {
   });
 }
 
+/**
+ * Git keeps listing a worktree whose directory was deleted out from under it (`rm -rf`, a
+ * vanished mount) as `prunable` until something runs `git worktree prune`/`remove --force`. It
+ * is present in the snapshot exactly as much as a nonexistent directory can be, and reconcile
+ * must treat it as gone -- release its leases, mark it ORPHANED -- the same as a worktree Git
+ * stops listing entirely, not leave it (and its leases) sitting at whatever state it last had.
+ * A worktree mid-teardown (CLEANING here) is untouched: something else already owns its leases.
+ */
+function prunableWorktreeRelease() {
+  return withDatabase((path, open, close) => {
+    const firstStore = open();
+    const repository = createRepository(firstStore);
+    const reconciled = firstStore.reconcileWorktrees(repository.id, [
+      worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
+      worktree('/projects/demo/repo-feature', 'feature-head', 'refs/heads/feature'),
+      worktree('/projects/demo/repo-cleaning', 'cleaning-head', 'refs/heads/cleaning'),
+    ]);
+    const feature = reconciled.discovered.find(({ path: p }) => p.endsWith('-feature'));
+    const cleaning = reconciled.discovered.find(({ path: p }) => p.endsWith('-cleaning'));
+    if (feature === undefined || cleaning === undefined) throw new Error('Expected two linked worktrees');
+    const range = { min: 4200, max: 4299 };
+    firstStore.allocateEndpoint({
+      worktreeId: feature.id, name: 'api', protocol: 'tcp', host: '127.0.0.1', portRange: range, preferredPort: 4200,
+    });
+    firstStore.allocateEndpoint({
+      worktreeId: cleaning.id, name: 'api', protocol: 'tcp', host: '127.0.0.1', portRange: range, preferredPort: 4201,
+    });
+    close();
+
+    const database = new Database(path);
+    database.prepare("UPDATE worktrees SET state = 'RUNNING' WHERE id = ?").run(feature.id);
+    database.prepare("UPDATE worktrees SET state = 'CLEANING' WHERE id = ?").run(cleaning.id);
+    database.close();
+
+    const reopenedStore = open();
+    try {
+      const result = reopenedStore.reconcileWorktrees(repository.id, [
+        worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
+        { ...worktree('/projects/demo/repo-feature', 'feature-head', 'refs/heads/feature'), prunableReason: 'gitdir file points to non-existent location' },
+        { ...worktree('/projects/demo/repo-cleaning', 'cleaning-head', 'refs/heads/cleaning'), prunableReason: 'gitdir file points to non-existent location' },
+      ]);
+      const leases = reopenedStore.listEndpointLeases();
+      return {
+        orphaned: result.orphaned.map(({ path: p, state }) => [p, state]),
+        updated: result.updated.map(({ path: p, state }) => [p, state]),
+        featureLeaseState: leases.find(({ worktreeId }) => worktreeId === feature.id)?.state,
+        cleaningLeaseState: leases.find(({ worktreeId }) => worktreeId === cleaning.id)?.state,
+      };
+    } finally {
+      close();
+    }
+  });
+}
+
 /** Retiring a registration takes its operation leases with it, and nothing else's. */
 function operationLeaseRetirement() {
   return withDatabase((_, open, close) => {
@@ -1701,6 +1755,7 @@ const scenarios: Record<string, () => unknown> = {
   'repository-operation-lease-recovery': repositoryOperationLeaseRecovery,
   'cross-operation-lease-exclusion': crossOperationLeaseExclusion,
   'worktree-endpoint-release': worktreeEndpointRelease,
+  'prunable-worktree-release': prunableWorktreeRelease,
   'operation-lease-retirement': operationLeaseRetirement,
 };
 

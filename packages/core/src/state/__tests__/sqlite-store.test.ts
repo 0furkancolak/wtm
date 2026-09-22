@@ -359,6 +359,15 @@ describe('SQLiteStateStore', () => {
     });
   });
 
+  test('orphans a worktree Git still lists but marks prunable, and releases its leases, without touching one mid-teardown', () => {
+    expect(runScenario('prunable-worktree-release')).toEqual({
+      orphaned: [['/projects/demo/repo-feature', 'ORPHANED']],
+      updated: [['/projects/demo/repo', 'DISCOVERED'], ['/projects/demo/repo-cleaning', 'CLEANING']],
+      featureLeaseState: 'RELEASED',
+      cleaningLeaseState: 'ACTIVE',
+    });
+  });
+
   test('retires a repository with its operation leases and leaves the other repository holding its own', () => {
     expect(runScenario('operation-lease-retirement')).toEqual({
       forgotRepository: true,
