@@ -213,6 +213,11 @@ export class ProxyServer {
     route: ProxyRoute,
     overlayApi: (route: ProxyRoute, request: IncomingMessage) => Promise<{ status: number; body: unknown }>,
   ): void {
+    if (!originMatchesHost(request)) {
+      response.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+      response.end('Cross-origin requests to the WTM dev-overlay API are refused.');
+      return;
+    }
     overlayApi(route, request).then((result) => {
       response.writeHead(result.status, { 'content-type': 'application/json' });
       response.end(JSON.stringify(result.body));
@@ -322,6 +327,28 @@ export class ProxyServer {
     });
     backend.on('error', (error) => { this.#onError(error); socket.destroy(); });
     socket.on('error', () => backend.destroy());
+  }
+}
+
+/**
+ * The overlay API is unauthenticated by design (todo item 46b never added a token) and reachable
+ * from any page the developer's browser has open, on a well-known `<service>.<slug>.wtm.localhost`
+ * hostname derived deterministically from the branch name — so a third-party page can guess it and
+ * fire a same-site-looking `fetch(..., {mode: 'no-cors'})` at it with no preflight. Every browser
+ * sends `Origin` on a POST regardless of CORS mode (Fetch §4.7 requires it outside bare same-origin
+ * GET/HEAD), so refusing a present-but-mismatched `Origin` closes that CSRF window without needing
+ * a token; absent `Origin` (a non-fetch tool, or a top-level GET navigation) is let through, since
+ * nothing overlay-API-shaped is reachable that way that a same-origin page couldn't already do.
+ */
+function originMatchesHost(request: IncomingMessage): boolean {
+  const origin = request.headers.origin;
+  if (origin === undefined) return true;
+  const host = request.headers.host;
+  if (host === undefined) return false;
+  try {
+    return new URL(origin).host.toLowerCase() === host.trim().toLowerCase();
+  } catch {
+    return false;
   }
 }
 

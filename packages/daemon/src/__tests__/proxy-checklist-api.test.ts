@@ -35,6 +35,7 @@ function request(options: {
   method?: string;
   path?: string;
   body?: string;
+  origin?: string;
 }): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const req = httpRequest({
@@ -45,6 +46,7 @@ function request(options: {
       headers: {
         host: options.hostHeader,
         ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
+        ...(options.origin === undefined ? {} : { origin: options.origin }),
       },
     }, (response) => {
       let body = '';
@@ -197,5 +199,63 @@ describe('ProxyServer overlay checklist API', () => {
     });
     expect(response.status).toBe(404);
     expect(JSON.parse(response.body)).toMatchObject({ error: expect.any(String) });
+  });
+
+  it('a cross-origin POST (CSRF) is refused with 403 and never reaches the checklist store', async () => {
+    backend = await startBackend();
+    const checklist = fakeChecklist([{ position: 0, text: 'Check it', checked: false }]);
+    proxy = new ProxyServer({
+      port: 0, hosts: ['127.0.0.1'],
+      resolveRoute: (name) => routeFor(backend.port).get(name) ?? null,
+      overlayApi: overlayApiFor(checklist),
+    });
+    await proxy.start();
+    proxyPort = proxy.addresses()[0]?.port ?? 0;
+
+    const response = await request({
+      port: proxyPort, hostHeader: hostname, method: 'POST', path: '/__wtm/checklist',
+      body: JSON.stringify({ position: 0, checked: true }),
+      origin: 'http://evil.example',
+    });
+    expect(response.status).toBe(403);
+
+    const followUp = await request({ port: proxyPort, hostHeader: hostname, path: '/__wtm/checklist' });
+    expect(JSON.parse(followUp.body)).toEqual({ items: [{ position: 0, text: 'Check it', checked: false }] });
+  });
+
+  it('a cross-origin GET is refused with 403 too, not just mutating requests', async () => {
+    backend = await startBackend();
+    proxy = new ProxyServer({
+      port: 0, hosts: ['127.0.0.1'],
+      resolveRoute: (name) => routeFor(backend.port).get(name) ?? null,
+      overlayApi: overlayApiFor(fakeChecklist([{ position: 0, text: 'Check it', checked: false }])),
+    });
+    await proxy.start();
+    proxyPort = proxy.addresses()[0]?.port ?? 0;
+
+    const response = await request({
+      port: proxyPort, hostHeader: hostname, path: '/__wtm/checklist', origin: 'http://evil.example',
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it('a same-origin POST (Origin matching the request Host) still succeeds', async () => {
+    backend = await startBackend();
+    const checklist = fakeChecklist([{ position: 0, text: 'Check it', checked: false }]);
+    proxy = new ProxyServer({
+      port: 0, hosts: ['127.0.0.1'],
+      resolveRoute: (name) => routeFor(backend.port).get(name) ?? null,
+      overlayApi: overlayApiFor(checklist),
+    });
+    await proxy.start();
+    proxyPort = proxy.addresses()[0]?.port ?? 0;
+
+    const response = await request({
+      port: proxyPort, hostHeader: hostname, method: 'POST', path: '/__wtm/checklist',
+      body: JSON.stringify({ position: 0, checked: true }),
+      origin: `http://${hostname}`,
+    });
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ item: { position: 0, text: 'Check it', checked: true } });
   });
 });
