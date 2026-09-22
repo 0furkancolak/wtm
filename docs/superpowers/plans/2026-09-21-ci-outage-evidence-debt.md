@@ -276,6 +276,21 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/core/src/state/__tests__/checklist.test.ts packages/protocol/src/__tests__/checklist.test.ts packages/daemon/src/__tests__/checklist-handler.test.ts packages/daemon/src/__tests__/proxy-checklist-api.test.ts packages/daemon/src/__tests__/dev-overlay.test.ts packages/cli/src/commands/__tests__/checklist.test.ts
   ```
 
+### #72 — feat(cli): add wtm tui — worktree/task/port/health dashboard (item 15, unit 1/3)
+- Commit: `ca3e3a9` · Unit: madde 15, birim 1/3.
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası: 5 leg 8-13 saniyede, runner atanmadan düştü). Yalnızca
+  yerel gate ile doğrulandı (273 dosya, bu sandbox'ın bilinen 2 uid-0 hatası hariç).
+- Bu PR'a özgü ayrı bir kanıt boşluğu: `wtm tui`'nin dış döngüsü (raw mode, alt-screen, cursor
+  gizleme, `SIGINT`/`SIGTERM` işleyicileri, resize) hiç gerçek bir TTY'ye karşı çalıştırılmadı —
+  yalnızca saf `view-model.ts`/`render.ts`/`command.ts` fonksiyonları test edildi. Bu, terminal
+  lifecycle kodunun kendisi için gerçek bir kanıt boşluğu (kesintiyle ilgisiz, ayrı bir konu):
+  gerçek bir terminalde (macOS/Linux/Windows, farklı `TERM`/boyut) elle doğrulama henüz yapılmadı.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/cli/src/tui/__tests__/view-model.test.ts packages/cli/src/tui/__tests__/render.test.ts packages/cli/src/tui/__tests__/command.test.ts packages/cli/src/__tests__/main.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,

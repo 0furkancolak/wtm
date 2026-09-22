@@ -125,6 +125,8 @@ import { withAdapterTasks } from '@wtm/daemon/adapter-tasks';
 import { createStateDiagnosticDataSource } from './state-diagnostics';
 import { createDaemonStartupDiagnostic } from './daemon-startup-diagnostic';
 import { renderCompletionScript, validateCompletionKind, type CompletionDataKind } from './commands/completion';
+import { parseTuiIntervalMs, tuiNonInteractiveRefusal } from './tui/command';
+import { runTuiLoop } from './tui/loop';
 
 export interface CliDependencies {
   dataSource?: DiagnosticDataSource;
@@ -699,6 +701,36 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       await runExecCommand({ cwd: target.cwd, argv }, dependencies.runtimeClient, dependencies.execForeground),
       runtimeJson(program, options),
     );
+  });
+
+  const tui = program.command('tui [selector]')
+    .description('Interactive terminal dashboard: worktree, running tasks, ports and health.');
+  tui.option('--interval <ms>', 'refresh interval in milliseconds (default 3000, minimum 250)');
+  tui.action(async (selector: string | undefined, options: { interval?: string }) => {
+    const refusal = tuiNonInteractiveRefusal(process.stdout);
+    if (refusal !== null) {
+      stderr(`[${refusal.code}] ${refusal.message}\n`);
+      hooks.setExitCode?.(exitCodeForError(refusal.code));
+      return;
+    }
+    let intervalMs: number;
+    try {
+      intervalMs = parseTuiIntervalMs(options.interval);
+    } catch (error) {
+      stderr(`[WTM_CONFIG_INVALID] ${error instanceof Error ? error.message : String(error)}\n`);
+      hooks.setExitCode?.(exitCodeForError('WTM_CONFIG_INVALID'));
+      return;
+    }
+    const result = await runTuiLoop({
+      cwd,
+      ...(selector === undefined ? {} : { selector }),
+      source,
+      stdin: process.stdin,
+      stdout: process.stdout,
+      intervalMs,
+      ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+    });
+    hooks.setExitCode?.(result.exitCode);
   });
 
   const daemon = program.command('daemon').description('Manage the per-user WTM daemon.');
@@ -2026,7 +2058,10 @@ function socketPathRefusalEnvelope(
 
 function isDiagnosticInvocation(argv: readonly string[]): boolean {
   const command = argv.find((argument) => !argument.startsWith('-'));
-  return command !== undefined && commands.some(([name]) => name === command);
+  // `tui` is not one of the six generic diagnostic commands (it renders a live dashboard, not one
+  // JSON envelope), but it answers from the same `DiagnosticDataSource` they do — `status` and
+  // `doctor`, polled — so it needs the same store opened ahead of it.
+  return command !== undefined && (commands.some(([name]) => name === command) || command === 'tui');
 }
 
 /**

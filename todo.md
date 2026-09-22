@@ -2617,6 +2617,49 @@ logs
 
 Bu özellik core logic taşımamalı; yalnızca mevcut stable protocol üzerinden çalışmalı.
 
+**2026-09-22 (birim 1/3, terminal render katmanı + polling döngüsü + worktree/task/port/health
+görünümü):** Teslim edildi. `packages/cli/src/tui/` altında dört modül: `view-model.ts` (saf —
+`wtm status --json` + `wtm doctor --json` zarflarını `TuiViewModel`'e dönüştürür), `render.ts` (saf
+— view model + terminal boyutu alır, ANSI frame string döner; panel listesi
+(`defaultTuiPanels`) genişletilebilir tutuldu — disk/cleanup-candidate ve log-tail görünümleri
+ileride bu listeye yeni `TuiPanel` eklenerek girecek, `renderTuiFrame`'e dokunmadan), `terminal.ts`
+(alt-screen + raw mode + cursor yaşam döngüsü, tek `restore()` her çıkış yolundan geçiyor) ve
+`loop.ts` (sabit aralıklı polling + `q`/Ctrl+C çıkış + `r` manuel yenileme). `wtm tui [selector]`
+komutu `packages/cli/src/main.ts`'e `status`/`doctor` ile aynı `DiagnosticDataSource`'u paylaşacak
+şekilde bağlandı.
+
+İki kısıt kasıtlı olarak önceden karara bağlandı, kod bunları uyguluyor:
+
+- **`wtm ps` hiç pollanmıyor.** `RuntimeController`'ın `ps` handler'ı her worktree için
+  `#observeActivity` çağırıyor (idle-suspension'ı, madde 14, besliyor); sürekli pollanan bir TUI bunu
+  kalıcı olarak devre dışı bırakırdı. `status`'un kendi `processes` alanı aynı süreç kayıtlarından
+  "şu an ne çalışıyor" sorusunu bu yan etki olmadan cevaplıyor, o yüzden `ps`'e hiç ihtiyaç yok.
+- **Worktree enumeration kararı:** `status --global`/`doctor --global` *registered workspace*'leri
+  (repo'ları) topluyor, bir workspace'in worktree'lerini değil — her biri yine yalnızca çağrıldığı
+  dizinin worktree'sini raporluyor. Tek bir workspace'in tüm worktree'lerini status/health ile
+  birlikte tek zarfta veren stabil bir komut bugün yok (`wtm ports` tüm worktree'lerin lease'lerini
+  veriyor ama branch/path/state yok; `wtm analyze --all` identity+git-safety veriyor ama
+  runtime/port/process health değil). Üçünü tek bir "enumeration" API'ymiş gibi birleştirmek bu
+  "render katmanı" biriminin altında yeni protokol yüzeyi icat etmek olurdu — madde 15'in kendi
+  metninin açıkça uyardığı şey. Bunun yerine `wtm tui [selector]`, `wtm status`/`wtm doctor`'ın
+  zaten varsayılan olarak yaptığı gibi **tek worktree'ye** (cwd'nin içinde olduğu, ya da
+  `[selector]`'ın adlandırdığı) kapsandı — `docs/04`'ün "General scoping rule"uyla birebir aynı
+  kalıp. Çok-worktree'li canlı bir dashboard, yeni bir stabil-protokol enumeration komutu (ya da
+  birden çok `cwd`'ye göre kurulmuş `DiagnosticDataSource` çağrısını dikişleyen belgeli bir karar)
+  gerektiriyor; ikisi de bu birimin dışında, sonraki bir birime bayraklandı.
+
+Dokunulan dosyalar: `packages/cli/src/tui/{view-model,render,terminal,loop,command}.ts` ve
+`__tests__/{view-model,render,command}.test.ts`; `packages/cli/src/main.ts` (`tui` komutu +
+`isDiagnosticInvocation`); `packages/cli/src/__tests__/main.test.ts` (komut listesi güncellendi);
+`docs/04-cli-reference.md` ("Interactive dashboard" bölümü); `skills/wtm/SKILL.md` (komut haritası
+satırı).
+
+Kasıtlı olarak dışarıda bırakılan: disk kullanımı + cleanup-candidate görünümü (birim 2) ve log
+tail görünümü (birim 3) — madde metninin kendisinin ayırdığı gibi. `wtm tui`'nin dış döngüsü
+(raw mode kurulumu, interval timer, key-event wiring) test edilmedi — gerçek bir TTY gerektiriyor,
+CLAUDE.md'nin native/fixture test ayrımıyla aynı sınır; yalnızca saf `view-model.ts`/`render.ts` ve
+`command.ts`'in TTY-refusal/interval-parse fonksiyonları test edildi.
+
 ---
 
 ### [ ] 46. Dev overlay: çalışan web uygulamasına worktree kimliğini ve ajan test adımlarını bas
