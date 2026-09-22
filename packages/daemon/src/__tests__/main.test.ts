@@ -420,3 +420,58 @@ describe('watch retry backoff', () => {
     expect(harness.starts()).toBe(closed);
   });
 });
+
+describe('the request gate reaches the runtime handler for every command it dispatches', () => {
+  // The CLI's `isRuntimeInvocation` (packages/cli/src/main.ts) decides which commands dial the
+  // daemon at all. This gate is the daemon's own, separate decision about which *wire* commands
+  // it will pass through to `runtimeHandler` -- and `task.*`/`checklist.*` are real wire
+  // commands `runtime-factory.ts`'s handler already routes correctly once a request reaches it
+  // (`taskOverrideCommandNames`/`checklistCommandNames`, alongside `ciCommandNames` and
+  // `jobCommandNames`). This gate used to check only `runtimeCommandNames`/`jobCommandNames`/
+  // `ciCommandNames`, so a `task.list` or `checklist.list` request -- sent by a CLI that, since
+  // #98, correctly believes the daemon can answer it -- was rejected right here as
+  // `WTM_DAEMON_INVALID_REQUEST` ("Unknown daemon command"), never reaching the handler that
+  // would have served it.
+  async function gateHarness(): Promise<{ daemon: WtmDaemon; request: IpcRequestHandler; seen: string[] }> {
+    let request!: IpcRequestHandler;
+    const seen: string[] = [];
+    const daemon = new WtmDaemon({
+      stateStore: emptyStore,
+      socketPath: '/unused/wtmd.sock',
+      serverFactory: ({ handler }) => {
+        request = handler;
+        return { start: async () => {}, close: async () => {} };
+      },
+      runtimeHandler: async (req) => {
+        seen.push(req.command);
+        return { schemaVersion: 1, ok: true, command: req.command, data: null, warnings: [], errors: [] };
+      },
+    });
+    await daemon.start();
+    return { daemon, request, seen };
+  }
+
+  test('task.* and checklist.* requests reach the runtime handler instead of being rejected as unknown', async () => {
+    const harness = await gateHarness();
+    try {
+      for (const command of ['task.list', 'task.show', 'task.set', 'task.unset', 'checklist.list', 'checklist.set', 'checklist.clear']) {
+        const response = await harness.request({ protocol: protocolVersion, id: command, command });
+        expect({ command, response }).toEqual({ command, response: { schemaVersion: 1, ok: true, command, data: null, warnings: [], errors: [] } });
+      }
+      expect(harness.seen).toEqual(['task.list', 'task.show', 'task.set', 'task.unset', 'checklist.list', 'checklist.set', 'checklist.clear']);
+    } finally {
+      await harness.daemon.close();
+    }
+  });
+
+  test('an actually unknown command is still rejected, so the gate still gates something', async () => {
+    const harness = await gateHarness();
+    try {
+      const response = await harness.request({ protocol: protocolVersion, id: '1', command: 'not.a.real.command' });
+      expect(response).toMatchObject({ ok: false, errors: [{ code: 'WTM_DAEMON_INVALID_REQUEST' }] });
+      expect(harness.seen).toEqual([]);
+    } finally {
+      await harness.daemon.close();
+    }
+  });
+});
