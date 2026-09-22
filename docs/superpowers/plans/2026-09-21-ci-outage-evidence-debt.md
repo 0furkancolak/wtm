@@ -350,6 +350,22 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   scripts/__tests__/render-scoop-manifest.test.ts scripts/__tests__/render-homebrew-formula.test.ts
   ```
 
+### #80 — fix(platform): cap glibc malloc arenas for the systemd-managed daemon
+- Commit: `645b46f` · Unit: idle RSS release-checklist finding — `MALLOC_ARENA_MAX=1` added to the
+  Linux systemd unit's `Environment` line, real measured ~3.5% RSS drop (89.65 → 86.55 MiB).
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası). Yalnızca yerel gate ile doğrulandı (276 dosya, bilinen 2
+  uid-0 hatası hariç, Node 24.18.0 ile).
+- Bu PR'a özgü ayrı bir kanıt boşluğu: bu değişikliğin gerçek bir ölçümü yalnızca bu sandbox
+  konteynerinde alındı, gerçek `ubuntu-24.04` GitHub runner'ında değil — todo.md'nin kendi notu
+  gerekçesini taşıyor. Ayrıca gerçek bir `wtm daemon install` üzerinden systemd'nin bu
+  `Environment` satırını gerçekten okuyup uyguladığı hiç native olarak doğrulanmadı (systemd bu
+  sandbox'ta çalışmıyor) — yalnızca `renderSystemdUnit`'in ürettiği metin test edildi.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/platform/src/service/__tests__/linux-service.test.ts packages/daemon/src/__tests__/systemd.test.ts packages/cli/src/__tests__/main.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
