@@ -105,9 +105,18 @@ function baseSlug(worktree: ProxyHostnameWorktree): string {
   return fromId !== '' ? fromId : 'worktree';
 }
 
-/** The canonical hostname for one service of one already-slugged worktree. */
+/**
+ * The canonical hostname for one service of one already-slugged worktree.
+ *
+ * `service` is lowercased: it comes straight from a `[ports.<name>]` TOML key with no case
+ * normalization of its own (`endpoint-plan.ts` reads it via a plain `Object.entries`), while
+ * every incoming Host header is lowercased before a route lookup (`hostnameFromHeader` in
+ * `packages/daemon/src/proxy.ts`) because URL host components are ASCII-lowercased by every
+ * standards-compliant client. A hostname built from an unlowercased `[ports.API]` would register
+ * a route no real request could ever match.
+ */
 export function proxyHostname(service: string, slug: string): string {
-  return `${service}.${slug}.${wtmLocalhostSuffix}`;
+  return `${service.toLowerCase()}.${slug}.${wtmLocalhostSuffix}`;
 }
 
 /**
