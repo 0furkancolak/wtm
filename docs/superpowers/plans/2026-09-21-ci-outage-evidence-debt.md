@@ -413,6 +413,35 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/cli/src/__tests__/dev-overlay-three-worktrees.test.ts
   ```
 
+### #88 — fix(daemon,core): close three correctness gaps found in the merge audit
+- Commit: `3254578` · Unit: Kaptan'ın isteğiyle yapılan tam birleştirme denetiminin bulduğu üç
+  gerçek doğruluk hatası — dev-overlay repo bazlı opt-in'in üretimde hiç bağlanmamış olması,
+  `[budgets] max_processes` kabulünde bir TOCTOU yarışı, ve idle-suspension süpürmesinin
+  `wtm task set` override'larını görmezden gelmesi. Her biri gerçek bir daemon'a karşı çalışan
+  yeni bir regresyon testiyle geldi, düzeltme öncesi kod üzerinde başarısız olduğu, düzeltme
+  sonrası geçtiği doğrulandı.
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası). Yalnızca yerel gate ile doğrulandı (279 dosya, bilinen
+  2 uid-0 hatası hariç — bu kez Node 24 PATH'te değilken `daemon/__tests__/main.test.ts` fazladan
+  başarısız görünüyordu, Node 24.21.0 ile tekrar koşulduğunda tek kalan hata dokümante edilen
+  uid-0/EACCES vakasıydı; `launchd.test.ts`'in tam koşudaki tek seferlik hatası da tek başına
+  çalıştırıldığında geçti — paralel kaynak baskısı, gerçek bir regresyon değil).
+- Bu PR'a özgü ayrı bir kanıt boşluğu: yok — üç düzeltme de platforma özel hiçbir şey yapmıyor
+  (proxy config çözümleme, in-process admission sayacı, idle policy çözümleme), gerçek bir
+  Windows kernel'e ihtiyaç duymuyor.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/cli/src/__tests__/dev-overlay-repo-opt-in-while-off.test.ts packages/daemon/src/__tests__/idle-policies-task-override.test.ts packages/daemon/src/__tests__/runtime-controller.test.ts
+  ```
+
+### #89 — docs: close CHANGELOG/todo.md gaps found in the merge audit
+- Commit: `5469a18` · Unit: #88 ile aynı denetimin bulduğu dokümantasyon boşlukları —
+  CHANGELOG.md'nin dev-overlay maddesine repo bazlı override eksikliği ve iki kayıtsız özellik
+  (checklist komutları/migration 017, `wtm tui`), todo.md'de K8 tarafından zaten kapatılmış bir
+  alt maddenin hâlâ açık göründüğü bir paragraf.
+- Eksik kanıt: yok — üretim kodu değişmedi, yalnızca `CHANGELOG.md` ve `todo.md`. Test etkisi yok.
+- Bu PR'a özgü ayrı bir kanıt boşluğu: yok, `win32_test_filter` gerekmiyor.
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
