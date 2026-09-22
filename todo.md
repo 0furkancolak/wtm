@@ -2798,7 +2798,12 @@ notu olarak burada kayıtlı.
 
 ---
 
-### [ ] 46. Dev overlay: çalışan web uygulamasına worktree kimliğini ve ajan test adımlarını bas
+### [~] 46. Dev overlay: çalışan web uygulamasına worktree kimliğini ve ajan test adımlarını bas
+
+**2026-09-22: tüm kararlar ve yapılacaklar `[x]`, kabul kriterlerinin 3'ü `[x]`, 1'i bilinçli
+olarak dar kapsamlı `[~]` (WTM-siz tam eşdeğerlik madde 12'nin konusu, sert bir engel değil). Bu
+maddenin gerçek, bloke olmayan tek açık kalemi — üç worktree e2e senaryosu — kapatıldı
+(`packages/cli/src/__tests__/dev-overlay-three-worktrees.scenario.ts`).**
 
 Aynı anda üç dört feature'ın `web`'i ayakta olduğunda, tarayıcıdaki bir sekmenin hangi worktree'ye
 ait olduğunu yalnızca port numarası söylüyor. Port da lease'e göre kayıyor: alan kurulumunda
