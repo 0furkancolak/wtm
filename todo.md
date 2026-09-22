@@ -3653,7 +3653,12 @@ Stable sonrası hedef:
 
 #### macOS
 
-- [ ] Homebrew
+- [~] Homebrew — formula-render altyapısı zaten vardı (`scripts/render-homebrew-formula.ts`,
+      `packaging/homebrew/wtm.rb.template`, `release.yml`'in `formula` job'ı): stable tag'lerde
+      yayımlanan checksum'lardan formula render edilip `HOMEBREW_TAP_TOKEN` varsa
+      `homebrew-wtm` tap'ine push ediliyor, yoksa build artifact olarak kalıyor. Gerçek `brew
+      install` ile hiç doğrulanmadı (gerçek bir stable tag hiç atılmadı) — release checklist'in
+      "Homebrew stable install doğrulanmış" satırı bu yüzden açık.
 
 #### Linux
 
@@ -3661,7 +3666,8 @@ Stable sonrası hedef:
 
 - [~] standalone binary — Linux x64 yerel ELF arşivi üretildi ve gerçek executable ile
       doğrulandı; GitHub release arşivi ve Linux ARM64 hâlâ açık.
-- [ ] Homebrew/Linuxbrew
+- [ ] Homebrew/Linuxbrew — macOS formula'sı yalnızca `on_arm`/`on_intel` (darwin arşivleri)
+      kullanıyor; Linux desteği `on_macos`/`on_linux` içiçe bloklarıyla ayrı bir birim.
 - [ ] `.deb` / apt repository ancak talep oluşursa
 - [ ] `.rpm` ancak talep oluşursa
 
@@ -3672,7 +3678,13 @@ Stable sonrası hedef:
 - [~] standalone zip/exe — `release.yml`'in `verify-windows` job'ı `wtm-windows-x64.zip`'i
       üretip yayımlıyor (W6-1 / 29b); gerçek `windows-latest` runner kanıtı yok (Actions
       kesintisi), yerel kanıt sahte PE fixture'larıyla sınırlı.
-- [ ] Scoop
+- [~] Scoop — **2026-09-22 eklendi**: `scripts/render-scoop-manifest.ts` +
+      `packaging/scoop/wtm.json.template`, homebrew'in render-from-checksums desenini birebir
+      taklit ediyor; `release.yml`'e yeni bir `scoop-manifest` job'ı eklendi (`publish`'e bağlı,
+      yalnızca stable tag'lerde, `verify-windows`'un `continue-on-error` olması nedeniyle win32
+      artifact'i yoksa sessizce atlıyor). `SCOOP_BUCKET_TOKEN` varsa `scoop-wtm` bucket'ine push
+      ediyor, yoksa build artifact olarak kalıyor. Gerçek `scoop install` ile hiç doğrulanmadı —
+      bir stable tag ve `scoop-wtm` deposu ikisi de yok henüz.
 - [ ] WinGet
 - [ ] Chocolatey ancak talep oluşursa
 

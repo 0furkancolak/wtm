@@ -640,4 +640,76 @@ jobs:
         with:
           name: homebrew-formula
           path: artifacts/formula/wtm.rb
+
+  scoop-manifest:
+    name: Scoop manifest
+    timeout-minutes: 20
+    needs: publish
+    # A prerelease must never become the default manifest for `scoop install`.
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - run: bun install --frozen-lockfile
+
+      # verify-windows is `continue-on-error` (CLAUDE.md's informational win32 leg): a release
+      # whose Windows leg failed before its upload step leaves this pattern matching nothing. That
+      # is this channel's own gap to report, not a reason to fail a release macOS and Linux
+      # otherwise ship cleanly -- the same reasoning `publish`'s npm step already applies to a
+      # rejected token.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wtm-win32-*
+          path: staged/
+          merge-multiple: true
+
+      - name: Render the manifest from the published checksum
+        id: render
+        run: |
+          set -euo pipefail
+          if [ ! -f staged/SHA256SUMS ]; then
+            echo '::warning::No wtm-win32-x64 artifact was published for this tag; the Scoop manifest is left unrendered.'
+            echo 'rendered=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p dist/release
+          cp staged/SHA256SUMS dist/release/SHA256SUMS
+          # The digest comes from the artifact that was just uploaded; it is never guessed.
+          bun run scoop:render
+          node -e "JSON.parse(require('node:fs').readFileSync('artifacts/scoop/wtm.json', 'utf8'))"
+          echo 'rendered=true' >> "$GITHUB_OUTPUT"
+
+      - name: Update the bucket
+        if: steps.render.outputs.rendered == 'true'
+        env:
+          BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BUCKET_TOKEN}" ]; then
+            echo 'No bucket token configured; the rendered manifest is left as a build artifact.'
+            exit 0
+          fi
+          git clone --depth 1 \
+            "https://x-access-token:${BUCKET_TOKEN}@github.com/0furkancolak/scoop-wtm.git" bucket
+          mkdir -p bucket/bucket
+          cp artifacts/scoop/wtm.json bucket/bucket/wtm.json
+          git -C bucket add bucket/wtm.json
+          git -C bucket -c user.name='wtm-release' -c user.email='release@nafru.com' \
+            commit -m "wtm ${{ github.ref_name }}"
+          git -C bucket push
+
+      - uses: actions/upload-artifact@v4
+        if: steps.render.outputs.rendered == 'true'
+        with:
+          name: scoop-manifest
+          path: artifacts/scoop/wtm.json
+          if-no-files-found: error
           if-no-files-found: error
