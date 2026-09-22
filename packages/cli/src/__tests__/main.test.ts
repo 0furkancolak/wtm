@@ -216,6 +216,37 @@ describe('Commander CLI', () => {
   // client's connection-settle path, comfortably clears bun's default 5s per-test budget.
   }, 20_000);
 
+  test('create now connects to the daemon too, so registration can actually be reported as "daemon"', async () => {
+    // Regression: `isRuntimeInvocation` gained `task`/`checklist`/`ci watch`/`ci unwatch` in #98
+    // but never gained `create`, even though `reconciledByDaemon` (`commands/create.ts`) reports
+    // `registration: "daemon"` only when `input.client` -- `dependencies.runtimeClient` -- is
+    // defined and answers a live `reconcile`. Every `wtm create` therefore reported
+    // `registration: "local"` and a spurious `WTM_DAEMON_UNAVAILABLE` warning even with a
+    // healthy, reachable daemon, because the client was never dialled at all.
+    const fixture = await createGitSafetyFixture();
+    repositoryFixtures.push(fixture);
+    const directory = await mkdtemp(join(tmpdir(), 'wtm-create-runtime-invocation-'));
+    const socketPath = join(directory, 'd.sock');
+    let connections = 0;
+    const server = createServer((socket) => { connections += 1; socket.destroy(); });
+    await new Promise<void>((resolve) => { server.listen(socketPath, () => resolve()); });
+
+    try {
+      const output = capture();
+      await runCli(['create', 'feature-x', '--json'], {
+        cwd: fixture.repoPath,
+        daemonSocketPath: socketPath,
+        taskTargetDatabasePath: join(fixture.root, 'state.db'),
+        taskTargetGlobalConfigPath: join(fixture.root, 'config.toml'),
+        ...output.io,
+      });
+      expect(connections).toBeGreaterThan(0);
+    } finally {
+      await new Promise<void>((resolve) => { server.close(() => resolve()); });
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   test('skill print emits exactly the canonical skill without an added newline or envelope', async () => {
     const output = capture();
     const canonical = await readFile(join(import.meta.dir, '../../../../skills/wtm/SKILL.md'), 'utf8');
