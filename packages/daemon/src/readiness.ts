@@ -17,6 +17,14 @@ export interface ReadinessOptions {
   inspectProcess(pid: number): Promise<ProcessInspection>;
   readCompletion?(stdoutPath: string, pid: number): Promise<ManagedProcessCompletion | null>;
   fetch?: ReadinessFetch;
+  /**
+   * Told once per poll attempt, so a caller with an idle-activity clock (the daemon's
+   * `IdleRuntimeSuspender`) can keep it fresh for the whole wait, not just its two endpoints.
+   * Without this, a wait longer than a task's own `idle.timeout` raced the sweep: the sweep's
+   * clock only moved when the caller touched it before and after `observeReadiness` ran, so a
+   * sweep landing mid-wait saw a stale clock and stopped the very process this call is polling.
+   */
+  onAttempt?(): void;
 }
 
 export interface ReadinessResult {
@@ -103,6 +111,7 @@ export async function observeReadiness(options: ReadinessOptions): Promise<Readi
     while (true) {
       const interruption = interrupted();
       if (interruption !== null) return finish(interruption);
+      try { options.onAttempt?.(); } catch { /* an activity clock is a convenience, not a contract */ }
       const before = await checkEvidence();
       if (interrupted() !== null) return finish(interrupted()!);
       if (before !== null) return finish(before);

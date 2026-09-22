@@ -196,4 +196,26 @@ describe('bounded HTTP readiness observation', () => {
     }));
     expect(result.readiness).toMatchObject({ state: 'ABORTED', attempts: 0 });
   });
+
+  // A caller with an idle-activity clock (the daemon's `IdleRuntimeSuspender`) only touched it
+  // once before and once after `observeReadiness` ran, never during the wait itself. A wait
+  // longer than a task's own `idle.timeout` let the sweep read a stale clock mid-wait and stop
+  // the very process this call is polling. `onAttempt` closes that gap.
+  test('tells onAttempt once per poll attempt, so a caller can keep an activity clock fresh for the whole wait', async () => {
+    let attempts = 0;
+    const onAttempt = () => { attempts += 1; };
+    const result = await observeReadiness(options({
+      onAttempt,
+      fetch: async () => new Response(null, { status: attempts >= 3 ? 200 : 503 }),
+    }));
+    expect(result.readiness).toMatchObject({ state: 'READY', attempts: 3 });
+    expect(attempts).toBe(3);
+  });
+
+  test('onAttempt is optional and a throwing onAttempt cannot fail the observation', async () => {
+    const result = await observeReadiness(options({
+      onAttempt: () => { throw new Error('activity sink is down'); },
+    }));
+    expect(result.readiness.state).toBe('READY');
+  });
 });
