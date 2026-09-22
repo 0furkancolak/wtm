@@ -129,6 +129,17 @@ const proxySchema = z.object({
 const devOverlaySchema = z.object({
   /** Off by default, and inert unless `[proxy] enabled = true` too — see this table's own doc. */
   enabled: z.boolean().optional(),
+  /**
+   * Per-repository override, keyed by repository name — the same `basename(mainRoot)` convention
+   * the overlay's own `repoName` already uses (`packages/daemon/src/dev-overlay.ts`). Lets one
+   * noisy repository opt out of an otherwise machine-wide `enabled = true` (or opt in under an
+   * otherwise-off default) without a second, per-workspace configuration surface: the overlay
+   * stays a single, daemon-wide injection point (K10), this just narrows which routes it applies
+   * to. A name with no entry here falls back to the table's own top-level `enabled`.
+   */
+  repos: z.record(z.string().min(1), z.object({
+    enabled: z.boolean().optional(),
+  }).strict()).optional(),
 }).strict();
 
 /**

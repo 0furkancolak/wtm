@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import { basename } from 'node:path';
-import type { ChecklistItemRecord, ChecklistStore, ManagedProcessRecord, ManagedProcessState, RepositoryRecord } from '@wtm/core';
+import type { ChecklistItemRecord, ChecklistStore, DevOverlayConfig, ManagedProcessRecord, ManagedProcessState, RepositoryRecord } from '@wtm/core';
 import { checklistToggleRequestSchema } from '@wtm/protocol';
 import { buildProxyRoutes, type ProxyRoute, type ProxyRouteSource } from './proxy-routes';
 
@@ -274,15 +274,28 @@ ${checklistHtml}
 }
 
 /**
+ * Whether the overlay should render for a given repository name, given the table-level default
+ * and this repository's own entry under `[dev-overlay.repos.<name>]` if it has one. A repository
+ * with no entry simply falls back to the default; an entry present but with `enabled` unset does
+ * the same (the entry exists only to eventually carry a value, not to imply a default of its own).
+ */
+export function isDevOverlayEnabledForRepo(policy: DevOverlayConfig, repoName: string): boolean {
+  const override = policy.repos?.[repoName]?.enabled;
+  return override ?? (policy.enabled ?? false);
+}
+
+/**
  * Builds the `ProxyServer` `htmlInjector` callback for the dev overlay: gathers this route's data
  * fresh (no caching, matching `buildProxyRoutes`'s own freshness contract) and renders it, or
  * returns `null` — which `proxy.ts` treats as "proxy this response untouched" — when there is
- * nothing to show.
+ * nothing to show, including when this route's repository was opted out of an otherwise-enabled
+ * overlay via `[dev-overlay.repos.<name>].enabled = false` (todo item 46's "repo bazında kapatma").
  */
-export function devOverlayHtmlInjector(store: DevOverlaySource): (route: ProxyRoute) => string | null {
+export function devOverlayHtmlInjector(store: DevOverlaySource, policy: DevOverlayConfig): (route: ProxyRoute) => string | null {
   return (route) => {
     const data = gatherDevOverlayData(store, route);
-    return data === null ? null : renderDevOverlayFragment(data);
+    if (data === null || !isDevOverlayEnabledForRepo(policy, data.repoName)) return null;
+    return renderDevOverlayFragment(data);
   };
 }
 

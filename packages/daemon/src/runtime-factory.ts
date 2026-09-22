@@ -352,7 +352,7 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     resolveRoute: (hostname) => buildProxyRoutes(stateStore).get(hostname) ?? null,
     ...(options.proxyHosts === undefined ? {} : { hosts: options.proxyHosts }),
     onError,
-    ...(devOverlayPolicy.enabled === true ? { htmlInjector: devOverlayHtmlInjector(stateStore) } : {}),
+    ...(devOverlayPolicy.enabled === true ? { htmlInjector: devOverlayHtmlInjector(stateStore, devOverlayPolicy) } : {}),
     ...(devOverlayPolicy.enabled === true && stateStore.checklist !== undefined
       ? { overlayApi: checklistApiHandler(stateStore.checklist) } : {}),
   }) : null;
