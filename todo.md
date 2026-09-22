@@ -2914,13 +2914,16 @@ etkinleştirme/kapatma da aynı nedenle bu slice'a girmedi (yalnızca global aç
 
 #### Kabul kriterleri
 
-- [ ] Üç feature'ın `web`'i aynı anda ayaktayken her sekme kendi worktree'sini sayfadan söylüyor. —
-      **2026-09-22: gerçek mekanizma birim testli, uçtan uca senaryo eksik.**
-      `packages/daemon/src/__tests__/dev-overlay.test.ts` sibling-endpoint çözümünü aynı
-      workspace+branch kimliğiyle kanıtlıyor (183, 202, 237. satırlar: dahil etme/hariç tutma),
-      ama üç gerçek `web` dev sunucusu + gerçek daemon + üç gerçek proxy isteğiyle tam
-      kullanıcı senaryosunu kanıtlayan bir e2e senaryo testi yok — `lifecycle-events-daemon.scenario.ts`
-      örneğindeki gibi biri yazılabilir. Bloke değil, yapılmamış iş.
+- [x] Üç feature'ın `web`'i aynı anda ayaktayken her sekme kendi worktree'sini sayfadan söylüyor. —
+      **2026-09-22: uçtan uca senaryo eklendi.**
+      `packages/cli/src/__tests__/dev-overlay-three-worktrees.scenario.ts`
+      (`lifecycle-events-daemon.scenario.ts`'in kalıbını izliyor): gerçek bir daemon, gerçek bir
+      `reconcile` ile keşfedilen tek repoda üç worktree/üç branch (`main`, `feature/existing`,
+      `feature/third`), her biri kendi `[ports.web]` lease'ini alan gerçek bir `wtm start dev`,
+      üç gerçek `http.Server` backend, ve gerçek `ProxyServer` üzerinden `Host` başlığıyla üç
+      gerçek istek. Her yanıtın enjekte edilen overlay fragment'i kendi branch'ini gösteriyor ve
+      diğer ikisinin branch'ini sızdırmıyor (`sawOwnBranch: true`, `leakedOtherBranch: false` her
+      üçünde de). 3 kez art arda koşuldu, flake yok.
 - [x] Overlay hiçbir prod build'de yer almıyor ve loopback dışı bir bind'de enjekte edilmiyor. —
       **2026-09-22 doğrulandı.** `dev-overlay.test.ts` + `proxy-dev-overlay.test.ts` koşuldu, 43/43
       geçti: kapalı overlay → baseline proxy yanıtıyla bayt-bayt aynı; HTML olmayan/sıkıştırılmış
