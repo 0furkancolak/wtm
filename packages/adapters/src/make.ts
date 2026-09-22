@@ -128,10 +128,27 @@ async function locateMakefile(root: string): Promise<{ name: string; contents: s
   return null;
 }
 
+/**
+ * GNU Make joins a line ending in `\` with the one after it (the pair is replaced by a single
+ * space) before it ever parses a rule -- so a rule can spread its *target* list across lines,
+ * not just its prerequisite list:
+ * ```
+ * foo bar \
+ *     baz: dep
+ * ```
+ * defines three targets. Splitting on raw newlines without this join first turns that into two
+ * independent lines -- "foo bar \" (no colon, not a rule) and "    baz: dep" (a rule of its own)
+ * -- silently dropping `foo` and `bar`. A continuation split only in the *prerequisite* list
+ * already worked before this, since the target/colon sits on the rule's first physical line.
+ */
+function joinLineContinuations(contents: string): string {
+  return contents.replace(/\\\r?\n/g, ' ');
+}
+
 export function parseMakeTargets(contents: string): MakeTarget[] {
   const targets = new Map<string, MakeTarget>();
   let inDefine = false;
-  for (const rawLine of contents.split(/\r?\n/)) {
+  for (const rawLine of joinLineContinuations(contents).split(/\r?\n/)) {
     // A recipe line belongs to the shell, not to make's own grammar.
     if (rawLine.startsWith('\t')) continue;
     const line = rawLine.trim();
