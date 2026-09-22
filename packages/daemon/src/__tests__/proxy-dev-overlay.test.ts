@@ -174,6 +174,47 @@ describe('ProxyServer dev overlay injection', () => {
     expect(response.body).not.toContain('wtm-dev-overlay');
   });
 
+  it('leaves an HTML response declared with a non-UTF-8 charset untouched, since decoding it as UTF-8 would corrupt it', async () => {
+    // The byte 0xE9 is "é" in ISO-8859-1; decoded as UTF-8 (an invalid sequence on its own) it
+    // becomes U+FFFD, an unrecoverable loss `#proxyHtmlResponse` must never risk for a response
+    // that declared a different charset up front. Checked on the raw bytes, not through the
+    // shared `request()` helper above: that helper accumulates the response with `body += chunk`,
+    // which itself decodes every chunk as UTF-8 — fine for every other test here (all ASCII), but
+    // it would corrupt this test's own non-UTF-8 fixture independently of what the proxy does.
+    const latin1Body = Buffer.from([0x3c, 0x68, 0x31, 0x3e, 0xe9, 0x3c, 0x2f, 0x68, 0x31, 0x3e]); // <h1>é</h1>
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=iso-8859-1' });
+      response.end(latin1Body);
+    });
+    backend = await new Promise((resolve) => {
+      server.listen(0, '127.0.0.1', () => {
+        const address = server.address();
+        resolve({ server, port: typeof address === 'object' && address !== null ? address.port : 0 });
+      });
+    });
+    proxy = new ProxyServer({
+      port: 0,
+      hosts: ['127.0.0.1'],
+      resolveRoute: (name) => routeFor(backend.port).get(name) ?? null,
+      htmlInjector: () => '<div id="wtm-dev-overlay">injected</div>',
+    });
+    await proxy.start();
+    proxyPort = proxy.addresses()[0]?.port ?? 0;
+
+    const rawBody = await new Promise<Buffer>((resolve, reject) => {
+      const req = httpRequest({
+        host: '127.0.0.1', port: proxyPort, method: 'GET', path: '/', headers: { host: hostname },
+      }, (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer) => chunks.push(chunk));
+        response.on('end', () => resolve(Buffer.concat(chunks)));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    expect(rawBody.equals(latin1Body)).toBe(true);
+  });
+
   it('appends the fragment when the HTML response has no </body> tag at all', async () => {
     backend = await startBackend({ html: '<html><body><h1>fragment only' });
     proxy = new ProxyServer({
