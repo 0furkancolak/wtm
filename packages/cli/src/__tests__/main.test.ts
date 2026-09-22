@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import { join, resolve } from 'node:path';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,6 +8,7 @@ import { createAdapterTrustStore } from '@wtm/core';
 import { jsonEnvelopeSchema } from '@wtm/protocol';
 import { createFakeAdapter } from '../../../testkit/src/fake-adapter';
 import { runScenario } from '../../../testkit/src/scenario-child';
+import { createGitSafetyFixture, type GitSafetyFixture } from '../../../testkit/src/git-fixture';
 import type { DiagnosticDataSource, RegisteredWorkspace } from '../diagnostics';
 import { createCli, DiagnosticSourceError, runCli } from '../index';
 // The assertion is that `--version` prints the shipped version alone, not that the shipped
@@ -165,6 +166,55 @@ describe('Commander CLI', () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  const repositoryFixtures: GitSafetyFixture[] = [];
+  afterEach(async () => { for (const fixture of repositoryFixtures.splice(0)) await fixture.cleanup(); });
+
+  test('task, checklist and ci watch/unwatch now connect to the daemon, unlike ci status', async () => {
+    // Regression: `isRuntimeInvocation` listed `start`/`stop`/.../`jobs` but not `task`,
+    // `checklist` or `ci watch`/`unwatch`, even though every one of their handlers takes
+    // `dependencies.runtimeClient` and needs the daemon exactly like `start`/`stop` do. Omitting
+    // them left the CLI's own client construction skipped entirely -- not attempted and failed,
+    // *never dialled* -- so every real invocation reported `WTM_DAEMON_UNAVAILABLE` even with a
+    // healthy daemon listening. Counting connections (as the "opens no connection" test above
+    // does) is what catches this: a client that dials a dead address and swallows the error looks
+    // identical, from the JSON envelope alone, to one that never dialled at all.
+    const fixture = await createGitSafetyFixture();
+    repositoryFixtures.push(fixture);
+    const directory = await mkdtemp(join(tmpdir(), 'wtm-runtime-invocation-'));
+    const socketPath = join(directory, 'd.sock');
+    let connections = 0;
+    const server = createServer((socket) => { connections += 1; socket.destroy(); });
+    await new Promise<void>((resolve) => { server.listen(socketPath, () => resolve()); });
+
+    const dependencies = {
+      cwd: fixture.repoPath,
+      daemonSocketPath: socketPath,
+      taskTargetDatabasePath: join(fixture.root, 'state.db'),
+      taskTargetGlobalConfigPath: join(fixture.root, 'config.toml'),
+    };
+
+    try {
+      for (const argv of [['task', 'list', '--json'], ['checklist', 'list', '--json'], ['ci', 'watch', '--json'], ['ci', 'unwatch', '--json']]) {
+        connections = 0;
+        const output = capture();
+        await runCli(argv, { ...dependencies, ...output.io });
+        expect(connections).toBeGreaterThan(0);
+      }
+
+      // The control case: `ci status` reads local state only and must stay daemon-free.
+      connections = 0;
+      const output = capture();
+      const code = await runCli(['ci', 'status', '--json'], { ...dependencies, ...output.io });
+      expect(code).toBe(0);
+      expect(connections).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => { server.close(() => resolve()); });
+      await rm(directory, { recursive: true, force: true });
+    }
+  // Five full CLI startups against a real (if minimal) daemon socket, each waiting out the
+  // client's connection-settle path, comfortably clears bun's default 5s per-test budget.
+  }, 20_000);
 
   test('skill print emits exactly the canonical skill without an added newline or envelope', async () => {
     const output = capture();
