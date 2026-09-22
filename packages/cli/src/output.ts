@@ -18,7 +18,15 @@ export function renderEnvelope(envelope: JsonEnvelope<unknown>, options: OutputO
 
 function renderValue(value: unknown, lines: string[], depth: number, key?: string): void {
   const indentation = '  '.repeat(depth);
-  if (value === null || typeof value !== 'object') {
+  if (value === null) {
+    // A leaf field is null for a real, non-error state (a detached-HEAD worktree's branch, a
+    // queued process's pid) — printing the bare word "null" reads as a corrupted-state signal
+    // rather than the "not applicable" it means. "none" already says that for an empty list,
+    // just below.
+    lines.push(`${indentation}${key === undefined ? '' : `${key}: `}none`);
+    return;
+  }
+  if (typeof value !== 'object') {
     lines.push(`${indentation}${key === undefined ? '' : `${key}: `}${String(value)}`);
     return;
   }
@@ -64,5 +72,19 @@ function renderItem(item: unknown, lines: string[], depth: number): void {
 function renderIssues(label: string, issues: WtmError[], lines: string[]): void {
   if (issues.length === 0) return;
   lines.push(`${label}:`);
-  for (const issue of issues) lines.push(`  [${issue.code}] ${issue.message}`);
+  for (const issue of issues) {
+    lines.push(`  [${issue.code}] ${issue.message}`);
+    // --json carries the same context/remediation an operator would need to act on a failure;
+    // dropping them here left the human-readable path strictly less useful for exactly the
+    // audience (a terminal, not a script) most likely to read the message and stop.
+    if (issue.context !== undefined) {
+      for (const [key, value] of Object.entries(issue.context)) {
+        const rendered = value === null || typeof value !== 'object' ? String(value) : JSON.stringify(value);
+        lines.push(`    ${key}: ${rendered}`);
+      }
+    }
+    if (issue.remediation !== undefined) {
+      for (const entry of issue.remediation) lines.push(`    try: ${entry.argv.join(' ')}`);
+    }
+  }
 }
