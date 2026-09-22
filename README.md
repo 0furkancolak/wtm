@@ -213,10 +213,12 @@ every gate. See [Platform support](#platform-support), especially the Windows li
 
 ### Windows: experimental contributor build
 
-There is no published Windows archive, Scoop manifest or WinGet package yet. The release workflow
-now builds and gates a `wtm-windows-x64.zip` the same way it does for macOS and Linux, but no tag
-has shipped one yet, and its job is informational rather than release-blocking: see
-[Platform support](#platform-support). A PowerShell installer, `install.ps1`, exists in this
+There is no published Windows archive, installed Scoop package or WinGet package yet. The release
+workflow now builds and gates a `wtm-windows-x64.zip` the same way it does for macOS and Linux, and
+renders a Scoop manifest from its published checksum (the same rendered-from-checksums approach as
+the Homebrew formula above), but no tag has shipped either one yet, and the archive's own job is
+informational rather than release-blocking: see [Platform support](#platform-support). A
+PowerShell installer, `install.ps1`, exists in this
 repository and mirrors `install.sh` — it resolves the latest release (or an explicit `-Version`),
 downloads `wtm-windows-x64.zip`, verifies it against `SHA256SUMS` with `Get-FileHash`, and installs
 `wtm.exe` into `$env:LOCALAPPDATA\wtm\bin` (override with `-Prefix` or `WTM_INSTALL_PREFIX`), with

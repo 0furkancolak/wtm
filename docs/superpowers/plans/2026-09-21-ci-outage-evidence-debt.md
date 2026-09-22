@@ -335,6 +335,21 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/core/src/state/__tests__/assets.test.ts packages/core/src/state/__tests__/sqlite-store.test.ts packages/cli/src/__tests__/main.test.ts
   ```
 
+### #77 — feat(release): add Scoop manifest rendering (item 30)
+- Commit: `e634e8c` · Unit: madde 30 — Scoop manifest render altyapısı (Homebrew'in birebir eşi).
+- Eksik kanıt: darwin, linux, win32 (gerçek CI) — `ci.yml` bu branch'te de hiç çalışmadı (aynı
+  kesinti imzası, main'in kendi son push'u `#76`/`42fb108` de aynı şekilde düşüyor). Yalnızca
+  yerel gate ile doğrulandı (276 dosya, bilinen 2 uid-0 hatası hariç).
+- Bu PR'a özgü ayrı bir kanıt boşluğu: `release.yml`'e eklenen yeni `scoop-manifest` job'ı hiçbir
+  gerçek tag push'unda hiç çalışmadı — yalnızca elle (`bun scripts/render-scoop-manifest.ts` +
+  sahte checksum) ve YAML syntax doğrulamasıyla kontrol edildi. Job'ın `SCOOP_BUCKET_TOKEN` yoksa
+  sessizce build artifact bırakma dalı ve `verify-windows` artifact'i yoksa atlama dalı hiç canlı
+  bir workflow run'ında tetiklenmedi.
+- Hedefli `win32_test_filter`:
+  ```
+  scripts/__tests__/render-scoop-manifest.test.ts scripts/__tests__/render-homebrew-formula.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,

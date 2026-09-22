@@ -1,0 +1,13 @@
+{
+    "version": "{{VERSION}}",
+    "description": "Local-first runtime and safety manager for Git worktrees",
+    "homepage": "https://github.com/0furkancolak/wtm",
+    "license": "Apache-2.0",
+    "url": "https://github.com/0furkancolak/wtm/releases/download/v{{VERSION}}/{{ARCHIVE}}",
+    "hash": "sha256:{{X64_SHA256}}",
+    "bin": "wtm.exe",
+    "notes": [
+        "Run `wtm init --yes` inside a workspace to get started.",
+        "Run `wtm daemon install` to supervise tasks in the background."
+    ]
+}
