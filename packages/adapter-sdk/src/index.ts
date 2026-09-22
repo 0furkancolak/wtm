@@ -66,9 +66,12 @@ const defaultIo: AdapterIo = { stdin: process.stdin, stdout: process.stdout, std
  * ```
  */
 export async function runAdapter(handlers: AdapterHandlers, io: AdapterIo = defaultIo): Promise<boolean> {
-  const raw = await readAll(io.stdin);
   let request: AdapterRequest;
   try {
+    // `readAll` lives inside this try too: a stdin stream error (a broken pipe, a parent that
+    // closes the fd abnormally) is exactly as much "no valid request arrived" as malformed JSON
+    // is, and this function's contract is to never reject on either.
+    const raw = await readAll(io.stdin);
     request = adapterRequestSchema.parse(JSON.parse(raw));
   } catch (error) {
     io.stderr.write(`invalid adapter request: ${errorMessage(error)}\n`);

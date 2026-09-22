@@ -109,3 +109,22 @@ test('reports a handler that throws on stderr instead of crashing the process', 
   }), io)).toBe(false);
   expect(io.stderrText()).toContain('adapter metadata failed: boom');
 });
+
+test('resolves false rather than rejecting when the stdin stream itself errors, matching the documented "never throws" contract', async () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const io: AdapterIo = {
+    stdin: new Readable({
+      read() { this.emit('error', new Error('EPIPE: broken pipe')); },
+    }) as unknown as NodeJS.ReadableStream,
+    stdout: new Writable({
+      write(chunk: Buffer, _encoding, callback) { stdout.push(chunk.toString()); callback(); },
+    }) as unknown as NodeJS.WritableStream,
+    stderr: new Writable({
+      write(chunk: Buffer, _encoding, callback) { stderr.push(chunk.toString()); callback(); },
+    }) as unknown as NodeJS.WritableStream,
+  };
+  await expect(runAdapter(handlers(), io)).resolves.toBe(false);
+  expect(stdout.join('')).toBe('');
+  expect(stderr.join('')).toContain('invalid adapter request');
+});
