@@ -210,6 +210,12 @@ describe('SQLiteStateStore', () => {
       remainingRepositories: ['/projects/kept/repo'],
       remainingWorktrees: ['/projects/kept/repo'],
       remainingLeases: 0,
+      // CI watches, task overrides and checklist items carry no foreign key to worktrees (see
+      // `forgetWorkspace`'s own comment), so only an explicit delete -- not the worktree cascade
+      // -- can retire them.
+      remainingCiWatches: null,
+      remainingTaskOverrides: [],
+      remainingChecklistItems: [],
       reclaimable: true,
     });
   });

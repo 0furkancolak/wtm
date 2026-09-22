@@ -1077,6 +1077,23 @@ function registrationRetirement() {
       store.claimLifecycleEvent('worktree', worktreeId, 'worktree.discovered');
       store.claimLifecycleEvent('workspace', gone.workspaceId, 'workspace.discovered');
 
+      // CI watches, task overrides and checklist items are worktree-scoped tables with no
+      // foreign key to worktrees at all (deliberately -- see their own migration comments), so a
+      // cascading delete off `worktrees` never reaches them. Only an explicit delete does, and
+      // `wtm forget` used to skip that step entirely (unlike `wtm remove`'s
+      // `removal-coordinator.ts`, which already does this for a single-worktree removal).
+      store.ci.start({
+        repositoryId: gone.id, worktreeId, worktreePath: '/projects/demo/repo',
+        providerRepo: 'github.com/acme/demo', branch: 'main', headSha: 'a'.repeat(40), pr: null,
+        now: '2026-09-22T00:00:00.000Z', nextPollAt: '2026-09-22T00:00:15.000Z',
+        pollIntervalMs: 15_000, maxPending: 20,
+      });
+      store.taskOverrides.set({
+        worktreeId, taskName: 'dev', task: { run: 'npm run dev', shell: true },
+        now: '2026-09-22T00:00:00.000Z',
+      });
+      store.checklist.set(worktreeId, ['Check the login flow'], '2026-09-22T00:00:00.000Z');
+
       const removed = store.forgetWorkspace(gone.workspaceId);
       return {
         removed,
@@ -1085,6 +1102,9 @@ function registrationRetirement() {
         remainingRepositories: store.listRepositories().map(({ mainRoot }) => mainRoot),
         remainingWorktrees: store.listWorktrees().map(({ path }) => path),
         remainingLeases: store.listEndpointLeases().length,
+        remainingCiWatches: store.ci.latestForWorktree(worktreeId),
+        remainingTaskOverrides: store.taskOverrides.listForWorktree(worktreeId),
+        remainingChecklistItems: store.checklist.list(worktreeId),
         // The claim is gone with it, so registering the same directory again starts over.
         reclaimable: store.claimLifecycleEvent('worktree', worktreeId, 'worktree.discovered'),
       };
