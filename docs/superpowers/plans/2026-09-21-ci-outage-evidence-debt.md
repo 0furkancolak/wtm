@@ -380,6 +380,22 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/platform/src/paths/__tests__/platform-paths.test.ts
   ```
 
+### #83 — feat(daemon): per-repository dev-overlay enable/disable (item 46)
+- Commit: `8250b59` · Unit: madde 46'nın kalan gerçek boşluğu — `[dev-overlay.repos.<name>]`
+  repo bazlı kapatma (K10'un tek enjeksiyon noktası korunarak).
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası: 5 job 4-8 saniyede düştü, `main`'in kendi son push'u
+  `#82`/`ac3f114` de aynı şekilde düşüyor). Yalnızca yerel gate ile doğrulandı (276 dosya,
+  bilinen 2 uid-0 hatası hariç, Node 24.18.0 ile).
+- Bu PR'a özgü ayrı bir kanıt boşluğu yok: repo bazlı kapatma yalnızca mevcut config çözümleme
+  yoluna bir dallanma ekliyor (`isDevOverlayEnabledForRepo`), platforma özel hiçbir şey
+  yapmıyor — #65'in taşıdığı "gerçek bir dev server'a karşı hiç çalıştırılmadı" boşluğunu
+  miras alıyor, yeni bir boşluk eklemiyor.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/daemon/src/__tests__/dev-overlay.test.ts packages/core/src/config/__tests__/schema.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
