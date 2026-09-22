@@ -170,4 +170,26 @@ describe('parseWtmConfig', () => {
       api: { preferred: 20007 },
     });
   });
+
+  // `preferredPort()` (`endpoint-plan.ts`) only does the offset math when `preferred` is set --
+  // `strategy = "offset"` with no `preferred` used to silently fall back to plain "any free port"
+  // allocation, defeating the point of declaring `offset` at all, with no error either way.
+  it('rejects strategy = "offset" with no preferred port to offset from', () => {
+    expect(() => parseWtmConfig({ ports: { web: { strategy: 'offset' } } })).toThrow();
+  });
+
+  it('accepts strategy = "offset" with a preferred port, and every other strategy without one', () => {
+    const config = parseWtmConfig({
+      ports: {
+        web: { strategy: 'offset', preferred: 3000, stride: 10 },
+        api: { strategy: 'stable-dynamic' },
+        db: {},
+      },
+    });
+    expect(config.ports).toMatchObject({
+      web: { strategy: 'offset', preferred: 3000, stride: 10 },
+      api: { strategy: 'stable-dynamic' },
+      db: {},
+    });
+  });
 });
