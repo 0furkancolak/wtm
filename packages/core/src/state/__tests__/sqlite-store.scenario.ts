@@ -894,6 +894,54 @@ function managedProcessReservations() {
   });
 }
 
+/**
+ * Regression: a `start` reserved while a `remove`/`gc`/`repair` holds the repository-operation
+ * lease for the same worktree must be refused, the same way `jobs-store.ts` already refuses a
+ * heavy job on a leased repository. Before this guard, a reservation taken after `remove`'s own
+ * process-stop stage had already run could still spawn into a worktree the lease holder was about
+ * to delete, orphaning a live process with no owning worktree.
+ */
+function managedProcessReservationBlockedByRepositoryLease() {
+  return withDatabase((path, open, close) => {
+    const setup = open();
+    const repository = createRepository(setup);
+    const other = setup.upsertRepository({
+      workspaceId: repository.workspaceId, commonGitDir: '/projects/other/.git', mainRoot: '/projects/other', remoteIdentity: null,
+    });
+    const worktreeRecord = setup.reconcileWorktrees(repository.id, [
+      worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
+    ]).discovered[0];
+    const otherWorktreeRecord = setup.reconcileWorktrees(other.id, [
+      worktree('/projects/other', 'other-head', 'refs/heads/main'),
+    ]).discovered[0];
+    if (worktreeRecord === undefined || otherWorktreeRecord === undefined) throw new Error('Expected discovered worktree');
+    close();
+    const store = new SQLiteStateStore(path);
+    try {
+      store.acquireRepositoryOperationLease({
+        repositoryId: repository.id, operation: 'remove', token: 'remove-token', pid: 1,
+        processStartTime: 'x', hostId: 'host-a', subjectWorktreeId: worktreeRecord.id, ttlMs: 60_000,
+      }, '2026-09-22T00:00:00.000Z');
+
+      const blockedOnLeasedWorktree = !store.reserveManagedProcessStart(
+        worktreeRecord.id, 'dev', 'start-token', '2026-09-22T00:00:01.000Z', { expiresAt: '2026-09-22T00:00:11.000Z' },
+      );
+      const otherRepositoryUnaffected = store.reserveManagedProcessStart(
+        otherWorktreeRecord.id, 'dev', 'other-start-token', '2026-09-22T00:00:01.000Z', { expiresAt: '2026-09-22T00:00:11.000Z' },
+      );
+
+      store.releaseRepositoryOperationLease({ repositoryId: repository.id, operation: 'remove' }, 'remove-token');
+      const admittedAfterRelease = store.reserveManagedProcessStart(
+        worktreeRecord.id, 'dev', 'start-token-2', '2026-09-22T00:00:02.000Z', { expiresAt: '2026-09-22T00:00:12.000Z' },
+      );
+
+      return { blockedOnLeasedWorktree, otherRepositoryUnaffected, admittedAfterRelease };
+    } finally {
+      store.close();
+    }
+  });
+}
+
 function managedProcessV4CleanupUpgrade() {
   return withDatabase((path) => {
     const database = new Database(path);
@@ -1643,6 +1691,7 @@ const scenarios: Record<string, () => unknown> = {
   'managed-process-crud': managedProcessCrud,
   'managed-process-lifecycle': managedProcessLifecycle,
   'managed-process-reservations': managedProcessReservations,
+  'managed-process-reservation-blocked-by-repository-lease': managedProcessReservationBlockedByRepositoryLease,
   'managed-process-v4-cleanup-upgrade': managedProcessV4CleanupUpgrade,
   'adapter-trust-persistence': adapterTrustPersistence,
   'registration-retirement': registrationRetirement,

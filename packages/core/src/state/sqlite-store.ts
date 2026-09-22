@@ -1246,6 +1246,24 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
       `).run(worktreeId, taskName, createdAt, worktreeId, taskName);
       const active = this.findActiveManagedProcess(worktreeId, taskName);
       if (active !== null && options.replaceProcessId !== active.id) return false;
+      // A `remove`/`gc`/`repair` holds its repository-operation lease for the whole lifecycle
+      // (`withRepositoryOperationLease` wraps every stage, `git worktree remove` included), but
+      // nothing stopped a `start` reserved after the removal's own process-stop stage had already
+      // run from spawning into a worktree the lease holder was about to delete — orphaning a live,
+      // never-noticed process with no owning worktree. Refusing the reservation while a lease is
+      // held on this worktree (repository-wide, or `subject_worktree_id` scoped to exactly this
+      // one) closes that window the same way `jobs-store.ts`'s `assertRegistered` already does
+      // for heavy jobs.
+      const worktree = this.#database.prepare('SELECT repository_id FROM worktrees WHERE id = ?')
+        .get(worktreeId) as { repository_id: string } | undefined;
+      if (worktree !== undefined) {
+        const lease = this.#database.prepare(`
+          SELECT 1 FROM repository_operation_leases
+          WHERE repository_id = ? AND (subject_worktree_id IS NULL OR subject_worktree_id = ?)
+          LIMIT 1
+        `).get(worktree.repository_id, worktreeId);
+        if (lease !== undefined) return false;
+      }
       try {
         this.#database.prepare(`
           INSERT INTO managed_process_start_reservations (
