@@ -8,12 +8,14 @@ import type {
   DaemonStateStore,
   EndpointLease,
   EndpointLeaseQuery,
+  ManagedProcessRecord,
   RepositoryRecord,
   WorkspaceRecord,
   WorktreeRecord,
 } from '@wtm/core';
 import { selectPlatformRuntime, UnsupportedPlatformError } from '@wtm/platform';
 import { daemonSocketFileName, publishedDaemonSocketPath } from '@wtm/platform/socket';
+import { inspectProcessIdentity } from '@wtm/daemon';
 import type { ServicePaths } from '@wtm/daemon/service-lifecycle';
 import { daemonStatusFileName, nextDaemonStatus, writeDaemonStatus } from '../daemon-status';
 import { doctorChecks, runDoctorCommand } from '../diagnostics';
@@ -317,6 +319,39 @@ describe('doctor', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('flags a RUNNING record whose live process no longer matches its recorded identity, not just a dead PID', async () => {
+    // process.pid is genuinely alive for the whole test, so its real identity is a stand-in for
+    // "a supervised task that's actually still running."
+    const identity = await inspectProcessIdentity(process.pid);
+    if (identity === null) throw new Error('expected the test runner\'s own process to be inspectable');
+
+    const baseRecord: ManagedProcessRecord = {
+      id: 'proc-1', worktreeId: 'web-feature', taskName: 'dev',
+      pid: identity.pid, pgid: identity.pgid,
+      processStartTime: identity.processStartTime, commandFingerprint: identity.commandFingerprint,
+      state: 'RUNNING', startedAt: '2026-01-01T00:00:00.000Z', stoppedAt: null,
+      stdoutPath: '/dev/null', stderrPath: '/dev/null', cleanupRequired: false,
+    };
+    const sourceWith = (record: ManagedProcessRecord) => createStateDiagnosticDataSource({
+      ...store, listManagedProcesses: () => [record],
+    } as unknown as DaemonStateStore, { cwd: '/workspace/web-feature', globalConfigPath: '/workspace/config.toml' });
+
+    const matching = (await sourceWith(baseRecord).readDoctor(registered)).findings;
+    expect(matching.find(({ check }) => check === 'process-records'))
+      .toMatchObject({ status: 'pass', details: { running: 1 } });
+
+    // Same PID (still genuinely alive) but the recorded identity no longer matches -- the shape
+    // of "the OS handed our dead task's old PID to an unrelated process." A bare `isAlive(pid)`
+    // check would wrongly call this "running".
+    const staleRecord = { ...baseRecord, processStartTime: `not-the-real-start-time-${identity.processStartTime}` };
+    const stale = (await sourceWith(staleRecord).readDoctor(registered)).findings;
+    expect(stale.find(({ check }) => check === 'process-records')).toMatchObject({
+      status: 'warning',
+      message: expect.stringContaining('dev'),
+      details: { stale: 1 },
+    });
   });
 
   it('counts the endpoints the workspace holds and the tasks it supervises', async () => {
