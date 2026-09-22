@@ -90,6 +90,15 @@ describe('proxyHostname / canonicalProxyHostname', () => {
     expect(proxyHostname('web', 'auth')).toBe(`web.auth.${wtmLocalhostSuffix}`);
   });
 
+  it('lowercases the service so a mixed-case [ports.<name>] key still matches the lowercased Host header the proxy routes by', () => {
+    // A TOML key like [ports.API] reaches here with its original casing (endpoint-plan.ts does
+    // no case normalization), but every real browser/client request presents an
+    // ASCII-lowercased Host header. Building the route table's key from the unlowercased name
+    // would register a route no real request could ever hit.
+    expect(proxyHostname('API', 'auth')).toBe('api.auth.wtm.localhost');
+    expect(proxyHostname('Web', 'auth')).toBe(proxyHostname('web', 'auth'));
+  });
+
   it('canonicalProxyHostname resolves the same slug assignProxySlugs would for that worktree', () => {
     const early = worktree('early', 1, 'fix/auth-bug');
     const late = worktree('late', 2, 'fix-auth-bug');
