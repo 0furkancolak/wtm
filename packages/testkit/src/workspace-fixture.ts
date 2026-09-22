@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { isolatedGitEnvironment } from './git-fixture';
 
 const execFileAsync = promisify(execFile);
 
@@ -60,7 +61,7 @@ export async function createWorkspaceFixture(options: WorkspaceFixtureOptions = 
 }
 
 async function createRepository(path: string, label: string): Promise<void> {
-  await execFileAsync('git', ['init', '--initial-branch=main', path]);
+  await execFileAsync('git', ['init', '--initial-branch=main', path], { env: await isolatedGitEnvironment() });
   await git(path, ['config', 'user.name', 'WTM Test']);
   await git(path, ['config', 'user.email', 'wtm-test@example.invalid']);
   await writeFile(join(path, 'README.md'), `${label} fixture\n`);
@@ -68,6 +69,6 @@ async function createRepository(path: string, label: string): Promise<void> {
   await git(path, ['commit', '-m', `Initialize ${label} fixture`]);
 }
 
-function git(repoPath: string, args: string[]) {
-  return execFileAsync('git', ['-C', repoPath, ...args]);
+async function git(repoPath: string, args: string[]) {
+  return execFileAsync('git', ['-C', repoPath, ...args], { env: await isolatedGitEnvironment() });
 }

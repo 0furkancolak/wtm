@@ -435,13 +435,17 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
 
   const taskExport = task.command('export <name>').description('Print this worktree\'s override of a task as a [tasks.<name>] wtm.toml block.');
   addTargetOptions(taskExport);
+  addJsonOption(taskExport);
   taskExport.action(async (name: string, options: ScopeOptions & TargetOptions) => {
     const target = await taskTarget(['wtm', 'task', 'export'], options);
     if (target.outcome === 'refused') {
       renderRuntime(refusedTarget('task export', target.error), runtimeJson(program, options));
       return;
     }
-    const envelope = await runTaskShowCommand({ cwd: target.cwd, taskName: name }, dependencies.runtimeClient);
+    // `runTaskShowCommand` builds its envelope labeled 'task show', since it has no way to know
+    // its caller here is 'task export' -- every envelope this action renders is relabeled below
+    // so `--json` output's `command` field always matches the command actually invoked.
+    const envelope = { ...await runTaskShowCommand({ cwd: target.cwd, taskName: name }, dependencies.runtimeClient), command: 'task export' };
     if (!envelope.ok) {
       renderRuntime(envelope, runtimeJson(program, options));
       return;

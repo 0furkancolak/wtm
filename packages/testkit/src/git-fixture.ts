@@ -187,7 +187,16 @@ async function git(repoPath: string, args: string[]) {
   return execFileAsync('git', ['-C', repoPath, ...args], { env: await isolatedGitEnvironment() });
 }
 
-async function isolatedGitEnvironment(): Promise<NodeJS.ProcessEnv> {
+/**
+ * The environment every fixture-issued `git` command in this package must run under: a real,
+ * empty global config allow-listing every path for `safe.directory` (see
+ * {@link isolatedGlobalConfig}'s doc comment for the Windows CI incident this fixes), plus every
+ * `GIT_*` repository-routing variable stripped so an ambient one set in the calling process can't
+ * redirect a fixture's git commands at some other repository than the fresh one it just created.
+ * Exported so every fixture module that shells out to `git` -- not just this file's own -- runs
+ * under the same isolation, rather than each one growing its own copy or, worse, none at all.
+ */
+export async function isolatedGitEnvironment(): Promise<NodeJS.ProcessEnv> {
   const environment: NodeJS.ProcessEnv = {
     ...process.env,
     GIT_CONFIG_GLOBAL: await isolatedGlobalConfig(),
