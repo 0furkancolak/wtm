@@ -122,4 +122,52 @@ describe('parseWtmConfig', () => {
   it('rejects a [budgets] min_available_memory_mib below 1', () => {
     expect(() => parseWtmConfig({ budgets: { min_available_memory_mib: 0 } })).toThrow();
   });
+
+  // A fixed port is never leased (`endpoint-plan.ts`'s `fixedPort` returns it verbatim), so two
+  // `[ports.<name>]` entries naming the same literal port used to resolve silently to the same
+  // number with nothing catching it until whichever process binds second got a bare OS
+  // EADDRINUSE. Caught here at config load instead, like every other cross-field [ports] rule.
+  it('rejects two fixed [ports] entries that name the same literal port', () => {
+    expect(() => parseWtmConfig({
+      ports: {
+        web: { strategy: 'fixed', port: 20005 },
+        metrics: { strategy: 'fixed', port: 20005 },
+      },
+    })).toThrow();
+  });
+
+  it('reports a fixed-port collision as a coded WTM_CONFIG_INVALID error naming both entries', () => {
+    try {
+      parseWtmConfig({
+        ports: {
+          web: { strategy: 'fixed', port: 20005 },
+          metrics: { strategy: 'fixed', port: 20005 },
+        },
+      });
+      throw new Error('expected parseWtmConfig to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(WtmConfigError);
+      const config = error as WtmConfigError;
+      expect(config.code).toBe('WTM_CONFIG_INVALID');
+      expect(config.context.issues).toEqual([
+        { path: 'ports.web.port', message: expect.stringContaining('Port 20005 is used by more than one fixed') },
+        { path: 'ports.metrics.port', message: expect.stringContaining('Port 20005 is used by more than one fixed') },
+      ]);
+    }
+  });
+
+  it('accepts fixed ports with distinct literal values, and a fixed port alongside a leased one', () => {
+    const config = parseWtmConfig({
+      ports: {
+        web: { strategy: 'fixed', port: 20005 },
+        metrics: { strategy: 'fixed', port: 20006 },
+        api: { preferred: 20007 },
+      },
+    });
+    expect(config.ports).toMatchObject({
+      web: { strategy: 'fixed', port: 20005 },
+      metrics: { strategy: 'fixed', port: 20006 },
+      api: { preferred: 20007 },
+    });
+  });
 });
