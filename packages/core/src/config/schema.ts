@@ -184,6 +184,14 @@ const portsSchema = z.object({
   strategy: z.enum(['stable-dynamic']).optional(),
   range: z.string().min(1).optional(),
 }).passthrough().superRefine((ports, context) => {
+  // A fixed port is never leased (see `endpoint-plan.ts`'s `fixedPort`, deliberately: leasing it
+  // would let the allocator move it the moment something else holds it), so it never reaches the
+  // one place collisions are otherwise caught -- `endpoint_leases`'s active-port uniqueness. Two
+  // `[ports.<name>]` entries naming the same literal port would resolve silently to the same
+  // number, with nothing failing until whichever process binds second gets a bare OS
+  // `EADDRINUSE`. Caught here instead, at config load, the same way every other cross-field
+  // `[ports]` rule is.
+  const fixedPortNames = new Map<number, string[]>();
   for (const [name, value] of Object.entries(ports)) {
     if (name === 'strategy' || name === 'range') continue;
     const parsed = portSchema.safeParse(value);
@@ -194,6 +202,22 @@ const portsSchema = z.object({
           path: [name, ...issue.path],
         });
       }
+      continue;
+    }
+    if (parsed.data.strategy === 'fixed' && parsed.data.port !== undefined) {
+      const names = fixedPortNames.get(parsed.data.port) ?? [];
+      names.push(name);
+      fixedPortNames.set(parsed.data.port, names);
+    }
+  }
+  for (const [port, names] of fixedPortNames) {
+    if (names.length < 2) continue;
+    for (const name of names) {
+      context.addIssue({
+        code: 'custom',
+        path: [name, 'port'],
+        message: `Port ${port} is used by more than one fixed [ports] entry (${names.join(', ')}). Each fixed port must be unique.`,
+      });
     }
   }
 });
