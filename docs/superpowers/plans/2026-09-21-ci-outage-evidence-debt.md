@@ -291,6 +291,20 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
   packages/cli/src/tui/__tests__/view-model.test.ts packages/cli/src/tui/__tests__/render.test.ts packages/cli/src/tui/__tests__/command.test.ts packages/cli/src/__tests__/main.test.ts
   ```
 
+### #73 — feat(cli): add disk usage / cleanup-candidate panel to wtm tui (item 15, unit 2/3)
+- Commit: `cb190b5` · Unit: madde 15, birim 2/3.
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası: 5 leg 7-10 saniyede, runner atanmadan düştü). Yalnızca
+  yerel gate ile doğrulandı (274 dosya, bilinen 2 uid-0 hatası hariç).
+- Bu PR'a özgü ayrı bir kanıt boşluğu: yeni panelin ~15 saniyelik yavaş yenileme kadansı
+  (`defaultResourceRefreshEveryNTicks`) yalnızca kod okumayla doğrulandı, gerçek bir TTY'de uzun
+  süre açık bırakılıp elle gözlemlenmedi — #72'nin aynı kategorideki dış-döngü boşluğuyla aynı,
+  kesintiyle ilgisiz.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/cli/src/tui/__tests__/resources-view.test.ts packages/cli/src/tui/__tests__/render.test.ts packages/cli/src/__tests__/main.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
