@@ -442,6 +442,21 @@ Hiçbirinde darwin/linux/win32 için gerçek CI koşusu yok.
 - Eksik kanıt: yok — üretim kodu değişmedi, yalnızca `CHANGELOG.md` ve `todo.md`. Test etkisi yok.
 - Bu PR'a özgü ayrı bir kanıt boşluğu: yok, `win32_test_filter` gerekmiyor.
 
+### #91 — test(core): add a real-world migration-9-to-18 upgrade scenario
+- Commit: `f2a4ed3` · Unit: gerçek kullanıcı verisiyle (store'un genel API'si üzerinden, elle SQL
+  değil) migration 9'dan 18'e tek seferde büyük bir sıçrama kanıtı — önceki iki dar sınır testinin
+  (12→18, 13→18) tamamlayıcısı, "aşırı kapsamlı test" isteğinin migration ayağı.
+- Eksik kanıt: darwin, linux (gerçek CI), win32 (gerçek Windows kernel) — `ci.yml` bu branch'te
+  de hiç çalışmadı (aynı kesinti imzası). Yalnızca yerel gate ile doğrulandı (280 dosya, bilinen
+  2 uid-0 hatası hariç, Node 24.21.0 ile). Yeni senaryo push'tan önce 3 kez art arda koşuldu,
+  flake gözlenmedi.
+- Bu PR'a özgü ayrı bir kanıt boşluğu: yok — better-sqlite3/dosya sistemi migration mantığı
+  platforma özel hiçbir şey yapmıyor, gerçek bir Windows kernel'e ihtiyaç duymuyor.
+- Hedefli `win32_test_filter`:
+  ```
+  packages/core/src/state/__tests__/real-world-upgrade.test.ts
+  ```
+
 ## Kapatma sırası (kota dönünce)
 
 1. Actions dönünce her branch/PR'a **gerçek bir commit** ile taze bir CI tetikle (boş commit yok,
