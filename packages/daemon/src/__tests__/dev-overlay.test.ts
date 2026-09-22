@@ -7,6 +7,7 @@ import {
   devOverlayHtmlInjector,
   gatherDevOverlayData,
   injectBeforeBodyClose,
+  isDevOverlayEnabledForRepo,
   isHtmlContentType,
   renderDevOverlayFragment,
   type DevOverlaySource,
@@ -482,8 +483,41 @@ describe('devOverlayHtmlInjector', () => {
   it('returns a fragment for a known route and null for one the store no longer knows', () => {
     const injector = devOverlayHtmlInjector(
       source({ worktrees: [worktree()], repositories: [repository()], leases: [lease()] }),
+      { enabled: true },
     );
     expect(injector(currentRoute())).toContain('storefront-web');
     expect(injector(currentRoute({ worktreeId: 'gone' }))).toBeNull();
+  });
+
+  it('lets a named repository opt out of an otherwise machine-wide overlay (todo item 46, repo-level toggle)', () => {
+    const storeData = source({ worktrees: [worktree()], repositories: [repository()], leases: [lease()] });
+    const optedOut = devOverlayHtmlInjector(storeData, { enabled: true, repos: { 'storefront-web': { enabled: false } } });
+    expect(optedOut(currentRoute())).toBeNull();
+
+    // An entry for a *different* name never touches this route.
+    const otherNameDisabled = devOverlayHtmlInjector(storeData, { enabled: true, repos: { 'some-other-repo': { enabled: false } } });
+    expect(otherNameDisabled(currentRoute())).toContain('storefront-web');
+  });
+
+  it('lets a named repository opt in when the table-level default is off', () => {
+    const storeData = source({ worktrees: [worktree()], repositories: [repository()], leases: [lease()] });
+    const optedIn = devOverlayHtmlInjector(storeData, { enabled: false, repos: { 'storefront-web': { enabled: true } } });
+    expect(optedIn(currentRoute())).toContain('storefront-web');
+  });
+
+  it('falls back to the table-level default when a repository has an entry with no enabled value', () => {
+    const storeData = source({ worktrees: [worktree()], repositories: [repository()], leases: [lease()] });
+    const inertEntry = devOverlayHtmlInjector(storeData, { enabled: true, repos: { 'storefront-web': {} } });
+    expect(inertEntry(currentRoute())).toContain('storefront-web');
+  });
+});
+
+describe('isDevOverlayEnabledForRepo', () => {
+  it('resolves default, override-off and override-on independently of other repositories', () => {
+    const policy = { enabled: true, repos: { quiet: { enabled: false }, loud: { enabled: true } } };
+    expect(isDevOverlayEnabledForRepo(policy, 'quiet')).toBe(false);
+    expect(isDevOverlayEnabledForRepo(policy, 'loud')).toBe(true);
+    expect(isDevOverlayEnabledForRepo(policy, 'unlisted')).toBe(true);
+    expect(isDevOverlayEnabledForRepo({}, 'unlisted')).toBe(false);
   });
 });

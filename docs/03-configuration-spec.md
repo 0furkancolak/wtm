@@ -618,6 +618,22 @@ second config flag for its browser-facing toggle endpoint. See
 [`docs/07`](07-process-port-runtime.md#dev-overlay) for what the injected fragment shows and
 exactly what response types it never touches.
 
+One repository can opt out of (or into) the table-level default, keyed by repository name — the
+same `basename` of the repository's main root the overlay's own identity fragment already shows:
+
+```toml
+[dev-overlay]
+enabled = true
+
+[dev-overlay.repos.storefront-web]
+enabled = false
+```
+
+A name with no entry, or an entry present with `enabled` left unset, simply falls back to
+`[dev-overlay]`'s own top-level `enabled`. This stays a single, daemon-wide injection point (K10)
+— the override only narrows which routes the one proxy-side injector applies to, it does not add
+a second place the overlay could be turned on from.
+
 ## Resource budgets
 
 In the daemon's global configuration, optionally cap how many processes WTM will supervise at

@@ -2860,9 +2860,13 @@ etkinleştirme/kapatma da aynı nedenle bu slice'a girmedi (yalnızca global aç
       İkincisi framework-agnostik. Bu madde 12'yi beklemeli mi, yoksa proxy gelene kadar adapter
       yolundan mı yürünmeli — karar maddeye yazılsın. **(2026-09-21, K10 + W10-4: proxy'de tek
       noktalı enjeksiyon.)**
-- [ ] Opt-in mi opt-out mu (`[dev-overlay] enabled = true`), ve repo bazında kapatma. **Kısmen:**
-      opt-in kısmı W10-4'te karara bağlandı (global, `[proxy]`'yle aynı kalıp); repo bazında
-      kapatma hâlâ açık.
+- [x] Opt-in mi opt-out mu (`[dev-overlay] enabled = true`), ve repo bazında kapatma. Opt-in kısmı
+      W10-4'te karara bağlandı (global, `[proxy]`'yle aynı kalıp). **2026-09-22: repo bazında
+      kapatma da eklendi** — `[dev-overlay.repos.<name>].enabled`, `isDevOverlayEnabledForRepo`
+      (`packages/daemon/src/dev-overlay.ts`) global varsayılanı adı geçen repo için ezer, tek
+      enjeksiyon noktasını (K10) genişletmeden. Testli: `dev-overlay.test.ts`'e 4 yeni test
+      (opt-out, farklı isimdeki override'ın dokunmaması, varsayılan kapalıyken opt-in, boş entry'nin
+      varsayılana düşmesi), `schema.test.ts`'e 2 yeni test.
 - [x] Overlay'in veri kaynağı `wtm status --json` ile aynı kontrat olmalı; overlay'e özel ikinci bir
       şema doğmamalı. **(2026-09-21, W10-4.)**
 
@@ -2884,8 +2888,15 @@ etkinleştirme/kapatma da aynı nedenle bu slice'a girmedi (yalnızca global aç
       `<input type="checkbox">` render ediyor.)**
 - [x] Kardeş repoların endpoint'leri feature identity üzerinden çözülsün, port taramasıyla değil.
       **(2026-09-21, W10-4: aynı workspace + aynı branch eşleşmesi.)**
-- [ ] Konfigürasyon: global ve repo bazında etkinleştirme/kapatma. **Kısmen — yalnızca global
-      (2026-09-21, W10-4); repo bazında kapatma bu slice'a girmedi.**
+- [x] Konfigürasyon: global ve repo bazında etkinleştirme/kapatma. **(2026-09-22: repo bazında
+      kapatma eklendi — `packages/core/src/config/schema.ts`'de `devOverlaySchema.repos` alanı
+      (`[dev-overlay.repos.<name>]`, K10'un tek enjeksiyon noktasını korur), çözümü
+      `packages/daemon/src/dev-overlay.ts`'deki `isDevOverlayEnabledForRepo`, çağrı yeri
+      `devOverlayHtmlInjector`/`runtime-factory.ts`. 6 yeni test: `dev-overlay.test.ts`'de 4
+      (opt-out/opt-in/global'a düşme + `isDevOverlayEnabledForRepo` birim testi),
+      `schema.test.ts`'de 2 (geçerli override kabul, bilinmeyen alan red). Kapalıyken byte-identical
+      garantisi zaten var olan `proxy-dev-overlay.test.ts`'den geliyor — repo bazlı kapatma da aynı
+      "injector null döner" yoluna düşüyor, ayrı bir dallanma eklemedi.)**
 - [x] `docs/03-configuration-spec.md`'ye `[dev-overlay]` bölümü. **(2026-09-21, W10-4.)**
 - [x] `docs/04-cli-reference.md`'ye overlay ile ilgili komut/bayrak parity'si. — **2026-09-22
       doğrulandı, satır zaten yapılmıştı.** Yeni bir CLI komutu/bayrağı yok, bu yüzden "parity"

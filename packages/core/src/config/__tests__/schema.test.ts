@@ -88,6 +88,20 @@ describe('parseWtmConfig', () => {
     expect(config.proxy).toEqual({ enabled: false });
   });
 
+  it('accepts a per-repository [dev-overlay.repos.<name>] override (todo item 46, repo-level toggle)', () => {
+    const config = parseWtmConfig({
+      'dev-overlay': { enabled: true, repos: { 'storefront-web': { enabled: false }, 'storefront-api': {} } },
+    });
+    expect(config['dev-overlay']).toEqual({
+      enabled: true,
+      repos: { 'storefront-web': { enabled: false }, 'storefront-api': {} },
+    });
+  });
+
+  it('rejects an unknown key inside a [dev-overlay.repos.<name>] entry', () => {
+    expect(() => parseWtmConfig({ 'dev-overlay': { repos: { web: { enabled: true, extra: 1 } } } })).toThrow();
+  });
+
   it('accepts a well-formed [budgets] table', () => {
     const config = parseWtmConfig({ budgets: { max_processes: 20, min_available_memory_mib: 512 } });
     expect(config.budgets).toEqual({ max_processes: 20, min_available_memory_mib: 512 });
