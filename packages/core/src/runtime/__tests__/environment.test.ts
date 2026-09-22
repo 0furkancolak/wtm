@@ -29,4 +29,29 @@ describe('resolveEnvironment', () => {
       context: { env: {} },
     })).toThrow('Circular environment template reference: A -> B -> A');
   });
+
+  test('passes an inherited value containing a literal brace through unchanged, rather than re-scanning it for templates', () => {
+    // Regression: a two-pass implementation substituted {env.DATABASE_URL} first, then ran the
+    // *whole result* back through template resolution -- so a legitimate env value containing
+    // `{...}` (a connection string option, a JSON blob) was re-interpreted as an unresolved
+    // template placeholder and threw, or worse, got silently replaced if its brace content
+    // happened to spell a real template key.
+    expect(resolveEnvironment({
+      workspace: { URL: '{env.DATABASE_URL}' },
+      context: {
+        env: { DATABASE_URL: 'postgres://host/db?options={connect_timeout=10}' },
+      },
+    })).toEqual({ URL: 'postgres://host/db?options={connect_timeout=10}' });
+
+    // The pathological case the two-pass bug could also produce: a brace-containing inherited
+    // value whose content happens to name a real template variable gets silently substituted.
+    expect(resolveEnvironment({
+      workspace: { TITLE: '{env.RAW}' },
+      context: {
+        workspace: { root: '/projects/demo', name: 'demo' },
+        slug: 'repo-main',
+        env: { RAW: 'build for {slug}' },
+      },
+    })).toEqual({ TITLE: 'build for {slug}' });
+  });
 });

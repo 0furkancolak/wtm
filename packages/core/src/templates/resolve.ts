@@ -32,7 +32,14 @@ export class WtmTemplateError extends Error implements TemplateErrorShape {
   readonly context: Record<string, unknown>;
 }
 
-function templateValue(variable: string, context: TemplateContext): string | number | undefined {
+/**
+ * The single resolved value for one `{variable}`, with no substitution into a larger string.
+ * `resolveTemplate` is built on this; `resolveEnvironment` also calls it directly so that an
+ * `{env.X}` reference's own resolved value — opaque, and never re-scanned for `{...}` — can be
+ * spliced in during the same single pass over the original text, rather than as a second pass
+ * over text that already contains substituted, untrusted content.
+ */
+export function templateValue(variable: string, context: TemplateContext): string | number | undefined {
   switch (variable) {
     case 'workspace.root': return context.workspace?.root;
     case 'workspace.name': return context.workspace?.name;
