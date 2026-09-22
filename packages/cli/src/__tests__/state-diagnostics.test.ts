@@ -276,13 +276,47 @@ describe('doctor', () => {
     // The finding that would have explained a daemon that refused to start at all.
     const findings = (await sourceAt('/workspace/web-feature').readDoctor(registered)).findings;
 
+    // /workspace/web-feature -- worktreeB, linked -- is also absent from the real filesystem
+    // here, and is now flagged too (see the two tests below): 2 missing repository roots plus
+    // that 1 missing linked worktree.
     expect(findings.find(({ check }) => check === 'git')).toEqual({
       check: 'git',
       status: 'error',
-      message: '2 registered repositories no longer on disk, starting with /workspace/api. '
+      message: '3 registered paths no longer on disk, starting with /workspace/api. '
         + 'WTM keeps serving the rest; the registration returns on its own if the directory comes back.',
-      details: { registered: 2, unavailable: 2 },
+      details: { registered: 2, unavailable: 3, missingWorktrees: 1 },
     });
+  });
+
+  it('flags a linked worktree directory that vanished outside WTM\'s own remove, not just a missing repository root', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wtm-doctor-worktree-'));
+    try {
+      mkdirSync(join(root, 'main'), { recursive: true });
+      const findings = await doctorWithLinkedWorktree(root, 'DISCOVERED');
+
+      expect(findings.find(({ check }) => check === 'git')).toMatchObject({
+        status: 'error',
+        details: { missingWorktrees: 1 },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not flag a linked worktree already known settled-absent (ORPHANED/REMOVED)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wtm-doctor-worktree-settled-'));
+    try {
+      mkdirSync(join(root, 'main'), { recursive: true });
+      for (const state of ['ORPHANED', 'REMOVED'] as const) {
+        const findings = await doctorWithLinkedWorktree(root, state);
+        expect(findings.find(({ check }) => check === 'git')).toMatchObject({
+          status: 'pass',
+          details: { missingWorktrees: 0 },
+        });
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('counts the endpoints the workspace holds and the tasks it supervises', async () => {
@@ -348,6 +382,37 @@ async function doctorIn(root: string) {
   } as unknown as DaemonStateStore;
   const source = createStateDiagnosticDataSource(localStore, {
     cwd: join(root, 'repo'),
+    globalConfigPath: join(root, 'config.toml'),
+  });
+  return (await source.readDoctor({
+    id: local.id, name: local.name, root: local.root, scope: local.scope,
+  })).findings;
+}
+
+/**
+ * Doctor findings for a real main worktree at `<root>/main` plus a *linked* worktree row whose
+ * path (`<root>/linked-gone`) is never created on disk, at the given store state -- what the
+ * `git` check must tell apart: a live-but-vanished worktree (any state but ORPHANED/REMOVED)
+ * from one whose absence reconcile has already settled.
+ */
+async function doctorWithLinkedWorktree(root: string, linkedState: WorktreeRecord['state']) {
+  const local: WorkspaceRecord = { ...workspace, root, configPath: null };
+  const repository: RepositoryRecord = {
+    ...repositories[0] as RepositoryRecord,
+    commonGitDir: join(root, 'main/.git'),
+    mainRoot: join(root, 'main'),
+  };
+  const main = worktree('main', repository.id, join(root, 'main'), 1);
+  const linked = { ...worktree('linked', repository.id, join(root, 'linked-gone'), 2), state: linkedState };
+  const localStore = {
+    listWorkspaces: () => [local],
+    listRepositories: () => [repository],
+    listWorktrees: () => [main, linked],
+    listManagedProcesses: () => [],
+    listEndpointLeases: () => [],
+  } as unknown as DaemonStateStore;
+  const source = createStateDiagnosticDataSource(localStore, {
+    cwd: join(root, 'main'),
     globalConfigPath: join(root, 'config.toml'),
   });
   return (await source.readDoctor({
