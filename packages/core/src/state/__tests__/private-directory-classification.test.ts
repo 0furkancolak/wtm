@@ -28,6 +28,20 @@ async function privateRoot(): Promise<string> {
   return root;
 }
 
+/**
+ * A root that is deliberately *not* a private anchor, unlike {@link privateRoot} -- `mkdtemp`
+ * itself creates at 0700, so a root left untouched would make `assertNoSymlinkComponents` treat
+ * it as WTM's own the moment it is reached, which is exactly what an ancestor test must not
+ * assume. This mirrors a real `$HOME` (0755, owned by the user, owned by nobody else, but never
+ * WTM's own strict 0700 directory).
+ */
+async function looseAncestorRoot(): Promise<string> {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'wtm-private-class-')));
+  await chmod(root, 0o755);
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  return root;
+}
+
 async function refusal(path: string, fileTrust: FileTrustPolicy = defaultCoreFileTrustPolicy): Promise<PrivateDirectoryError> {
   try {
     await ensurePrivateDirectory(path, fileTrust);
@@ -78,11 +92,45 @@ describe.skipIf(isWindowsTestHost)('private directory refusals', () => {
     await mkdir(state);
     await chmod(state, 0o755);
 
-    const error = await refusal(join(state, 'nested'));
+    // Refused at `state` itself, not a not-yet-created path below it: this is the directory WTM
+    // actually owns and creates, which stays strict (0o077, no group/other access at all) even
+    // after the ancestor relaxation below -- see the next two tests for the ancestor case.
+    const error = await refusal(state);
 
     expectPermanent(error, state);
     expect(error.message).toContain('mode 755');
     expect(error.remediation).toEqual([{ kind: 'command-suggestion', argv: ['chmod', '700', state] }]);
+  });
+
+  test('a merely-traversed ancestor readable (but not writable) by others is accepted, unlike the directory WTM actually creates', async () => {
+    // Regression: a fresh install's `~/.local` (created by `install.sh`'s plain `mkdir -p`, at
+    // the OS's standard umask -- 0755 on almost every Linux host) sits *above* where WTM creates
+    // its own directory. `state` here stands in for it: it is never created or owned by WTM, only
+    // climbed over on the way to `state/nested`, which is. Refusing it refused every first
+    // install; only a directory another user can *write into* can plant something WTM would later
+    // create inside, so only that -- not mere readability -- is this ancestor's question.
+    const root = await looseAncestorRoot();
+    const state = join(root, 'state');
+    await mkdir(state);
+    await chmod(state, 0o755);
+
+    const created = await ensurePrivateDirectory(join(state, 'nested'), defaultCoreFileTrustPolicy);
+
+    expect(created.path).toBe(await realpath(join(state, 'nested')));
+  });
+
+  test('an ancestor writable by others is still permanent, with a chmod go-w remedy instead of chmod 700', async () => {
+    const root = await looseAncestorRoot();
+    const state = join(root, 'state');
+    await mkdir(state);
+    await chmod(state, 0o757);
+
+    const error = await refusal(join(state, 'nested'));
+
+    expectPermanent(error, state);
+    expect(error.message).toContain('mode 757');
+    expect(error.message).toContain('writable by others');
+    expect(error.remediation).toEqual([{ kind: 'command-suggestion', argv: ['chmod', 'go-w', state] }]);
   });
 
   test('a symbolic link is permanent', async () => {
