@@ -2514,12 +2514,15 @@ paylaşıyor, davranış değişmedi. `[proxy]` kapalıyken (varsayılan) davran
 aynı — ek origin yok, ek config okuması yok (ENOENT yolu zaten vardı); bu ayrı bir testle
 kanıtlandı (`packages/daemon/src/__tests__/proxy-cors-integration.test.ts`).
 
-Madde 12'nin kendi başlığı ve "HTTPS gerekiyorsa local certificate strategy" alt maddesi bilinçli
-olarak `[ ]` kalıyor: bu birim sadece CORS yarısını kapsıyor (bkz. görev tanımındaki "W10-1, CORS
-half only"). HTTPS/local certificate stratejisi **K8 ile v1 kapsamı dışı bırakıldı** — bekleyen
-bir güvenlik kararı değil, kapanmış bir kapsam sınırı (yukarıdaki W9-4 notuna bakın); bu birim
-bilinçli olarak hiç dokunmadı. Proxy origin'leri hâlâ `http://`, proxy'nin bugünkü HTTP-only
-gerçeğiyle uyumlu (`docs/07`'nin bu konudaki dürüst notuna bakın).
+Madde 12'nin kendi başlığı bu W10-1 biriminden sonra da `[ ]` kalıyor: bu birim sadece CORS
+yarısını kapsıyor (bkz. görev tanımındaki "W10-1, CORS half only"), tam kapsam (port numaralarını
+tamamen gizlemek) hâlâ teslim edilmedi (yukarıdaki başlık notuna bakın). "HTTPS gerekiyorsa local
+certificate strategy" alt maddesi ise — bu satırın kendi notunun da söylediği gibi — `[x]`:
+**K8 ile v1 kapsamı dışı bırakıldı** — bekleyen bir güvenlik kararı değil, kapanmış bir kapsam
+sınırı (yukarıdaki W9-4 notuna bakın); bu birim ona bilinçli olarak hiç dokunmadı, sadece daha
+önce kapanmış olan kararı yeniden açmadı. (Bu paragraf önceden alt maddeyi de `[ ]` sanıyordu —
+W9-4'ün K8 kararı bu birimden önce zaten kapatmıştı; düzeltildi.) Proxy origin'leri hâlâ `http://`,
+proxy'nin bugünkü HTTP-only gerçeğiyle uyumlu (`docs/07`'nin bu konudaki dürüst notuna bakın).
 
 ---
 

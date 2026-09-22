@@ -485,7 +485,16 @@ the win32 leg's current (informational) status.
   so a browser tab open on one of several worktrees' `web` services can be told apart from the
   others by more than a port number. Only `text/html`, uncompressed, non-streaming responses are
   buffered and spliced; every other response keeps the exact byte-for-byte path it always had,
-  whether or not the overlay is configured.
+  whether or not the overlay is configured. `[dev-overlay.repos.<name>].enabled` lets one
+  repository opt out of an otherwise machine-wide default, or opt in under an otherwise-off one,
+  independently of every other repository.
+- `wtm checklist set/list/clear`: a worktree-scoped test/review checklist, editable from the CLI
+  and, when the dev overlay is active, toggleable as real checkboxes directly in the injected
+  fragment — the checkbox POSTs to a proxy-native `/__wtm/checklist` endpoint, so state round-trips
+  without the browser ever reaching the daemon's Unix socket. Migration 017 adds the table.
+- `wtm tui`: a terminal dashboard combining worktree/task status, a disk-usage and
+  cleanup-candidate panel, and a log-tail view for the currently selected worktree, refreshed from
+  the same daemon state every other command reads.
 - `workspace-here:<target>`: a third `make` adapter task family alongside `make:<target>` and
   `workspace:<target>`. It runs a root Makefile target with the *worktree* as `cwd` instead of the
   workspace root, via an explicit `make -f <path>` rather than copying or symlinking the file —
