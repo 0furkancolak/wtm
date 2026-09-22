@@ -458,6 +458,18 @@ describe('checklistApiHandler', () => {
     expect(invalidShape.status).toBe(400);
   });
 
+  it('a request body over the size cap is a 413, not buffered without bound', async () => {
+    // A real toggle body is `{position, checked}` — a few dozen bytes — so this stands in for any
+    // caller that isn't the overlay's own fetch (the endpoint has no auth and lets a request with
+    // no Origin header through by design, see `originMatchesHost`'s own comment in proxy.ts).
+    const handler = checklistApiHandler(store());
+    const oversized = 'x'.repeat(64 * 1024 + 1);
+    const result = await handler(currentRoute(), fakeRequest({
+      method: 'POST', url: '/__wtm/checklist', body: JSON.stringify({ position: 0, checked: true, note: oversized }),
+    }));
+    expect(result.status).toBe(413);
+  });
+
   it('POST toggling a nonexistent position is a 404', async () => {
     const handler = checklistApiHandler(store());
     const result = await handler(currentRoute(), fakeRequest({
