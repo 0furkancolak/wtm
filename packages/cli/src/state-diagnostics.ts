@@ -267,16 +267,28 @@ export function createStateDiagnosticDataSource(
     for (const repository of repositories) {
       if (!await isDirectory(repository.mainRoot)) unavailable.push(repository.mainRoot);
     }
+    // A linked worktree is just as much "git WTM expects to find on disk" as a repository's main
+    // root, but nothing checked it before this: reconcile is what notices and flips the row to
+    // ORPHANED, and only runs on its own schedule (daemon start, a triggering command), so a
+    // worktree deleted outside WTM's own `remove` (`rm -rf`, a direct `git worktree remove`, an
+    // unmounted network path) reads as ordinary here until reconcile catches up. ORPHANED/REMOVED
+    // rows are excluded because their absence is already known and settled, not a fresh problem.
+    const settledAbsent = new Set<WorktreeRecord['state']>(['ORPHANED', 'REMOVED']);
+    let missingWorktrees = 0;
+    for (const worktree of worktrees) {
+      if (worktree.isMain || settledAbsent.has(worktree.state)) continue;
+      if (!await isDirectory(worktree.path)) { unavailable.push(worktree.path); missingWorktrees += 1; }
+    }
 
     const findings: DoctorDiagnostic['findings'] = [{
       check: 'git',
       status: unavailable.length === 0 ? 'pass' : 'error',
       message: unavailable.length === 0
         ? `${repositories.length} registered ${plural(repositories.length, 'repository', 'repositories')}, all present.`
-        : `${unavailable.length} registered ${plural(unavailable.length, 'repository', 'repositories')} `
+        : `${unavailable.length} registered ${plural(unavailable.length, 'path', 'paths')} `
           + `no longer on disk, starting with ${unavailable[0]}. WTM keeps serving the rest; `
           + 'the registration returns on its own if the directory comes back.',
-      details: { registered: repositories.length, unavailable: unavailable.length },
+      details: { registered: repositories.length, unavailable: unavailable.length, missingWorktrees },
     }];
 
     findings.push(await configFinding(workspace, current));
