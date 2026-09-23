@@ -9,6 +9,7 @@ const provenance = new Map<string, Provenance>([
   ['ports.api.env', { source: '/projects/demo/wtm.toml', line: 12 }],
   ['environment.WTM_ID', { source: '/projects/demo/wtm.toml', line: 20 }],
   ['repos.api.environment.PORT', { source: '/projects/demo/wtm.toml', line: 31 }],
+  ['repos.api.path', { source: '/projects/demo/wtm.toml', line: 29 }],
   ['tasks.test.run', { source: '/projects/demo/wtm.toml', line: 44 }],
   ['resources.env.path', { source: '/projects/demo/wtm.toml', line: 50 }],
   ['git.allowed_remote_refs', { source: '/projects/demo/wtm.toml', line: 60 }],
@@ -24,6 +25,7 @@ const config: WtmConfig = {
     dev: { run: ['make', 'dev'] },
   },
   resources: { env: { path: '.env', policy: 'symlink' } },
+  repos: { api: { path: 'server', environment: { PORT: '{port.api}' } } },
   git: { allowed_remote_refs: ['refs/remotes/upstream/*'] },
   safety: { untracked_symlinks: 'block' },
 };
@@ -185,5 +187,23 @@ describe('explained decisions', () => {
 
     expect(keys.filter((key) => key.startsWith('tasks.'))).toEqual([]);
     expect(keys.filter((key) => key.startsWith('resources.'))).toEqual([]);
+  });
+
+  it('surfaces a [repos.*].path mapping, which nothing else explains', () => {
+    // `repos.*.environment.*` is explained under `env.<name>` (see the earlier test attributing
+    // PORT to `[repos.*.environment]`), so it stays out of the per-leaf list. `repos.*.path` has
+    // no other producer -- it has to fall through here or `wtm explain` never mentions it.
+    const decision = explain().find(({ key }) => key === 'repos.api.path');
+
+    expect(decision).toEqual({
+      kind: 'config',
+      key: 'repos.api.path',
+      value: 'server',
+      provenance: { source: '/projects/demo/wtm.toml', line: 29 },
+      reason: 'Declared in /projects/demo/wtm.toml line 29.',
+    });
+
+    const keys = explain().filter(({ kind }) => kind === 'config').map(({ key }) => key);
+    expect(keys.filter((key) => key.startsWith('repos.') && key.endsWith('.environment.PORT'))).toEqual([]);
   });
 });
