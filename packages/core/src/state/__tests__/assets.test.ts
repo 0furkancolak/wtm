@@ -1,29 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { filesystemMigrationAssets } from '../assets';
+import { filesystemMigrationAssets, migrationFileNames } from '../assets';
 import { runScenario as runScenarioChild } from '../../../../testkit/src/scenario-child';
 
-const migrationFiles = [
-  '001-initial.sql',
-  '002-managed-process-indexes.sql',
-  '003-managed-process-reservations.sql',
-  '004-managed-process-reservation-leases.sql',
-  '005-managed-process-cleanup-ownership.sql',
-  '006-resource-lifecycle.sql',
-  '007-resource-gc-deleting-phase.sql',
-  '008-resource-gc-container-identity.sql',
-  '009-lifecycle-events.sql',
-  '010-repository-operation-leases.sql',
-  '011-repository-operation-lease-host-identity.sql',
-  '012-heavy-jobs.sql',
-  '013-heavy-job-memory.sql',
-  '014-feature-creations.sql',
-  '015-ci-watches.sql',
-  '016-task-overrides.sql',
-  '017-checklist-items.sql',
-  '018-drop-dead-resources-table.sql',
-] as const;
 const scenarioPath = fileURLToPath(new URL('./assets.scenario.ts', import.meta.url));
 
 function runScenario(): Record<string, unknown> {
@@ -35,8 +15,8 @@ function runScenario(): Record<string, unknown> {
 }
 
 describe('filesystem migration assets', () => {
-  test('reads the eighteen canonical migrations in exact byte order', () => {
-    const expected = migrationFiles.map((file) => readFileSync(new URL(`../migrations/${file}`, import.meta.url), 'utf8'));
+  test('reads every canonical migration in exact byte order', () => {
+    const expected = migrationFileNames.map((file) => readFileSync(new URL(`../migrations/${file}`, import.meta.url), 'utf8'));
 
     expect(filesystemMigrationAssets.readMigrations()).toEqual(expected);
   });
