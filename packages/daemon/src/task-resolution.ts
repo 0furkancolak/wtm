@@ -234,8 +234,13 @@ export function featureGroup(store: StateRegistrationReader, registration: Regis
     .sort((left, right) => left.path.localeCompare(right.path));
 }
 
-/** Worktree states `featureGroup` treats as no longer a candidate to hold shared endpoint leases. */
-const deadWorktreeStates = new Set<WorktreeState>(['ORPHANED', 'CLEANING', 'REMOVED', 'DEGRADED_CLEANUP']);
+/**
+ * Worktree states that mean "gone or going" -- Git no longer reports it, or something else
+ * already owns tearing it down. Shared between `featureGroup` (endpoint-lease ownership) and
+ * `proxy-routes.ts`'s hostname-slug assignment: both need "every worktree that could still claim
+ * this identity" rather than "every worktree that happens to be active right now."
+ */
+export const deadWorktreeStates = new Set<WorktreeState>(['ORPHANED', 'CLEANING', 'REMOVED', 'DEGRADED_CLEANUP']);
 
 /**
  * The proxy-hostname origins for the endpoints that already publish a dynamic-port origin, when
