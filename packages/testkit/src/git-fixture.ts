@@ -77,7 +77,10 @@ export async function createGitWorktreeFixture(): Promise<GitWorktreeFixture> {
   const repoPath = join(directory, 'repo with spaces;still-a-path');
   const linkedWorktreePath = join(directory, 'linked');
   const detachedWorktreePath = join(directory, 'detached');
-  const cleanup = () => rm(directory, { recursive: true, force: true });
+  // Matches `createGitSafetyFixture`/`createWorkspaceFixture` below: this fixture locks a
+  // worktree (`git worktree lock` a few lines down) right before returning, so its cleanup is at
+  // least as likely as theirs to race a transient file-lock/EBUSY condition on deletion.
+  const cleanup = () => rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
 
   try {
     await execFileAsync('git', ['init', '--initial-branch=main', repoPath], { env: await isolatedGitEnvironment() });
