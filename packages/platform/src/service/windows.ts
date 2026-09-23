@@ -240,10 +240,15 @@ export interface ScheduledTaskDefinitionOptions {
  *
  * `stdoutPath`/`stderrPath` have no XML analogue — a Scheduled Task action has no built-in
  * stdout/stderr redirection the way launchd's `StandardOutPath` or systemd's `StandardOutput=` do.
- * They are threaded through as `-daemon-log-path`-shaped *arguments* instead (appended to
- * `programArguments`, at the composition root, not here — this function only renders whatever
- * argv it is given), which is a real behavioural difference from the other two platforms, named
- * rather than silently dropped.
+ * **Nothing currently threads them through as arguments either** — `stdoutPath`/`stderrPath` are
+ * accepted here and by `windowsServiceBackend.renderDefinition` but never referenced by the
+ * rendered XML or by `daemonProgramArguments()` (`cli/src/main.ts`), which builds a plain
+ * `daemon serve` argv with no log-path flag on any platform. Until that composition-root wiring
+ * exists, `createDaemonErrorReporter`'s stderr writes (`cli/src/commands/daemon.ts`) have nowhere
+ * to land on Windows the way launchd/systemd redirection gives them one on darwin/linux — a
+ * daemon crash on Windows leaves no trace in either log path. This is real behavioural
+ * incompleteness, not a silently-accepted drop: see Increment D2 in `todo.md`, since Windows
+ * daemon support is unverified against real hardware regardless.
  */
 export function renderScheduledTaskXml(options: ScheduledTaskDefinitionOptions): string {
   assertUnitValue(options.label, 'scheduled task label');
