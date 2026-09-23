@@ -133,8 +133,19 @@ export async function runProductionGcCommand(input: {
     const workspaces = store.listWorkspaces();
     const records = await localRecords(store.listResourceGcEvidence(now.toISOString()), workspaces, input.cwd);
     const sandboxes = sandboxIdentities(records);
-    const repositories = store.listRepositories();
-    const worktrees = store.listWorktrees();
+    // Scoped to the workspace `cwd` is actually in, the same workspace `records`/`sandboxes`
+    // above are already scoped to (`localRecords`) and this whole command reports as `scope: {
+    // mode: 'local' }` below -- not to every repository and worktree registered on the machine.
+    // Unscoped, `repositoryRoots` below fed every registered repository's root into
+    // `createResourceGuard`, which runs `git rev-parse` against each one to discover its
+    // administrative paths: a repository some *other* workspace registered and then lost (its
+    // directory deleted or moved without `wtm forget`) made that `git` call fail, and the
+    // unhandled rejection aborted `wtm gc` for this workspace too, even though it has nothing to
+    // do with the broken one.
+    const localWorkspace = await resolveLocalWorkspace(workspaces, input.cwd);
+    const repositories = localWorkspace === undefined ? [] : store.listRepositories(localWorkspace.id);
+    const localRepositoryIds = new Set(repositories.map((repository) => repository.id));
+    const worktrees = store.listWorktrees().filter((worktree) => localRepositoryIds.has(worktree.repositoryId));
     const items: GcCommandResult['items'] = [];
     const errors: WtmError[] = [];
     let planned = 0;
