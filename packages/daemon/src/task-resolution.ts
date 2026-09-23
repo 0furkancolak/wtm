@@ -284,7 +284,7 @@ export function findRegistration(store: StateRegistrationReader, cwd: string): R
 export function adapterContext({ workspace, repository, worktree }: Registration): AdapterContext {
   return {
     workspace: { root: workspace.root },
-    repository: { root: worktree.path, mainRoot: repository.mainRoot },
+    repository: { root: repository.mainRoot, mainRoot: repository.mainRoot },
     worktree: { root: worktree.path, id: worktree.numericId, branch: worktree.branch ?? null },
   };
 }
