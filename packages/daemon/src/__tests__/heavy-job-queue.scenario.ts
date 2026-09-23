@@ -96,5 +96,13 @@ try {
   assert.equal(queue.get(expiredAtHandshake.jobId).state, 'TIMED_OUT');
   assert.equal(queue.get(expiredAtHandshake.jobId).slotHeld, false);
   assert.equal(starts.length, 4, 'a deadline refusal must never relaunch the job');
+  // The queue is idle here (every job above finished and released its slot, nothing new queued).
+  // `#prune()` used to run only as a side effect of `#enqueue`, so an idle queue with nothing new
+  // arriving never reclaimed a finished job past retention on its own -- only `flush()` calling it
+  // too, and rescheduling itself even while idle, fixes that.
+  assert.equal(store.jobs.active('host:user').length, 0, 'queue must be idle for this to test the idle path');
+  now += 7 * 24 * 60 * 60 * 1000 + 1;
+  await queue.flush();
+  assert.equal(store.jobs.get(changed.jobId, 'host:user'), null, 'an idle queue must still prune a job past retention on its own');
   console.log(JSON.stringify({ ok: true }));
 } finally { await queue.close(); store.close(); }

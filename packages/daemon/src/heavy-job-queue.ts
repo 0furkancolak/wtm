@@ -52,6 +52,9 @@ export interface HeavyJobQueueOptions {
 
 type ObservedExit = { exitCode: number | null; signal: NodeJS.Signals | null; groupAbsent: boolean; exitedAt?: string };
 
+/** How often an idle queue (no active jobs) still wakes up to prune finished jobs past retention. */
+const heavyJobIdlePruneIntervalMs = 60 * 60 * 1000;
+
 /** One scheduler for every repository of this daemon's private, host/user-scoped SQLite state. */
 export class HeavyJobQueue {
   readonly #options: HeavyJobQueueOptions;
@@ -61,6 +64,7 @@ export class HeavyJobQueue {
   readonly #recovering = new Set<string>();
   readonly #stopAttempts = new Map<string, number>();
   #timer: ReturnType<typeof setTimeout> | null = null;
+  #timerDelay = 0;
   #operation: Promise<void> = Promise.resolve();
   #started = false;
   #closed = false;
@@ -157,7 +161,15 @@ export class HeavyJobQueue {
           await this.#launch(job);
         }
       }
-      if (this.#options.store.active(this.#options.scope).length > 0) this.#schedule(1000);
+      // `#enqueue` prunes too, but that is only ever a side effect of *new* work arriving -- an
+      // idle queue (nothing active, nothing enqueued) never reaches it, so finished jobs past
+      // `heavyJobRetentionMs`/`maxRetainedHeavyJobs` sat in the store and on disk forever unless
+      // something unrelated later enqueued into the same host/user scope. Pruning here too, and
+      // rescheduling even while idle, makes an idle queue keep reclaiming on its own.
+      if (!this.#closed) await this.#prune();
+      if (!this.#closed) {
+        this.#schedule(this.#options.store.active(this.#options.scope).length > 0 ? 1000 : heavyJobIdlePruneIntervalMs);
+      }
     });
     this.#operation = next.catch((error: unknown) => { this.#options.onError?.(error); this.#schedule(1000); });
     await next;
@@ -217,7 +229,18 @@ export class HeavyJobQueue {
   }
 
   #schedule(delay: number): void {
-    if (this.#closed || !this.#started || this.#timer !== null) return;
+    if (this.#closed || !this.#started) return;
+    // A pending timer only blocks a *later or equal* request now that an idle queue can leave a
+    // long (`heavyJobIdlePruneIntervalMs`) timer running: without this, `enqueue`'s own
+    // `#schedule(0)` right after inserting a job would see that long timer already set and do
+    // nothing, leaving the new job QUEUED until the idle timer eventually fired -- up to an hour
+    // later. A strictly shorter request still preempts and replaces it.
+    if (this.#timer !== null) {
+      if (delay >= this.#timerDelay) return;
+      clearTimeout(this.#timer);
+      this.#timer = null;
+    }
+    this.#timerDelay = delay;
     this.#timer = setTimeout(() => { this.#timer = null; void this.flush().catch(() => {}); }, delay);
     this.#timer.unref();
   }
