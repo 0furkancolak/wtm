@@ -134,6 +134,29 @@ describe('wtm forget', () => {
     expect(forgotten).toEqual([]);
   });
 
+  it('reports the ambiguity, not a plain no-match, when a name is shared by two workspaces', async () => {
+    const shared = [
+      workspace('shared', '/projects/one/shared'),
+      { ...workspace('shared', '/projects/two/shared'), id: 'workspace-shared-2' },
+    ];
+    const { store, forgotten } = createStore(shared);
+
+    const envelope = await runForgetCommand({ store, cwd: '/elsewhere', selector: 'shared' });
+
+    expect(envelope.ok).toBe(false);
+    expect(envelope.errors[0]?.code).toBe('WTM_WORKSPACE_NOT_FOUND');
+    expect(envelope.errors[0]?.message).toContain('matches 2 registered workspaces');
+    expect(envelope.errors[0]?.message).not.toContain('No registered workspace or repository matches');
+    expect(envelope.errors[0]?.context).toEqual({
+      selector: 'shared',
+      matches: [
+        { id: 'workspace-shared', name: 'shared', root: '/projects/one/shared' },
+        { id: 'workspace-shared-2', name: 'shared', root: '/projects/two/shared' },
+      ],
+    });
+    expect(forgotten).toEqual([]);
+  });
+
   it('needs a selector when the current directory is in no workspace', async () => {
     const { store } = createStore([workspace('old', '/projects/gone/old')]);
 

@@ -56,6 +56,18 @@ export type ForgetCommandEnvelope = JsonEnvelope<ForgetCommandResult | null>;
 export async function runForgetCommand(input: ForgetCommandInput): Promise<ForgetCommandEnvelope> {
   const workspaces = input.store.listWorkspaces();
   const target = select(input.store, workspaces, input);
+  if (target !== undefined && 'ambiguous' in target) {
+    return failure({
+      code: 'WTM_WORKSPACE_NOT_FOUND',
+      message: `"${input.selector}" matches ${target.ambiguous.length} registered workspaces by `
+        + 'name. Use the workspace id instead, or a path inside the one you mean.',
+      severity: 'error',
+      context: {
+        selector: input.selector,
+        matches: target.ambiguous.map(({ id, name, root }) => ({ id, name, root })),
+      },
+    });
+  }
   if (target === undefined) {
     return failure(input.selector === undefined
       ? {
@@ -147,15 +159,20 @@ interface ForgetTarget {
   repository?: RepositoryRecord;
 }
 
+interface AmbiguousSelection {
+  /** The workspaces sharing the name the selector named; names are not unique, only roots are. */
+  ambiguous: readonly WorkspaceRecord[];
+}
+
 function select(
   store: StateRegistrationReader,
   workspaces: readonly WorkspaceRecord[],
   input: ForgetCommandInput,
-): ForgetTarget | undefined {
+): ForgetTarget | AmbiguousSelection | undefined {
   if (input.selector === undefined) return containingWorkspace(workspaces, input.cwd);
   const named = workspaces.filter(({ id, name }) => id === input.selector || name === input.selector);
   if (named.length === 1) return { workspace: named[0] as WorkspaceRecord };
-  if (named.length > 1) return undefined;
+  if (named.length > 1) return { ambiguous: named };
 
   const path = resolveAgainst(input.cwd, input.selector);
   const workspace = containingWorkspace(workspaces, path);

@@ -1127,6 +1127,10 @@ function lifecycleEventClaims() {
 
     const reopened = open();
     try {
+      // Peeking must never itself claim -- a caller that revisits an already-claimed subject on
+      // every pass (see `hasLifecycleEventClaim`'s own doc comment) has to be free to check
+      // without spending the one claim a real dispatch still needs to make.
+      const hasClaimBeforeWithdrawal = reopened.hasLifecycleEventClaim('repository', repository.id, 'worktree.created');
       const withdrawn = reopened.releaseLifecycleEvent('repository', repository.id, 'worktree.created');
       return {
         claimed,
@@ -1134,6 +1138,9 @@ function lifecycleEventClaims() {
         otherEvent,
         afterRestart: reopened.claimLifecycleEvent('repository', repository.id, 'repo.discovered'),
         otherSubject: reopened.claimLifecycleEvent('repository', 'another', 'repo.discovered'),
+        hasClaimBeforeWithdrawal,
+        hasClaimAfterWithdrawal: reopened.hasLifecycleEventClaim('repository', repository.id, 'worktree.created'),
+        hasClaimForNeverClaimedEvent: reopened.hasLifecycleEventClaim('repository', repository.id, 'worktree.ready'),
         withdrawn,
         withdrawnTwice: reopened.releaseLifecycleEvent('repository', repository.id, 'worktree.created'),
         // Withdrawing puts the announcement back, so a later pass can make it again.

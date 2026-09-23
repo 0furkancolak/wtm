@@ -616,6 +616,13 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
     `).run(subjectType, subjectId, event).changes === 1;
   }
 
+  hasLifecycleEventClaim(subjectType: LifecycleEventSubject, subjectId: string, event: string): boolean {
+    this.#assertOpen();
+    return this.#database.prepare(`
+      SELECT 1 FROM lifecycle_event_dispatches WHERE subject_type = ? AND subject_id = ? AND event = ?
+    `).get(subjectType, subjectId, event) !== undefined;
+  }
+
   listRepositories(workspaceId?: string): RepositoryRecord[] {
     this.#assertOpen();
     const rows = workspaceId === undefined

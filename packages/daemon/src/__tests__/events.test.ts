@@ -86,6 +86,7 @@ function createHarness(config: WtmConfig, options: {
       claims.splice(claims.indexOf(key), 1);
       return claimed.delete(key);
     },
+    hasLifecycleEventClaim: (type: string, id: string, event: string) => claimed.has(`${type}:${id}:${event}`),
   };
   const dispatcher = new LifecycleEventDispatcher({
     store: store as never,
@@ -265,6 +266,30 @@ describe('lifecycle event dispatch', () => {
 
     expect(harness.claims).toContain('worktree:worktree-1:worktree.discovered');
     expect(harness.claims).not.toContain('worktree:worktree-1:worktree.created');
+  });
+
+  it('retries a worktree\'s created event on a later ordinary reconcile if a crash left it unclaimed', async () => {
+    // Simulates the daemon restart window this fix closes: the worktree row is already
+    // committed (so this reconcile reports it in `updated`, never `discovered` again -- that
+    // signal is tied purely to the row's own INSERT), but nothing ever claimed its event, exactly
+    // as a crash between "row committed" and "event dispatched" would leave it.
+    const harness = createHarness(installTask);
+
+    await harness.dispatcher.onReconciled(repository, reconciled({ updated: [worktree] }));
+
+    expect(harness.claims).toContain('worktree:worktree-1:worktree.created');
+    expect(harness.started.map(({ taskName }) => taskName)).toEqual(['deps.install']);
+  });
+
+  it('does not redo an already-claimed worktree\'s created event on later ordinary reconciles', async () => {
+    const harness = createHarness(installTask);
+
+    await harness.dispatcher.onReconciled(repository, reconciled({ discovered: [worktree] }));
+    await harness.dispatcher.onReconciled(repository, reconciled({ updated: [worktree] }));
+    await harness.dispatcher.onReconciled(repository, reconciled({ updated: [worktree] }));
+
+    expect(harness.claims.filter((claim) => claim === 'worktree:worktree-1:worktree.created')).toHaveLength(1);
+    expect(harness.started).toHaveLength(1);
   });
 
   it('announces the workspace and the repository once each, ahead of any worktree', async () => {
