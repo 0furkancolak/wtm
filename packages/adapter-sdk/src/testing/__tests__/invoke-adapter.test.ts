@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isWindowsTestHost } from '../../../../testkit/src/platform';
 import { invokeAdapter } from '../index';
 
 const roots: string[] = [];
@@ -111,4 +112,41 @@ test('reports a hung adapter as a timeout rather than waiting forever', async ()
   const result = await invokeAdapter(adapter, { operation: 'metadata', timeoutMs: 200 });
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.reason).toBe('timeout');
+});
+
+// Process-group semantics (the mechanism this test proves) are POSIX-only; win32 has no
+// equivalent, the same reason `external-adapter.ts`'s own tests skip this class of assertion there.
+test.skipIf(isWindowsTestHost)('a timeout kills the descendant a hung adapter spawned, not just the adapter itself', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wtm-adapter-sdk-testing-'));
+  roots.push(root);
+  const pidFile = join(root, 'grandchild.pid');
+  const adapter = await scriptAdapter(`
+    import { spawn } from 'node:child_process';
+    import { writeFileSync } from 'node:fs';
+    process.stdin.resume();
+    const grandchild = spawn('sleep', ['9999'], { stdio: 'ignore' });
+    writeFileSync(${JSON.stringify(pidFile)}, String(grandchild.pid));
+    setInterval(() => {}, 1_000);
+  `);
+
+  const result = await invokeAdapter(adapter, { operation: 'metadata', timeoutMs: 200 });
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.reason).toBe('timeout');
+
+  const grandchildPid = Number((await readFile(pidFile, 'utf8')).trim());
+  // The signal itself is a no-op on Linux/macOS: `kill(pid, 0)` sends nothing, it only asks
+  // whether the process still exists. A non-ESRCH result means the grandchild outlived the
+  // timeout that was supposed to end it. SIGKILL delivery/reaping isn't instantaneous, so poll
+  // briefly rather than asserting the very first check.
+  const deadline = Date.now() + 2_000;
+  let stillAlive = true;
+  while (stillAlive && Date.now() < deadline) {
+    try {
+      process.kill(grandchildPid, 0);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    } catch {
+      stillAlive = false;
+    }
+  }
+  expect(stillAlive).toBe(false);
 });

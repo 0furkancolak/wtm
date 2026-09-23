@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import {
   parseAdapterResponse,
   protocolVersion,
@@ -50,7 +50,14 @@ export async function invokeAdapter(executablePath: string, invocation: AdapterI
     }),
   };
 
-  const child = spawn(process.execPath, [executablePath], { stdio: ['pipe', 'pipe', 'pipe'] });
+  // A dedicated process group lets the timeout path below terminate a hung adapter's own
+  // descendants (nothing stops a `detect`/`plan` handler from spawning one, e.g. while
+  // prototyping a `cargo fetch`/`docker` call) instead of leaving them running unsupervised
+  // after this function has already resolved.
+  const child = spawn(process.execPath, [executablePath], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
+  });
   const timeoutMs = invocation.timeoutMs ?? defaultTimeoutMs;
   const maxOutputBytes = invocation.maxOutputBytes ?? defaultMaxOutputBytes;
 
@@ -74,7 +81,7 @@ export async function invokeAdapter(executablePath: string, invocation: AdapterI
 
   const outcome = await new Promise<{ timedOut: boolean; exitCode: number | null }>((resolve) => {
     const timer = setTimeout(() => {
-      child.kill('SIGKILL');
+      killAdapterProcessGroup(child);
       resolve({ timedOut: true, exitCode: null });
     }, timeoutMs);
     child.on('close', (exitCode) => {
@@ -98,4 +105,20 @@ export async function invokeAdapter(executablePath: string, invocation: AdapterI
     const detail = error instanceof Error ? error.message : String(error);
     return { ok: false, reason: 'invalid-response', detail, stderr: stderrText };
   }
+}
+
+/** Mirrors `@wtm/core`'s `signalAdapterProcessGroup`: kills the whole group the adapter's
+ * `detached` spawn above started, not just the immediate `node` process, so a descendant the
+ * adapter spawned while handling the timed-out request doesn't outlive this call. */
+function killAdapterProcessGroup(child: ChildProcess): void {
+  if (child.pid === undefined) return;
+  try {
+    if (process.platform !== 'win32') {
+      process.kill(-child.pid, 'SIGKILL');
+      return;
+    }
+  } catch {
+    // The process may already have exited; direct-child fallback is best effort.
+  }
+  child.kill('SIGKILL');
 }
