@@ -18,6 +18,7 @@ const socketDirectory = await mkdtemp(join(shortTmpRoot(), 'wtm-socket-'));
 const useDefaultClient = process.argv[2] === 'default-client';
 const closeWithLiveTask = process.argv[2] === 'close-live';
 const ciUnwatch = process.argv[2] === 'ci-unwatch';
+const deadWorktree = process.argv[2] === 'dead-worktree';
 const runtimeInvocation = developmentRuntimeInvocation();
 // Failure-only evidence from the actual observations used by the supervisor. A second ps
 // after a failure cannot explain an earlier identity mismatch. Keep argv and environment out.
@@ -123,50 +124,69 @@ try {
     await runtime.start();
     if (!useDefaultClient) await client.start();
 
-    const start = await invoke(['start', 'hold', '--json']);
-    if (!start.envelope.ok) throw new Error(JSON.stringify({ stage: 'start', ...start, trace }));
-    const processRecord = start.envelope.data.process;
-    expected = { pid: processRecord.pid, pgid: processRecord.pgid,
-      processStartTime: processRecord.processStartTime, commandFingerprint: processRecord.commandFingerprint };
-    if (closeWithLiveTask) {
-      await runtime.close();
-      const processRecord = start.envelope.data.process;
+    if (deadWorktree) {
+      // Simulates a `wtm start` that races a `wtm remove` already past its `release-endpoints`
+      // stage: `releaseEndpointLeases` (`cli/src/removal-coordinator.ts`) marks the worktree
+      // `CLEANING` there, strictly before the real `git worktree remove` subprocess runs, so this
+      // is a real, reachable window rather than a synthetic state. `firstRepoPath` also owns a
+      // linked worktree (`fixture.linkedWorktreePath`), so the row to mark is picked by path
+      // rather than by list order.
+      const worktree = runtime.stateStore.listWorktrees(repository.id)
+        .find((candidate) => candidate.path === fixture.firstRepoPath);
+      if (worktree === undefined) throw new Error('fixture worktree missing before markWorktreeCleaning');
+      runtime.stateStore.markWorktreeCleaning(worktree.id);
+      const start = await invoke(['start', 'hold', '--json']);
       console.log(JSON.stringify({
         startExit: start.exitCode,
-        startState: processRecord.state,
-        identity: {
-          pid: processRecord.pid,
-          pgid: processRecord.pgid,
-          processStartTime: processRecord.processStartTime,
-          commandFingerprint: processRecord.commandFingerprint,
-        },
+        ok: start.envelope.ok,
+        code: start.envelope.ok ? null : start.envelope.errors[0]?.code,
       }));
     } else {
-      const ps = await invoke(['ps', '--json']);
-      if (ps.exitCode !== 0 || ps.envelope.ok !== true) {
-        throw new Error(JSON.stringify({ stage: 'ps', ...ps }));
+      const start = await invoke(['start', 'hold', '--json']);
+      if (!start.envelope.ok) throw new Error(JSON.stringify({ stage: 'start', ...start, trace }));
+      const processRecord = start.envelope.data.process;
+      expected = { pid: processRecord.pid, pgid: processRecord.pgid,
+        processStartTime: processRecord.processStartTime, commandFingerprint: processRecord.commandFingerprint };
+      if (closeWithLiveTask) {
+        await runtime.close();
+        const processRecord = start.envelope.data.process;
+        console.log(JSON.stringify({
+          startExit: start.exitCode,
+          startState: processRecord.state,
+          identity: {
+            pid: processRecord.pid,
+            pgid: processRecord.pgid,
+            processStartTime: processRecord.processStartTime,
+            commandFingerprint: processRecord.commandFingerprint,
+          },
+        }));
+      } else {
+        const ps = await invoke(['ps', '--json']);
+        if (ps.exitCode !== 0 || ps.envelope.ok !== true) {
+          throw new Error(JSON.stringify({ stage: 'ps', ...ps }));
+        }
+        const stop = await invoke(['stop', 'hold', '--json']);
+        if (stop.exitCode !== 0 || stop.envelope.ok !== true) {
+          const terminal = runtime.stateStore.getManagedProcess(processRecord.id);
+          const completion = await runtime.logs.readCompletion(processRecord.stdoutPath, processRecord.pid)
+            .catch((error: unknown) => ({ inspectionFailed: errorCode(error) }));
+          throw new Error(JSON.stringify({ stage: 'stop', ...stop, expected, firstMismatch, trace,
+            terminal: terminal === null ? null : { state: terminal.state, stoppedAt: terminal.stoppedAt }, completion }));
+        }
+        console.log(JSON.stringify({
+          startExit: start.exitCode,
+          startState: start.envelope.data.process.state,
+          psRunning: ps.envelope.data.processes.some((process: { taskName: string; state: string }) =>
+            process.taskName === 'hold' && process.state === 'RUNNING'),
+          stopExit: stop.exitCode,
+          stopState: stop.envelope.data.processes[0].state,
+          // Reported only by the default-client run, because that is the only one whose socket is
+          // derived rather than handed in — the others would be reading back their own argument. The
+          // parent checks every disk root is confined and the IPC address matches the isolated
+          // production derivation. Windows pipes are names, not entries beneath a home directory.
+          ...(useDefaultClient ? { socketPath: runtime.paths.socketPath, paths: runtime.paths } : {}),
+        }));
       }
-      const stop = await invoke(['stop', 'hold', '--json']);
-      if (stop.exitCode !== 0 || stop.envelope.ok !== true) {
-        const terminal = runtime.stateStore.getManagedProcess(processRecord.id);
-        const completion = await runtime.logs.readCompletion(processRecord.stdoutPath, processRecord.pid)
-          .catch((error: unknown) => ({ inspectionFailed: errorCode(error) }));
-        throw new Error(JSON.stringify({ stage: 'stop', ...stop, expected, firstMismatch, trace,
-          terminal: terminal === null ? null : { state: terminal.state, stoppedAt: terminal.stoppedAt }, completion }));
-      }
-      console.log(JSON.stringify({
-        startExit: start.exitCode,
-        startState: start.envelope.data.process.state,
-        psRunning: ps.envelope.data.processes.some((process: { taskName: string; state: string }) =>
-          process.taskName === 'hold' && process.state === 'RUNNING'),
-        stopExit: stop.exitCode,
-        stopState: stop.envelope.data.processes[0].state,
-        // Reported only by the default-client run, because that is the only one whose socket is
-        // derived rather than handed in — the others would be reading back their own argument. The
-        // parent checks every disk root is confined and the IPC address matches the isolated
-        // production derivation. Windows pipes are names, not entries beneath a home directory.
-        ...(useDefaultClient ? { socketPath: runtime.paths.socketPath, paths: runtime.paths } : {}),
-      }));
     }
   }
 } finally {

@@ -45,8 +45,9 @@ import { checklistApiHandler, devOverlayHtmlInjector } from './dev-overlay';
 import { defaultProxyPort, ProxyServer } from './proxy';
 import { globalDevOverlayPolicy, globalProxyPolicy } from './proxy-policy';
 import { buildProxyRoutes } from './proxy-routes';
-import { DaemonRuntimeController, type DaemonRuntimeResolver } from './runtime-controller';
+import { DaemonRegistrationError, DaemonRuntimeController, type DaemonRuntimeResolver } from './runtime-controller';
 import {
+  deadWorktreeStates,
   execEnvironment,
   findRegistration,
   prepareRuntimeResources,
@@ -588,10 +589,25 @@ class ProductionRuntimeResolver implements DaemonRuntimeResolver {
   }
 
   async #runtime(cwd: string) {
-    return await resolveWorktreeRuntime({
+    const runtime = await resolveWorktreeRuntime({
       store: this.store,
       cwd,
       globalConfigPath: this.globalConfigPath,
     });
+    // `findRegistration` (which this calls into) resolves purely by path containment and never
+    // looks at `worktree.state` -- by design, since `resolveWorktree`/`stop`/`ps`/`logs` must
+    // keep working on a worktree that is `CLEANING`/`ORPHANED`/etc. so a residual process can
+    // still be inspected or reaped after the worktree itself is gone. `resolveTask`/`resolveExec`
+    // are different: they are how `start`/`restart`/`exec`/queued tasks spawn a brand-new managed
+    // process, and nothing else in that path refuses one. A `wtm remove` marks its own worktree
+    // `CLEANING` before its `git worktree remove` subprocess runs (`releaseEndpointLeases` in
+    // `packages/cli/src/removal-coordinator.ts`) specifically so a concurrent allocation cannot
+    // treat it as live in the meantime (`featureGroup` already excludes these states for the same
+    // reason) -- without this check here, a `wtm start` racing that same window would still launch
+    // a new process against a worktree whose directory is about to disappear out from under it.
+    if (deadWorktreeStates.has(runtime.registration.worktree.state)) {
+      throw new DaemonRegistrationError('This worktree is being removed and cannot start new tasks.');
+    }
+    return runtime;
   }
 }

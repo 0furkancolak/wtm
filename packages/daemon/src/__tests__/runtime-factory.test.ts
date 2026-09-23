@@ -151,6 +151,29 @@ describe('production daemon composition', () => {
     }
   }, 20_000);
 
+  test('refuses `start` against a worktree already marked CLEANING by a removal in progress', () => {
+    // `findRegistration` (task-resolution.ts) resolves purely by path containment and never
+    // looked at `worktree.state`, so `wtm start` racing the window between `wtm remove`'s
+    // `release-endpoints` stage (which marks the worktree CLEANING before its `git worktree
+    // remove` subprocess runs) and the removal's own `reconcile` stage could still launch a
+    // brand-new managed process against a worktree about to disappear. This pins the fix:
+    // `ProductionRuntimeResolver`'s `resolveTask`/`resolveExec` now refuse any of the
+    // `deadWorktreeStates` (`CLEANING`/`ORPHANED`/`REMOVED`/`DEGRADED_CLEANUP`) the same way an
+    // unregistered directory already does.
+    const isolated = isolatedHome();
+    try {
+      const result = runScenario('node', ['--import', 'tsx', scenarioPath, 'dead-worktree'], {
+        timeoutMs: 20_000,
+        env: isolated.env,
+      });
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(JSON.parse(result.stdout)).toEqual({ startExit: 2, ok: false, code: 'WTM_WORKSPACE_NOT_FOUND' });
+    } finally {
+      isolated.cleanup();
+    }
+  }, 20_000);
+
   test('uses the private custom database parent rather than only the data root', () => {
     const isolated = isolatedHome();
     try {
