@@ -70,6 +70,16 @@ async function run(driver: DriverName): Promise<Record<string, unknown>> {
       reservationCreatedAt,
       { expiresAt: '2026-08-28T08:05:00.000Z' },
     );
+    // A losing reservation race must return `false` on both drivers, not throw: the INSERT hits
+    // `managed_process_start_reservations`'s (worktree_id, task_name) UNIQUE constraint, whose
+    // error shape differs between better-sqlite3 and node:sqlite (see `isConstraintError`).
+    const reservationConflict = store.reserveManagedProcessStart(
+      registeredWorktree.id,
+      'dev',
+      'contract-token-conflict',
+      reservationCreatedAt,
+      { expiresAt: '2026-08-28T08:05:00.000Z' },
+    );
     const createdProcess = store.createManagedProcess({
       worktreeId: registeredWorktree.id,
       taskName: 'dev',
@@ -157,6 +167,21 @@ async function run(driver: DriverName): Promise<Record<string, unknown>> {
       state: 'STALE',
       retention: 'ephemeral',
     }, 'cleanup-token', 60_000);
+    // Same as the reservation conflict above: a losing lease race hits
+    // `resource_cleanup_leases`'s primary key on `storage_object_id` and must return `false` on
+    // both drivers.
+    const cleanupLeaseConflict = store.acquireResourceCleanupLease({
+      storageObjectId: 'cleanup-storage',
+      sandboxId: 'sandbox-1',
+      sandboxGeneration: 'generation-1',
+      path: '/resources/contract/stale',
+      dev: 1,
+      ino: 5,
+      uid: 3,
+      kind: 'directory',
+      state: 'QUARANTINED',
+      retention: 'ephemeral',
+    }, 'cleanup-token-conflict', 60_000);
     let resourceFinalized: boolean | null = null;
     let resourceFinalizationError: string | null = null;
     try {
@@ -295,7 +320,11 @@ async function run(driver: DriverName): Promise<Record<string, unknown>> {
       repository: [persistedRepository.mainRoot, persistedRepository.remoteIdentity],
       worktree: [persistedWorktree.path, persistedWorktree.numericId, persistedWorktree.state],
       endpoint: [endpoint.name, endpoint.protocol, endpoint.host, endpoint.port, endpoint.state],
-      reservation: [reserved, store.hasManagedProcessStartReservation(persistedWorktree.id, 'dev')],
+      reservation: [
+        reserved,
+        reservationConflict,
+        store.hasManagedProcessStartReservation(persistedWorktree.id, 'dev'),
+      ],
       process: [
         persistedProcess.taskName,
         persistedProcess.pid,
@@ -332,6 +361,7 @@ async function run(driver: DriverName): Promise<Record<string, unknown>> {
       ],
       resourceFinalization: [
         cleanupLeaseAcquired,
+        cleanupLeaseConflict,
         resourceFinalized,
         resourceFinalizationError,
         finalizedResource.state,

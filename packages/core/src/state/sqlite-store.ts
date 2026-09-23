@@ -1949,11 +1949,20 @@ function assertProcessTransition(from: ManagedProcessState, to: ManagedProcessSt
 }
 
 function isConstraintError(error: unknown): boolean {
-  return typeof error === 'object'
-    && error !== null
-    && 'code' in error
-    && typeof error.code === 'string'
-    && error.code.startsWith('SQLITE_CONSTRAINT');
+  if (typeof error !== 'object' || error === null || !('code' in error) || typeof error.code !== 'string') {
+    return false;
+  }
+  // better-sqlite3 throws `.code === 'SQLITE_CONSTRAINT...'` directly. `node:sqlite` (used by
+  // the standalone/SEA binary's driver, see `node-sqlite-driver.ts`) wraps every SQLite error in
+  // `.code === 'ERR_SQLITE_ERROR'` instead, carrying the real SQLite result code in `.errcode`.
+  // The primary result code is the low byte of an extended code (SQLite's own convention, e.g.
+  // `SQLITE_CONSTRAINT_PRIMARYKEY` = 1555 = 19 | (6 << 8)); 19 is `SQLITE_CONSTRAINT`. Without
+  // this branch a losing race on `node:sqlite` rethrows instead of returning `false`.
+  if (error.code.startsWith('SQLITE_CONSTRAINT')) return true;
+  return error.code === 'ERR_SQLITE_ERROR'
+    && 'errcode' in error
+    && typeof error.errcode === 'number'
+    && (error.errcode & 0xff) === 19;
 }
 
 function journalRowMatchesFinalization(row: Record<string, unknown>, input: ResourceGcJournalInput): boolean {
