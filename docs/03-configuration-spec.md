@@ -147,6 +147,11 @@ expose = true
 run = ["make", "test"]
 cwd = "{workspace.root}"
 
+[tasks."deps.install"]
+description = "Install dependencies"
+run = ["make", "deps"]
+cwd = "{workspace.root}"
+
 [events."worktree.created"]
 tasks = ["deps.install"]
 ```
@@ -703,7 +708,8 @@ report a task that will not start.
 
 Event names contain a dot, so the table key must be quoted. `[events.worktree.created]` is parsed as a nested table and rejected.
 
-Example:
+Example (assuming a `[tasks."deps.install"]` block, as shown in the worked example above, already
+defines that task in this workspace):
 
 ```toml
 [events."worktree.created"]
