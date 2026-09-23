@@ -1738,7 +1738,7 @@ async function unregisteredTaskResolution(
   return {
     config: await withAdapterTasks(config.value, {
       workspace: { root: workspaceRoot },
-      repository: { root: worktree.path, mainRoot },
+      repository: { root: mainRoot, mainRoot },
       worktree: { root: worktree.path, id: numericId, branch: worktree.branch ?? null },
     }),
     taskName: input.taskName,
@@ -1855,7 +1855,7 @@ async function productionTaskNames(cwd: string, databasePath: string): Promise<s
     const numericId = Math.max(1, topology.findIndex(({ path }) => path === worktree.path) + 1);
     const withAdapters = await withAdapterTasks(config.value, {
       workspace: { root: workspaceRoot },
-      repository: { root: worktree.path, mainRoot },
+      repository: { root: mainRoot, mainRoot },
       worktree: { root: worktree.path, id: numericId, branch: worktree.branch ?? null },
     });
     return Object.keys(withAdapters.tasks ?? {}).sort(compareNames);
