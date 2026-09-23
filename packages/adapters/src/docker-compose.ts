@@ -17,7 +17,10 @@ export const dockerComposeAdapter = defineBuiltInAdapter({
   plan: async () => ({
     resources: [],
     actions: [
-      { type: 'register-runtime-namespace', namespace: 'wtm-{worktree.id}' },
+      // `{id}` is the worktree's own numeric id (`TemplateContext.id`, `resolve.ts`) -- there is
+      // no separate `{worktree.id}` variable `templateValue` recognizes, so that spelling throws
+      // `WtmTemplateError` the moment this action is actually resolved.
+      { type: 'register-runtime-namespace', namespace: 'wtm-{id}' },
     ],
     capabilities: {
       'runtime.start': { action: 'task.compose-up' },
