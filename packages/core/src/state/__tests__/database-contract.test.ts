@@ -21,7 +21,7 @@ describe('SQLite database drivers', () => {
       repository: ['/projects/contract/repository', 'ssh://example.invalid/contract.git'],
       worktree: ['/projects/contract/repository', 1, 'DISCOVERED'],
       endpoint: ['web', 'tcp', '127.0.0.1', 45123, 'ACTIVE'],
-      reservation: [true, true],
+      reservation: [true, false, true],
       process: ['dev', 4242, 'RUNNING', false],
       adapterTrust: ['contract-adapter', '/adapters/contract', 'a'.repeat(64)],
       resource: ['/resources/contract/cache', 'directory', 'READY', 1, 100, 128],
@@ -33,7 +33,7 @@ describe('SQLite database drivers', () => {
         ['api', 'RELEASED', '2026-08-28T08:00:14.000Z'],
         ['web', 'RELEASED', '2026-08-28T08:00:14.000Z'],
       ]],
-      resourceFinalization: [true, true, null, 'REMOVED', null],
+      resourceFinalization: [true, false, true, null, 'REMOVED', null],
       nested: ['nested rollback', true, true, false],
       rollback: ['contract rollback', true],
       relationships: {
