@@ -128,6 +128,10 @@ class FailingReconciliationStore implements StateStore, StateRegistrationReader 
     return this.inner.hasManagedProcessStartReservation(worktreeId, taskName);
   }
 
+  releaseOrphanedManagedProcessStartReservations(): number {
+    return this.inner.releaseOrphanedManagedProcessStartReservations();
+  }
+
   listManagedProcesses(query?: ManagedProcessQuery): ManagedProcessRecord[] {
     return this.inner.listManagedProcesses(query);
   }

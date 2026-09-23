@@ -1380,6 +1380,19 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
     `).run(worktreeId, taskName, now, worktreeId, taskName).changes === 1;
   }
 
+  releaseOrphanedManagedProcessStartReservations(): number {
+    this.#assertOpen();
+    return this.#database.prepare(`
+      DELETE FROM managed_process_start_reservations
+      WHERE NOT EXISTS (
+        SELECT 1 FROM managed_processes
+        WHERE managed_processes.worktree_id = managed_process_start_reservations.worktree_id
+          AND managed_processes.task_name = managed_process_start_reservations.task_name
+          AND (managed_processes.state IN ('STARTING', 'RUNNING', 'STOPPING') OR managed_processes.cleanup_required = 1)
+      )
+    `).run().changes;
+  }
+
   releaseExpiredManagedProcessReplacement(record: ManagedProcessRecord, now: string): boolean {
     this.#assertOpen();
     return this.#database.prepare(`

@@ -280,6 +280,22 @@ export interface StateStore extends AdapterTrustStateStore {
   releaseExpiredManagedProcessReplacement(record: ManagedProcessRecord, now: string): boolean;
   hasManagedProcessStartReservation(worktreeId: string, taskName: string): boolean;
   /**
+   * Drops every start reservation left with nothing backing it — no `managed_processes` row in
+   * an active state — regardless of its TTL.
+   *
+   * Every other reservation cleanup here is deliberately TTL-gated: a reservation still inside
+   * its window might belong to a spawn genuinely in flight in this same process, and clearing it
+   * early would let a second spawn start into the same worktree/task underneath it. That window
+   * does not exist right after the daemon starts and before it recovers, before it has accepted
+   * a single request: nothing here started under the current process, so a reservation with no
+   * record behind it can only be left over from a process that crashed before the record it was
+   * guarding was ever created. Left to the ordinary TTL cleanup, such a reservation blocks the
+   * very first retry of that worktree/task with "already in progress" for up to the reservation's
+   * full TTL after every daemon restart, for no reason the daemon itself could not already rule
+   * out. Call this once, before serving anything.
+   */
+  releaseOrphanedManagedProcessStartReservations(): number;
+  /**
    * Claims the repository for one destructive operation, or reports who holds it.
    *
    * Exclusion is per repository, not per operation: any live lease on the repository refuses
