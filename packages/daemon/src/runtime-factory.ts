@@ -41,7 +41,7 @@ import { ManagedLogStore } from './logs';
 import { HeavyJobQueue, type ResolvedHeavyJob } from './heavy-job-queue';
 import { IdleRuntimeSuspender } from './idle-runtime';
 import { ManagedProcessSupervisor, type RuntimeInvocation } from './process-supervisor';
-import { checklistApiHandler, devOverlayHtmlInjector } from './dev-overlay';
+import { checklistApiHandler, devOverlayHtmlInjector, type DevOverlaySource } from './dev-overlay';
 import { defaultProxyPort, ProxyServer } from './proxy';
 import { globalDevOverlayPolicy, globalProxyPolicy } from './proxy-policy';
 import { buildProxyRoutes } from './proxy-routes';
@@ -377,12 +377,27 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
   // `checklistApiHandler` itself re-checks `isDevOverlayEnabledForRepo` per request, the same way
   // `devOverlayHtmlInjector` does, so a repository opted out via `[dev-overlay.repos.<name>]` stays
   // opted out even while the aggregate is `true` for some other repository on this shared proxy.
+  //
+  // `stateStore` itself has no `listChecklistItems` — only `stateStore.checklist.list(...)` — so
+  // `devOverlayHtmlInjector` (whose `DevOverlaySource` declares `listChecklistItems` as an optional
+  // method it calls when present) never saw one and always rendered an empty checklist. This small
+  // wrapper is what actually connects the two; delegating explicitly, rather than spreading
+  // `stateStore`, because its methods live on the class prototype and a spread would drop them.
+  const devOverlaySource: DevOverlaySource = {
+    listWorktrees: () => stateStore.listWorktrees(),
+    listEndpointLeases: (query) => stateStore.listEndpointLeases(query),
+    listRepositories: (workspaceId) => stateStore.listRepositories(workspaceId),
+    listManagedProcesses: (query) => stateStore.listManagedProcesses(query),
+    ...(stateStore.checklist === undefined ? {} : {
+      listChecklistItems: (worktreeId) => stateStore.checklist!.list(worktreeId),
+    }),
+  };
   const proxy = proxyPolicy.enabled === true ? new ProxyServer({
     port: proxyPolicy.port ?? defaultProxyPort,
     resolveRoute: (hostname) => buildProxyRoutes(stateStore).get(hostname) ?? null,
     ...(options.proxyHosts === undefined ? {} : { hosts: options.proxyHosts }),
     onError,
-    ...(devOverlayActive ? { htmlInjector: devOverlayHtmlInjector(stateStore, devOverlayPolicy) } : {}),
+    ...(devOverlayActive ? { htmlInjector: devOverlayHtmlInjector(devOverlaySource, devOverlayPolicy) } : {}),
     ...(devOverlayActive && stateStore.checklist !== undefined
       ? { overlayApi: checklistApiHandler(stateStore.checklist, stateStore, devOverlayPolicy) } : {}),
   }) : null;
