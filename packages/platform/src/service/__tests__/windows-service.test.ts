@@ -112,6 +112,39 @@ describe('scheduled task XML body', () => {
     expect(xml).not.toMatch(/&(?!amp;|lt;|gt;|quot;|apos;)/);
   });
 
+  test('quotes a trailing backslash so it cannot swallow the closing quote', () => {
+    const xml = renderScheduledTaskXml({
+      label,
+      programArguments: ['C:\\wtm.exe', '--home', 'C:\\Users\\Bob Smith\\'],
+      home,
+      workingDirectory: home,
+      stdoutPath: 'C:\\out.log',
+      stderrPath: 'C:\\err.log',
+    });
+    // A naive `"..."` wrap ends in a single backslash before the closing quote, which
+    // CommandLineToArgvW reads as an escaped literal quote rather than the closing one -- never
+    // closing the argument and swallowing everything after it. Correct quoting doubles a
+    // backslash run immediately before the closing quote.
+    expect(xml).toContain('&quot;C:\\Users\\Bob Smith\\\\&quot;');
+  });
+
+  test('quotes a bare embedded quote even without a space, so it cannot escape its own argument', () => {
+    const xml = renderScheduledTaskXml({
+      label,
+      programArguments: ['C:\\wtm.exe', 'foo"bar'],
+      home,
+      workingDirectory: home,
+      stdoutPath: 'C:\\out.log',
+      stderrPath: 'C:\\err.log',
+    });
+    // A naive `includes(' ') ? quote : value` never quotes an argument with no space, so a bare
+    // embedded `"` reached `<Arguments>` un-wrapped (only XML-escaped by `escapeXml`). Once Task
+    // Scheduler XML-unescapes it back to a literal `"` before CreateProcess parses the command
+    // line, that stray quote toggles CommandLineToArgvW's quoting state and splits or merges
+    // neighbouring arguments.
+    expect(xml).toContain('&quot;foo\\&quot;bar&quot;');
+  });
+
   test('rejects an empty argv, a relative executable, and an embedded newline', () => {
     expect(() => renderScheduledTaskXml({
       label, programArguments: [], home, workingDirectory: home, stdoutPath: 'C:\\o', stderrPath: 'C:\\e',

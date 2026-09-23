@@ -287,8 +287,53 @@ export function renderScheduledTaskXml(options: ScheduledTaskDefinitionOptions):
 `;
 }
 
+/**
+ * Quotes one argument the way `CommandLineToArgvW` expects to unquote it -- the C-runtime parser
+ * every Windows process (including a Scheduled Task's launched image) uses to split `<Arguments>`
+ * back into argv. The naive `includes(' ') ? "${value}" : value` this replaced got two shapes
+ * wrong: a value ending in `\` (e.g. a directory argument `C:\Users\Bob Smith\`) produced
+ * `"...Smith\"`, where CommandLineToArgvW reads the lone backslash-before-quote as an escaped
+ * literal quote rather than a closing one, so the argument boundary never closes and swallows
+ * every argument after it; and a value with an embedded `"` but no space skipped quoting
+ * entirely, so the quote reached argv unescaped and split/merged neighbouring arguments. Doubling
+ * a run of backslashes only when it is immediately followed by a quote (or by the end of the
+ * argument, which the trailing added quote turns into the same case) is the actual rule; a
+ * backslash run followed by anything else is copied through literally.
+ */
 function quoteArgument(value: string): string {
-  return value.includes(' ') ? `"${value.replaceAll('"', '\\"')}"` : value;
+  if (value.length > 0 && !/[ \t\n\v"]/.test(value)) return value;
+  let quoted = '"';
+  let index = 0;
+  while (index < value.length) {
+    if (value[index] === '\\') {
+      let backslashes = 0;
+      while (index < value.length && value[index] === '\\') {
+        index += 1;
+        backslashes += 1;
+      }
+      if (index === value.length) {
+        // The closing quote this function appends after the loop follows immediately.
+        quoted += '\\'.repeat(backslashes * 2);
+      } else if (value[index] === '"') {
+        // The backslashes precede a literal quote in the value: double them, then one more to
+        // escape that quote, then emit and consume the quote itself.
+        quoted += `${'\\'.repeat(backslashes * 2 + 1)}"`;
+        index += 1;
+      } else {
+        // Not followed by a quote (or the end): the backslashes carry no special meaning here.
+        quoted += '\\'.repeat(backslashes);
+      }
+      continue;
+    }
+    if (value[index] === '"') {
+      quoted += '\\"';
+      index += 1;
+      continue;
+    }
+    quoted += value[index];
+    index += 1;
+  }
+  return `${quoted}"`;
 }
 
 function escapeXml(value: string): string {
