@@ -1314,6 +1314,68 @@ describe('ManagedProcessSupervisor', () => {
     expect(store.hasManagedProcessStartReservation(worktree.id, 'cleanup-crash')).toBe(false);
   });
 
+  /**
+   * The sibling fix for #stopLocked ("a signal refused with EPERM settles on what inspection
+   * observes, not on the errno", above) was never carried over to #terminateCleanupOwned, which
+   * performs the exact same identity-check-then-signal sequence during recovery. Before this fix,
+   * an EPERM on the recovery-time SIGTERM (the kernel having already recycled the pid/pgid into
+   * something else, the exact race described in isSignalWithoutLiveTarget's own docstring) made
+   * #terminateCleanupOwned return false without ever asking the kernel what is actually there --
+   * so recover() pushed the record back unchanged, cleanupRequired stayed true forever, and the
+   * start reservation tied to its cleanupOwnerToken was never released, wedging every future
+   * start for that worktree/task.
+   */
+  test('recovery settles a cleanup-owned anchor on EPERM the same way stop does, not by leaving it stuck', async () => {
+    const { root, store, worktree } = await setup(100);
+    const identity = {
+      pid: 52001, pgid: 52001, processStartTime: 'start', commandFingerprint: 'fingerprint',
+    };
+    const record = store.createManagedProcess({
+      worktreeId: worktree.id,
+      taskName: 'recover-eperm',
+      ...identity,
+      state: 'FAILED',
+      startedAt: new Date().toISOString(),
+      stoppedAt: new Date().toISOString(),
+      cleanupRequired: true,
+      cleanupOwnerToken: 'recover-eperm-token',
+      stdoutPath: join(root, 'recover-eperm.stdout.log'),
+      stderrPath: join(root, 'recover-eperm.stderr.log'),
+    });
+    expect(store.reserveManagedProcessStart(
+      worktree.id,
+      'recover-eperm',
+      'recover-eperm-token',
+      new Date().toISOString(),
+      { expiresAt: new Date(Date.now() - 1).toISOString() },
+    )).toBe(true);
+
+    let present = true;
+    const supervisor = createSupervisor({
+      stateStore: store,
+      logs: new ManagedLogStore({ root: join(root, 'logs-recover-eperm') }),
+      gracePeriodMs: 100,
+      pollIntervalMs: 1,
+      inspectProcess: async (): Promise<ProcessInspection> => (
+        present ? { status: 'present', identity } : { status: 'absent' }
+      ),
+      inspectProcessGroup: async () => present ? { status: 'present', pids: [identity.pid] } : { status: 'absent' },
+      signalProcessGroup: (_pgid, signal) => {
+        expect(signal).toBe('SIGTERM');
+        present = false;
+        throw Object.assign(new Error('Operation not permitted'), { code: 'EPERM' });
+      },
+    });
+    cleanups.push(() => supervisor.close());
+
+    const recovered = await supervisor.recover();
+
+    expect(recovered.find(({ id }) => id === record.id)).toMatchObject({
+      state: 'FAILED', cleanupRequired: false,
+    });
+    expect(store.hasManagedProcessStartReservation(worktree.id, 'recover-eperm')).toBe(false);
+  });
+
   test('daemon close leaves the anchor-owned writer rotating while recovery remains read-only', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wtm-supervisor-recover-logs-'));
     const store = new MemoryProcessStore();
