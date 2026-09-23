@@ -28,6 +28,7 @@ import {
 import type { ManagedProcessCompletion } from './logs';
 import { observeReadiness, uncheckedReadiness, type ReadinessFetch } from './readiness';
 import { readHostJobMemory, type HostJobMemory } from './job-memory';
+import { checkProcessBudgets } from './process-budgets';
 
 /**
  * Raised when a request names a directory that no registered workspace, repository, or
@@ -198,40 +199,18 @@ export class DaemonRuntimeController {
    * open rather than refuse a start on a number the daemon does not actually have.
    */
   #checkBudgets(worktreeId: string, taskName: string): WtmError | null {
-    const { maxProcesses, minAvailableMemoryBytes } = this.#budgets;
-    if (maxProcesses !== undefined) {
-      // `list()` returns every row the state store has ever recorded for history (`wtm ps`/`wtm
-      // logs`), stopped and failed ones included — never pruned. Counting all of it here would
-      // make the budget a lifetime counter that only ever climbs, refusing every start once the
-      // daemon's cumulative history crosses the limit even with nothing running. Restrict to the
-      // same active states `alreadyActive` above already filters to.
-      const current = this.#supervisor.list().filter((record) => ['STARTING', 'RUNNING', 'STOPPING'].includes(record.state)).length
-        + this.#pendingStarts;
-      if (current >= maxProcesses) {
-        return {
-          code: 'RUNTIME_PROCESS_BUDGET_EXCEEDED',
-          message: 'Starting this task would exceed the configured process budget.',
-          severity: 'error',
-          context: { taskName, worktreeId, limit: maxProcesses, current },
-        };
-      }
-    }
-    if (minAvailableMemoryBytes !== undefined) {
-      const { availableBytes } = this.#readMemory();
-      if (availableBytes !== null && availableBytes < minAvailableMemoryBytes) {
-        return {
-          code: 'RUNTIME_MEMORY_BUDGET_EXCEEDED',
-          message: 'Starting this task would drop host available memory below the configured floor.',
-          severity: 'error',
-          context: {
-            taskName, worktreeId,
-            floorMib: Math.floor(minAvailableMemoryBytes / (1024 * 1024)),
-            availableMib: Math.floor(availableBytes / (1024 * 1024)),
-          },
-        };
-      }
-    }
-    return null;
+    // `list()` returns every row the state store has ever recorded for history (`wtm ps`/`wtm
+    // logs`), stopped and failed ones included — never pruned. `checkProcessBudgets` restricts
+    // its count to the same active states `alreadyActive` above already filters to, so the
+    // budget stays a live-process count rather than a lifetime counter that only ever climbs.
+    return checkProcessBudgets({
+      supervisor: this.#supervisor,
+      budgets: this.#budgets,
+      readMemory: this.#readMemory,
+      pendingStarts: this.#pendingStarts,
+      worktreeId,
+      taskName,
+    });
   }
 
   async handle(request: IpcRequest, context?: { signal?: AbortSignal }): Promise<JsonEnvelope<unknown>> {

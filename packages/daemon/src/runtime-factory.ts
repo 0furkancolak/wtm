@@ -283,6 +283,16 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     ...(options.runtimeInvocation === undefined ? {} : { runtimeInvocation: options.runtimeInvocation }),
   });
   const onError = options.onError ?? (() => {});
+  // Read here, ahead of `events` below, rather than at its previous spot just before `controller`:
+  // the dispatcher needs the same resolved budgets the controller does, and this is a plain async
+  // config read with no dependency on `supervisor`/`controller`, so hoisting it costs nothing.
+  const budgetsPolicy = await globalBudgetsPolicy(paths.globalConfigPath);
+  const resolvedBudgets = {
+    ...(budgetsPolicy.max_processes === undefined ? {} : { maxProcesses: budgetsPolicy.max_processes }),
+    ...(budgetsPolicy.min_available_memory_mib === undefined ? {} : {
+      minAvailableMemoryBytes: budgetsPolicy.min_available_memory_mib * 1024 * 1024,
+    }),
+  };
   const events = new LifecycleEventDispatcher({
     store: stateStore as DaemonStateStore & LifecycleEventStore,
     globalConfigPath: paths.globalConfigPath,
@@ -292,6 +302,11 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     // selected policies is a divergence nothing would report until one of them refused.
     fileTrust: platformRuntime.fileTrust,
     onError,
+    // The same `[budgets]` admission gate `controller` below applies to a person's own
+    // `start`/`restart` — an event-triggered task is still a net-new managed process. See
+    // `process-budgets.ts`'s own doc comment for why this was extracted (round-25 audit finding).
+    supervisor,
+    budgets: resolvedBudgets,
   });
   const idle = new IdleRuntimeSuspender({
     supervisor,
@@ -313,7 +328,6 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     // task cannot be waiting on the start that is waiting on it.
     void events.dispatchForWorktree('worktree.ready', worktreeId).catch(onError);
   }, platformRuntime.fileTrust);
-  const budgetsPolicy = await globalBudgetsPolicy(paths.globalConfigPath);
   const controller = new DaemonRuntimeController({
     supervisor,
     logs,
@@ -325,12 +339,7 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
       void events.dispatchForWorktree(event, worktreeId).catch(onError);
     },
     onTaskActivity: (worktreeId, taskName) => { idle.touch(worktreeId, taskName); },
-    budgets: {
-      ...(budgetsPolicy.max_processes === undefined ? {} : { maxProcesses: budgetsPolicy.max_processes }),
-      ...(budgetsPolicy.min_available_memory_mib === undefined ? {} : {
-        minAvailableMemoryBytes: budgetsPolicy.min_available_memory_mib * 1024 * 1024,
-      }),
-    },
+    budgets: resolvedBudgets,
   });
   if (stateStore.jobs !== undefined) {
     const jobPolicy = await globalJobPolicy(paths.globalConfigPath);

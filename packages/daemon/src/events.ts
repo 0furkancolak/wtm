@@ -3,11 +3,13 @@ import {
   type DaemonStateStore,
   type LifecycleEventStore,
   type LifecycleEventSubject,
+  type ManagedProcessRecord,
   type ReconcileResult,
   type RepositoryRecord,
   type WorktreeRecord,
 } from '@wtm/core';
 import type { FileTrustPolicy } from '@wtm/platform/ports';
+import { checkProcessBudgets, readHostJobMemory, type HostJobMemory, type ProcessBudgets } from './process-budgets';
 import type { ManagedProcessStartInput } from './process-supervisor';
 import {
   prepareRuntimeResources,
@@ -68,6 +70,17 @@ export interface LifecycleEventDispatcherOptions {
   fileTrust?: FileTrustPolicy | undefined;
   /** Test seam: the resolved runtime for a worktree, allocating endpoints only when asked. */
   runtimeFor?(worktreePath: string, allocate: boolean): Promise<WorktreeRuntime>;
+  /**
+   * The same `[budgets]` admission gate `DaemonRuntimeController` applies to a person's
+   * `start`/`restart` (`checkProcessBudgets`, `./process-budgets`) — an event-triggered task is
+   * still a net-new managed process, and the host does not care which of WTM's spawn paths asked
+   * for it. Needs `supervisor` (just the `list()` a live process count is read from) alongside it;
+   * leaving `budgets` unset (the default) skips the check entirely, matching the controller's own
+   * "off unless configured" default.
+   */
+  supervisor?: { list(worktreeId?: string): ManagedProcessRecord[] };
+  budgets?: ProcessBudgets;
+  readMemory?: () => HostJobMemory;
 }
 
 /** One task an event asked for, and what became of it. */
@@ -105,6 +118,9 @@ export class LifecycleEventDispatcher {
   readonly #onError: (error: unknown) => void;
   readonly #fileTrust: FileTrustPolicy | undefined;
   readonly #runtimeFor: (worktreePath: string, allocate: boolean) => Promise<WorktreeRuntime>;
+  readonly #budgetSupervisor: { list(worktreeId?: string): ManagedProcessRecord[] };
+  readonly #budgets: ProcessBudgets;
+  readonly #readMemory: () => HostJobMemory;
 
   constructor(options: LifecycleEventDispatcherOptions) {
     this.#store = options.store;
@@ -118,6 +134,9 @@ export class LifecycleEventDispatcher {
       globalConfigPath: options.globalConfigPath,
       ...(allocate ? {} : { allocate: false }),
     }));
+    this.#budgetSupervisor = options.supervisor ?? { list: () => [] };
+    this.#budgets = options.budgets ?? {};
+    this.#readMemory = options.readMemory ?? readHostJobMemory;
   }
 
   async dispatch(input: LifecycleEventDispatch): Promise<LifecycleDispatchResult> {
@@ -175,6 +194,22 @@ export class LifecycleEventDispatcher {
     const outcomes: LifecycleTaskOutcome[] = [];
     for (const task of tasks) {
       try {
+        // The same admission gate a person's `wtm start` passes through — an event-triggered
+        // task is still a net-new managed process, and `[budgets]` is documented as covering
+        // every `start`/`restart` on the host, not just ones that arrived over IPC.
+        const budgetError = checkProcessBudgets({
+          supervisor: this.#budgetSupervisor,
+          budgets: this.#budgets,
+          readMemory: this.#readMemory,
+          pendingStarts: 0,
+          worktreeId: input.worktree.id,
+          taskName: task,
+        });
+        if (budgetError !== null) {
+          this.#onError(new Error(`[events."${input.event}"] task ${task} did not start: ${budgetError.message}`));
+          outcomes.push({ task, started: false, error: budgetError.message });
+          continue;
+        }
         const resolved = resolveTask(taskResolutionInput(runtime, task));
         await this.#start({
           worktreeId: input.worktree.id,

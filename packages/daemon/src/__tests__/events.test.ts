@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
-import type { ReconcileResult, RepositoryRecord, WorktreeRecord, WtmConfig } from '@wtm/core';
+import type { ManagedProcessRecord, ReconcileResult, RepositoryRecord, WorktreeRecord, WtmConfig } from '@wtm/core';
 import { LifecycleEventDispatcher } from '../events';
+import type { ProcessBudgets } from '../process-budgets';
 import type { ManagedProcessStartInput } from '../process-supervisor';
 import type { WorktreeRuntime } from '../task-resolution';
 
@@ -66,6 +67,8 @@ function createHarness(config: WtmConfig, options: {
   worktrees?: WorktreeRecord[];
   failStart?: boolean;
   failRuntime?: boolean;
+  budgets?: ProcessBudgets;
+  activeProcesses?: ManagedProcessRecord[];
 } = {}): Harness & { allocations: boolean[] } {
   const claimed = options.claimed ?? new Set<string>();
   const claims: string[] = [];
@@ -101,6 +104,11 @@ function createHarness(config: WtmConfig, options: {
       if (options.failRuntime === true) throw new Error('configuration does not resolve');
       return runtimeWith(config);
     },
+    ...(options.budgets === undefined ? {} : {
+      supervisor: { list: () => options.activeProcesses ?? [] },
+      budgets: options.budgets,
+      readMemory: () => ({ availableBytes: null, totalBytes: null }),
+    }),
   });
   return { dispatcher, started, errors, claims, allocations };
 }
@@ -108,6 +116,22 @@ function createHarness(config: WtmConfig, options: {
 const installTask: WtmConfig = {
   tasks: { 'deps.install': { run: ['make', 'deps'], cwd: '/projects/demo' } },
   events: { 'worktree.created': { tasks: ['deps.install'] } },
+};
+
+const runningProcess: ManagedProcessRecord = {
+  id: 'process-1',
+  worktreeId: 'worktree-other',
+  taskName: 'dev',
+  pid: 42001,
+  pgid: 42001,
+  processStartTime: 'start',
+  commandFingerprint: 'fingerprint',
+  state: 'RUNNING',
+  startedAt: '2026-08-27T09:00:00.000Z',
+  stoppedAt: null,
+  stdoutPath: '/logs/stdout.log',
+  stderrPath: '/logs/stderr.log',
+  cleanupRequired: false,
 };
 
 describe('lifecycle event dispatch', () => {
@@ -198,6 +222,40 @@ describe('lifecycle event dispatch', () => {
     expect(harness.errors).toHaveLength(1);
     expect((harness.errors[0] as Error).message)
       .toBe('[events."worktree.created"] task deps.install did not start: spawn refused');
+  });
+
+  it('refuses a task that would exceed the configured process budget', async () => {
+    // Round-25 audit finding: `dispatch` called the supervisor's `start` directly, so an
+    // event-triggered task never passed through the `[budgets]` admission gate
+    // `DaemonRuntimeController` applies to a person's own `start`/`restart` -- a burst of
+    // `worktree.created` events could blow straight past `max_processes`.
+    const harness = createHarness(installTask, {
+      budgets: { maxProcesses: 1 },
+      activeProcesses: [runningProcess],
+    });
+
+    const result = await harness.dispatcher.dispatch({ event: 'worktree.created', worktree });
+
+    expect(result.announced).toBe(true);
+    expect(result.tasks).toEqual([{
+      task: 'deps.install',
+      started: false,
+      error: 'Starting this task would exceed the configured process budget.',
+    }]);
+    expect(harness.started).toEqual([]);
+    expect(harness.errors).toHaveLength(1);
+  });
+
+  it('starts a task normally when the process budget still has room', async () => {
+    const harness = createHarness(installTask, {
+      budgets: { maxProcesses: 2 },
+      activeProcesses: [runningProcess],
+    });
+
+    const result = await harness.dispatcher.dispatch({ event: 'worktree.created', worktree });
+
+    expect(result.tasks).toEqual([{ task: 'deps.install', started: true }]);
+    expect(harness.started).toHaveLength(1);
   });
 
   it('reports a task the configuration does not define, and keeps going', async () => {
