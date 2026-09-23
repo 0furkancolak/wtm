@@ -381,6 +381,16 @@ export interface LifecycleEventStore {
   ): boolean;
   /** Withdraws an announcement that could not be carried out, so a later pass can retry it. */
   releaseLifecycleEvent(subjectType: LifecycleEventSubject, subjectId: string, event: string): boolean;
+  /**
+   * Whether this once-only event has already been announced for this subject, without claiming
+   * it. Lets a caller that revisits a subject on every pass (a worktree already present in an
+   * ordinary reconcile update, not a fresh discovery) skip cheaply when there is nothing left to
+   * do, instead of either re-claiming nothing for real work every pass or never revisiting a
+   * subject whose claim was never made at all -- which is what stranded a once-only event
+   * forever when a crash landed between a worktree's row being committed and its event being
+   * claimed.
+   */
+  hasLifecycleEventClaim(subjectType: LifecycleEventSubject, subjectId: string, event: string): boolean;
 }
 
 export type DaemonStateStore = StateStore & StateRegistrationReader & {

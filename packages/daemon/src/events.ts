@@ -213,11 +213,22 @@ export class LifecycleEventDispatcher {
   async onReconciled(repository: RepositoryRecord, result: ReconcileResult): Promise<void> {
     const firstReconcile = repository.lastReconciledAt === null;
     await this.#announceRegistration(repository, result);
+    const createdEvent = firstReconcile ? 'worktree.discovered' : 'worktree.created';
     for (const worktree of result.discovered) {
-      await this.dispatch({
-        event: firstReconcile ? 'worktree.discovered' : 'worktree.created',
-        worktree,
-      });
+      await this.dispatch({ event: createdEvent, worktree });
+      await this.prepareDiscovered(worktree);
+    }
+    // `result.discovered` is a one-shot signal tied purely to the INSERT that first registered a
+    // worktree's row -- not to whether its once-only event was ever actually claimed. A daemon
+    // that dies between committing that row and finishing the dispatch above leaves the worktree
+    // stranded: every later reconcile reports it as an ordinary update instead, and nothing else
+    // would ever revisit it. Retried here for every already-present worktree, the same
+    // retry-every-pass-let-the-claim-dedupe pattern `#announceRegistration` already uses for
+    // `workspace.discovered`/`repo.discovered` -- an already-claimed worktree costs one cheap
+    // existence check, not the real work `dispatch` would otherwise redo.
+    for (const worktree of result.updated) {
+      if (this.#store.hasLifecycleEventClaim('worktree', worktree.id, createdEvent)) continue;
+      await this.dispatch({ event: createdEvent, worktree });
       await this.prepareDiscovered(worktree);
     }
     for (const worktree of result.orphaned) {
