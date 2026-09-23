@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { StateStore } from '@wtm/core';
+import type { StateRegistrationReader, StateStore } from '@wtm/core';
 import { runProductionInitCommand } from '../init';
 
 const roots: string[] = [];
@@ -14,7 +14,7 @@ afterEach(async () => {
 describe('production init', () => {
   test('closes its production SQLite store after initialization', async () => {
     let closes = 0;
-    const stateStore = {} as StateStore;
+    const stateStore = {} as StateStore & StateRegistrationReader;
     const root = await temporaryRoot();
 
     const envelope = await runProductionInitCommand({
@@ -47,7 +47,7 @@ describe('production init', () => {
       userDataDir: '/user-data',
       databasePath: join(root, 'state', 'state.db'),
     }, {
-      openStateStore: () => ({ stateStore: {} as StateStore, close: () => { closes += 1; } }),
+      openStateStore: () => ({ stateStore: {} as StateStore & StateRegistrationReader, close: () => { closes += 1; } }),
       runInit: async () => { throw new Error('init failure'); },
     });
 
@@ -65,7 +65,7 @@ describe('production init', () => {
       databasePath: join(stateParent, 'state.db'),
       installAiSkill: false,
     }, {
-      openStateStore: () => ({ stateStore: {} as StateStore, close: () => {} }),
+      openStateStore: () => ({ stateStore: {} as StateStore & StateRegistrationReader, close: () => {} }),
       runInit: async () => ({
         schemaVersion: 1,
         ok: true,

@@ -7,6 +7,7 @@ import {
   WtmConfigError,
   type InitInput,
   type InitResult,
+  type StateRegistrationReader,
   type StateStore,
 } from '@wtm/core';
 import type { FileTrustPolicy } from '@wtm/platform/ports';
@@ -154,7 +155,7 @@ export interface ProductionInitCommandInput {
 }
 
 export interface ProductionInitDependencies {
-  openStateStore?(databasePath: string): { stateStore: StateStore; close(): void };
+  openStateStore?(databasePath: string): { stateStore: StateStore & StateRegistrationReader; close(): void };
   runInit?(input: InitCommandInput): Promise<InitCommandEnvelope>;
 }
 
@@ -187,7 +188,7 @@ export async function runProductionInitCommand(
   }
 }
 
-function openSqliteStateStore(databasePath: string): { stateStore: StateStore; close(): void } {
+function openSqliteStateStore(databasePath: string): { stateStore: StateStore & StateRegistrationReader; close(): void } {
   const stateStore = new SQLiteStateStore(databasePath);
   return { stateStore, close: () => stateStore.close() };
 }

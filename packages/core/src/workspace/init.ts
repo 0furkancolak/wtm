@@ -7,7 +7,13 @@ import { parseWtmConfig, WtmConfigError, type WtmConfig } from '../config/schema
 import { stripByteOrderMark } from '../config/toml-text';
 import { renderConfigDraft, type OutOfRangePort } from '../detect/config-draft';
 import { detectWorkspaceServices, type WorkspaceDetection } from '../detect/service-detection';
-import type { ReconcileResult, RepositoryRecord, StateStore, WorkspaceRecord } from '../state/store';
+import type {
+  ReconcileResult,
+  RepositoryRecord,
+  StateRegistrationReader,
+  StateStore,
+  WorkspaceRecord,
+} from '../state/store';
 import { discoverWorkspace, type DiscoveryReport } from './discover';
 
 export interface InitInput {
@@ -15,7 +21,13 @@ export interface InitInput {
   maxDepth?: number;
   globalOnly?: boolean;
   userDataDir: string;
-  stateStore: StateStore;
+  /**
+   * Registration also needs to read the *whole* registry (`StateRegistrationReader`), not just
+   * write to the workspace/repository being initialized: detecting that a discovered repository
+   * is already registered under a different workspace (see the cross-workspace check in
+   * `initializeWorkspace`) means looking across every workspace, not only the one being created.
+   */
+  stateStore: StateStore & StateRegistrationReader;
   workspaceName?: string;
   /**
    * Whether to read the repositories for the ports, allowlists, and cross-service addresses
@@ -99,6 +111,37 @@ export async function initializeWorkspace(input: InitInput): Promise<InitResult>
       scope: input.globalOnly === true ? 'global-only' : 'local',
       configPath,
     });
+    // `upsertRepository` only dedupes within one workspace (`UNIQUE (workspace_id,
+    // common_git_dir)`): nothing else stops a second `wtm init` -- rooted at a plain
+    // subdirectory of an already-registered workspace, or at a linked worktree whose main root
+    // `discoverWorkspace` resolves back to an already-registered repository -- from silently
+    // registering the *same* physical repository a second time, under a new workspace and
+    // repository id. Every cwd-based lookup (`findRegistration`) then has two equally valid
+    // registrations to pick from for the same directory and picks arbitrarily (by row order),
+    // and the daemon ends up watching and lease-allocating the same repository twice. Checked
+    // here, before either row is written, so the whole transaction (including the workspace
+    // upsert above) rolls back rather than leaving a half-registered duplicate behind.
+    const existingRepositories = input.stateStore.listRepositories();
+    for (const discovered of discovery.repositories) {
+      const conflict = existingRepositories.find((existing) =>
+        existing.commonGitDir === discovered.commonGitDir && existing.workspaceId !== workspace.id);
+      if (conflict === undefined) continue;
+      const conflictingWorkspace = input.stateStore.listWorkspaces()
+        .find((candidate) => candidate.id === conflict.workspaceId);
+      throw new WtmConfigError(
+        `${discovered.mainRoot} is already registered under workspace `
+        + `"${conflictingWorkspace?.name ?? conflict.workspaceId}" (${conflictingWorkspace?.root ?? 'unknown root'}). `
+        + 'A repository can only be registered under one workspace at a time; run `wtm forget` on '
+        + 'the existing registration first if this workspace should take it over instead.',
+        {
+          conflict: 'repository-already-registered',
+          commonGitDir: discovered.commonGitDir,
+          mainRoot: discovered.mainRoot,
+          existingWorkspaceId: conflict.workspaceId,
+          ...(conflictingWorkspace === undefined ? {} : { existingWorkspaceRoot: conflictingWorkspace.root }),
+        },
+      );
+    }
     const repositories = discovery.repositories.map((discovered) => {
       const repository = input.stateStore.upsertRepository({
         workspaceId: workspace.id,
