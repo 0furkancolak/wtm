@@ -4,7 +4,7 @@ import { parse } from 'smol-toml';
 import { defaultAllowedRemoteRefs } from '../analysis/remote-persistence';
 import { mergeConfigLayers, type ConfigLayer } from './merge';
 import { collectProvenance, type ResolvedConfig } from './provenance';
-import { parseWtmConfig, WtmConfigError, type WtmConfig } from './schema';
+import { parseWtmConfig, parseWtmConfigLayer, WtmConfigError, type WtmConfig } from './schema';
 import { stripByteOrderMark } from './toml-text';
 
 export const builtInConfig: WtmConfig = {
@@ -29,7 +29,12 @@ async function loadConfigFile(path: string): Promise<ConfigLayer | undefined> {
   }
 
   try {
-    const value = parseWtmConfig(parse(toml), path);
+    // Each layer is validated for its own field shapes only, not the full schema's cross-field
+    // rules -- a field this file sets legitimately may combine with a sibling from another layer
+    // to satisfy (or violate) a rule that only makes sense once they are read together. See
+    // `parseWtmConfigLayer`'s docstring. `resolveWorkspaceConfig` runs the full `parseWtmConfig`
+    // on the merged result below, which is where those rules are actually enforced.
+    const value = parseWtmConfigLayer(parse(toml), path);
     return { source: path, value, provenance: collectProvenance(value, path, toml) };
   } catch (error) {
     if (error instanceof WtmConfigError) throw error;
