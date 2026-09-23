@@ -159,7 +159,15 @@ async function refuseTarget(path: string, worktreeRoot: string, fileTrust: FileT
   if (within.length === 0 || within.startsWith('..') || isAbsolute(within)) {
     return 'A resource path has to name something inside its own worktree.';
   }
-  if (within.split(sep).includes('.git')) return 'Git administrative paths are protected.';
+  // Case-insensitively: on a case-insensitive filesystem (macOS APFS, Windows NTFS) a path
+  // segment spelled ".GIT" resolves to the very same directory as ".git", so a literal string
+  // comparison here would pass a path the OS itself still writes into `.git` -- the same class of
+  // bypass Git itself blocks unconditionally, on every platform, rather than only where a host
+  // happens to be case-insensitive (state that started on one host is not guaranteed to stay
+  // there).
+  if (within.split(sep).some((segment) => segment.toLowerCase() === '.git')) {
+    return 'Git administrative paths are protected.';
+  }
 
   for (const directory of ancestors(worktreeRoot, dirname(path))) {
     let entry;

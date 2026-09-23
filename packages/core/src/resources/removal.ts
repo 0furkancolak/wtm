@@ -212,7 +212,10 @@ async function authorizeTarget(
   if (within.length === 0 || within.startsWith('..') || isAbsolute(within)) {
     deny('A resource path has to name something inside its own worktree.', context);
   }
-  if (within.split(sep).includes('.git')) deny('Git administrative paths are protected.', context);
+  // Case-insensitively -- see the matching comment in `preparation.ts`'s `refuseTarget`.
+  if (within.split(sep).some((segment) => segment.toLowerCase() === '.git')) {
+    deny('Git administrative paths are protected.', context);
+  }
 
   for (const directory of ancestors(worktreeRoot, dirname(path))) {
     let entry;

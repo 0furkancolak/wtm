@@ -448,7 +448,8 @@ function assertProtectedBoundaries(
   ) {
     deny('The resource path names a protected broad directory.', { path });
   }
-  if (path.split(sep).includes('.git')) {
+  // Case-insensitively -- see the matching comment in `preparation.ts`'s `refuseTarget`.
+  if (path.split(sep).some((segment) => segment.toLowerCase() === '.git')) {
     deny('Git administrative paths are protected.', { path });
   }
   for (const gitDirectory of protectedPaths.gitDirectoryPaths) {
