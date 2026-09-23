@@ -49,6 +49,11 @@ export interface FeatureCreateCommandInput {
    * pre-flight is measured again, so a scenario can change the world between planning and leasing.
    */
   afterLeases?: (() => Promise<void>) | undefined;
+  /**
+   * Test seam: runs right before the leases are requested, so a scenario can change the world
+   * between the repository snapshot taken at the top of the command and the lease insert.
+   */
+  beforeLease?: (() => Promise<void>) | undefined;
   /** Test seam for the topology a local registration reconciles. Defaults to `listGitWorktrees`. */
   registrationTopology?: ((repoPath: string) => Promise<GitWorktreeRecord[]>) | undefined;
 }
@@ -161,50 +166,67 @@ async function createFresh(
   const first = planFeatureCreation({ ...planInput, members: await measure(resolution.repositories, branch, input.from) });
   if (first.outcome === 'refused') return failure(first.errors);
 
-  return await withRepositoryOperationLeases({
-    store,
-    readProcessStartTime: input.readProcessStartTime,
-    hostId: input.hostId,
-    repositoryIds: resolution.repositories.map(({ id }) => id),
-    operation: 'create',
-  }, async (leases) => {
-    await input.afterLeases?.();
-    // A creation over a different member set takes different leases, so the open creation this
-    // run planned against can still change before its leases are held.
-    if (!sameOpenCreation(open, readOpen(store, workspace, branch))) return failure([openCreationChanged(branch)]);
-    // Measured again under the leases: a branch checked out or a path filled since planning is
-    // refused here, before the journal exists and before Git writes.
-    const second = planFeatureCreation({ ...planInput, members: await measure(resolution.repositories, branch, input.from) });
-    if (second.outcome === 'refused') return failure(second.errors);
-    let creation: FeatureCreationRecord;
-    try {
-      creation = store.beginFeatureCreation({
-        workspaceId: workspace.id,
-        branch: `refs/heads/${branch}`,
-        fromRef: input.from ?? null,
-        members: second.members.map((member) => ({
-          repositoryId: member.repository.id,
-          repositoryMainRoot: member.repository.mainRoot,
-          position: member.position,
-          worktreePath: member.plan.path,
-          branchExisted: member.branchExisted,
-          startOid: member.startOid,
-        })),
-        ...(supersedeCreationId === undefined ? {} : { supersedeCreationId }),
-      });
-    } catch (error) {
-      // The one-open-creation index, or the supersede guard, refusing a creation another process
-      // opened or advanced in the moment since the re-read above. Nothing was journalled.
-      if (isConstraintViolation(error) || !sameOpenCreation(open, readOpen(store, workspace, branch))) {
-        return failure([openCreationChanged(branch)]);
+  await input.beforeLease?.();
+  const repositoryIds = resolution.repositories.map(({ id }) => id);
+  try {
+    return await withRepositoryOperationLeases({
+      store,
+      readProcessStartTime: input.readProcessStartTime,
+      hostId: input.hostId,
+      repositoryIds,
+      operation: 'create',
+    }, async (leases) => {
+      await input.afterLeases?.();
+      // A creation over a different member set takes different leases, so the open creation this
+      // run planned against can still change before its leases are held.
+      if (!sameOpenCreation(open, readOpen(store, workspace, branch))) return failure([openCreationChanged(branch)]);
+      // Measured again under the leases: a branch checked out or a path filled since planning is
+      // refused here, before the journal exists and before Git writes.
+      const second = planFeatureCreation({ ...planInput, members: await measure(resolution.repositories, branch, input.from) });
+      if (second.outcome === 'refused') return failure(second.errors);
+      let creation: FeatureCreationRecord;
+      try {
+        creation = store.beginFeatureCreation({
+          workspaceId: workspace.id,
+          branch: `refs/heads/${branch}`,
+          fromRef: input.from ?? null,
+          members: second.members.map((member) => ({
+            repositoryId: member.repository.id,
+            repositoryMainRoot: member.repository.mainRoot,
+            position: member.position,
+            worktreePath: member.plan.path,
+            branchExisted: member.branchExisted,
+            startOid: member.startOid,
+          })),
+          ...(supersedeCreationId === undefined ? {} : { supersedeCreationId }),
+        });
+      } catch (error) {
+        // The one-open-creation index, or the supersede guard, refusing a creation another process
+        // opened or advanced in the moment since the re-read above. Nothing was journalled.
+        if (isConstraintViolation(error) || !sameOpenCreation(open, readOpen(store, workspace, branch))) {
+          return failure([openCreationChanged(branch)]);
+        }
+        throw error;
       }
-      throw error;
-    }
-    const work = second.members.map((member): MemberWork => ({
-      repository: member.repository, plan: member.plan, worktree: null, alreadyRegistered: false,
-    }));
-    return await applyAndRegister(input, store, leases, creation, branch, work, false, new Map());
-  });
+      const work = second.members.map((member): MemberWork => ({
+        repository: member.repository, plan: member.plan, worktree: null, alreadyRegistered: false,
+      }));
+      return await applyAndRegister(input, store, leases, creation, branch, work, false, new Map());
+    });
+  } catch (error) {
+    // A repository named in --repos, forgotten in the moment between the snapshot at the top of
+    // the command and this lease request, has no lease of its own to catch it: the lease table's
+    // foreign key rejects the insert outright, and that raw constraint error would otherwise read
+    // as a Git failure.
+    if (!isConstraintViolation(error)) throw error;
+    const gone = racedForgottenRepositoryIds(store, workspace, repositoryIds);
+    const raced = resolution.repositories.filter((repository) => gone.has(repository.id));
+    if (raced.length === 0) throw error;
+    return failure(raced.map((repository) => configInvalid(
+      'A repository named in --repos is no longer registered.',
+      { branch, repository: repository.mainRoot },
+    )));
+  }
 }
 
 async function resume(
@@ -241,70 +263,103 @@ async function resume(
   // Before any lease, and only for members with work left: a REGISTERED member needs nothing from
   // its repository, so a repository forgotten after it registered does not block the rest.
   const forgotten = open.members.filter((member) => member.phase !== 'REGISTERED' && !byId.has(member.repositoryId));
-  if (forgotten.length > 0) {
-    return failure(forgotten.map((member) => {
-      const action = classifyMemberRecovery({ member, branch, repositoryRegistered: false, topology: [], branchOid: null, pathExists: false });
-      return action.action === 'refuse' ? action.error : configInvalid('A member repository is no longer registered.', { branch });
-    }));
-  }
+  if (forgotten.length > 0) return failure(forgottenMemberErrors(forgotten, branch));
   // The lease table's foreign key rejects a lease on a forgotten repository, so only members whose
-  // repository is still registered are leased.
-  const leased = open.members.filter((member) => byId.has(member.repositoryId)).map(({ repositoryId }) => repositoryId);
+  // repository is still registered are leased -- and, same as the `forgotten` check above, only
+  // members that still have work to do: a REGISTERED member needs nothing from its repository, so
+  // leasing it too meant an unrelated, unfinished `create --resume` could be refused outright by
+  // ordinary contention (a `gc`/`remove` running against a repository whose part of this feature
+  // was already done) on a repository this resume was never going to touch.
+  const leased = open.members
+    .filter((member) => member.phase !== 'REGISTERED' && byId.has(member.repositoryId))
+    .map(({ repositoryId }) => repositoryId);
   // Every member REGISTERED and every repository forgotten leaves nothing to lease or do.
   if (leased.length === 0) {
     return await finishWithoutLeases(input, store, open, branch);
   }
 
-  return await withRepositoryOperationLeases({
-    store,
-    readProcessStartTime: input.readProcessStartTime,
-    hostId: input.hostId,
-    repositoryIds: leased,
-    operation: 'create',
-    adopt: true,
-  }, async (leases) => {
-    await input.afterLeases?.();
-    // Classified against the journal as it stands under the leases, not as it stood before them.
-    if (!sameOpenCreation(open, readOpen(store, workspace, branch))) return failure([openCreationChanged(branch)]);
-    const recovered = new Map<string, FeatureCreationPhase>();
-    const existing = new Map<string, GitWorktreeRecord>();
-    const work: MemberWork[] = [];
-    for (const member of open.members) {
-      const repository = byId.get(member.repositoryId);
-      if (repository === undefined) {
-        // Only a REGISTERED member reaches here (the pre-check refused the rest): nothing to do,
-        // and no repository to ask about its worktree.
-        recovered.set(member.repositoryId, member.phase);
-        work.push({
-          repository: { id: member.repositoryId, mainRoot: member.repositoryMainRoot },
-          plan: null, worktree: null, alreadyRegistered: true,
+  await input.beforeLease?.();
+  try {
+    return await withRepositoryOperationLeases({
+      store,
+      readProcessStartTime: input.readProcessStartTime,
+      hostId: input.hostId,
+      repositoryIds: leased,
+      operation: 'create',
+      adopt: true,
+    }, async (leases) => {
+      await input.afterLeases?.();
+      // Classified against the journal as it stands under the leases, not as it stood before them.
+      if (!sameOpenCreation(open, readOpen(store, workspace, branch))) return failure([openCreationChanged(branch)]);
+      const recovered = new Map<string, FeatureCreationPhase>();
+      const existing = new Map<string, GitWorktreeRecord>();
+      const work: MemberWork[] = [];
+      for (const member of open.members) {
+        const repository = byId.get(member.repositoryId);
+        if (member.phase === 'REGISTERED' || repository === undefined) {
+          // A REGISTERED member has no work left, whether or not its repository is still
+          // registered -- `classifyMemberRecovery` would only tell us so after this member's
+          // repository was read below, which is exactly the read the `leased` filter above no
+          // longer takes a lease to guard, since nothing here needs one.
+          recovered.set(member.repositoryId, member.phase);
+          work.push({
+            repository: repository ?? { id: member.repositoryId, mainRoot: member.repositoryMainRoot },
+            plan: null, worktree: null, alreadyRegistered: true,
+          });
+          continue;
+        }
+        const topology = await listGitWorktrees(repository.mainRoot);
+        const action = classifyMemberRecovery({
+          member, branch, repositoryRegistered: true, topology,
+          branchOid: await resolveCommit(repository.mainRoot, `refs/heads/${branch}`),
+          pathExists: existsSync(member.worktreePath),
         });
-        continue;
+        if (action.action === 'refuse') {
+          return failure([action.error], envelopeData(store, open.id, existing, null, true, recovered));
+        }
+        recovered.set(member.repositoryId, member.phase);
+        if (action.action === 'skip') {
+          const at = topology.find((record) => resolve(record.path) === resolve(member.worktreePath));
+          if (at !== undefined) existing.set(member.repositoryId, at);
+          work.push({ repository, plan: null, worktree: at ?? null, alreadyRegistered: true });
+        } else if (action.action === 'mark-applied') {
+          store.advanceCreationMember(open.id, member.repositoryId, 'APPLIED', null);
+          existing.set(member.repositoryId, action.worktree);
+          work.push({ repository, plan: null, worktree: action.worktree, alreadyRegistered: false });
+        } else {
+          work.push({ repository, plan: action.plan, worktree: null, alreadyRegistered: false });
+        }
       }
-      const topology = await listGitWorktrees(repository.mainRoot);
-      const action = classifyMemberRecovery({
-        member, branch, repositoryRegistered: true, topology,
-        branchOid: await resolveCommit(repository.mainRoot, `refs/heads/${branch}`),
-        pathExists: existsSync(member.worktreePath),
-      });
-      if (action.action === 'refuse') {
-        return failure([action.error], envelopeData(store, open.id, existing, null, true, recovered));
-      }
-      recovered.set(member.repositoryId, member.phase);
-      if (action.action === 'skip') {
-        const at = topology.find((record) => resolve(record.path) === resolve(member.worktreePath));
-        if (at !== undefined) existing.set(member.repositoryId, at);
-        work.push({ repository, plan: null, worktree: at ?? null, alreadyRegistered: true });
-      } else if (action.action === 'mark-applied') {
-        store.advanceCreationMember(open.id, member.repositoryId, 'APPLIED', null);
-        existing.set(member.repositoryId, action.worktree);
-        work.push({ repository, plan: null, worktree: action.worktree, alreadyRegistered: false });
-      } else {
-        work.push({ repository, plan: action.plan, worktree: null, alreadyRegistered: false });
-      }
-    }
-    return await applyAndRegister(input, store, leases, open, branch, work, true, recovered);
+      return await applyAndRegister(input, store, leases, open, branch, work, true, recovered);
+    });
+  } catch (error) {
+    // A repository forgotten in the moment between the snapshot at the top of the command and this
+    // lease request has no lease of its own to catch it: the lease table's foreign key rejects the
+    // insert outright, and that raw constraint error would otherwise read as a Git failure. Reported
+    // the same clean way a repository already known to be forgotten is, above.
+    if (!isConstraintViolation(error)) throw error;
+    const gone = racedForgottenRepositoryIds(store, workspace, leased);
+    const raced = open.members.filter((member) => gone.has(member.repositoryId));
+    if (raced.length === 0) throw error;
+    return failure(forgottenMemberErrors(raced, branch));
+  }
+}
+
+function forgottenMemberErrors(forgotten: readonly FeatureCreationRecord['members'][number][], branch: string): WtmError[] {
+  return forgotten.map((member) => {
+    const action = classifyMemberRecovery({ member, branch, repositoryRegistered: false, topology: [], branchOid: null, pathExists: false });
+    return action.action === 'refuse' ? action.error : configInvalid('A member repository is no longer registered.', { branch });
   });
+}
+
+/**
+ * Which of `repositoryIds` -- present in this command's snapshot when it started -- are gone now.
+ * The lease table's foreign key is what actually notices a repository forgotten mid-command; this
+ * is only how a caller that already caught that constraint error learns which one(s).
+ */
+function racedForgottenRepositoryIds(store: SQLiteStateStore, workspace: WorkspaceRecord, repositoryIds: readonly string[]): Set<string> {
+  const stillThere = new Set(store.listRepositories(workspace.id).map(({ id }) => id));
+  return new Set(repositoryIds.filter((id) => !stillThere.has(id)));
 }
 
 /**
