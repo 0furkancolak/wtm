@@ -5,8 +5,8 @@ Use GitHub Issues for reproducible bugs and feature requests. Include the WTM ve
 | Platform | CI | Source backend and native evidence | Published standalone distribution |
 | --- | --- | --- | --- |
 | macOS arm64 / x64 | Decides the run | launchd, Unix sockets and process-group supervision; CI covers both architectures | `v0.1.0-rc.1` archives and checksums |
-| Linux x64, glibc | Decides the run | systemd user backend, Unix sockets and process-group supervision; native CLI/daemon evidence exists, full systemd lifecycle verification remains open | Release workflow builds and publishes an archive on a tag; none has shipped yet — build from source |
-| Linux arm64, glibc | Decides the run | Native `ubuntu-24.04-arm` CI and local ELF archive construction are configured; passing native acceptance remains pending | Same as Linux x64: buildable and publishable, none shipped yet |
+| Linux x64, glibc | Decides the run | systemd user backend, Unix sockets and process-group supervision; native CLI/daemon evidence exists, full systemd lifecycle verification remains open | `v0.2.0-rc.1` archive and checksums |
+| Linux arm64, glibc | Decides the run | Native `ubuntu-24.04-arm` CI and local ELF archive construction are configured; passing native acceptance remains pending | Release workflow builds and publishes an archive on a tag; none has shipped yet — build from source |
 | Windows x64 | Informational only | Experimental Scheduled Task, named-pipe and process-tree backend; CI is configured, native acceptance remains incomplete | Release workflow builds, zips and gates `wtm-windows-x64.zip` on a tag; its job does not block a release the way the macOS/Linux jobs do, and none has shipped yet |
 | Linux musl and other targets | Not run | No complete native acceptance evidence or configured native CI | No release archive |
 

@@ -25,7 +25,7 @@ publication awaiting verification](#npm-package-publication-awaiting-verificatio
 | Platform | CLI | Daemon | Process supervision | Release binary |
 | --- | --- | --- | --- | --- |
 | macOS | ✅ | ✅ launchd | ✅ | ✅ prerelease arm64 / x64 |
-| Linux x64 | ✅ | ✅ systemd --user | ✅ | 🚧 buildable, not yet shipped in a tag |
+| Linux x64 | ✅ | ✅ systemd --user | ✅ | ✅ prerelease x64 |
 | Linux arm64 | ✅ | ✅ systemd --user | ✅ | 🚧 buildable, not yet shipped in a tag |
 | Windows x64 | 🚧 experimental | 🚧 experimental | 🚧 experimental | 🚧 built, CI leg informational only |
 
@@ -93,9 +93,9 @@ context-aware orchestration layer around them.
 ### macOS and Linux: from source
 
 Requires [Bun](https://bun.sh) 1.3+ and the repository's pinned **Node.js 24.18.0** to build the standalone binary. The result is a single
-standalone executable that needs neither afterwards. This is the route on Linux: the published
-release archives are macOS-only, and building from source is what CI itself does on
-`ubuntu-latest`.
+standalone executable that needs neither afterwards. On Linux arm64 or Windows, this remains the
+only route until a tag ships an archive for that platform; building from source is also what CI
+itself does on `ubuntu-latest`.
 
 ```bash
 git clone https://github.com/0furkancolak/wtm.git && cd wtm && make install
@@ -123,11 +123,11 @@ is verified.
 
 ### macOS: published prerelease binary
 
-The published `v0.1.0-rc.1` archives are macOS-only — `wtm-darwin-arm64` and `wtm-darwin-x64`. There
-is no Linux or Windows download yet: the release workflow now builds and publishes
-`wtm-linux-x64`, `wtm-linux-arm64` and `wtm-windows-x64.zip` alongside them, but no tag has been
-cut since that landed, so nothing is published for either platform today. Install on Linux from
-source, or use the Windows contributor build below, until a release carries those archives.
+The `v0.1.0-rc.1` archives are macOS-only — `wtm-darwin-arm64` and `wtm-darwin-x64`. `v0.2.0-rc.1`
+adds a Linux x64 archive (see the Linux section below); there is still no Linux arm64 or Windows
+download — the release workflow builds and gates `wtm-linux-arm64` and `wtm-windows-x64.zip` too,
+but no tag has shipped either yet. Build from source, or use the Windows contributor build below,
+until a release carries those archives.
 
 The one-line install downloads the right archive for your Mac, verifies it against `SHA256SUMS`,
 and installs `wtm` to `$HOME/.local/bin`:
@@ -142,11 +142,12 @@ latest one, and `--prefix <dir>` (or `WTM_INSTALL_PREFIX`) to install somewhere 
 command overwrites an existing install in place — this is the upgrade path. The script installs
 the executable only; it does not register the daemon, so run `wtm daemon install` afterwards if
 you want the supervised background service, or use `make install` from source if you want both in
-one step. Like every other channel on this page whose "awaiting verification" or "no tag" caveat
-is stated above, this script has not been exercised against a real published release: only the
-macOS-only `v0.1.0-rc.1` prerelease has ever shipped, and the script's own test coverage
-(`scripts/__tests__/install-script.test.ts`) runs it only against a local fixture server standing
-in for GitHub Releases.
+one step. The script's own test coverage (`scripts/__tests__/install-script.test.ts`) runs it
+against a local fixture server standing in for GitHub Releases; as of `v0.2.0-rc.1` it has also
+been run against a real published release end to end, for the Linux x64 archive (see the Linux
+section below). Its macOS path has not: only `v0.1.0-rc.1` (macOS-only) and `v0.2.0-rc.1`
+(adds Linux x64) have ever been published, and this sandbox cannot build or fetch a macOS archive
+to exercise that path against a real release.
 
 #### Or do it by hand
 
@@ -189,12 +190,13 @@ not something you should have to do. It disappears when the stable macOS binarie
 signed and notarized.
 <!-- gatekeeper-quarantine:end -->
 
-### Linux: published prerelease binary (once a release ships one)
+### Linux: published prerelease binary (x64 only so far)
 
-The release workflow builds and gates `wtm-linux-x64.tar.gz` and `wtm-linux-arm64.tar.gz` the same
-way it does the macOS archives, but as with the Windows archive below, no tag has shipped one yet
-— only the macOS-only `v0.1.0-rc.1` prerelease has ever been published. Build from source (above)
-until a release carries a Linux archive; once one does, the same one-line install works here too:
+`v0.2.0-rc.1` publishes `wtm-linux-x64.tar.gz`, built and gated from a Linux x64 sandbox (no
+Developer ID equivalent applies to Linux, so there is nothing to sign or notarize). The release
+workflow also builds and gates `wtm-linux-arm64.tar.gz` the same way, but no tag has shipped an
+arm64 archive yet — build from source (above) on that architecture. The same one-line install
+works on Linux x64:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/0furkancolak/wtm/main/install.sh | sh
@@ -203,9 +205,9 @@ curl -fsSL https://raw.githubusercontent.com/0furkancolak/wtm/main/install.sh | 
 It detects your CPU architecture, downloads the matching `wtm-linux-x64.tar.gz` or
 `wtm-linux-arm64.tar.gz`, verifies it against `SHA256SUMS`, and installs `wtm` to
 `$HOME/.local/bin` — see the macOS section above for the `--version`/`--prefix` flags and their
-`WTM_INSTALL_*` environment equivalents; they work identically on Linux. Until a tag actually
-publishes a Linux archive, running this on Linux today fails at the download step with a normal
-HTTP error, not a silent wrong install.
+`WTM_INSTALL_*` environment equivalents; they work identically on Linux. On arm64, until a tag
+actually publishes that archive, running this today fails at the download step with a normal HTTP
+error, not a silent wrong install.
 
 ### npm package: publication awaiting verification
 
@@ -854,8 +856,8 @@ WTM is pre-release and honest about its edges. Every command carries a real payl
 | Platform | CI | State |
 | --- | --- | --- |
 | **macOS** (Apple silicon and Intel) | Decides the run | Native CLI, launchd and process supervision backends; both architectures have published prerelease archives and native CI legs. Current regressions and signing/notarization requirements remain release gates. |
-| **Linux x64** (glibc) | Decides the run | Native CLI, Unix IPC and POSIX process supervision have passing CI evidence. The systemd user-service lifecycle needs a real user session for full validation. The release workflow builds and publishes a Linux archive on a tag; no tag has shipped one yet, so build from source until one does. |
-| **Linux arm64** (glibc) | Decides the run | Native CI is configured on `ubuntu-24.04-arm`, with local ELF archive support; a passing ARM64 run is still required. Same release-archive status as Linux x64: buildable, not yet shipped in a tag. |
+| **Linux x64** (glibc) | Decides the run | Native CLI, Unix IPC and POSIX process supervision have passing CI evidence. The systemd user-service lifecycle needs a real user session for full validation. `v0.2.0-rc.1` publishes a `wtm-linux-x64.tar.gz` prerelease archive. |
+| **Linux arm64** (glibc) | Decides the run | Native CI is configured on `ubuntu-24.04-arm`, with local ELF archive support; a passing ARM64 run is still required. The release workflow builds and gates a Linux arm64 archive; no tag has shipped one yet (buildable from source until one does). |
 | **Linux musl/Alpine** | Not run | No native CI or supported standalone build. |
 | **Windows x64** | **Informational only** | Experimental implementation: CLI, Named Pipe IPC, SID/ACL checks, Scheduled Task service backend and process-tree supervision. The release workflow now builds, zips and gates a `wtm-windows-x64.zip`, but its job does not block a release the way the macOS/Linux jobs do — no tag has shipped one, and native acceptance is still incomplete. |
 
