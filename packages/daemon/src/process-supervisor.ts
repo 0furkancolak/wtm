@@ -752,7 +752,7 @@ export class ManagedProcessSupervisor {
     }
     if (!identityMatches(record, beforeTerm.identity)) return true;
     try { this.#signalGroup(record.pgid, 'SIGTERM'); }
-    catch (error) { if (!isNoSuchProcess(error)) return false; }
+    catch (error) { if (!isSignalWithoutLiveTarget(error)) return false; }
     const term = await waitForOwnedGroupChange(
       record, this.#inspectProcess, this.#inspectGroup, this.#gracePeriodMs, this.#pollIntervalMs,
     );
@@ -763,7 +763,7 @@ export class ManagedProcessSupervisor {
     if (beforeKill.status === 'absent') return (await this.#inspectGroup(record.pgid)).status === 'absent';
     if (!identityMatches(record, beforeKill.identity)) return true;
     try { this.#signalGroup(record.pgid, 'SIGKILL'); }
-    catch (error) { if (!isNoSuchProcess(error)) return false; }
+    catch (error) { if (!isSignalWithoutLiveTarget(error)) return false; }
     return await waitForGroupAbsent(
       record.pgid, this.#inspectGroup, this.#gracePeriodMs, this.#pollIntervalMs,
       this.#groupAbsenceFloorMs(),
