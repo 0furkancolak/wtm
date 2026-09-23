@@ -7,6 +7,11 @@ All notable changes are documented here. This project follows Semantic Versionin
 Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract
 are unstable, and a breaking change may land in a minor release without a deprecation window.
 
+## [0.2.0-rc.1] - 2026-09-23
+
+Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract
+are unstable, and a breaking change may land in a minor release without a deprecation window.
+
 <!-- gatekeeper-quarantine:start -->
 ### Before you run a macOS binary downloaded through a browser
 
@@ -501,6 +506,22 @@ the win32 leg's current (informational) status.
   closing the gap where a root target whose recipe shells into a specific repository always
   reached the workspace's own checkout, never the worktree's. Only `WTM_WORKTREE_ROOT` and
   `WTM_WORKSPACE_ROOT` are injected.
+
+### Notes
+
+- This is a prerelease, and a narrower one than `v0.1.0-rc.1`: it was built and gated from a Linux
+  sandbox with no macOS or Windows runner and no code-signing credentials available, so it ships a
+  **Linux x64 archive only**. Its executable is unsigned; there is no macOS or Windows archive in
+  this release at all, not merely an unsigned one.
+- `bun run lint && bun run typecheck && bun run test` and `bun run test:e2e` all pass on this
+  commit in that sandbox. GitHub Actions has been out of quota since 2026-09-21, so this build has
+  no CI evidence layered on top of the local gate; see the `v*` tag's own Actions run for whether
+  that has since changed.
+- The real, stable `v0.2.0` — Developer ID signed and notarized macOS binaries, real macOS/Linux
+  (arm64 included)/Windows CI evidence, and the first `npm publish` — needs `Apple`
+  notarization credentials and an npm token that only the repository owner holds, plus the Actions
+  quota outage clearing. See `todo.md`'s "Release checklist — v0.2.0" and "Kaptan'ın hesabına/
+  donanımına bağlı kapılar" sections for the exact remaining list.
 
 ## [0.1.0-rc.1] - 2026-08-30
 
