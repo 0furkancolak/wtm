@@ -470,7 +470,12 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
             UPDATE endpoint_leases SET state = 'RELEASED' WHERE worktree_id = ? AND state = 'ACTIVE'
           `).run(existing.id);
         }
-        if (cleanupOwned) continue;
+        // CLEANING means a removal already reached its own `release-endpoints` stage
+        // (`markWorktreeCleaning`) — the same removal's own `reconcile` stage, right here, is
+        // what closes it out once Git confirms the directory is gone, so it is not "someone
+        // else's job" the way DEGRADED_CLEANUP is. ORPHANED/REMOVED are already settled (this
+        // write would be a no-op); DEGRADED_CLEANUP is left alone pending whatever resolves it.
+        if (cleanupOwned && existing.state !== 'CLEANING') continue;
         this.#database.prepare("UPDATE worktrees SET state = 'ORPHANED' WHERE id = ?").run(existing.id);
         const row = this.#database.prepare('SELECT * FROM worktrees WHERE id = ?').get(existing.id) as WorktreeRow;
         orphaned.push(worktreeFromRow(row));
@@ -481,6 +486,13 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
         .run(timestamp, repositoryId);
       return { discovered, updated, orphaned };
     });
+  }
+
+  markWorktreeCleaning(worktreeId: string): void {
+    this.#assertOpen();
+    this.transaction(() => this.#database.prepare(
+      "UPDATE worktrees SET state = 'CLEANING' WHERE id = ?",
+    ).run(worktreeId));
   }
 
   listWorkspaces(): WorkspaceRecord[] {

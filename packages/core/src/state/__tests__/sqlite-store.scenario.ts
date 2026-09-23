@@ -15,6 +15,7 @@ type StateStoreDomainOperation =
   | 'upsertWorkspace'
   | 'upsertRepository'
   | 'reconcileWorktrees'
+  | 'markWorktreeCleaning'
   | 'allocateEndpoint'
   | 'upsertAdapterTrust'
   | 'listAdapterTrust'

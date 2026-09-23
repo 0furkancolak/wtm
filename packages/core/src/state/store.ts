@@ -261,6 +261,16 @@ export interface StateStore extends AdapterTrustStateStore {
   upsertWorkspace(input: WorkspaceInput): WorkspaceRecord;
   upsertRepository(input: RepositoryInput): RepositoryRecord;
   reconcileWorktrees(repositoryId: string, snapshot: GitWorktreeRecord[]): ReconcileResult;
+  /**
+   * Marks a worktree `CLEANING` -- already a `deadWorktreeStates` member -- before a removal's
+   * own `git worktree remove` runs, so `featureGroup` (`@wtm/daemon`'s `task-resolution.ts`)
+   * stops treating it as a live, lease-eligible group member for the whole of that removal, not
+   * only from the moment `reconcileWorktrees` notices Git no longer reports it afterwards.
+   * Without this, a concurrent allocation on a live sibling can attach a brand-new endpoint lease
+   * to the worktree mid-teardown, which `reconcileWorktrees` then immediately releases out from
+   * under it once the removal's own reconcile stage runs.
+   */
+  markWorktreeCleaning(worktreeId: string): void;
   allocateEndpoint(input: EndpointRequest, probe?: EndpointAvailabilityProbe): EndpointLease;
   listEndpointLeases(query?: EndpointLeaseQuery): EndpointLease[];
   createManagedProcess(input: ManagedProcessInput, options?: ManagedProcessCreateOptions): ManagedProcessRecord;
