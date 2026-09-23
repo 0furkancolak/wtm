@@ -144,4 +144,27 @@ describe('resolveWorkspaceConfig', () => {
       context: { source: workspaceConfigPath },
     });
   });
+
+  it('reports an unreadable wtm.toml (not merely absent) as a coded config error, not a raw filesystem exception', async () => {
+    // Regression: `loadConfigFile` only special-cased `ENOENT` ("absent, use defaults") and
+    // rethrew every other `readFile` failure raw -- unlike a TOML syntax error a few lines below,
+    // which was already wrapped in `WtmConfigError`. A `wtm.toml` accidentally created as a
+    // directory (an easy real mistake: `mkdir wtm.toml` instead of `touch`) threw a bare `EISDIR`
+    // `Error` with no `.code`/`.severity`/`.context`, which let it escape every
+    // `instanceof WtmConfigError` guard downstream and reach a CLI caller as an unhandled
+    // exception instead of the envelope contract's `errors[{code, message, severity, ...}]`.
+    const root = await mkdtemp(join(tmpdir(), 'wtm-config-'));
+    directories.push(root);
+    const workspaceRoot = join(root, 'workspace');
+    const globalConfigPath = join(root, 'absent-global.toml');
+    await mkdir(workspaceRoot, { recursive: true });
+    const workspaceConfigPath = join(workspaceRoot, 'wtm.toml');
+    await mkdir(workspaceConfigPath);
+
+    await expect(resolveWorkspaceConfig({ workspaceRoot, globalConfigPath })).rejects.toMatchObject({
+      code: 'WTM_CONFIG_INVALID',
+      severity: 'error',
+      context: { source: workspaceConfigPath },
+    });
+  });
 });

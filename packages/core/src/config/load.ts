@@ -25,7 +25,13 @@ async function loadConfigFile(path: string): Promise<ConfigLayer | undefined> {
     toml = stripByteOrderMark(await readFile(path, 'utf8'));
   } catch (error) {
     if (isMissingFile(error)) return undefined;
-    throw error;
+    // Anything other than "absent" -- `EISDIR` (the path is a directory), `EACCES`/`EPERM`
+    // (permission denied), `ELOOP` (symlink cycle), etc. -- gets the same coded-envelope
+    // treatment a TOML syntax error gets below, rather than escaping as a bare `Error` past
+    // every `instanceof WtmConfigError` guard downstream (CLAUDE.md's envelope contract: every
+    // operational JSON command reports through `errors[{code, message, severity, ...}]`, never a
+    // raw exception).
+    throw new WtmConfigError('WTM configuration could not be read.', { source: path, cause: error instanceof Error ? error.message : String(error) });
   }
 
   try {
