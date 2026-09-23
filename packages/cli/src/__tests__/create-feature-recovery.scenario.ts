@@ -196,6 +196,22 @@ const changedUnder = await create(['feat/changed', '--repos', 'web,api'], {
   featureCreateAfterLeases: async () => { await create(['feat/changed', '--repos', 'worker'], { featureCreateApply: alwaysFail }); },
 });
 
+// 15. A REGISTERED member (nothing left to do) is not leased on --resume: an unrelated live
+// gc/remove lease on its own repository -- one this resume was never going to touch -- must not
+// block finishing the member that still has work. Runs before section 8, which deletes a
+// repository row and forbids anything running after it.
+const registeredBusySetup = await create(['feat/registered-busy', '--repos', 'web,api,worker'], { featureCreateApply: failFor(last) });
+sql(
+  `UPDATE feature_creation_members SET phase = 'REGISTERED' WHERE worktree_path = ?`,
+  join(workspaceRoot, `${others[0]}-feat-registered-busy`),
+);
+const registeredBusyRepoId = (query('SELECT id FROM repositories WHERE main_root = ?', join(workspaceRoot, others[0]!)) as Array<{ id: string }>)[0]!.id;
+sql(`INSERT INTO repository_operation_leases (repository_id, operation, token, pid, process_start_time, subject_worktree_id,
+  stage, acquired_at, renewed_at, expires_at, host_id) VALUES (?, 'gc', 'registered-held', 999999, 'x', NULL, NULL,
+  '2026-09-13T00:00:00.000Z', '2026-09-13T00:00:00.000Z', '2999-01-01T00:00:00.000Z', 'elsewhere')`, registeredBusyRepoId);
+const resumedRegisteredBusy = await create(['feat/registered-busy', '--resume']);
+sql(`DELETE FROM repository_operation_leases WHERE token = 'registered-held'`);
+
 // 8. A resume treats a forgotten repository specially: a member with no work left (REGISTERED) is
 // skipped even though its repository is gone; a member with work left whose repository is gone is
 // refused by name. These delete a repository row, so nothing may run after them.
@@ -214,6 +230,35 @@ sql(
 }
 const forgotDone = await create(['feat/forgot-done', '--resume']);
 const forgotLeft = await create(['feat/forgot-left', '--resume']);
+
+// 16. A fresh `--repos` create: a repository forgotten between the snapshot at the top of the
+// command and the initial lease request (an adversarial concurrent `wtm forget`, not anything this
+// run did) is reported the same clean way as a name --repos never resolved, not as a raw Git
+// failure. Runs after section 8's own permanent deletion, so only `last` is still registered here.
+const raceCreateRepoId = (query('SELECT id FROM repositories WHERE main_root = ?', join(workspaceRoot, last)) as Array<{ id: string }>)[0]!.id;
+const raceCreated = await create(['feat/race-fresh', '--repos', last], {
+  featureCreateBeforeLease: async () => {
+    const database = new Database(databasePath);
+    database.pragma('foreign_keys = ON');
+    database.prepare('DELETE FROM repositories WHERE id = ?').run(raceCreateRepoId);
+    database.close();
+  },
+});
+const raceCreatedOnDisk = exists(last, 'feat/race-fresh');
+
+// 17. `--resume`: the same race, this time between the snapshot and --resume's own lease request
+// for a member with work left. Only `others[1]` is still registered at this point.
+const raceResumeSetup = await create(['feat/race-resume', '--repos', others[1]!], { featureCreateApply: alwaysFail });
+const raceResumeRepoId = (query('SELECT id FROM repositories WHERE main_root = ?', join(workspaceRoot, others[1]!)) as Array<{ id: string }>)[0]!.id;
+const raceResumed = await create(['feat/race-resume', '--resume'], {
+  featureCreateBeforeLease: async () => {
+    const database = new Database(databasePath);
+    database.pragma('foreign_keys = ON');
+    database.prepare('DELETE FROM repositories WHERE id = ?').run(raceResumeRepoId);
+    database.close();
+  },
+});
+const raceResumedOnDisk = exists(others[1]!, 'feat/race-resume');
 
 process.stdout.write(JSON.stringify({
   partial: {
@@ -301,5 +346,23 @@ process.stdout.write(JSON.stringify({
     leftCode: forgotLeft.envelope.errors[0]?.code ?? null,
     leftNamesRepository: forgotLeft.envelope.errors[0]?.context?.repository === join(workspaceRoot, others[0]!),
     leftLastOnDisk: exists(last, 'feat/forgot-left'),
+  },
+  registeredBusy: {
+    setupOk: registeredBusySetup.envelope.ok,
+    ok: resumedRegisteredBusy.envelope.ok,
+    code: resumedRegisteredBusy.envelope.errors[0]?.code ?? null,
+    lastOnDisk: exists(last, 'feat/registered-busy'),
+  },
+  raceFresh: {
+    ok: raceCreated.envelope.ok,
+    code: raceCreated.envelope.errors[0]?.code ?? null,
+    data: raceCreated.envelope.data,
+    onDisk: raceCreatedOnDisk,
+  },
+  raceResume: {
+    setupOk: raceResumeSetup.envelope.ok,
+    ok: raceResumed.envelope.ok,
+    code: raceResumed.envelope.errors[0]?.code ?? null,
+    onDisk: raceResumedOnDisk,
   },
 }));

@@ -186,6 +186,8 @@ export interface CliDependencies {
   featureCreateApply?: (repoPath: string, plan: WorktreeCreationPlan) => Promise<WorktreeCreationResult>;
   /** Test seam: runs once a multi-repository create holds its leases, before it re-reads and re-plans. */
   featureCreateAfterLeases?: () => Promise<void>;
+  /** Test seam: runs right before a multi-repository create requests its leases. */
+  featureCreateBeforeLease?: () => Promise<void>;
   /** Test seam: the topology a multi-repository create's local registration reconciles. */
   featureCreateRegistrationTopology?: (repoPath: string) => Promise<GitWorktreeRecord[]>;
   /** State and global config the task commands' `--worktree`/`--repo` resolve against. */
@@ -569,6 +571,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
         hostId: hostname(),
         ...(dependencies.featureCreateApply === undefined ? {} : { applyWorktree: dependencies.featureCreateApply }),
         ...(dependencies.featureCreateAfterLeases === undefined ? {} : { afterLeases: dependencies.featureCreateAfterLeases }),
+        ...(dependencies.featureCreateBeforeLease === undefined ? {} : { beforeLease: dependencies.featureCreateBeforeLease }),
         ...(dependencies.featureCreateRegistrationTopology === undefined
           ? {}
           : { registrationTopology: dependencies.featureCreateRegistrationTopology }),

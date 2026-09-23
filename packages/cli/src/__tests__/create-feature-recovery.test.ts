@@ -109,4 +109,16 @@ describe('wtm create --resume', () => {
   test('a finished member of a forgotten repository is skipped; one with work left is refused by name', () => {
     expect(scenario['forgotten']).toEqual({ doneOk: true, doneLastOnDisk: true, leftOk: false, leftCode: 'WTM_CONFIG_INVALID', leftNamesRepository: true, leftLastOnDisk: false });
   });
+
+  test('a REGISTERED member is not leased on --resume, so an unrelated live lease on its own repository does not block the rest', () => {
+    expect(scenario['registeredBusy']).toEqual({ setupOk: false, ok: true, code: null, lastOnDisk: true });
+  });
+
+  test('a repository forgotten between the snapshot and a fresh --repos create requesting its lease is refused cleanly, not as a Git failure', () => {
+    expect(scenario['raceFresh']).toEqual({ ok: false, code: 'WTM_CONFIG_INVALID', data: null, onDisk: false });
+  });
+
+  test('a repository forgotten between the snapshot and --resume requesting its lease is refused cleanly, not as a Git failure', () => {
+    expect(scenario['raceResume']).toEqual({ setupOk: false, ok: false, code: 'WTM_CONFIG_INVALID', onDisk: false });
+  });
 });
