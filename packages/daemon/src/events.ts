@@ -154,7 +154,18 @@ export class LifecycleEventDispatcher {
     // There is something to run, so it gets the ports and resources a task is owed.
     try {
       runtime = await this.#runtimeFor(input.worktree.path, true);
-      await prepareRuntimeResources(runtime, this.#fileTrust);
+      const prepared = await prepareRuntimeResources(runtime, this.#fileTrust);
+      const failed = prepared.find((resource) => resource.state === 'degraded');
+      // `prepareRuntimeResources` never throws for a resource that failed to materialize (a
+      // missing source, a refused target, a copy/symlink I/O error) — it reports `degraded` and
+      // moves on. Without this check, the docs' own promise ("a resource that could not be
+      // created — withdraws its announcement and is tried again on the next pass",
+      // docs/03-configuration-spec.md) was true only for a thrown template-resolution error,
+      // never for the far more common creation failure: the event fired anyway, on tasks that
+      // may depend on a resource that was never actually there.
+      if (failed !== undefined) {
+        throw new Error(`Resource "${failed.name}" could not be created: ${failed.detail ?? 'unknown reason'}`);
+      }
     } catch (error) {
       withdraw();
       this.#onError(error);
@@ -229,7 +240,14 @@ export class LifecycleEventDispatcher {
       // Reading which mode is in force is a read, so it allocates nothing. Only `eager` then
       // resolves for real, because preparing is what needs the ports the templates may name.
       if ((await this.#runtimeFor(worktree.path, false)).config.prepare?.mode !== 'eager') return;
-      await prepareRuntimeResources(await this.#runtimeFor(worktree.path, true), this.#fileTrust);
+      const prepared = await prepareRuntimeResources(await this.#runtimeFor(worktree.path, true), this.#fileTrust);
+      const failed = prepared.find((resource) => resource.state === 'degraded');
+      // Same reasoning as `dispatch`'s own check: a degraded resource never throws on its own, so
+      // without this, `worktree.ready` fired here even when the eager prepare it is meant to
+      // announce left a resource broken.
+      if (failed !== undefined) {
+        throw new Error(`Resource "${failed.name}" could not be created: ${failed.detail ?? 'unknown reason'}`);
+      }
     } catch (error) {
       this.#onError(error);
       return;
