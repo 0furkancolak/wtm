@@ -118,6 +118,12 @@ Verify before relying on one; they describe the sandbox, not the repository.
   the branch onto `main` — a real commit, not an empty one.
 - **Remote branch deletion is refused** (403 on `DELETE git/refs`, and `git push --delete` is
   rejected too). Merged unit branches therefore stay on the remote and are pruned by hand later.
+- **Pushing a new tag is refused too** (403 on `git push origin <tag>`, reproduced twice on
+  2026-09-23 pushing `v0.2.0-rc.1`; same ref-mutation restriction class as branch deletion above).
+  No GitHub MCP tool creates a release either. A tag/release therefore has to be cut by the repo
+  owner, from their own machine or another authorized environment — hand them the built,
+  gate-verified archive and a ready `gh release create ... --target <merge-commit-sha>` command
+  (it creates the tag itself, no separate push needed) rather than retrying the push.
 - **The sandbox runs as root.** Four test files fail on *any* branch, including the merge base:
   `cli/__tests__/reconcile-fallback`, `daemon/__tests__/main`, `daemon/__tests__/process-anchor`,
   `daemon/__tests__/server.integration`. Several of their tests refuse uid 0 outright. Compare a
@@ -125,4 +131,10 @@ Verify before relying on one; they describe the sandbox, not the repository.
 - **The host is Linux**; macOS and Windows evidence comes from CI only.
 - **Check the toolchain.** The repo pins Bun 1.3.14 and the daemon requires Node >= 24; the
   sandbox's `bun` and `node` are often older. Put a Node 24 runtime on `PATH` before running
-  daemon scenario tests.
+  daemon scenario tests. `scripts/build-sea.ts` pins the *exact* patch, `24.18.0` — a newer 24.x
+  (e.g. an `nvm install 24` default) fails `build:binary`/`binary:verify` outright; install
+  `24.18.0` specifically.
+- **`node_modules` can be present but incomplete** (e.g. `@types/bun` missing even though
+  `bun pm ls` reports it) if it predates a lockfile change. `typecheck` fails oddly
+  (`Cannot find type definition file for 'bun'`) rather than reporting a missing package —
+  `bun install --frozen-lockfile` first if a gate fails in a way that doesn't match the diff.
