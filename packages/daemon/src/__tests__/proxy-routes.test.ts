@@ -97,6 +97,41 @@ describe('buildProxyRoutes', () => {
     expect(routes.get(disambiguated as string)?.worktreeId).toBe('w-late');
   });
 
+  it('keeps the older worktree\'s plain slug stable even while it holds no lease of its own', () => {
+    // `assignProxySlugs` promises the worktree WTM has held longest keeps the plain slug, so a
+    // bookmarked hostname never moves underneath it. That only holds if the older sibling is
+    // still in the group being disambiguated, even when it isn't leasing anything right now --
+    // otherwise the younger, currently-leased worktree grabs the plain slug alone, and loses it
+    // (silently redirecting anyone still pointed at that hostname to a *different* backend) the
+    // moment the older one starts a task and reclaims its rightful slug.
+    const early = worktree({ id: 'w-early', numericId: 1, branch: 'fix/auth-bug', state: 'READY' });
+    const late = worktree({ id: 'w-late', numericId: 2, branch: 'fix-auth-bug' });
+    const routes = buildProxyRoutes(store([early, late], [lease({ id: 'l2', worktreeId: 'w-late' })]));
+
+    // `early` holds the plain slug by right (lowest numericId) even though it has no lease to
+    // serve it -- so nothing routes there, and `late` is reachable only under its own,
+    // disambiguated hostname. Before the fix, `early`'s absence from the comparison let `late`
+    // take the plain slug outright here, and would have reassigned it (silently redirecting an
+    // already-open hostname to a different backend) the moment `early` later got a lease of its
+    // own.
+    expect(routes.has('web.fix-auth-bug.wtm.localhost')).toBe(false);
+    expect(routes.size).toBe(1);
+    const [[hostname, route]] = [...routes.entries()];
+    expect(hostname).not.toBe('web.fix-auth-bug.wtm.localhost');
+    expect(route.worktreeId).toBe('w-late');
+  });
+
+  it('does not let a removed worktree squat its slug forever', () => {
+    // The other half of the fix above: widening slug assignment to every worktree, not just
+    // leased ones, must not resurrect a worktree that is gone for good -- `reconcileWorktrees`
+    // never deletes rows, so an ORPHANED/REMOVED worktree's record outlives it indefinitely.
+    const removed = worktree({ id: 'w-removed', numericId: 1, branch: 'fix/auth-bug', state: 'REMOVED' });
+    const live = worktree({ id: 'w-live', numericId: 2, branch: 'fix-auth-bug' });
+    const routes = buildProxyRoutes(store([removed, live], [lease({ id: 'l2', worktreeId: 'w-live' })]));
+
+    expect(routes.get('web.fix-auth-bug.wtm.localhost')?.worktreeId).toBe('w-live');
+  });
+
   it('is rebuilt fresh on every call, so a released lease disappears immediately', () => {
     const leases = [lease()];
     const dynamicStore: ProxyRouteSource = {

@@ -4,6 +4,7 @@ import {
   type EndpointLease,
   type WorktreeRecord,
 } from '@wtm/core';
+import { deadWorktreeStates } from './task-resolution';
 
 /** One resolved route: where the proxy connects to serve a canonical hostname. */
 export interface ProxyRoute {
@@ -44,8 +45,15 @@ export function buildProxyRoutes(store: ProxyRouteSource): ReadonlyMap<string, P
   const routes = new Map<string, ProxyRoute>();
   if (leases.length === 0) return routes;
 
-  const worktreeIds = new Set(leases.map((lease) => lease.worktreeId));
-  const worktrees = store.listWorktrees().filter((worktree) => worktreeIds.has(worktree.id));
+  // `assignProxySlugs` promises the worktree WTM has held longest keeps the plain slug, so a
+  // bookmarked hostname never moves underneath it -- that promise only holds if every worktree
+  // that could still claim a slug is in the group it disambiguates over, not only the ones with
+  // an active lease right now. Scoping to active leases let a younger, currently-leased worktree
+  // take the plain slug while an older, currently-idle sibling was absent from the comparison,
+  // and reassigned the plain slug (and the hostname a browser tab is already pointed at) out from
+  // under it the moment that older worktree started a task too. Worktrees that are gone or being
+  // torn down are still excluded, so a removed worktree does not squat its slug forever.
+  const worktrees = store.listWorktrees().filter((worktree) => !deadWorktreeStates.has(worktree.state));
   const worktreesById = new Map(worktrees.map((worktree) => [worktree.id, worktree] as const));
   const slugs = assignProxySlugs(worktrees);
 
