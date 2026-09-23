@@ -1746,6 +1746,42 @@ function operationLeaseRetirement() {
   });
 }
 
+/**
+ * A live (unexpired) operation lease refuses `forget`, so retiring a registration cannot delete
+ * the lease row a concurrent `remove`/`gc`/`create` is relying on to keep a second destructive
+ * operation out of the same repository. An expired lease is not evidence of anything live and is
+ * still retired along with everything else, exactly as `operationLeaseRetirement` already covers.
+ */
+function operationLeaseBlocksForget() {
+  return withDatabase((_, open, close) => {
+    const store = open();
+    try {
+      const repository = createRepository(store);
+      store.acquireRepositoryOperationLease({
+        repositoryId: repository.id,
+        operation: 'remove',
+        token: 'token-9901',
+        pid: 9901,
+        processStartTime: 'start',
+        hostId: 'this-host',
+        ttlMs: 120_000,
+      }, '2026-08-31T10:00:00.000Z');
+      const stillLive = '2026-08-31T10:01:00.000Z';
+      const messageOf = (body: () => void): string | null => {
+        try { body(); return null; } catch (error) { return error instanceof Error ? error.message : String(error); }
+      };
+      const forgetRepositoryError = messageOf(() => { store.forgetRepository(repository.id, stillLive); });
+      const forgetWorkspaceError = messageOf(() => { store.forgetWorkspace(repository.workspaceId, stillLive); });
+      const survivedRefusals = store.readRepositoryOperationLease({ repositoryId: repository.id, operation: 'remove' }) !== null;
+      const afterExpiry = '2026-08-31T10:03:00.000Z';
+      const forgotAfterExpiry = store.forgetRepository(repository.id, afterExpiry);
+      return { forgetRepositoryError, forgetWorkspaceError, survivedRefusals, forgotAfterExpiry };
+    } finally {
+      close();
+    }
+  });
+}
+
 function requireMigration(file: string): string {
   return readFileSync(new URL(`../migrations/${file}`, import.meta.url), 'utf8');
 }
@@ -1777,6 +1813,7 @@ const scenarios: Record<string, () => unknown> = {
   'worktree-endpoint-release': worktreeEndpointRelease,
   'prunable-worktree-release': prunableWorktreeRelease,
   'operation-lease-retirement': operationLeaseRetirement,
+  'operation-lease-blocks-forget': operationLeaseBlocksForget,
 };
 
 const scenarioName = process.argv[2];

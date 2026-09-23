@@ -2,6 +2,7 @@ import { lstat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import {
   containsPath,
+  HeavyJobError,
   samePath,
   type RepositoryRecord,
   type StateRegistrationReader,
@@ -94,9 +95,25 @@ export async function runForgetCommand(input: ForgetCommandInput): Promise<Forge
     : [repository];
   const repositoryIds = new Set(repositories.map(({ id }) => id));
   const worktrees = input.store.listWorktrees().filter(({ repositoryId }) => repositoryIds.has(repositoryId));
-  const retired = repository === undefined
-    ? input.store.forgetWorkspace(workspace.id)
-    : input.store.forgetRepository(repository.id);
+  let retired: boolean;
+  try {
+    retired = repository === undefined
+      ? input.store.forgetWorkspace(workspace.id)
+      : input.store.forgetRepository(repository.id);
+  } catch (error) {
+    // Both a pending heavy job and a live repository-operation lease refuse by throwing
+    // `HeavyJobError` rather than returning, because the refusal happens deep inside the same
+    // transaction that would otherwise delete the very row a concurrent operation depends on.
+    // Left uncaught, that throw would escape as a bare exception instead of the JSON envelope
+    // every other `forget` failure returns.
+    if (!(error instanceof HeavyJobError)) throw error;
+    return failure({
+      code: error.code,
+      message: error.message,
+      severity: error.severity,
+      context: { workspace: workspace.name, root, ...error.context },
+    });
+  }
   if (!retired) {
     return failure({
       code: 'WTM_WORKSPACE_NOT_FOUND',

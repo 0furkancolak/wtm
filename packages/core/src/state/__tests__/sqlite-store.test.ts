@@ -383,4 +383,13 @@ describe('SQLiteStateStore', () => {
       leaseAfterWorkspaceForget: null,
     });
   });
+
+  test('refuses to forget a repository or workspace while a repository-operation lease is still live', () => {
+    expect(runScenario('operation-lease-blocks-forget')).toEqual({
+      forgetRepositoryError: 'Repository has a live "remove" operation (pid 9901); wait for it to finish before forgetting.',
+      forgetWorkspaceError: 'Repository has a live "remove" operation (pid 9901); wait for it to finish before forgetting.',
+      survivedRefusals: true,
+      forgotAfterExpiry: true,
+    });
+  });
 });
