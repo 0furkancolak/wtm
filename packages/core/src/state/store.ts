@@ -347,10 +347,15 @@ export interface StateRegistrationReader {
 
 /** Retiring a registration whose directory is not coming back. */
 export interface StateRegistrationWriter {
-  /** Removes the workspace and everything that exists only because of it. */
-  forgetWorkspace(workspaceId: string): boolean;
-  /** Removes one repository and everything that exists only because of it. */
-  forgetRepository(repositoryId: string): boolean;
+  /**
+   * Removes the workspace and everything that exists only because of it. Refuses (throwing) when
+   * a repository underneath it holds a live repository-operation lease, so retiring the
+   * registration cannot delete the lease a concurrent `remove`/`gc`/`create` is relying on to
+   * keep a second destructive operation out.
+   */
+  forgetWorkspace(workspaceId: string, now?: string): boolean;
+  /** Removes one repository and everything that exists only because of it. Same refusal as above. */
+  forgetRepository(repositoryId: string, now?: string): boolean;
 }
 
 /** What a once-only lifecycle event can be about. */

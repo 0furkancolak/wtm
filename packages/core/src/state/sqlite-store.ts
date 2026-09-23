@@ -8,7 +8,7 @@ import { createCiWatchStore } from './ci-store';
 import { createTaskOverrideStore } from './task-overrides-store';
 import { createChecklistStore } from './checklist-store';
 import { maxEndpointBatchCandidates, validEndpointBatchResults } from '../runtime/endpoint-batch';
-import type { HeavyJobStore } from './jobs';
+import { HeavyJobError, type HeavyJobStore } from './jobs';
 import type { CiWatchStore } from './ci';
 import type { TaskOverrideStore } from './task-overrides';
 import type { ChecklistStore } from './checklist';
@@ -494,7 +494,7 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
    * to worktrees at all (see their own migration comments) — `wtm remove` deletes each
    * explicitly for that reason, and this delete must do the same for every worktree it retires.
    */
-  forgetWorkspace(workspaceId: string): boolean {
+  forgetWorkspace(workspaceId: string, now = new Date().toISOString()): boolean {
     this.#assertOpen();
     return this.#database.transaction(() => {
       const worktreeIds = this.#database
@@ -514,6 +514,7 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
         .prepare('SELECT id FROM repositories WHERE workspace_id = ?')
         .all(workspaceId) as Array<{ id: string }>;
       for (const { id } of repositoryIds) assertNoHeavyJobs(this.#database, id);
+      for (const { id } of repositoryIds) this.#assertNoLiveOperationLease(id, now);
       // The cascade reaches operation leases, and the explicit delete is what the tests
       // assert: a lease naming a repository that no longer exists would refuse an operation
       // nobody could ever release.
@@ -564,10 +565,11 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
    * leases and process records cascade from the repository row; CI watches, task overrides and
    * checklist items do not (see `forgetWorkspace`'s own comment) and are deleted explicitly here.
    */
-  forgetRepository(repositoryId: string): boolean {
+  forgetRepository(repositoryId: string, now = new Date().toISOString()): boolean {
     this.#assertOpen();
     return this.#database.transaction(() => {
       assertNoHeavyJobs(this.#database, repositoryId);
+      this.#assertNoLiveOperationLease(repositoryId, now);
       const worktreeIds = this.#database
         .prepare('SELECT id FROM worktrees WHERE repository_id = ?')
         .all(repositoryId) as Array<{ id: string }>;
@@ -1779,6 +1781,28 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
       ORDER BY acquired_at, operation
     `).all(repositoryId) as RepositoryOperationLeaseRow[];
     return rows.map(repositoryOperationLeaseHolderFromRow);
+  }
+
+  /**
+   * `forgetWorkspace`/`forgetRepository` unconditionally deleted every
+   * `repository_operation_leases` row for a repository being retired, with nothing checking
+   * whether the lease was still live. A `wtm forget --force` racing a `wtm remove` or `wtm gc`
+   * on the same repository could delete the very row that operation was relying on to keep a
+   * second destructive operation out — exactly the race `acquireRepositoryOperationLease`'s own
+   * "a lapsed TTL is not evidence the holder is gone" reasoning exists to prevent. `forget` takes
+   * no lease of its own and has no `--resume` to clear a dead one, so it only refuses on a row
+   * that has not yet expired; an expired row is left to the existing unconditional delete below,
+   * exactly as before.
+   */
+  #assertNoLiveOperationLease(repositoryId: string, now: string): void {
+    const holder = this.#repositoryOperationLeases(repositoryId)
+      .find((lease) => !isRepositoryOperationLeaseExpired(lease, now));
+    if (holder === undefined) return;
+    throw new HeavyJobError(
+      'WTM_OPERATION_CONFLICT',
+      `Repository has a live "${holder.operation}" operation (pid ${String(holder.pid)}); wait for it to finish before forgetting.`,
+      { repositoryId, operation: holder.operation, holderPid: holder.pid },
+    );
   }
 
   #releaseResourceCleanupLease(storageObjectId: string, token: string, preserveReservation = false): boolean {

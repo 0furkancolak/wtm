@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { join as posixJoin } from 'node:path/posix';
 import { join as win32Join } from 'node:path/win32';
-import type { RepositoryRecord, WorkspaceRecord, WorktreeRecord } from '@wtm/core';
+import { HeavyJobError, type RepositoryRecord, type WorkspaceRecord, type WorktreeRecord } from '@wtm/core';
 import { runForgetCommand } from '../commands/forget';
 
 function workspace(name: string, root: string): WorkspaceRecord {
@@ -235,5 +235,45 @@ describe('wtm forget', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  /**
+   * `forgetWorkspace`/`forgetRepository` refuse a live repository-operation lease by throwing
+   * `HeavyJobError` from deep inside the same transaction that would otherwise delete the lease
+   * row a concurrent `remove`/`gc`/`create` depends on. Left uncaught, that throw would escape
+   * `runForgetCommand` as a bare exception instead of the `ok: false` envelope every other
+   * `forget` refusal returns.
+   */
+  it('turns a live-operation-lease refusal into a failure envelope instead of throwing', async () => {
+    const { store, forgotten } = createStore([workspace('busy', '/projects/gone/busy')]);
+    const guarded = {
+      ...store,
+      forgetWorkspace: (id: string) => {
+        forgotten.push(id);
+        throw new HeavyJobError(
+          'WTM_OPERATION_CONFLICT',
+          'Repository has a live "remove" operation (pid 4242); wait for it to finish before forgetting.',
+          { repositoryId: 'repository-busy', operation: 'remove', holderPid: 4242 },
+        );
+      },
+    };
+
+    const envelope = await runForgetCommand({ store: guarded, cwd: '/anywhere', selector: 'busy' });
+
+    expect(envelope.ok).toBe(false);
+    expect(envelope.errors[0]?.code).toBe('WTM_OPERATION_CONFLICT');
+    expect(envelope.errors[0]?.message).toContain('live "remove" operation');
+    expect(envelope.errors[0]?.context).toMatchObject({ operation: 'remove', holderPid: 4242 });
+  });
+
+  it('lets an unrelated exception propagate rather than swallowing it as a forget failure', async () => {
+    const { store } = createStore([workspace('busy', '/projects/gone/busy')]);
+    const broken = {
+      ...store,
+      forgetWorkspace: () => { throw new TypeError('unexpected'); },
+    };
+
+    await expect(runForgetCommand({ store: broken, cwd: '/anywhere', selector: 'busy' }))
+      .rejects.toThrow('unexpected');
   });
 });
