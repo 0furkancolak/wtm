@@ -104,6 +104,14 @@ const watchRetryBaseMs = 1_000;
 const watchRetryCeilingMs = 60_000;
 
 /**
+ * The `root` a synthetic watch-error signal carries when the failure is `replaceWatcher()`'s own
+ * `start()` rejecting, rather than a live watch reporting one root by name. The rebuild it retries
+ * re-establishes every watch in the current snapshot regardless of which root is named here (see
+ * `#replaceWatcher`), so this is bookkeeping for the queue's dedup set, not a real path.
+ */
+const watchRebuildFailureRoot = '*';
+
+/**
  * How long the daemon waits before rebuilding watchers after a watch failed, by how many rebuilds
  * have already failed in a row.
  *
@@ -415,8 +423,20 @@ export class WtmDaemon {
     }
     if (topologyChanged) this.#watchRefreshPending = true;
     if (this.#watchRefreshPending && !this.#closed) {
-      await this.#replaceWatcher();
-      this.#watchRefreshPending = false;
+      try {
+        await this.#replaceWatcher();
+        this.#watchRefreshPending = false;
+      } catch (error) {
+        // `replaceWatcher()`'s own `start()` can fail the same way a live watch can (an
+        // exhausted inotify budget, e.g.) -- but unlike a live watch's error, nothing produces a
+        // fresh signal to retry from afterwards: the failed replacement is discarded before it
+        // could ever report another error. Left uncaught, this stranded `watchRefreshPending`
+        // true with no timer behind it, so the daemon silently stopped reconciling that
+        // registration until something else happened to schedule a rebuild. Routing the failure
+        // through the same watch-error path re-arms the existing backoff instead.
+        this.#onError(error);
+        this.#scheduleFromWatcher({ root: watchRebuildFailureRoot, kind: 'watch-error' });
+      }
     }
     // The rest of the batch still ran, so the daemon stays current for every repository that
     // could be read. Reporting the failure last is what tells someone who asked for a
