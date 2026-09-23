@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
+import { stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createGitSafetyFixture } from '../../../../testkit/src/git-fixture';
 import type { GitSafetyFixture } from '../../../../testkit/src/git-fixture';
@@ -149,6 +150,10 @@ describe('planWorktreeCreation', () => {
 describe('createWorktree', () => {
   const fixtures: GitSafetyFixture[] = [];
 
+  afterEach(async () => {
+    for (const fixture of fixtures.splice(0)) await fixture.cleanup();
+  });
+
   async function fixture(): Promise<GitSafetyFixture> {
     const created = await createGitSafetyFixture();
     fixtures.push(created);
@@ -231,5 +236,22 @@ describe('createWorktree', () => {
     })).rejects.toMatchObject({ code: 'GIT_COMMAND_FAILED' });
     await safety.cleanup();
     fixtures.splice(fixtures.indexOf(safety), 1);
+  });
+
+  // Every other test above calls `safety.cleanup()` itself, but only after its own assertions --
+  // a `expect()` that throws first (as a regression in one of them would) skips straight past
+  // that line, leaving the fixture in `fixtures` forever with nothing left to drain it. This pair
+  // proves the array is a safety net `afterEach` actually sweeps, not dead bookkeeping: the first
+  // test leaks its fixture on purpose (mirroring what a thrown assertion would do), and the second
+  // proves `afterEach` removed it from disk before that second test even started.
+  let leakedFixtureRoot: string;
+
+  test('a fixture left in the array (as a thrown assertion would leave one) is still tracked for cleanup', async () => {
+    const safety = await fixture();
+    leakedFixtureRoot = safety.root;
+  });
+
+  test('afterEach cleaned up the previous test\'s leaked fixture', async () => {
+    await expect(stat(leakedFixtureRoot)).rejects.toThrow();
   });
 });
