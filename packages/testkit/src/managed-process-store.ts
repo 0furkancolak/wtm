@@ -58,6 +58,13 @@ export class MemoryManagedProcessStore implements ManagedProcessStateStore {
   hasManagedProcessStartReservation(worktreeId: string, taskName: string): boolean {
     return this.#reservation?.key === `${worktreeId}\0${taskName}`;
   }
+  releaseOrphanedManagedProcessStartReservations(): number {
+    if (this.#reservation === null) return 0;
+    const [worktreeId, taskName] = this.#reservation.key.split('\0') as [string, string];
+    if (this.findActiveManagedProcess(worktreeId, taskName) !== null) return 0;
+    this.#reservation = null;
+    return 1;
+  }
   #copy(record: ManagedProcessRecord | undefined): ManagedProcessRecord | null {
     return record === undefined ? null : { ...record };
   }

@@ -239,6 +239,19 @@ class MemoryProcessStore implements ManagedProcessStateStore {
     return this.#reservations.has(`${worktreeId}\0${taskName}`);
   }
 
+  releaseOrphanedManagedProcessStartReservations(): number {
+    let released = 0;
+    for (const key of [...this.#reservations.keys()]) {
+      const [worktreeId, taskName] = key.split('\0') as [string, string];
+      const protectedProcess = this.listManagedProcesses({ worktreeId, taskName })
+        .some((record) => ['STARTING', 'RUNNING', 'STOPPING'].includes(record.state) || record.cleanupRequired);
+      if (protectedProcess) continue;
+      this.#reservations.delete(key);
+      released += 1;
+    }
+    return released;
+  }
+
   forceRecord(id: string, update: Partial<ManagedProcessRecord> & { cleanupRequired?: boolean }): void {
     const current = this.#records.get(id);
     if (current === undefined) throw new Error('Unknown managed process');
@@ -1168,6 +1181,38 @@ describe('ManagedProcessSupervisor', () => {
     expect(existing.existing).toBe(true);
     expect(existing.record.id).toBe(started.record.id);
     await supervisor.stop({ worktreeId: worktree.id, taskName: input.taskName });
+  });
+
+  test('a start reservation orphaned by a crash before its record ever existed does not block the next start past recovery', async () => {
+    // The daemon can die between taking a start reservation and creating the `managed_processes`
+    // row it guards (mid-`#spawn`, before `createManagedProcess` runs) -- simulated here by
+    // reserving directly on the store without ever creating a record for it. `recover()` only
+    // walks existing records, so nothing else would ever notice this reservation before its TTL.
+    const { root, store, worktree, supervisor } = await setup();
+    expect(store.reserveManagedProcessStart(
+      worktree.id,
+      'crash-before-record',
+      'orphaned-token',
+      new Date().toISOString(),
+      { expiresAt: new Date(Date.now() + 60_000).toISOString() },
+    )).toBe(true);
+
+    // Before recovery, nothing distinguishes this orphaned reservation from one genuinely in
+    // flight, so a retry is correctly refused.
+    await expect(supervisor.start({
+      worktreeId: worktree.id, taskName: 'crash-before-record', argv: longRunningArgv, cwd: root, env: process.env,
+    })).rejects.toThrow(/already in progress/);
+
+    await supervisor.recover();
+    expect(store.hasManagedProcessStartReservation(worktree.id, 'crash-before-record')).toBe(false);
+
+    // The daemon has now restarted (recover() ran): the orphaned reservation must not still be
+    // blocking the very next attempt for up to its own 30-second TTL.
+    const started = await supervisor.start({
+      worktreeId: worktree.id, taskName: 'crash-before-record', argv: longRunningArgv, cwd: root, env: process.env,
+    });
+    expect(started.existing).toBe(false);
+    await supervisor.stop({ worktreeId: worktree.id, taskName: 'crash-before-record' });
   });
 
   test('recovery never releases a different owner token for a live RUNNING anchor', async () => {

@@ -179,6 +179,7 @@ export interface ManagedProcessStateStore {
   releaseExpiredManagedProcessStart(worktreeId: string, taskName: string, now: string): boolean;
   releaseExpiredManagedProcessReplacement(record: ManagedProcessRecord, now: string): boolean;
   hasManagedProcessStartReservation(worktreeId: string, taskName: string): boolean;
+  releaseOrphanedManagedProcessStartReservations(): number;
 }
 
 interface OwnedChild {
@@ -318,6 +319,14 @@ export class ManagedProcessSupervisor {
 
   async recover(): Promise<ManagedProcessRecord[]> {
     this.#assertOpen();
+    // A reservation with no `managed_processes` row behind it -- the daemon died between taking
+    // the reservation and creating the record it guards -- is otherwise invisible here: `recover`
+    // only walks existing records, and nothing else ever revisits a reservation before its TTL.
+    // That left the first `start`/`restart` retry after a crash refused as "already in progress"
+    // for up to the reservation's own TTL, for a worktree/task nothing is actually doing anything
+    // with. Safe to clear unconditionally only here, before this instance has served a single
+    // request of its own to race against.
+    this.#stateStore.releaseOrphanedManagedProcessStartReservations();
     const recovered: ManagedProcessRecord[] = [];
     const candidates = this.#stateStore.listManagedProcesses()
       .filter((record) => isActiveState(record.state) || record.cleanupRequired);
@@ -732,13 +741,6 @@ export class ManagedProcessSupervisor {
   }
 
   #assertOpen(): void { if (this.#closed) throw new Error('Managed process supervisor is closed'); }
-  #releaseExpiredReservation(record: ManagedProcessRecord): void {
-    this.#stateStore.releaseExpiredManagedProcessStart(
-      record.worktreeId,
-      record.taskName,
-      this.#now().toISOString(),
-    );
-  }
   #releaseReservationAfterRecovery(record: ManagedProcessRecord): boolean {
     return record.cleanupOwnerToken !== undefined
       && this.#stateStore.releaseManagedProcessStart(record.worktreeId, record.taskName, record.cleanupOwnerToken);

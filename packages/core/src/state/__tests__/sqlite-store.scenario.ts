@@ -30,6 +30,7 @@ type StateStoreDomainOperation =
   | 'releaseExpiredManagedProcessStart'
   | 'releaseExpiredManagedProcessReplacement'
   | 'hasManagedProcessStartReservation'
+  | 'releaseOrphanedManagedProcessStartReservations'
   | 'acquireRepositoryOperationLease'
   | 'renewRepositoryOperationLease'
   | 'advanceRepositoryOperationLease'
