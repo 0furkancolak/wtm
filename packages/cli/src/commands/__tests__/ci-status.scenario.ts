@@ -96,6 +96,49 @@ const cases: Record<string, () => Promise<unknown>> = {
       remediation: result.errors[0]?.remediation ?? null,
     };
   },
+
+  /**
+   * `wtm remove` reconciles a removed worktree's row to `ORPHANED` rather than deleting it, and a
+   * single removal never prunes its `ci_watches` row. `readCiStatus` must not keep reporting that
+   * stale, now-meaningless watch as current once the worktree it belonged to is dead -- neither
+   * for a `cwd` still pointed at the dead path, nor in the `--all` listing.
+   */
+  'status-excludes-removed-worktree': async () => {
+    const { fixture, databasePath, store, repositoryId, main, linked } = await prepare();
+    const now = new Date().toISOString();
+    store.ci.start({
+      repositoryId,
+      worktreeId: linked.id,
+      worktreePath: linked.path,
+      providerRepo: 'github.com/acme/widgets',
+      branch: 'refs/heads/feature',
+      headSha: fixture.mainHead,
+      pr: null,
+      now,
+      nextPollAt: now,
+      pollIntervalMs: 15_000,
+      maxPending: 20,
+    });
+    const beforeRemoval = readCiStatus({ cwd: linked.path, all: true, databasePath });
+
+    // Simulate `wtm remove <linked>` completing: git no longer lists it, so reconciling drops it
+    // out of the snapshot -- exactly what the real removal lifecycle's own `reconcile` stage does.
+    store.reconcileWorktrees(repositoryId, await listGitWorktrees(fixture.repoPath).then(
+      (worktrees) => worktrees.filter(({ path }) => path !== linked.path),
+    ));
+    store.close();
+
+    const single = readCiStatus({ cwd: linked.path, all: false, databasePath });
+    const all = readCiStatus({ cwd: fixture.repoPath, all: true, databasePath });
+    const allData = all.data as { watches: Array<{ worktreePath: string }> };
+    return {
+      beforeRemovalCount: (beforeRemoval.data as { watches: unknown[] }).watches.length,
+      singleOk: single.ok,
+      singleCode: single.errors[0]?.code ?? null,
+      allOk: all.ok,
+      allWorktreePaths: allData.watches.map((entry) => entry.worktreePath),
+    };
+  },
 };
 
 const name = process.argv[2] ?? '';
