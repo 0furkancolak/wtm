@@ -76,6 +76,12 @@ export async function invokeAdapter(executablePath: string, invocation: AdapterI
     stderr.push(chunk);
   });
 
+  // A candidate adapter that exits before (or while) this write lands turns it into a write to a
+  // closed pipe (EPIPE). Without a listener, Node treats that as an unhandled error and crashes
+  // this process instead of letting the `close` handler below report the documented
+  // `nonzero-exit`/`timeout` result — exactly the crash this function exists to keep out of an
+  // adapter author's own test run. Mirrors `@wtm/core`'s `external-adapter.ts` (`onStdinError`).
+  child.stdin.on('error', () => {});
   child.stdin.write(JSON.stringify(request));
   child.stdin.end();
 
