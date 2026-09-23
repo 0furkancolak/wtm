@@ -225,6 +225,71 @@ describe('registry-backed diagnostics', () => {
       expect(doctorB.findings.find(({ check }) => check === 'resources')).toMatchObject({ status: 'unknown' });
     });
   });
+
+  describe('doctor for a workspace whose own worktree contains a nested, separately registered workspace', () => {
+    // The sibling case above is guarded by `current === undefined`: a workspace whose own
+    // worktree does not contain `cwd` at all gets `unknown`. That guard does nothing when B's
+    // repository is nested *inside* A's worktree (a vendored/nested git repository, its own
+    // `wtm init`) and `cwd` sits inside both: `current` is non-undefined for A too (A's own
+    // worktree does contain `cwd`), so `adapterFinding`/`resourceFinding` proceed -- but they
+    // resolve via `findRegistration(store, options.cwd)`, an unscoped search across every
+    // registered worktree that always prefers the deepest path match. That is always B's nested
+    // worktree, never A's own, so A's doctor report silently describes B's adapters/resources
+    // under A's name instead of A's.
+    async function nestedWorkspaceFixture() {
+      const root = mkdtempSync(join(tmpdir(), 'wtm-nested-'));
+      cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+      const outerRoot = join(root, 'outer/repo');
+      const innerRoot = join(outerRoot, 'vendor/nested');
+      mkdirSync(innerRoot, { recursive: true });
+      // Only the nested repository looks like a Cargo project. If A's own doctor ever reports
+      // cargo in force, it can only be because it resolved B's registration instead of its own.
+      writeFileSync(join(innerRoot, 'Cargo.toml'), '[package]\nname = "nested"\n');
+
+      const workspaceA: WorkspaceRecord = { ...workspace, id: 'workspace-outer', name: 'outer', root: join(root, 'outer'), configPath: null };
+      const workspaceB: WorkspaceRecord = { ...workspace, id: 'workspace-inner', name: 'inner', root: innerRoot, configPath: null };
+      const repoA: RepositoryRecord = {
+        ...repositories[0] as RepositoryRecord, id: 'repo-outer', workspaceId: 'workspace-outer',
+        commonGitDir: join(outerRoot, '.git'), mainRoot: outerRoot,
+      };
+      const repoB: RepositoryRecord = {
+        ...repositories[0] as RepositoryRecord, id: 'repo-inner', workspaceId: 'workspace-inner',
+        commonGitDir: join(innerRoot, '.git'), mainRoot: innerRoot,
+      };
+      const worktreeA = worktree('worktree-outer', 'repo-outer', outerRoot, 1);
+      const worktreeB = worktree('worktree-inner', 'repo-inner', innerRoot, 1);
+      const nestedStore = {
+        listWorkspaces: () => [workspaceA, workspaceB],
+        listRepositories: (workspaceId?: string) => [repoA, repoB]
+          .filter((repository) => workspaceId === undefined || repository.workspaceId === workspaceId),
+        listWorktrees: (repositoryId?: string) => [worktreeA, worktreeB]
+          .filter((record) => repositoryId === undefined || record.repositoryId === repositoryId),
+        listManagedProcesses: () => [],
+        listEndpointLeases: () => [],
+      } as unknown as DaemonStateStore;
+
+      const registeredA = { id: workspaceA.id, name: workspaceA.name, root: workspaceA.root, scope: workspaceA.scope } as const;
+      // `cwd` is inside both worktrees -- inside B's own root exactly, and inside A's because B
+      // is nested under it.
+      const source = createStateDiagnosticDataSource(nestedStore, {
+        cwd: innerRoot,
+        globalConfigPath: join(root, 'config.toml'),
+      });
+      return { source, registeredA };
+    }
+
+    it('reports the outer workspace\'s own adapters, not the nested workspace\'s', async () => {
+      const { source, registeredA } = await nestedWorkspaceFixture();
+
+      const doctorA = await source.readDoctor(registeredA);
+
+      const adapters = doctorA.findings.find(({ check }) => check === 'adapters');
+      expect(adapters).toMatchObject({
+        status: 'pass',
+        message: 'No built-in adapter recognizes this worktree; only configured tasks are available.',
+      });
+    });
+  });
 });
 
 describe('wtm status --pr', () => {
