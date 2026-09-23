@@ -259,6 +259,16 @@ export class ProxyServer {
         return;
       }
       response.writeHead(backendResponse.statusCode ?? 502, backendResponse.headers);
+      // Headers are already flushed by the time this can fire (`pipe` only starts after this
+      // synchronous `writeHead`), so unlike `#proxyHtmlResponse`'s pre-header-flush branch there is
+      // only ever the "destroy the client response" outcome here -- never a 502 to write. Without
+      // this listener a backend that resets the connection mid-stream (a dev server restarting on
+      // a file-watch trigger, for one) never fires `'end'` on `backendResponse`, so `.pipe()` never
+      // calls `response.end()`: the client-facing response hangs open forever instead of erroring.
+      backendResponse.on('error', (error) => {
+        this.#onError(error);
+        response.destroy();
+      });
       backendResponse.pipe(response);
     });
     outgoing.on('error', (error) => {
