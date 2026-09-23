@@ -234,6 +234,36 @@ describe('prepareResources', () => {
     expect((await readdir(place.worktree)).some((entry) => entry.includes('wtm-partial'))).toBe(false);
   });
 
+  test('a copy never replaces a target that appeared while it was being staged', async () => {
+    // `create`'s own comment says a resource "does not already exist... nothing is ever
+    // replaced" -- but until the fix, getting a staged copy into place was a `rename`, which
+    // POSIX defines to atomically *replace* whatever is already at the destination. Two
+    // preparations racing the same never-yet-created target (two `wtm run` invocations hitting
+    // the same worktree at once is the realistic case) would both pass `observe`'s "missing"
+    // check before either finished writing, and the loser's `rename` would silently clobber
+    // the winner's file instead of refusing like `symlink`'s own policy already does above.
+    // A large-ish source widens the window between `observe`'s lstat and `create`'s copy, so
+    // both calls reliably interleave rather than running fully sequentially.
+    const place = await workspace();
+    await writeFile(join(place.main, 'first.bin'), Buffer.alloc(4 * 1024 * 1024, 'a'));
+    await writeFile(join(place.main, 'second.bin'), Buffer.alloc(4 * 1024 * 1024, 'b'));
+
+    const [first, second] = await Promise.all([
+      prepareResources(declare(place, {
+        seed: { path: 'seed.bin', policy: 'copy', source: '{main.root}/first.bin' },
+      })),
+      prepareResources(declare(place, {
+        seed: { path: 'seed.bin', policy: 'copy', source: '{main.root}/second.bin' },
+      })),
+    ]);
+
+    const states = [first[0]?.state, second[0]?.state].sort();
+    expect(states).toEqual(['degraded', 'ready']);
+    const loser = first[0]?.state === 'degraded' ? first[0] : second[0];
+    expect(loser?.detail).toContain('EEXIST');
+    expect((await readdir(place.worktree)).some((entry) => entry.includes('wtm-partial'))).toBe(false);
+  });
+
   test('an isolated resource is a directory of this worktree’s own', async () => {
     const place = await workspace();
 
