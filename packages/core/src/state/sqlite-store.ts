@@ -420,7 +420,16 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
           continue;
         }
 
-        const nextState = existing.state === 'ORPHANED' ? 'DISCOVERED' : existing.state;
+        // A worktree that is still prunable must stay ORPHANED here, not just on the pass that
+        // first marked it so: reviving it to DISCOVERED whenever the snapshot still reports it
+        // absent (the `cleanupOwnedStates` guard above only fires once, since ORPHANED is itself
+        // cleanup-owned) made the two branches fight every other reconcile -- ORPHANED, then
+        // DISCOVERED, then ORPHANED again, forever, for as long as nothing runs `git worktree
+        // prune`. Only a snapshot that has actually stopped reporting the record as prunable
+        // (the directory came back, or `git worktree repair` fixed the gitdir link) may revive it.
+        const nextState = existing.state === 'ORPHANED' && snapshotRecord.prunableReason === null
+          ? 'DISCOVERED'
+          : existing.state;
         this.#database.prepare(`
           UPDATE worktrees SET
             branch = ?, head_oid = ?, is_main = ?, is_locked = ?, state = ?, last_seen_at = ?
