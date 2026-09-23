@@ -1171,12 +1171,19 @@ async function refreshRepositories(
   repoPaths: readonly string[],
   command: 'analyze' | 'remove',
   notify: CommandNotifier | undefined,
+  globalConfigPath: string,
 ): Promise<{ refreshedAt: Map<string, string> } | { error: WtmError }> {
   const refreshedAt = new Map<string, string>();
   const remotes = new Set<string>();
   for (const repoPath of new Set(repoPaths)) {
     try {
-      const result = await refreshRemoteTrackingRefs(repoPath);
+      // The refresh has to fetch whatever `[git] allowed_remote_refs` actually names for this
+      // repository, not always `origin` -- otherwise it silently fetches and prunes the wrong
+      // remote while `analyzeRemotePersistence` judges persistence against the *configured* one,
+      // so a workspace that restricts persistence to a non-origin remote gets REFRESHED confidence
+      // over a remote-tracking ref this refresh never touched.
+      const { allowedRemoteRefs } = await resolveConfiguredGitSafety(repoPath, globalConfigPath);
+      const result = await refreshRemoteTrackingRefs(repoPath, allowedRemoteRefs);
       refreshedAt.set(repoPath, result.refreshedAt);
       for (const remote of result.remotes) remotes.add(remote);
     } catch (error) {
@@ -1294,7 +1301,9 @@ async function runProductionAnalyze(input: {
   }
   let refreshedAt = new Map<string, string>();
   if (input.refreshRemotes) {
-    const refresh = await refreshRepositories(selected.map(({ repoPath }) => repoPath), 'analyze', input.notify);
+    const refresh = await refreshRepositories(
+      selected.map(({ repoPath }) => repoPath), 'analyze', input.notify, input.globalConfigPath,
+    );
     if ('error' in refresh) return operationFailure('analyze', input.global, refresh.error);
     refreshedAt = refresh.refreshedAt;
   }
@@ -1366,7 +1375,7 @@ async function runProductionRemove(input: {
   // One refresh for the one repository, before any selector is resolved and before analysis, so
   // that both selector spellings below reach `runRemoveCommand` with the same remote knowledge.
   const refresh = input.refreshRemotes
-    ? await refreshRepositories([repositoryRoot], 'remove', input.notify)
+    ? await refreshRepositories([repositoryRoot], 'remove', input.notify, input.globalConfigPath)
     : { refreshedAt: new Map<string, string>() };
   if ('error' in refresh) return operationFailure('remove', false, refresh.error);
   const refreshed = refresh.refreshedAt.get(repositoryRoot);

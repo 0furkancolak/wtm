@@ -82,6 +82,26 @@ describe('[git] allowed_remote_refs', () => {
     expect(envelope.errors[0]?.code).toBe('WTM_CONFIG_INVALID');
     expect(await pathExists(fixture.linkedWorktreePath)).toBe(true);
   });
+
+  test('--refresh-remotes fetches the remote allowed_remote_refs actually names, not always origin', async () => {
+    const fixture = await createFixture();
+    const upstreamPath = join(fixture.root, 'upstream.git');
+    await fixture.git(fixture.root, ['init', '--bare', '--initial-branch=main', upstreamPath]);
+    await fixture.git(fixture.linkedWorktreePath, ['remote', 'add', 'upstream', upstreamPath]);
+    await fixture.git(fixture.linkedWorktreePath, ['push', '-u', 'upstream', 'feature/safe']);
+    // Deletes the branch directly on the bare remote rather than via a push from this client, so
+    // this client's own `refs/remotes/upstream/feature/safe` stays stale -- exactly the "force-
+    // deleted upstream, tracking ref not yet caught up" state `--refresh-remotes` exists to fix,
+    // and `origin` (still holding the branch) must not be able to paper over it.
+    await fixture.git(upstreamPath, ['update-ref', '-d', 'refs/heads/feature/safe']);
+    await writeWorkspaceConfig(fixture, '[git]\nallowed_remote_refs = ["refs/remotes/upstream/*"]\n');
+
+    const envelope = await remove(fixture, ['--refresh-remotes']);
+
+    expect(envelope.ok).toBe(false);
+    expect(envelope.errors.map(({ code }) => code)).toEqual(['GIT_HEAD_NOT_REMOTE_PERSISTED']);
+    expect(await pathExists(fixture.linkedWorktreePath)).toBe(true);
+  });
 });
 
 async function writeWorkspaceConfig(fixture: GitSafetyFixture, contents: string): Promise<void> {
