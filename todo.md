@@ -4297,6 +4297,195 @@ veriyor (aşağıya bak) — bu Kaptan'ın hesabına bağlı değil, gerçek bir
 
 ---
 
+# Bilinçli olarak açık bırakılan denetim bulguları
+
+2026-09-21'den beri todo.md'nin ana maddeleri (P0-P3) tükendikten sonra, ayrı bir düzenli
+karşıt-denetim (adversarial audit) yürütüldü: her turda birkaç paralel ajan koda bakıp gerçek hata
+arıyor, her bulgu elle doğrulanıyor, ve K1-K12 ile aynı duruşla (bkz. madde 1'in üstündeki K notları)
+**tasarım kararı gerektiren** bulgular tek taraflı "düzeltilmiş" sayılmadan burada bırakılıyor —
+spekülatif düzeltme yok, sadece Kaptan'ın kararını bekleyen, tekrar keşfedilmesin diye yazılı
+tutulan bir liste. Aşağıdaki her madde koddan doğrudan doğrulanmış bir bulgu; bir madde çözülürse
+satırı `[x]`'e çevirip kısa bir not eklemek yeterli — ayrı bir PR/plan dosyasına gerek yok.
+
+- [ ] **Proxy policy'si daemon içinde tutarsız donuyor/donmuyor.** `[proxy]` daemon başlangıcında
+      donduruluyor (`runtime-factory.ts`) ama `task-resolution.ts`'in CORS-origin hesaplaması her
+      `resolveWorktreeRuntime` çağrısında diskten taze okuyor — `[budgets]`/`[jobs]`/`[dev-overlay]`
+      gibi "restart gerekiyor" tutarlılığı bozuluyor. Karar: `[proxy]`'yi kardeşleri gibi dondur mu,
+      yoksa gerçek hot-reload mu? Round 6.
+- [ ] **Proxy, henüz başlamamış bir backend'i 502'liyor.** Endpoint lease, task process spawn
+      edilmeden/HTTP listener bind etmeden önce `ACTIVE` oluyor; `proxy.ts`'in `#proxyRequest`/
+      `#handleUpgrade`'i `ECONNREFUSED` dahil her bağlantı hatasını anında, retry'sız 502'liyor.
+      Build/migration adımı olan bir task ilk isteği 502 alabilir. Karar: retry/backoff bütçesi mi,
+      readiness probe'dan sonra mı routable? Round 7. (Round 16'da düşük güvenle, doğrulanmamış:
+      proxy'de bağlantı timeout'u da hiç yok olabilir — ayrıca kontrol edilmeli.)
+- [ ] **Daemon soketi, hiç byte göndermeyen bağlantıyı asla zaman aşımına uğratmıyor.** Bir client
+      `connect()` sonrası hemen çökerse, `#maxConnections` (varsayılan 64) slotlarından biri sonsuza
+      dek tutulur. **Denendi ve geri alındı:** `#activate`'te bir connect-timer kurmak,
+      `DaemonClient.start()`'ın kasıtlı olarak uzun süre istek göndermeden açık kalan bağlantı
+      deseniyle çakıştı (`heavy-job-native-lifecycle.scenario.ts`'in `timeout` modu ~5s boyunca
+      istek göndermeden bekliyor). Karar: protokol seviyesinde "buradayım, izliyorum" ayrımı mı,
+      yoksa mevcut örtük-güven modeli (soket zaten aynı uid'e kilitli) kabul mü? Round 8.
+- [ ] **`wtm create` (tekli), `remove`/`gc`/`create-feature`'ın aksine repository operation lease
+      almıyor.** `create.ts`'in kendi yorumu bunu yalnızca "tekli repo'da partial state yok" ile
+      gerekçelendiriyor — ama bu, `remove`/`gc`'nin lease'in repo-geneli dışlayıcılığına dayanan
+      varsayımını (başka hiçbir şey eşzamanlı mutasyon yapmıyor) ele almıyor. Gerçek bozulma
+      üretilemedi (Git'in kendi ref/worktree-admin kilitlemesi büyük olasılıkla emiyor). Karar:
+      tutarlılık için `create` de aynı lease'i alsın mı? Round 8.
+- [ ] **Adapter protokol versiyon kontrolü, dokümante edilen politikayla çelişiyor.**
+      `isProtocolVersionCompatible` (`packages/protocol/src/adapter.ts`) major VE minor'da tam eşleşme
+      istiyor; `docs/06-adapter-protocol.md` daha gevşek bir politika tanımlıyor (eski minor'lu
+      adapter, gerekli alanlar destekleniyorsa kabul edilmeli). Bugün zararsız (yalnızca 1.0 var) —
+      protokol 1.1 çıktığı gün her 1.0 adapter'ı haksız yere reddedilir. Protokol 1.1'i tasarlayan
+      kişiye not: bu fonksiyonu o değişiklikle birlikte düzelt. Round 8/19 (aynı bulgu iki kez, ayrı
+      doc-drift açısıyla teyit edildi).
+- [ ] **`MemoryManagedProcessStore` (testkit) tek global reservation slotu kullanıyor.** Gerçek store
+      ve `process-supervisor.test.ts`'in kendi `FakeStore`'u `Map` ile doğru key'liyor; bu test
+      double'ı değil. Bugün hiçbir test iki eşzamanlı reservation'ı aynı instance üzerinde
+      denemediği için sorun çıkmıyor. Bir test "Reservation not owned" ile mysteriously başarısız
+      olursa `#reservation`'ı `Map<string, {token}>` yap. Round 9.
+- [ ] **`runCli()`'dan kaçan bir exception, `--json` isteneceğinde JSON zarf değil düz metin
+      basıyor.** `bin.ts`'in top-level `onError`'ı `--json` bayrağını kontrol etmiyor —
+      CLAUDE.md'nin zarf kontratını ihlal eder. Round 9'da somut bir kaçış noktası bulunamadı
+      (incelenen her handler kendi try/catch'ine sahip); gerçek bir reproduksiyon çıkarsa `onError`'ı
+      `--json`-farkında yap (argv'de kontrol et, `ok:false` minimal bir zarf bas).
+- [ ] **`allocateEndpoint`'in legacy (non-batch) port-probe yolu, blocking `spawnSync` çağrıları
+      boyunca `BEGIN IMMEDIATE` yazma kilidini tutabiliyor.** `busy_timeout` (5s) aşılabilir; eşzamanlı
+      başka bir daemon yazması (`process start`, heavy job, CI watch kaydı) `SQLITE_BUSY` ile
+      başarısız olabilir. Varsayılan batch-probe yolu (`isEndpointAvailable`) buna karşı bağışık.
+      Orta güven — legacy yolun gerçekte ne sıklıkla kullanıldığı belirsiz. `packages/core/src/state/
+      sqlite-store.ts:1004-1114`. Round 11.
+- [ ] **Dev-overlay'in HTML injection yolu, boyut sınırı olmadan tüm response'u buffer'lıyor.**
+      `ProxyServer#proxyHtmlResponse` (`packages/daemon/src/proxy.ts:284-312`) "dev server HTML'i
+      küçüktür" varsayımına dayanıyor ama hiçbir şey bunu zorlamıyor; büyük bir `text/html` yanıtı
+      (webpack-bundle-analyzer raporu, Storybook build'i) daemon belleğini sınırsız büyütebilir.
+      Düzgün düzeltme streaming'e geçişi gerektirir (cap aşılınca injection'dan vazgeçip
+      `pipe(response)`'a düş) — `proxy-dev-overlay.test.ts`'in test ettiği davranışı değiştiren
+      gerçek bir tasarım kararı. Orta güven; proxy yalnızca loopback'e bağlı (makine dışından
+      erişilemez). Round 12.
+- [ ] **16 MiB'ı aşan bir CI job log'u, "transient" sınıflandırılıp 2 saatlik CI-watch süresi
+      boyunca sonsuza dek retry ediliyor.** `gh-runner.ts`'in truncation mesajı `classify()`'ın
+      hiçbir pattern'iyle eşleşmiyor, `transient`'a düşüyor; job zaten bitmiş olduğu için her
+      retry aynı (kısaltılmış) log'u üretiyor. `CiProviderFailure`'ın üç `kind`'ından hiçbiri tam
+      uymuyor — dördüncü bir kind mi, yoksa `watcher.ts`'te job-log'a özel bir "bir kere dene, sonra
+      vazgeç" kuralı mı? Round 12.
+- [ ] **`wtm remove --resume`, Git zaten worktree'yi sildiyse o worktree'yi bir daha asla
+      seçemiyor.** Her selector adayı canlı Git topolojisinden geliyor (state DB'den değil); işlem
+      `git-remove` aşamasından sonra `reconcile` bitmeden ölürse, operation lease terk edilmiş
+      kalır ve `--resume` başarısız olur (Git artık o worktree'yi hiçbir şekilde listelemiyor).
+      Kurtarma yolu var (`wtm forget --force` + `wtm init`) ama kullanıcıya sinyallenmiyor. Gerçek
+      düzeltme, selector'ın `remove --resume` için DB-only bir adaya düşmesini gerektirir — bu
+      selector `ci`/`create-feature`/`analyze` ile paylaşılıyor, yani birkaç komutu etkiler. Round 13.
+- [ ] **Harici (external) adapter altyapısı tamamen inşa edilmiş ama hiçbir production çağrı
+      noktası yok.** Trust/execution/sandboxing (`adapter-trust.ts`, `external-adapter.ts`,
+      `adapter-runner.ts`) tam ve test edilmiş, ama `invokeExternalAdapter` yalnızca kendi
+      tanımında ve testlerinde geçiyor; daemon'ın gerçek detect→plan→apply yolu yalnızca
+      built-in adapter'ları çağırıyor. Karar: v0.2.0'da harici adapter'lar gerçekten
+      kullanılabilir mi olsun (kendi kapsamlı planı gerekir), yoksa dokümantasyon "bilinçli olarak
+      eksik" olarak mı düzeltilsin? Round 16.
+- [ ] **`numericId` repo-başına atanıyor ama proxy slug çakışma çözümü onu global bir yaş
+      sırası gibi karşılaştırıyor; CORS de proxy'den farklı bir çakışma-grubu tanımı kullanıyor.**
+      İki farklı repo'daki worktree'ler slug'da çakışabilir ve `numericId` hangisinin önce
+      oluşturulduğunu söylemez (Finding 2); `canonicalProxyHostname`'in CORS hesaplaması
+      `buildProxyRoutes`'tan farklı bir collision-domain kullanıyor, worktree'nin CORS izin
+      listesi kendi gerçek proxy hostname'iyle eşleşmeyebilir (Finding 3). Tek bir paylaşılan
+      collision-domain hesaplaması gerektiren mimari bir karar — parça parça yamanmamalı. Round 16.
+- [ ] **Yarıda kalan kopyalama/klonlama, hiçbir şeyin tanımadığı/temizlemediği bir
+      `.wtm-partial-*` yetim dosyası bırakabiliyor.** `preparation.ts`'in staging'i `copyFile`
+      ile `finally`'deki silme arasında öldürülürse dosya kalıcı kalır ve `wtm remove`'u sessizce
+      engelleyebilir. **Denendi ve geri alındı:** staging öncesi süpürme, eşzamanlı bir race testini
+      kırdı (`preparation.test.ts`). Yaşa dayalı bir sezgisel de reddedildi (gerçekten yavaş bir
+      klonu yanlışlıkla silebilir). Gerçek bir crash-recovery tasarımı gerekiyor (sahiplik/liveness
+      kontrolü ya da kurtarılabilir bir staging-intent kaydı). Round 17.
+- [ ] **`SPAWN_OWNERSHIP_UNCONFIRMED`, bir heavy-job-queue slotunu kalıcı olarak tıkıyor.**
+      `HeavyJobQueue#reconcile`, bu hatayı gördüğünde sonsuza dek `return` ediyor; kodda bunu temizleyen
+      başka hiçbir yer yok. Karar: sınırlı bir yeniden-probe mu, operatöre görünür "sıkışmış iş"
+      raporu mu, yoksa slotun zorla serbest bırakılabileceği açık bir terminal durum mu? Round 17.
+- [ ] **Dev proxy, `127.0.0.1`/`::1`'i kullanıcıya özel kabul ediyor — paylaşımlı çok kullanıcılı
+      bir host'ta bu doğru değil.** TCP loopback'in uid tabanlı bir ACL'i yok (Unix soketinin aksine);
+      aynı makinedeki başka bir local kullanıcı proxy portuna bağlanıp branch adından türetilen
+      (tahmin edilebilir) hostname'ler üzerinden dev-server backend'lerine erişebilir.
+      `originMatchesHost` yalnızca checklist API'sini CSRF'e karşı korur, sıradan proxy isteklerini
+      ya da WebSocket upgrade'lerini kapsamaz. Orta önem — proxy varsayılan kapalı, config şeması
+      loopback-dışını zaten reddediyor. Karar: v0.2.0'da paylaşımlı-host izolasyonu kapsamda mı?
+      Kapsamdaysa mekanizma (URL/header'da paylaşılan sır) ne olmalı? Round 18.
+- [ ] **`[budgets].max_processes`, `HeavyJobQueue`'nun başlatma yolunda hiç kontrol edilmiyor** —
+      ama heavy-job process'leri aynı host-geneli sayaca dahil. `#checkBudgets()` yalnızca
+      interaktif `start`/`restart` dalından çağrılıyor; `HeavyJobQueue#launch` supervisor'ı
+      doğrudan çağırıyor, `HeavyJobQueueOptions`'ta `budgets` alanı yok. Küçük bir host'ta
+      (`max_processes=2`) kuyruğa alınmış heavy job'lar sınırı tamamen aşabilir, sonraki alakasız
+      bir `wtm start` `RUNTIME_PROCESS_BUDGET_EXCEEDED` alır ama gerçek sebep (arka plan job'ları)
+      hata bağlamında görünmez. Karar: `HeavyJobQueue`'yu da aynı bütçeye bağla, yoksa
+      dokümanı/şemayı "yalnızca interaktif task'lar" diye düzelt mi? Round 19.
+- [ ] **`measureDaemonSocketPath` her zaman POSIX bind-path türetmesi kullanıyor,
+      `SocketAddressPolicy.boundPathFor`'u (platforma özel türetme için var olan tam mekanizma) hiç
+      danışmıyor.** `windowsSocketAddressPolicy.boundPathFor` production kodunda hiçbir yerden
+      çağrılmıyor — tamamen ölü API. Gerçek bir Windows pipe adresi için POSIX türetmesi anlamsız bir
+      sonuç üretiyor (`.\.\pipe\wtm-<hash>\wtmd.sock`), ama varsayılan Windows pipe kökü sabit
+      uzunlukta olduğu için `assertDaemonSocketPathFits`'in geçme/kalma sonucu bugüne kadar
+      gözlemlenen bir şekilde değişmiyor. Karar: `SocketAddressPolicy`'yi tüm çağrı noktalarına
+      (5 dosya) sar, yoksa ölü `boundPathFor`'u kaldır mı? Round 19.
+- [ ] **Son `git worktree remove` adımı başarısız olduğunda, o ana kadar tamamlanmış temizlik
+      ilerlemesi (durdurulan process'ler, serbest bırakılan endpoint'ler) hata zarfından
+      düşüyor.** Hiçbir şey gerçekten kaybolmuyor/bozulmuyor (operation lease zaten aşama
+      ilerlemesini journal'lıyor, her adım idempotent) — bu salt bir gözlemlenebilirlik boşluğu.
+      Kullanıcı yalnızca Git hatasını görüyor, "process'leriniz zaten durduruldu, yalnızca son adım
+      başarısız oldu" bilgisini görmüyor. Düzeltme, thrown error üzerinden partial-progress
+      taşımanın şeklini seçmeyi gerektiriyor (context'e ekle, veya yeni bir error subclass) — küçük
+      ama gerçek bir envelope-contract kararı (`docs/18` güncellemesi gerektirir). Round 21.
+- [ ] **`recordResourceGcJournal`'ın read-then-write'ı, dosyadaki her diğer çok-adımlı yazmanın
+      aksine transaction'a sarılmamış.** İki writer aynı `operation_id` üzerinde yarışırsa (yalnızca
+      iki ayrı process/connection'dan mümkün, better-sqlite3 tek process içinde senkron), journal
+      phase'i sessizce geriye gidebilir (`finalized` → `quarantined`), GC resume mantığını zaten
+      silinmiş bir storage object'i hâlâ silinmesi gerekiyormuş gibi ele almaya itebilir. Bugünkü
+      mimaride canlı bir tetikleyici bulunamadı (`resource_cleanup_leases` zaten serileştiriyor).
+      Düzeltme çok basit ve güvenli (diğer kardeş metodlar gibi `this.#database.transaction(...)
+      .immediate()`'a sar) — yalnızca kayıp gitmesin diye burada. Round 22.
+- [ ] **Built-in adapter'ların `actions`/`capabilities`'i deklare ediliyor ama hiçbir zaman
+      çalıştırılabilir bir task'a sentezlenmiyor.** `detectAdapterTasks` yalnızca her adapter'ın
+      `plan.tasks`'ını okuyor; `plan.capabilities` (örn. npm'in `{'deps.install': {action:
+      'npm.install'}}`) hiçbir yerde task sentezi için kullanılmıyor, ve `adapterActionSchema`'nın
+      hiçbir varyantında bir id/name alanı yok — yani `capabilities[x].action` mekanik olarak bir
+      `actions[]` girdisine bağlanamaz. `docs/06`'nın kendi kanonik örneği `tasks: {}` + `capabilities`'i
+      zaten doğru şekil olarak gösteriyor — yani bu bir tasarım sorusu (bir capability adı, açıkça
+      `[tasks]`'ta tanımlanmadan runtime'da çözülmeli mi?), tek taraflı "sadece bağla" değil. Round 27.
+- **Doğrulanamadı, düşük güven (round 6):** `findRegistration`, üç kardeş daemon handler'ının
+  aksine `cwd`'yi `realpath` ile kanonikleştirmiyor. Gerçek, tekrarlanabilir bir başarısız komut
+  bulunamadı — gerçek bir reproduksiyon çıkana kadar düzeltilmeden bırakıldı.
+
+---
+
+# Kaptan'ın hesabına/donanımına bağlı kapılar — özet
+
+Bu liste tek başına eksiksiz değildir; her satır todo.md içindeki asıl, ayrıntılı maddeye işaret
+eder — tekrar aramak yerine burada tek bakışta toplanmıştır. Kod ve gate tarafında WTM'nin
+yapabileceği hiçbir şey kalmamıştır; hepsi Kaptan'ın hesabı, donanımı veya GitHub ayarları
+gerektirir.
+
+- [ ] **Apple Developer ID imzalama + notarization** — `MACOS_NOTARIZATION_APPLE_ID/PASSWORD/
+      TEAM_ID` secret'ları gerekiyor. Madde 5/36, satır ~4226-4227, 4254-4255.
+- [ ] **İlk `npm publish` + `@next`/`latest` dist-tag doğrulaması** — npm hesabı + 2FA gerekiyor.
+      Madde 38, satır ~4252-4253.
+- [ ] **Gerçek bir `v*` etiketi (tag) atılması** — yukarıdaki ikisi ve Homebrew/Scoop tap
+      push'larının hepsi buna bağlı.
+- [ ] **GitHub Actions kotasının dönmesi** — 2026-09-21'den beri kapalı (bkz.
+      `docs/superpowers/plans/2026-09-21-ci-outage-evidence-debt.md`); dönene kadar macOS
+      arm64/x64, Linux arm64 CI kanıtı ve Linux x64/win32'nin *taze* kanıtı alınamıyor
+      (yerel gate her PR'da koşuluyor, CI kanıtı ayrı). Satır ~4228-4233.
+- [ ] **Gerçek Windows donanımı** — win32 native gate (PowerShell/Task Scheduler backend, gerçek
+      NTFS/named pipe davranışı) yalnızca CI'da `continue-on-error` ile biliniyor; madde 9,
+      satır ~1480, ~1501.
+- [ ] **Gerçek, canlı iki-AI-oturumu denemesi** — RAM/eşzamanlılık kabul kriterinin son parçası;
+      satır ~988, ~1117, ~1129.
+- [ ] **GitHub repo About açıklaması + topics** — Kaptan'ın doğrudan Settings'ten uygulaması
+      gerekiyor; önerilen metin ve topics listesi zaten yazılı, satır ~3285-3338.
+- [ ] **Homebrew tap'ine gerçek push + `brew install` doğrulaması** — altyapı hazır
+      (`render-homebrew-formula.ts`, `release.yml`'in `formula` job'ı), yalnızca gerçek tag +
+      `HOMEBREW_TAP_TOKEN` bekliyor. Satır ~3744-3757.
+- [ ] **Scoop bucket'ine gerçek push + `scoop install` doğrulaması** — aynı durum
+      (`render-scoop-manifest.ts`, `SCOOP_BUCKET_TOKEN`). Satır ~3769-3775.
+
+---
+
 # Önerilen geliştirme sırası
 
 **2026-09-09 güncellemesi:** Tamamlanan madde 16/34'ün native CI doğrulamasıyla birlikte
