@@ -66,6 +66,25 @@ describe('featureGroup', () => {
     expect(featureGroup(store, registration).map(({ id }) => id)).toEqual(['worktree-web']);
   });
 
+  test('drops a sibling mid-teardown, not only one `reconcileWorktrees` has already settled', () => {
+    // `CLEANING` is what a removal sets on its own worktree before `git worktree remove` runs
+    // (`removal-coordinator.ts`'s `releaseEndpointLeases`) -- well before `reconcileWorktrees`
+    // gets a chance to settle it to `ORPHANED`/`REMOVED`. A concurrent resolution against a live
+    // sibling, during that whole window, must not still treat the worktree being removed as a
+    // candidate for the group's shared endpoint lease: `allocateStableEndpoint` (`endpoint-plan.ts`)
+    // would attach a fresh lease to a worktree whose directory is already gone, which
+    // `reconcileWorktrees` then silently releases once it notices -- splitting the group's shared
+    // endpoint between a live process and a lease nothing points at.
+    const api = repository('repo-api', '/projects/demo/api');
+    const web = repository('repo-web', '/projects/demo/web');
+    const apiWorktree = worktree('worktree-api', api.id, '/projects/demo/api', 'feature', 'CLEANING');
+    const webWorktree = worktree('worktree-web', web.id, '/projects/demo/web', 'feature', 'RUNNING');
+    const store = fakeStore([api, web], [apiWorktree, webWorktree]);
+    const registration: Registration = { workspace, repository: web, worktree: webWorktree };
+
+    expect(featureGroup(store, registration).map(({ id }) => id)).toEqual(['worktree-web']);
+  });
+
   test('keeps the registration\'s own worktree even in a dead state', () => {
     // A caller resolving *against* the removed worktree itself (e.g. mid-removal, before its row
     // is deleted) must still get itself back -- only siblings are filtered.

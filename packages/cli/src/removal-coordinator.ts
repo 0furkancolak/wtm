@@ -251,6 +251,15 @@ export function createProductionRemovalCoordinator(
     },
 
     async releaseEndpointLeases(subject: RemovalSubject): Promise<EndpointReleaseReport> {
+      // Mark the worktree `CLEANING` before touching a single lease. `git worktree remove`
+      // below is a real subprocess call with real wall-clock duration, and nothing else marks
+      // this worktree dead until `reconcile` runs afterwards -- so without this, a concurrent
+      // allocation on a live feature-group sibling can still see this worktree as the group's
+      // "owner" for the whole of that window and attach a brand-new lease to it, which
+      // `reconcileWorktrees` then silently releases once it notices Git no longer reports this
+      // worktree. `featureGroup` (`@wtm/daemon`) already excludes `CLEANING` worktrees from that
+      // computation; this is the one place that state was never set for a removal in progress.
+      store.markWorktreeCleaning(subject.worktreeId);
       // The post-removal store step: a removed worktree's endpoint leases, its CI watches
       // (`wtm ci watch`), its task overrides (`wtm task set`) and its dev-overlay checklist
       // (`wtm checklist set`) all end here, since worktree rows are never deleted.

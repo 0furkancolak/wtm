@@ -269,8 +269,16 @@ const cases: Record<string, () => Promise<unknown>> = {
       state,
       worktree: worktreeId === sibling.id ? 'sibling' : worktreeId === prepared.worktreeId ? 'removed' : 'unknown',
     }));
+    // The worktree being removed must already read as dead to `featureGroup` by the time this
+    // call returns -- `git worktree remove` (a real subprocess with real wall-clock duration)
+    // and `reconcile` both still run after this stage, and neither marks the worktree dead any
+    // sooner. Without this, a concurrent allocation on `sibling` during that window would still
+    // see the worktree being removed as the group's "owner" and attach a fresh lease to it,
+    // which `reconcileWorktrees` then silently releases once it notices Git no longer reports it.
+    const stateAfterRelease = prepared.store.listWorktrees(prepared.repositoryId)
+      .find(({ id }) => id === prepared.worktreeId)?.state ?? null;
 
-    return { released: report.released, leases };
+    return { released: report.released, leases, stateAfterRelease };
   },
 
   /**

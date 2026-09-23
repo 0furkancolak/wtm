@@ -70,6 +70,10 @@ class FailingReconciliationStore implements StateStore, StateRegistrationReader 
     return this.inner.reconcileWorktrees(repositoryId, snapshot);
   }
 
+  markWorktreeCleaning(worktreeId: string): void {
+    this.inner.markWorktreeCleaning(worktreeId);
+  }
+
   allocateEndpoint(input: EndpointRequest): EndpointLease {
     return this.inner.allocateEndpoint(input);
   }

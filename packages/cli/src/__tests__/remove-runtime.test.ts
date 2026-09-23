@@ -97,6 +97,7 @@ describe('runtime-aware wtm remove', () => {
         { name: 'api', port: 42_000, state: 'ACTIVE', worktree: 'sibling' },
         { name: 'web', port: 42_001, state: 'ACTIVE', worktree: 'sibling' },
       ],
+      stateAfterRelease: 'CLEANING',
     });
   }, scenarioTestTimeoutMs);
 
