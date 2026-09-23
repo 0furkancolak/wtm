@@ -361,9 +361,12 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
   // itself would never be constructed and handed to `ProxyServer`.
   const devOverlayActive = devOverlayPolicy.enabled === true
     || Object.values(devOverlayPolicy.repos ?? {}).some((repo) => repo?.enabled === true);
-  // The checklist's browser-facing toggle endpoint (todo item 46b, W11-1) shares the exact same
-  // gate `htmlInjector` above uses — there is no second config flag for this half of the overlay,
-  // since a checklist with no overlay to render it in has nothing to toggle from.
+  // The checklist's browser-facing toggle endpoint (todo item 46b, W11-1) is wired in behind the
+  // same aggregate gate `htmlInjector` above uses — there is no second config flag for this half
+  // of the overlay, since a checklist with no overlay to render it in has nothing to toggle from.
+  // `checklistApiHandler` itself re-checks `isDevOverlayEnabledForRepo` per request, the same way
+  // `devOverlayHtmlInjector` does, so a repository opted out via `[dev-overlay.repos.<name>]` stays
+  // opted out even while the aggregate is `true` for some other repository on this shared proxy.
   const proxy = proxyPolicy.enabled === true ? new ProxyServer({
     port: proxyPolicy.port ?? defaultProxyPort,
     resolveRoute: (hostname) => buildProxyRoutes(stateStore).get(hostname) ?? null,
@@ -371,7 +374,7 @@ export async function createProductionDaemon(options: ProductionDaemonOptions = 
     onError,
     ...(devOverlayActive ? { htmlInjector: devOverlayHtmlInjector(stateStore, devOverlayPolicy) } : {}),
     ...(devOverlayActive && stateStore.checklist !== undefined
-      ? { overlayApi: checklistApiHandler(stateStore.checklist) } : {}),
+      ? { overlayApi: checklistApiHandler(stateStore.checklist, stateStore, devOverlayPolicy) } : {}),
   }) : null;
   const taskOverrides = stateStore.taskOverrides === undefined ? null : new TaskOverridesHandler({
     store: stateStore.taskOverrides,
