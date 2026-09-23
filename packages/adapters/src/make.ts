@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { defineBuiltInAdapter, detectMarkers } from './built-in';
 
@@ -116,9 +116,20 @@ function hasSeparateWorkspace(context: { workspace: { root: string }; worktree: 
  * none exists. The filename is kept alongside the contents because `workspace-here:<target>`
  * needs it to build an explicit `-f` path rather than relying on `make`'s own cwd-relative file
  * resolution.
+ *
+ * The name is matched against the directory listing, not probed with `readFile`: on a
+ * case-insensitive filesystem (the macOS default) reading `makefile` succeeds for a file named
+ * `Makefile`, and the `-f` path would then name a spelling that does not exist on disk.
  */
 async function locateMakefile(root: string): Promise<{ name: string; contents: string } | null> {
+  let entries: ReadonlySet<string>;
+  try {
+    entries = new Set(await readdir(root));
+  } catch {
+    return null;
+  }
   for (const name of makefileNames) {
+    if (!entries.has(name)) continue;
     try {
       return { name, contents: await readFile(join(root, name), 'utf8') };
     } catch {

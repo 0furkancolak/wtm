@@ -7,7 +7,7 @@ All notable changes are documented here. This project follows Semantic Versionin
 Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract
 are unstable, and a breaking change may land in a minor release without a deprecation window.
 
-## [0.2.0-rc.1] - 2026-09-23
+## [0.2.0-rc.2] - 2026-09-23
 
 Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract
 are unstable, and a breaking change may land in a minor release without a deprecation window.
@@ -28,6 +28,23 @@ Installing with `curl` and `tar` as the README describes is unaffected — neith
 quarantine attribute. This note is a workaround for a defect and is removed once the stable macOS
 binaries are Developer ID signed and notarized.
 <!-- gatekeeper-quarantine:end -->
+
+### Fixed
+
+- The Make adapter's `workspace-here:<target>` task named `-f {workspace.root}/makefile` for a
+  file called `Makefile` on a case-insensitive filesystem (the macOS default), because probing
+  `makefile` with a read succeeded there. The name is now matched against the directory listing,
+  so the `-f` path is always the spelling on disk.
+- The test suite no longer depends on the machine it runs on. Several CLI tests reached the
+  developer's own running daemon or opened their real state database (which panicked Bun's SQLite
+  binding and took `main.test.ts` down with it), and a daemon scenario put its socket under
+  macOS's long per-process `TMPDIR`, past the 104-byte socket address limit. All of them now use
+  paths the test owns.
+
+## [0.2.0-rc.1] - 2026-09-23
+
+Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract
+are unstable, and a breaking change may land in a minor release without a deprecation window.
 
 ### Added
 

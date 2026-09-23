@@ -237,6 +237,9 @@ describe('Commander CLI', () => {
         cwd: fixture.repoPath,
         daemonSocketPath: socketPath,
         taskTargetDatabasePath: join(fixture.root, 'state.db'),
+        // `create` reads its state through this seam, not the task-target one above. Left unset it
+        // opened the developer's real state database, which panics this Bun build's SQLite binding.
+        analysisDatabasePath: join(fixture.root, 'state.db'),
         taskTargetGlobalConfigPath: join(fixture.root, 'config.toml'),
         ...output.io,
       });
