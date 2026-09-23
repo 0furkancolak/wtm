@@ -6,7 +6,15 @@ import { idleSchema } from './idle';
 
 const commandSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
 
-export const taskSchema = z.object({
+/**
+ * Field-level shape only, with none of `taskSchema`'s cross-field rules -- used to validate one
+ * config *layer* in isolation, before it is merged with the others. A field this shape accepts
+ * standing alone may still combine with a sibling from a different layer into something
+ * {@link taskSchema}'s `superRefine` rejects (`queue = true` in a workspace file, `queue_env` in
+ * a repo's own `.wtm.toml`); that combination is only checked once, on the merged result. See
+ * {@link parseWtmConfigLayer}.
+ */
+const taskShape = z.object({
   description: z.string().min(1).optional(),
   expose: z.boolean().optional(),
   run: commandSchema.optional(),
@@ -26,7 +34,9 @@ export const taskSchema = z.object({
   on_failure: z.enum(['fail', 'warn', 'continue']).optional(),
   requires: z.array(z.string().min(1)).optional(),
   env: z.record(z.string(), z.string()).optional(),
-}).strict().superRefine((task, context) => {
+}).strict();
+
+export const taskSchema = taskShape.superRefine((task, context) => {
   if (task.queue_env !== undefined && task.queue !== true) {
     context.addIssue({ code: 'custom', message: 'queue_env requires queue = true' });
   }
@@ -61,7 +71,8 @@ export const taskSchema = z.object({
   }
 });
 
-const portSchema = z.object({
+/** Field-level shape only -- see {@link taskShape}'s docstring for why. */
+const portShape = z.object({
   strategy: z.enum(['stable-dynamic', 'offset', 'fixed']).optional(),
   preferred: z.number().int().min(1).max(65535).optional(),
   stride: z.number().int().positive().optional(),
@@ -77,7 +88,9 @@ const portSchema = z.object({
    * so an endpoint that serves something else — a database, a queue — says so and stays out.
    */
   origin: z.boolean().optional(),
-}).strict().superRefine((port, context) => {
+}).strict();
+
+const portSchema = portShape.superRefine((port, context) => {
   // `endpoint-plan.ts`'s `preferredPort()` only does the offset math when `preferred` is set --
   // `strategy = "offset"` with no `preferred` silently falls back to plain "any free port in
   // range" allocation, the same as no strategy at all, defeating the whole point of writing
@@ -188,10 +201,12 @@ const resourceSchema = z.object({
   retention: z.enum(['ephemeral', 'persistent']).optional(),
 }).strict();
 
-const portsSchema = z.object({
+const portsShape = z.object({
   strategy: z.enum(['stable-dynamic']).optional(),
   range: z.string().min(1).optional(),
-}).passthrough().superRefine((ports, context) => {
+}).passthrough();
+
+const portsSchema = portsShape.superRefine((ports, context) => {
   // A fixed port is never leased (see `endpoint-plan.ts`'s `fixedPort`, deliberately: leasing it
   // would let the allocator move it the moment something else holds it), so it never reaches the
   // one place collisions are otherwise caught -- `endpoint_leases`'s active-port uniqueness. Two
@@ -231,15 +246,38 @@ const portsSchema = z.object({
 });
 
 /**
+ * Field-level shape only -- see {@link taskShape}'s docstring for why. `[ports.<name>]` entries
+ * still get their own per-field validation (a `preferred` that isn't a number is still wrong on
+ * its own, in one file), but the fixed-port-collision and offset-requires-preferred rules can
+ * span layers (two files each naming one fixed port, or `strategy` and `preferred` landing in
+ * different files) exactly the way {@link taskShape}'s cross-field rules can, so those are left
+ * for the merged result.
+ */
+const portsShapeOnly = portsShape.superRefine((ports, context) => {
+  for (const [name, value] of Object.entries(ports)) {
+    if (name === 'strategy' || name === 'range') continue;
+    const parsed = portShape.safeParse(value);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        context.addIssue({ ...issue, path: [name, ...issue.path] });
+      }
+    }
+  }
+});
+
+/**
  * Which remote-tracking refs count as "this branch is safely persisted elsewhere" for `wtm
  * remove` and `wtm analyze`. Validated with the exact rule {@link normalizeAllowedRemoteRefs}
  * enforces at analysis time, so a pattern that would later throw a bare `TypeError` deep inside
  * `analyzeRemotePersistence` is instead reported here, at config load, as a coded
  * `WTM_CONFIG_INVALID` naming the offending pattern.
  */
-const gitSchema = z.object({
+/** Field-level shape only -- see {@link taskShape}'s docstring for why. */
+const gitShape = z.object({
   allowed_remote_refs: z.array(z.string().min(1)).min(1).optional(),
-}).strict().superRefine((git, context) => {
+}).strict();
+
+const gitSchema = gitShape.superRefine((git, context) => {
   if (git.allowed_remote_refs === undefined) return;
   try {
     normalizeAllowedRemoteRefs(git.allowed_remote_refs);
@@ -252,40 +290,58 @@ const gitSchema = z.object({
   }
 });
 
-export const wtmConfigSchema = z.object({
-  jobs: z.object({
-    max_concurrent_heavy: z.number().int().min(1).max(64).optional(),
-    memory: z.object({
-      budget_mib: z.number().int().min(1).max(1_048_576),
-      reserve_mib: z.number().int().min(0).max(1_048_576).optional(),
+/**
+ * Built twice: once with the full task/ports/git schemas (their `superRefine` cross-field rules
+ * included) for {@link wtmConfigSchema}, and once with the field-shape-only variants for
+ * {@link parseWtmConfigLayer}'s per-layer validation. Kept as one factory rather than two literal
+ * copies so a field added here can never drift out of sync between the two -- see
+ * {@link taskShape}'s docstring for why the split exists at all.
+ */
+function buildWtmConfigSchema<Task extends z.ZodTypeAny, Ports extends z.ZodTypeAny, Git extends z.ZodTypeAny>(
+  task: Task,
+  ports: Ports,
+  git: Git,
+) {
+  return z.object({
+    jobs: z.object({
+      max_concurrent_heavy: z.number().int().min(1).max(64).optional(),
+      memory: z.object({
+        budget_mib: z.number().int().min(1).max(1_048_576),
+        reserve_mib: z.number().int().min(0).max(1_048_576).optional(),
+      }).strict().optional(),
     }).strict().optional(),
-  }).strict().optional(),
-  git: gitSchema.optional(),
-  safety: z.object({ untracked_symlinks: z.enum(['ignore', 'review', 'block']).optional() }).strict().optional(),
-  version: z.literal(1).optional(),
-  workspace: z.object({ name: z.string().min(1).optional() }).strict().optional(),
-  discovery: z.object({
-    repos: z.boolean().optional(),
-    worktrees: z.boolean().optional(),
-    max_depth: z.number().int().nonnegative().optional(),
-  }).strict().optional(),
-  prepare: z.object({ mode: z.enum(['lazy', 'eager']).optional() }).strict().optional(),
-  ports: portsSchema.optional(),
-  cors: corsSchema.optional(),
-  proxy: proxySchema.optional(),
-  'dev-overlay': devOverlaySchema.optional(),
-  budgets: budgetsSchema.optional(),
-  repos: z.record(z.string(), repoSchema).optional(),
-  environment: z.record(z.string(), z.string()).optional(),
-  tasks: z.record(z.string(), taskSchema).optional(),
-  events: z.record(z.string(), z.object({ tasks: z.array(z.string().min(1)) }).strict()).optional(),
-  resources: z.record(z.string(), resourceSchema).optional(),
-  identity: z.object({
-    strategy: z.enum(['persistent']).optional(),
-    reuse_ids: z.boolean().optional(),
-  }).strict().optional(),
-  capabilities: z.record(z.string(), z.string().min(1)).optional(),
-}).strict();
+    git: git.optional(),
+    safety: z.object({ untracked_symlinks: z.enum(['ignore', 'review', 'block']).optional() }).strict().optional(),
+    version: z.literal(1).optional(),
+    workspace: z.object({ name: z.string().min(1).optional() }).strict().optional(),
+    discovery: z.object({
+      repos: z.boolean().optional(),
+      worktrees: z.boolean().optional(),
+      max_depth: z.number().int().nonnegative().optional(),
+    }).strict().optional(),
+    prepare: z.object({ mode: z.enum(['lazy', 'eager']).optional() }).strict().optional(),
+    ports: ports.optional(),
+    cors: corsSchema.optional(),
+    proxy: proxySchema.optional(),
+    'dev-overlay': devOverlaySchema.optional(),
+    budgets: budgetsSchema.optional(),
+    repos: z.record(z.string(), repoSchema).optional(),
+    environment: z.record(z.string(), z.string()).optional(),
+    tasks: z.record(z.string(), task).optional(),
+    events: z.record(z.string(), z.object({ tasks: z.array(z.string().min(1)) }).strict()).optional(),
+    resources: z.record(z.string(), resourceSchema).optional(),
+    identity: z.object({
+      strategy: z.enum(['persistent']).optional(),
+      reuse_ids: z.boolean().optional(),
+    }).strict().optional(),
+    capabilities: z.record(z.string(), z.string().min(1)).optional(),
+  }).strict();
+}
+
+export const wtmConfigSchema = buildWtmConfigSchema(taskSchema, portsSchema, gitSchema);
+
+/** Per-layer counterpart of {@link wtmConfigSchema} -- see {@link buildWtmConfigSchema}. */
+const wtmConfigShapeSchema = buildWtmConfigSchema(taskShape, portsShapeOnly, gitShape);
 
 export type TaskConfig = z.infer<typeof taskSchema>;
 export type PortConfig = z.infer<typeof portSchema>;
@@ -324,6 +380,27 @@ export class WtmConfigError extends Error implements ConfigErrorShape {
 
 export function parseWtmConfig(value: unknown, source?: string): WtmConfig {
   const parsed = wtmConfigSchema.safeParse(value);
+  if (parsed.success) return parsed.data as WtmConfig;
+
+  throw new WtmConfigError('WTM configuration is invalid.', {
+    ...(source === undefined ? {} : { source }),
+    issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message })),
+  });
+}
+
+/**
+ * Validates one config file's own content before it is merged with the workspace's other layers
+ * -- global, workspace, nested-directory, per-repository. Enforces every field's own shape (a
+ * `preferred` port that isn't a number is wrong regardless of what any other layer says) but
+ * skips the cross-field rules `parseWtmConfig`'s full schema also carries (`queue_env` needs
+ * `queue = true`, `idle.enabled` needs `idle.timeout`, a fixed `[ports]` entry must not collide
+ * with another): those fields can legitimately be set in different layers and only make sense
+ * read together, so checking them against one file in isolation rejected configurations that
+ * were valid once merged. `resolveWorkspaceConfig` still runs the full `parseWtmConfig` on the
+ * merged result, which is where those rules are actually enforced.
+ */
+export function parseWtmConfigLayer(value: unknown, source?: string): WtmConfig {
+  const parsed = wtmConfigShapeSchema.safeParse(value);
   if (parsed.success) return parsed.data as WtmConfig;
 
   throw new WtmConfigError('WTM configuration is invalid.', {
