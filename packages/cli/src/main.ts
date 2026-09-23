@@ -1989,7 +1989,8 @@ function parseNonNegativeInteger(value: string): number {
 
 export async function runCli(argv: readonly string[], dependencies: CliDependencies = {}): Promise<number> {
   let exitCode = 0;
-  const jsonRequested = hasOptionIntent(argv, '--json');
+  const valueTakingFlags = valueTakingCliFlags();
+  const jsonRequested = hasOptionIntent(argv, '--json', valueTakingFlags);
   const stdout = dependencies.stdout ?? ((value: string) => process.stdout.write(value));
   const socketPath = dependencies.daemonSocketPath ?? defaultDaemonSocketPath();
   // The connect side gets the same preflight the daemon's bind side gets. Without it a home
@@ -2006,8 +2007,8 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
   // platform. Nothing downstream of `--help` can reach the daemon, so the connection had no reader
   // even when it succeeded.
   const wantsRuntimeClient = dependencies.runtimeClient === undefined
-    && isRuntimeInvocation(argv)
-    && !isHelpInvocation(argv);
+    && isRuntimeInvocation(argv, valueTakingFlags)
+    && !isHelpInvocation(argv, valueTakingFlags);
   const defaultClient = wantsRuntimeClient && socketPathRefusal === null
     ? new DaemonClient({ socketPath })
     : null;
@@ -2036,7 +2037,7 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
       },
     }).catch(() => {});
   }
-  const cancellation = dependencies.signal === undefined && isFollowInvocation(argv)
+  const cancellation = dependencies.signal === undefined && isFollowInvocation(argv, valueTakingFlags)
     ? new AbortController()
     : null;
   const onInterrupt = () => cancellation?.abort();
@@ -2077,7 +2078,7 @@ export async function runCli(argv: readonly string[], dependencies: CliDependenc
   } catch (error) {
     if (error instanceof CommanderError) {
       if (error.exitCode === 0) return 0;
-      if (jsonRequested) stdout(`${JSON.stringify(usageFailureEnvelope(argv, error.code))}\n`);
+      if (jsonRequested) stdout(`${JSON.stringify(usageFailureEnvelope(argv, error.code, valueTakingFlags))}\n`);
       return 2;
     }
     throw error;
@@ -2248,10 +2249,9 @@ function openStateStore(databasePath: string): SQLiteStateStore | null {
   }
 }
 
-function isFollowInvocation(argv: readonly string[]): boolean {
-  const boundary = argv.indexOf('--');
-  const commandArguments = boundary < 0 ? argv : argv.slice(0, boundary);
-  return commandArguments.includes('logs') && commandArguments.includes('--follow');
+function isFollowInvocation(argv: readonly string[], valueTakingFlags: ReadonlySet<string>): boolean {
+  const tokens = commandTokens(argv, valueTakingFlags);
+  return tokens.includes('logs') && tokens.includes('--follow');
 }
 
 function addScopeOptions(command: Command): void {
@@ -2331,7 +2331,7 @@ export function defaultDaemonSocketPath(home = homedir()): string {
  * refreshes the registrations that would have added the watcher. Registering a workspace and
  * creating a worktree in it discovered nothing at all until the daemon happened to restart.
  */
-function isRuntimeInvocation(argv: readonly string[]): boolean {
+function isRuntimeInvocation(argv: readonly string[], valueTakingFlags: ReadonlySet<string>): boolean {
   const nonFlags = argv.filter((argument) => !argument.startsWith('-'));
   const command = nonFlags[0];
   // `remove` is here because stopping this worktree's managed processes is the daemon's job and
@@ -2354,7 +2354,7 @@ function isRuntimeInvocation(argv: readonly string[]): boolean {
   // `"daemon"` registration means).
   return command !== undefined && (
     ['start', 'stop', 'restart', 'ps', 'logs', 'exec', 'init', 'remove', 'jobs', 'task', 'checklist', 'create'].includes(command)
-    || command === 'run' && hasOptionIntent(argv, '--enqueue')
+    || command === 'run' && hasOptionIntent(argv, '--enqueue', valueTakingFlags)
     // `ci status` deliberately reads local state only (its own doc says so) and stays daemon-free;
     // only `watch`/`unwatch` register/unregister a live daemon-side watch and need the client.
     || command === 'ci' && (nonFlags[1] === 'watch' || nonFlags[1] === 'unwatch')
@@ -2375,13 +2375,17 @@ function capitalize(value: string): string {
   return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
 }
 
-function usageFailureEnvelope(argv: readonly string[], commanderCode: string): JsonEnvelope<null> {
+function usageFailureEnvelope(
+  argv: readonly string[],
+  commanderCode: string,
+  valueTakingFlags: ReadonlySet<string>,
+): JsonEnvelope<null> {
   const command = argv.find((argument) => !argument.startsWith('-')) ?? 'wtm';
   return {
     schemaVersion: 1,
     ok: false,
     command,
-    scope: { mode: hasOptionIntent(argv, '--global') ? 'global' : 'local' },
+    scope: { mode: hasOptionIntent(argv, '--global', valueTakingFlags) ? 'global' : 'local' },
     data: null,
     warnings: [],
     errors: [{
@@ -2393,16 +2397,52 @@ function usageFailureEnvelope(argv: readonly string[], commanderCode: string): J
   };
 }
 
-function isHelpInvocation(argv: readonly string[]): boolean {
-  return hasOptionIntent(argv, '--help') || hasOptionIntent(argv, '-h');
+function isHelpInvocation(argv: readonly string[], valueTakingFlags: ReadonlySet<string>): boolean {
+  return hasOptionIntent(argv, '--help', valueTakingFlags) || hasOptionIntent(argv, '-h', valueTakingFlags);
 }
 
-function hasOptionIntent(argv: readonly string[], option: string): boolean {
-  for (const argument of argv) {
-    if (argument === '--') return false;
-    if (argument === option) return true;
+// Scanning raw, unparsed argv for an exact flag token is only safe once the value belonging to a
+// *preceding* value-taking option (`--description -h`, `--idempotency-key --json`, ...) is
+// excluded from that scan — otherwise a free-text option value that happens to equal `-h`,
+// `--json`, `--enqueue`, `--global` or `--follow` is indistinguishable from the real flag, and
+// this pre-parse (which runs before Commander itself parses argv, because it decides whether to
+// build a daemon client and which output stream/format to use) wrongly reports the invocation's
+// intent. `commandTokens` walks argv the same way Commander's own option consumption does,
+// dropping each value-taking flag's following token, so every caller below sees only real tokens.
+function commandTokens(argv: readonly string[], valueTakingFlags: ReadonlySet<string>): string[] {
+  const tokens: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === undefined || argument === '--') break;
+    tokens.push(argument);
+    if (valueTakingFlags.has(argument)) index += 1;
   }
-  return false;
+  return tokens;
+}
+
+function hasOptionIntent(argv: readonly string[], option: string, valueTakingFlags: ReadonlySet<string>): boolean {
+  return commandTokens(argv, valueTakingFlags).includes(option);
+}
+
+// The set of every `--flag`/`-f` token, across the whole command tree, whose option definition
+// consumes a following argv element as its value (`<required>` or `[optional]` in its `.option()`
+// declaration) — as opposed to a boolean flag, which takes none. Built once from `createCli`'s
+// real option definitions rather than hand-maintained, so it can never drift from the actual CLI
+// surface the way a hardcoded list would.
+let cachedValueTakingCliFlags: ReadonlySet<string> | null = null;
+function valueTakingCliFlags(): ReadonlySet<string> {
+  cachedValueTakingCliFlags ??= collectValueTakingFlags(createCli());
+  return cachedValueTakingCliFlags;
+}
+
+function collectValueTakingFlags(command: Command, flags: Set<string> = new Set()): Set<string> {
+  for (const option of command.options) {
+    if (!option.required && !option.optional) continue;
+    if (option.short !== undefined) flags.add(option.short);
+    if (option.long !== undefined) flags.add(option.long);
+  }
+  for (const subcommand of command.commands) collectValueTakingFlags(subcommand, flags);
+  return flags;
 }
 
 async function writeStdoutWithBackpressure(value: string): Promise<void> {
