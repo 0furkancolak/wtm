@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { createGitWorktreeFixture } from '../../../../testkit/src/git-fixture';
 import { writeExecutableFixture } from '../../../../testkit/src/executable-fixture';
-import { GitCommandError, createGitEnvironment, listGitWorktrees, readWorktreeHead, runGit } from '../git-runner';
+import { GitCommandError, createGitEnvironment, listGitWorktrees, readGitRepositoryIdentity, readWorktreeHead, runGit } from '../git-runner';
 
 describe('readWorktreeHead', () => {
   it('reads the commit and branch, a detached HEAD as a null branch, and null without a commit', async () => {
@@ -76,6 +76,41 @@ describe('listGitWorktrees', () => {
       });
     } finally {
       await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('readGitRepositoryIdentity', () => {
+  it('reads the common Git directory and toplevel of a normal repository', async () => {
+    const fixture = await createGitWorktreeFixture();
+    try {
+      await expect(readGitRepositoryIdentity(fixture.repoPath)).resolves.toEqual({
+        commonGitDir: join(fixture.repoPath, '.git'),
+        topLevel: fixture.repoPath,
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it('rejects rather than silently misreading a repository whose path contains an embedded newline', async () => {
+    // A newline is a legal byte in a POSIX path. `git rev-parse` answers this command's two
+    // values newline-joined on one line each, so a newline embedded in either value produces
+    // more than two lines overall and shifts every field after it -- silently, unless the
+    // parser checks for exactly two parts rather than just that the first two are defined.
+    const base = await mkdtemp(join(tmpdir(), 'wtm-identity-newline-'));
+    const repoPath = join(base, 'repo\nwithnewline');
+    try {
+      await mkdir(repoPath, { recursive: true });
+      await runGit(repoPath, ['init', '--initial-branch=main']);
+      await expect(readGitRepositoryIdentity(repoPath)).rejects.toMatchObject({
+        name: 'GitCommandError',
+        code: 'GIT_COMMAND_FAILED',
+        exitCode: 0,
+        signal: null,
+      });
+    } finally {
+      await rm(base, { recursive: true, force: true });
     }
   });
 });
