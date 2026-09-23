@@ -2,6 +2,8 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { runScenario } from '../../../../testkit/src/scenario-child';
 import { isWindowsTestHost } from '../../../../testkit/src/platform';
 import { invokeAdapter } from '../index';
 
@@ -112,6 +114,18 @@ test('reports a hung adapter as a timeout rather than waiting forever', async ()
   const result = await invokeAdapter(adapter, { operation: 'metadata', timeoutMs: 200 });
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.reason).toBe('timeout');
+});
+
+test('does not crash the caller when a candidate adapter exits before a large request finishes writing to its stdin', () => {
+  // Bun's own stdin/EPIPE handling is more forgiving than plain node's, so this only reproduces
+  // (and only guards against a regression of) the crash under a real `node` process — exactly the
+  // runtime this function's own doc comment promises to emulate for adapter authors testing
+  // locally. Run out-of-process via `runScenario`, matching the store tests' `*.scenario.ts`
+  // convention for behavior that depends on the actual node runtime rather than bun's.
+  const scenarioPath = fileURLToPath(new URL('./invoke-adapter-epipe.scenario.ts', import.meta.url));
+  const result = runScenario('node', ['--import', 'tsx', scenarioPath]);
+  expect(result.status, result.stderr || result.stdout).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual({ ok: false, reason: 'nonzero-exit' });
 });
 
 // Process-group semantics (the mechanism this test proves) are POSIX-only; win32 has no
