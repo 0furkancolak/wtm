@@ -571,8 +571,17 @@ class ProductionRuntimeResolver implements DaemonRuntimeResolver {
     return {
       workspaceId: registration.workspace.id,
       worktreeId: registration.worktree.id,
+      // `ps` is the one caller of this scope (`stop`/`logs` both target `worktreeId` alone), and
+      // worktree rows are never deleted -- so without a state filter this keeps growing to every
+      // worktree the repository has ever held, `wtm ps` from any live sibling included, forever.
+      // `featureGroup` (task-resolution.ts) already excludes the same `deadWorktreeStates` from
+      // its own repository-wide scan for the identical reason; mirrored here rather than shared
+      // because `featureGroup` also always keeps the *registration's own* worktree regardless of
+      // its state (a caller resolving against a dying worktree must still see its own residuals),
+      // which this does too.
       workspaceWorktreeIds: this.store.listWorktrees()
         .filter(({ repositoryId }) => repositoryIds.has(repositoryId))
+        .filter((worktree) => worktree.id === registration.worktree.id || !deadWorktreeStates.has(worktree.state))
         .map(({ id }) => id),
     };
   }

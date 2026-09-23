@@ -27,6 +27,7 @@ import {
 
 const scenarioPath = fileURLToPath(new URL('./runtime-factory.scenario.ts', import.meta.url));
 const privateDatabaseScenarioPath = fileURLToPath(new URL('./private-database.scenario.ts', import.meta.url));
+const psScopeScenarioPath = fileURLToPath(new URL('./ps-scope.scenario.ts', import.meta.url));
 
 describe('production daemon composition', () => {
   test('runs CLI start, ps, and stop through a real temporary socket and SQLite store', () => {
@@ -169,6 +170,30 @@ describe('production daemon composition', () => {
       expect(result.status, result.stderr || result.stdout).toBe(0);
       expect(result.stderr).toBe('');
       expect(JSON.parse(result.stdout)).toEqual({ startExit: 2, ok: false, code: 'WTM_WORKSPACE_NOT_FOUND' });
+    } finally {
+      isolated.cleanup();
+    }
+  }, 20_000);
+
+  test('`ps`\'s workspace-wide scope excludes a sibling worktree already marked CLEANING', () => {
+    // `ProductionRuntimeResolver.resolveWorktree` computed `workspaceWorktreeIds` from repository
+    // membership alone, with no state filter -- unlike `featureGroup`, which already excludes
+    // `deadWorktreeStates` for the same "every worktree this repository has ever held, forever"
+    // reason. Since worktree rows are soft-deleted and never purged, `wtm ps` from any live
+    // sibling accumulated every worktree the repository ever held, including ones mid-removal or
+    // removed long ago, and kept reporting their (never-pruned) historical processes. This pins
+    // the fix: the sibling's own residual process is no longer in scope from elsewhere, while a
+    // caller resolving *against* the dead worktree itself would still see it (not exercised here;
+    // see the CLEANING-refusal test above for that half of `deadWorktreeStates`' two call sites).
+    const isolated = isolatedHome();
+    try {
+      const result = runScenario('node', ['--import', 'tsx', psScopeScenarioPath], {
+        timeoutMs: 20_000,
+        env: isolated.env,
+      });
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(JSON.parse(result.stdout)).toEqual({ psOk: true, siblingProcessListed: false });
     } finally {
       isolated.cleanup();
     }
