@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
+import { extensionfulRelativeImportSpecifiers } from './lint-rules';
 
 const root = resolve(import.meta.dir, '..');
 const violations: string[] = [];
@@ -10,9 +11,8 @@ for (const path of await files(root)) {
   }
   if (!/\.[cm]?[jt]sx?$/.test(path)) continue;
   const source = await readFile(path, 'utf8');
-  const relativeSpecifier = /\b(?:from\s*|import\s*\(|export\s+[^'"\n]*from\s*)['"](\.{1,2}\/[^'"]+)['"]/g;
-  for (const match of source.matchAll(relativeSpecifier)) {
-    if (/\.(?:js|jsx|ts|tsx)$/.test(match[1] ?? '')) violations.push(`${projectPath}: extensionful relative import ${match[1]}`);
+  for (const specifier of extensionfulRelativeImportSpecifiers(source)) {
+    violations.push(`${projectPath}: extensionful relative import ${specifier}`);
   }
 }
 if (violations.length > 0) {
