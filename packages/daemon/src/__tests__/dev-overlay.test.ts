@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { Readable } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
-import type { ChecklistItemRecord, EndpointLease, ManagedProcessRecord, RepositoryRecord, WorktreeRecord } from '@wtm/core';
+import type { ChecklistItemRecord, DevOverlayConfig, EndpointLease, ManagedProcessRecord, RepositoryRecord, WorktreeRecord } from '@wtm/core';
 import {
   checklistApiHandler,
   devOverlayHtmlInjector,
@@ -402,6 +402,9 @@ describe('renderDevOverlayFragment', () => {
 });
 
 describe('checklistApiHandler', () => {
+  const defaultRouteSource = source({ worktrees: [worktree()], repositories: [repository()], leases: [] });
+  const defaultPolicy: DevOverlayConfig = { enabled: true };
+
   function store(initial: ChecklistItemRecord[] = []) {
     const rows = new Map<string, ChecklistItemRecord>();
     for (const row of initial) rows.set(`${row.worktreeId}\u0000${row.position}`, row);
@@ -434,13 +437,21 @@ describe('checklistApiHandler', () => {
   }
 
   it('GET returns the stored list', async () => {
-    const handler = checklistApiHandler(store([checklistItem({ position: 0, text: 'Check it', checked: false })]));
+    const handler = checklistApiHandler(
+      store([checklistItem({ position: 0, text: 'Check it', checked: false })]),
+      defaultRouteSource,
+      defaultPolicy,
+    );
     const result = await handler(currentRoute(), fakeRequest({ method: 'GET', url: '/__wtm/checklist' }));
     expect(result).toEqual({ status: 200, body: { items: [checklistItem({ position: 0, text: 'Check it', checked: false })] } });
   });
 
   it('POST toggles an item', async () => {
-    const handler = checklistApiHandler(store([checklistItem({ position: 0, checked: false })]));
+    const handler = checklistApiHandler(
+      store([checklistItem({ position: 0, checked: false })]),
+      defaultRouteSource,
+      defaultPolicy,
+    );
     const result = await handler(currentRoute(), fakeRequest({
       method: 'POST', url: '/__wtm/checklist', body: JSON.stringify({ position: 0, checked: true }),
     }));
@@ -449,7 +460,7 @@ describe('checklistApiHandler', () => {
   });
 
   it('POST with a malformed body is a 400', async () => {
-    const handler = checklistApiHandler(store());
+    const handler = checklistApiHandler(store(), defaultRouteSource, defaultPolicy);
     const malformed = await handler(currentRoute(), fakeRequest({ method: 'POST', url: '/__wtm/checklist', body: 'not json' }));
     expect(malformed.status).toBe(400);
     const invalidShape = await handler(currentRoute(), fakeRequest({
@@ -462,7 +473,7 @@ describe('checklistApiHandler', () => {
     // A real toggle body is `{position, checked}` — a few dozen bytes — so this stands in for any
     // caller that isn't the overlay's own fetch (the endpoint has no auth and lets a request with
     // no Origin header through by design, see `originMatchesHost`'s own comment in proxy.ts).
-    const handler = checklistApiHandler(store());
+    const handler = checklistApiHandler(store(), defaultRouteSource, defaultPolicy);
     const oversized = 'x'.repeat(64 * 1024 + 1);
     const result = await handler(currentRoute(), fakeRequest({
       method: 'POST', url: '/__wtm/checklist', body: JSON.stringify({ position: 0, checked: true, note: oversized }),
@@ -471,7 +482,7 @@ describe('checklistApiHandler', () => {
   });
 
   it('POST toggling a nonexistent position is a 404', async () => {
-    const handler = checklistApiHandler(store());
+    const handler = checklistApiHandler(store(), defaultRouteSource, defaultPolicy);
     const result = await handler(currentRoute(), fakeRequest({
       method: 'POST', url: '/__wtm/checklist', body: JSON.stringify({ position: 5, checked: true }),
     }));
@@ -479,15 +490,31 @@ describe('checklistApiHandler', () => {
   });
 
   it('any other method is a 405', async () => {
-    const handler = checklistApiHandler(store());
+    const handler = checklistApiHandler(store(), defaultRouteSource, defaultPolicy);
     const result = await handler(currentRoute(), fakeRequest({ method: 'DELETE', url: '/__wtm/checklist' }));
     expect(result.status).toBe(405);
   });
 
   it('an unrecognized path under the prefix is a 405', async () => {
-    const handler = checklistApiHandler(store());
+    const handler = checklistApiHandler(store(), defaultRouteSource, defaultPolicy);
     const result = await handler(currentRoute(), fakeRequest({ method: 'GET', url: '/__wtm/checklist/extra' }));
     expect(result.status).toBe(405);
+  });
+
+  it('a route whose repository opted out of the overlay is a 404, even though the aggregate policy is enabled', async () => {
+    const handler = checklistApiHandler(
+      store([checklistItem({ position: 0, text: 'Check it', checked: false })]),
+      defaultRouteSource,
+      { enabled: true, repos: { 'storefront-web': { enabled: false } } },
+    );
+    const result = await handler(currentRoute(), fakeRequest({ method: 'GET', url: '/__wtm/checklist' }));
+    expect(result).toEqual({ status: 404, body: { error: 'No active WTM overlay for this route.' } });
+  });
+
+  it('a route whose worktree is unknown to the store is a 404', async () => {
+    const handler = checklistApiHandler(store(), source({ worktrees: [], repositories: [], leases: [] }), defaultPolicy);
+    const result = await handler(currentRoute(), fakeRequest({ method: 'GET', url: '/__wtm/checklist' }));
+    expect(result).toEqual({ status: 404, body: { error: 'No active WTM overlay for this route.' } });
   });
 });
 

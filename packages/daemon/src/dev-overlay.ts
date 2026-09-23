@@ -100,6 +100,19 @@ export interface DevOverlayData {
 const runningProcessStates: readonly ManagedProcessState[] = ['STARTING', 'RUNNING'];
 
 /**
+ * The repository-name identity `isDevOverlayEnabledForRepo` keys on, for one worktree alone —
+ * the same derivation `gatherDevOverlayData` does as part of its larger gather, pulled out on its
+ * own for a caller (`checklistApiHandler`) that needs only this, not the siblings/tasks/checklist
+ * that come with a full gather. Null when the worktree has since disappeared.
+ */
+function repoNameForWorktree(store: Pick<DevOverlaySource, 'listRepositories' | 'listWorktrees'>, worktreeId: string): string | null {
+  const worktree = store.listWorktrees().find((entry) => entry.id === worktreeId);
+  if (worktree === undefined) return null;
+  const repository = store.listRepositories().find((entry) => entry.id === worktree.repositoryId);
+  return repository === undefined ? worktree.repositoryId : basename(repository.mainRoot);
+}
+
+/**
  * Gathers what the overlay shows for one proxied route, straight from state-store queries the
  * daemon already runs elsewhere — see this module's own doc comment for which ones and why no
  * new persistence is involved. Returns `null` when the route's worktree has since disappeared
@@ -345,15 +358,34 @@ function readRequestBody(request: IncomingMessage): Promise<string> {
  * backend (see `proxy.ts`'s own doc comment on `overlayApi` for why this exists at all — the
  * browser can only ever reach this loopback proxy, never the daemon's Unix socket).
  *
+ * `runtime-factory.ts` wires this in behind the same *aggregate* `devOverlayActive` check as
+ * `devOverlayHtmlInjector`, because the two flags share one on/off switch at the daemon-startup
+ * level. But `devOverlayHtmlInjector` re-checks `isDevOverlayEnabledForRepo` per request, inside
+ * its own closure, so a repository that opted out via `[dev-overlay.repos.<name>].enabled = false`
+ * never gets a rendered fragment even while the aggregate is `true` for some other repository on
+ * the same (machine-wide) proxy. This handler needs the identical per-request re-check, or a
+ * repository that opted out still has its checklist readable and toggleable by anyone who can
+ * reach the shared loopback proxy, just with no visible overlay to toggle it from.
+ *
  * - `GET` returns the worktree's stored checklist.
  * - `POST` with a `checklistToggleRequestSchema` body toggles one item by `position`; a position
  *   that no longer exists is a `404`, not a crash.
  * - A malformed or schema-invalid body is a `400`.
  * - Any other method, or any path under the prefix other than the bare `/__wtm/checklist` route
  *   itself, is a `405`.
+ * - A route whose repository has opted out of the overlay is a `404`, matching how a disabled
+ *   route already looks to `devOverlayHtmlInjector` (no fragment, nothing to toggle from).
  */
-export function checklistApiHandler(store: ChecklistStore): (route: ProxyRoute, request: IncomingMessage) => Promise<{ status: number; body: unknown }> {
+export function checklistApiHandler(
+  store: ChecklistStore,
+  routeSource: Pick<DevOverlaySource, 'listWorktrees' | 'listRepositories'>,
+  policy: DevOverlayConfig,
+): (route: ProxyRoute, request: IncomingMessage) => Promise<{ status: number; body: unknown }> {
   return async (route, request) => {
+    const repoName = repoNameForWorktree(routeSource, route.worktreeId);
+    if (repoName === null || !isDevOverlayEnabledForRepo(policy, repoName)) {
+      return { status: 404, body: { error: 'No active WTM overlay for this route.' } };
+    }
     if (pathnameOf(request.url) !== checklistApiPath) {
       return { status: 405, body: { error: 'Unrecognized path under /__wtm/checklist.' } };
     }
