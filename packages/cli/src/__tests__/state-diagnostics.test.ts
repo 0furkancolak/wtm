@@ -199,6 +199,31 @@ describe('registry-backed diagnostics', () => {
       await expect(source.readPlan(registeredB)).resolves.toEqual({ workspace: registeredB, changes: [] });
       await expect(source.readEnv(registeredB)).resolves.toEqual({ workspace: registeredB, variables: {} });
     });
+
+    it('does not leak the running workspace\'s registration/adapters/resources into another workspace\'s doctor report', async () => {
+      // `readDoctor`'s `registration`/`adapters`/`resources` checks resolved from `options.cwd`
+      // regardless of which workspace `diagnose` was asked about -- the same bug class as
+      // explain/plan/env above, just found later. A `--global wtm doctor` walk reported A's own
+      // adapters and declared resources under B's name too, and reported B as "registered, daemon
+      // answering" even though B's own worktree has nothing to do with where the command ran.
+      const { source, registeredA, registeredB } = await twoWorkspaceFixture();
+
+      const doctorA = await source.readDoctor(registeredA);
+      const doctorB = await source.readDoctor(registeredB);
+
+      // A's own worktree is where the command runs, so A's checks resolve normally. Registration
+      // reports `registered: true` either way -- whether the daemon itself answers in this test
+      // environment is a separate fact this test does not depend on.
+      expect(doctorA.findings.find(({ check }) => check === 'registration')).toMatchObject({ details: { registered: true } });
+      expect(doctorA.findings.find(({ check }) => check === 'adapters')).toMatchObject({ status: 'pass' });
+      expect(doctorA.findings.find(({ check }) => check === 'resources')).toMatchObject({ status: 'pass' });
+
+      // B has no worktree at A's cwd: it must not receive A's registration/adapters/resources
+      // relabeled as its own.
+      expect(doctorB.findings.find(({ check }) => check === 'registration')).toMatchObject({ status: 'unknown' });
+      expect(doctorB.findings.find(({ check }) => check === 'adapters')).toMatchObject({ status: 'unknown' });
+      expect(doctorB.findings.find(({ check }) => check === 'resources')).toMatchObject({ status: 'unknown' });
+    });
   });
 });
 

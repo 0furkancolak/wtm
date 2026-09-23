@@ -295,11 +295,11 @@ export function createStateDiagnosticDataSource(
     }];
 
     findings.push(await configFinding(workspace, current));
-    findings.push(await adapterFinding());
-    findings.push(await resourceFinding());
+    findings.push(await adapterFinding(current));
+    findings.push(await resourceFinding(current));
     findings.push(portFinding(workspace, worktrees));
     findings.push(await processFinding(worktrees));
-    findings.push(await registrationFinding());
+    findings.push(await registrationFinding(current));
     findings.push(platformFinding());
     const socketPath = socketPathFinding();
     if (socketPath !== null) findings.push(socketPath);
@@ -365,7 +365,9 @@ export function createStateDiagnosticDataSource(
    * and reachability is not answerable from the store: a registry written by a daemon that has
    * since exited reads exactly like one written by a daemon that is still serving.
    */
-  const registrationFinding = async (): Promise<DoctorDiagnostic['findings'][number]> => {
+  const registrationFinding = async (
+    current: WorktreeRecord | undefined,
+  ): Promise<DoctorDiagnostic['findings'][number]> => {
     const reachable = await daemonReachable();
     try {
       findRegistration(store, options.cwd);
@@ -391,6 +393,20 @@ export function createStateDiagnosticDataSource(
             startupRemediation: failure.remediation === null ? null : formatRemediation(failure.remediation),
           }),
         },
+      };
+    }
+    // `findRegistration` succeeded, but not necessarily for *this* workspace: a `--global` sweep
+    // calls this once per registered workspace with the one `options.cwd` the command was run
+    // from, and `cwd` can only ever be inside one of them. Reporting the worktree it actually
+    // found -- "registered, daemon answering" -- under every other workspace's name would claim
+    // a registration that workspace does not have, exactly the leak `adapterFinding`/
+    // `resourceFinding` had for the same reason.
+    if (current === undefined) {
+      return {
+        check: 'registration',
+        status: 'unknown',
+        message: 'This workspace is not the one the command was run from; nothing to check here.',
+        details: { code: null, registered: null, daemonReachable: reachable },
       };
     }
     return reachable
@@ -538,7 +554,9 @@ export function createStateDiagnosticDataSource(
    * exactly one of them wins; a check that always said `unknown` left the person whose wrong
    * `dev` command ran with nowhere to look.
    */
-  const adapterFinding = async (): Promise<DoctorDiagnostic['findings'][number]> => {
+  const adapterFinding = async (
+    current: WorktreeRecord | undefined,
+  ): Promise<DoctorDiagnostic['findings'][number]> => {
     let registration;
     try {
       registration = findRegistration(store, options.cwd);
@@ -551,6 +569,18 @@ export function createStateDiagnosticDataSource(
         check: 'adapters',
         status: 'unknown',
         message: 'Adapter detection needs a registered worktree; see the registration check.',
+      };
+    }
+    // The worktree `findRegistration` found belongs to a different workspace than the one this
+    // finding is being built for — a `--global` sweep asking every workspace about the one
+    // directory the command was run from. Reporting that other worktree's adapters under this
+    // workspace's name is a real cross-workspace leak, not a repeated true fact (see
+    // `registrationFinding` for the same reasoning).
+    if (current === undefined) {
+      return {
+        check: 'adapters',
+        status: 'unknown',
+        message: 'Adapter detection answers for the workspace the command was run from; this is a different workspace.',
       };
     }
     let inspection;
@@ -579,7 +609,22 @@ export function createStateDiagnosticDataSource(
     };
   };
 
-  const resourceFinding = async (): Promise<DoctorDiagnostic['findings'][number]> => {
+  const resourceFinding = async (
+    current: WorktreeRecord | undefined,
+  ): Promise<DoctorDiagnostic['findings'][number]> => {
+    // `declaredResources` resolves from `options.cwd`, same as `findRegistration` in
+    // `adapterFinding`/`registrationFinding` above -- and for the same reason, must not run at
+    // all for a workspace that is not the one `cwd` is actually in. Falling back to an empty
+    // list here (the way `readStatus`'s own use of `declaredResources` does for a `--global`
+    // sweep) would report "declares no resources", which is a different and equally wrong claim
+    // about a workspace this command has nothing to say about; `unknown` is the honest answer.
+    if (current === undefined) {
+      return {
+        check: 'resources',
+        status: 'unknown',
+        message: 'Resource diagnostics need a registered worktree in this workspace; see the registration check.',
+      };
+    }
     // Unlike `readStatus`'s own use of `declaredResources` below, this one still catches: a
     // resolution failure here is already reported under its own `config` finding
     // (`configFinding`, above), and `doctor` exists precisely to keep answering every other
