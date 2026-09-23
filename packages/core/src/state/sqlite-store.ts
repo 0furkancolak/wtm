@@ -1166,6 +1166,33 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
     `).run(releasedAt, worktreeId).changes);
   }
 
+  reassignEndpointLeases(fromWorktreeId: string, toWorktreeId: string): number {
+    this.#assertOpen();
+    return this.transaction(() => {
+      const leases = this.#database.prepare(`
+        SELECT * FROM endpoint_leases WHERE worktree_id = ? AND state = 'ACTIVE'
+      `).all(fromWorktreeId) as EndpointRow[];
+      let reassigned = 0;
+      for (const lease of leases) {
+        // `(worktree_id, name)` is unique, so a straight UPDATE can collide with a row the
+        // target already holds for the same name -- most plausibly a stale RELEASED lease from
+        // before this worktree joined the group. A live ACTIVE row at the target is left alone
+        // (something else already gave this name a home there); a stale one is cleared first.
+        const existingAtTarget = this.#database.prepare(`
+          SELECT id, state FROM endpoint_leases WHERE worktree_id = ? AND name = ?
+        `).get(toWorktreeId, lease.name) as { id: string; state: string } | undefined;
+        if (existingAtTarget?.state === 'ACTIVE') continue;
+        if (existingAtTarget !== undefined) {
+          this.#database.prepare('DELETE FROM endpoint_leases WHERE id = ?').run(existingAtTarget.id);
+        }
+        this.#database.prepare('UPDATE endpoint_leases SET worktree_id = ? WHERE id = ?')
+          .run(toWorktreeId, lease.id);
+        reassigned += 1;
+      }
+      return reassigned;
+    });
+  }
+
   createManagedProcess(
     input: ManagedProcessInput,
     options: ManagedProcessCreateOptions = {},

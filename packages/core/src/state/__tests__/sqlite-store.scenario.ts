@@ -37,6 +37,7 @@ type StateStoreDomainOperation =
   | 'readRepositoryOperationLease'
   | 'listRepositoryOperationLeases'
   | 'releaseEndpointLeasesForWorktree'
+  | 'reassignEndpointLeases'
   | 'transaction';
 type StateStoreHasExactlyPlannedOperations = Assert<Equal<keyof StateStore, StateStoreDomainOperation>>;
 
@@ -1604,6 +1605,67 @@ function crossOperationLeaseExclusion() {
 }
 
 /**
+ * `reassignEndpointLeases` moves a worktree's active leases to another worktree instead of
+ * releasing them -- what removal now does first when the worktree being removed is holding a
+ * feature group's shared leases (`(worktree_id, name)` is unique, so it has to cope with a
+ * collision at the target: a stale RELEASED row for the same name is cleared out of the way, but
+ * an already-ACTIVE one at the target means something else already holds that name there, so the
+ * source lease is left where it is rather than colliding).
+ */
+function endpointLeaseReassignment() {
+  return withDatabase((_, open, close) => {
+    const store = open();
+    try {
+      const repository = createRepository(store);
+      const reconciled = store.reconcileWorktrees(repository.id, [
+        worktree('/projects/demo/api', 'api-head', 'refs/heads/feature'),
+        worktree('/projects/demo/web', 'web-head', 'refs/heads/feature'),
+      ]);
+      const source = reconciled.discovered.find(({ path }) => path.endsWith('/api'));
+      const target = reconciled.discovered.find(({ path }) => path.endsWith('/web'));
+      if (source === undefined || target === undefined) throw new Error('Expected two worktrees');
+      const range = { min: 4200, max: 4299 };
+
+      // Two leases the group shares, both stored under `source` -- the ordinary case.
+      store.allocateEndpoint({
+        worktreeId: source.id, name: 'api', protocol: 'tcp', host: '127.0.0.1', portRange: range, preferredPort: 4200,
+      });
+      store.allocateEndpoint({
+        worktreeId: source.id, name: 'web', protocol: 'tcp', host: '127.0.0.1', portRange: range, preferredPort: 4201,
+      });
+      // A name `target` already has a stale, RELEASED row for from an earlier cycle -- clashes
+      // with the (worktree_id, name) unique index unless reassignment clears it first.
+      store.allocateEndpoint({
+        worktreeId: target.id, name: 'stale', protocol: 'tcp', host: '127.0.0.1', portRange: range, preferredPort: 4202,
+      });
+      store.releaseEndpointLeasesForWorktree(target.id, '2026-09-23T00:00:00.000Z');
+      store.allocateEndpoint({
+        worktreeId: source.id, name: 'stale', protocol: 'tcp', host: '127.0.0.1', portRange: range, preferredPort: 4203,
+      });
+      // A name `target` already holds an ACTIVE lease for -- reassigning `source`'s would collide
+      // with something still live, so this one must be left exactly where it is.
+      store.allocateEndpoint({
+        worktreeId: source.id, name: 'busy', protocol: 'tcp', host: '127.0.0.1', portRange: range, preferredPort: 4204,
+      });
+      store.allocateEndpoint({
+        worktreeId: target.id, name: 'busy', protocol: 'tcp', host: '127.0.0.1', portRange: range, preferredPort: 4205,
+      });
+
+      const reassigned = store.reassignEndpointLeases(source.id, target.id);
+      const leases = store.listEndpointLeases().map((lease) => ({
+        name: lease.name,
+        port: lease.port,
+        state: lease.state,
+        worktree: lease.worktreeId === source.id ? 'source' : lease.worktreeId === target.id ? 'target' : 'unknown',
+      }));
+      return { reassigned, leases };
+    } finally {
+      close();
+    }
+  });
+}
+
+/**
  * Removal has to give a worktree's ports back before Git deletes it, and be able to say how
  * many it gave back. Reconciliation's own release stays where it is; the two agree.
  */
@@ -1810,6 +1872,7 @@ const scenarios: Record<string, () => unknown> = {
   'repository-operation-leases': repositoryOperationLeases,
   'repository-operation-lease-recovery': repositoryOperationLeaseRecovery,
   'cross-operation-lease-exclusion': crossOperationLeaseExclusion,
+  'endpoint-lease-reassignment': endpointLeaseReassignment,
   'worktree-endpoint-release': worktreeEndpointRelease,
   'prunable-worktree-release': prunableWorktreeRelease,
   'operation-lease-retirement': operationLeaseRetirement,

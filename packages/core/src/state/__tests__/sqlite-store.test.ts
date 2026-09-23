@@ -350,6 +350,19 @@ describe('SQLiteStateStore', () => {
     });
   });
 
+  test('reassigns active leases to another worktree, clearing a stale collision and skipping a live one', () => {
+    expect(runScenario('endpoint-lease-reassignment')).toEqual({
+      reassigned: 3,
+      leases: [
+        { name: 'api', port: 4200, state: 'ACTIVE', worktree: 'target' },
+        { name: 'busy', port: 4204, state: 'ACTIVE', worktree: 'source' },
+        { name: 'busy', port: 4205, state: 'ACTIVE', worktree: 'target' },
+        { name: 'stale', port: 4203, state: 'ACTIVE', worktree: 'target' },
+        { name: 'web', port: 4201, state: 'ACTIVE', worktree: 'target' },
+      ],
+    });
+  });
+
   test('releases exactly one worktree\'s active endpoint leases and frees their ports', () => {
     expect(runScenario('worktree-endpoint-release')).toEqual({
       released: 2,

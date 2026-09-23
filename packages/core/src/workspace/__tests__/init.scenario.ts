@@ -160,6 +160,10 @@ class FailingReconciliationStore implements StateStore {
     return this.inner.releaseEndpointLeasesForWorktree(worktreeId, releasedAt);
   }
 
+  reassignEndpointLeases(fromWorktreeId: string, toWorktreeId: string): number {
+    return this.inner.reassignEndpointLeases(fromWorktreeId, toWorktreeId);
+  }
+
   transaction<T>(fn: () => T): T {
     this.transactionDepth += 1;
     this.maximumTransactionDepth = Math.max(this.maximumTransactionDepth, this.transactionDepth);

@@ -89,6 +89,17 @@ describe('runtime-aware wtm remove', () => {
     });
   }, scenarioTestTimeoutMs);
 
+  test('hands a feature group\'s shared leases to a live sibling instead of releasing them', () => {
+    expect(runLifecycleCase('endpoint-lease-reassignment-on-removal')).toEqual({
+      // Both leases moved to the sibling, so nothing was actually released here.
+      released: 0,
+      leases: [
+        { name: 'api', port: 42_000, state: 'ACTIVE', worktree: 'sibling' },
+        { name: 'web', port: 42_001, state: 'ACTIVE', worktree: 'sibling' },
+      ],
+    });
+  }, scenarioTestTimeoutMs);
+
   test('says runtime cleanup was skipped when the worktree is not one WTM knows about', () => {
     expect(runLifecycleCase('unregistered-worktree')).toEqual({
       exitCode: 0,
