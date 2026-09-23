@@ -38,8 +38,11 @@ function runtime(): WorktreeRuntime {
         configPath: null, createdAt: '', lastSeenAt: '',
       },
       repository: {
-        id: 'repository-1', workspaceId: 'workspace-1', commonGitDir: '/projects/demo/api/.git',
-        mainRoot: '/projects/demo/api', remoteIdentity: null, createdAt: '', lastReconciledAt: null,
+        // `config.repos.api.path` is 'server', relative to the workspace root -- `mainRoot` has
+        // to resolve to the same directory for `resolveRepoScope` to match this repo to its own
+        // `[repos.api]` table (see the env.PORT provenance tests below).
+        id: 'repository-1', workspaceId: 'workspace-1', commonGitDir: '/projects/demo/server/.git',
+        mainRoot: '/projects/demo/server', remoteIdentity: null, createdAt: '', lastReconciledAt: null,
       },
       worktree: {
         id: 'worktree-1', repositoryId: 'repository-1', numericId: 1, path: '/projects/demo/api',
@@ -104,6 +107,31 @@ describe('explained decisions', () => {
     });
     expect(decisions.find(({ key }) => key === 'env.WTM_ID')?.provenance)
       .toEqual({ source: '/projects/demo/wtm.toml', line: 20 });
+  });
+
+  it('attributes env.PORT to this repository\'s own [repos.*.environment], not another repo\'s table of the same variable name', () => {
+    // Two repos in the same workspace both override PORT, and `web`'s entry comes FIRST in file
+    // (and so provenance-map iteration) order -- a naive first-match scan over the provenance map
+    // would report web's line here. `wtm explain` runs in the "api" worktree, so it must cite
+    // api's own line (31) regardless of which repo's entry the file declared first.
+    const withTwoRepos = runtime();
+    withTwoRepos.config = {
+      ...withTwoRepos.config,
+      repos: {
+        web: { path: 'web', environment: { PORT: '{port.web}' } },
+        ...withTwoRepos.config.repos,
+      },
+    };
+    withTwoRepos.provenance = new Map([
+      ['repos.web.path', { source: '/projects/demo/wtm.toml', line: 10 }],
+      ['repos.web.environment.PORT', { source: '/projects/demo/wtm.toml', line: 12 }],
+      ...provenance,
+    ]);
+
+    const decisions = explainDecisions({ runtime: withTwoRepos, adapters, resources, environment: { PORT: '4000', WTM_ID: '1', CORS_ORIGINS: 'http://localhost:4000' } });
+
+    expect(decisions.find(({ key }) => key === 'env.PORT')?.provenance)
+      .toEqual({ source: '/projects/demo/wtm.toml', line: 31 });
   });
 
   it('explains a variable no file declares by the endpoint that published it', () => {
