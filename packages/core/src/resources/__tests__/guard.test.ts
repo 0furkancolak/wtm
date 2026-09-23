@@ -63,6 +63,22 @@ describe('resource sandbox guard', () => {
     }
   });
 
+  test('rejects a case-variant .git path segment too', async () => {
+    // A case-INSENSITIVE segment comparison matters beyond case-insensitive hosts: it matches
+    // how Git itself blocks case-variant ".git" paths unconditionally, on every platform, rather
+    // than only where a literal string check would otherwise let one through that the OS still
+    // resolves to the real `.git` directory (macOS APFS, Windows NTFS).
+    //
+    // Deliberately inside `sandboxRoot`, not `workspaceRoot`: a target under `workspaceRoot`
+    // would be refused by the sandbox-boundary check before ever reaching the `.git` segment
+    // check this test means to exercise, and a target spelled exactly `workspaceRoot + '.git'`
+    // would be refused by the configured `gitDirectoryPaths` containment check instead (see the
+    // test above) -- neither would prove the segment check itself handles a case variant.
+    const { guard, sandboxRoot } = await fixture();
+    await expect(guard.authorize(join(sandboxRoot, '.GIT', 'hooks', 'pre-commit'), 'delete'))
+      .rejects.toMatchObject({ code: 'RESOURCE_PATH_DENIED' });
+  });
+
   test('rejects configured external worktree gitdir targets', async () => {
     const { guard, root } = await fixture();
     await expect(guard.authorize(join(root, 'external.git'), 'delete')).rejects.toMatchObject({

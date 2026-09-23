@@ -138,6 +138,25 @@ describe('prepareResources', () => {
     expect(prepared?.detail).toContain('Git administrative paths');
   });
 
+  test('a path inside a case-variant of .git is refused too', async () => {
+    // A case-INSENSITIVE segment comparison is not merely defensive on this Linux sandbox (a
+    // case-sensitive filesystem here really would create a separate ".GIT" directory) -- it
+    // matches how Git itself blocks case-variant ".git" paths unconditionally, on every
+    // platform, rather than only on the case-insensitive ones (macOS APFS, Windows NTFS) where a
+    // literal `.split(sep).includes('.git')` string check silently passes a path that the OS
+    // itself resolves to the real `.git` directory. State that started on a case-insensitive host
+    // is not guaranteed to stay there, so the check must not depend on which host is running it.
+    const place = await workspace();
+    await writeFile(join(place.main, '.env'), 'A=1\n');
+
+    const [prepared] = await prepareResources(declare(place, {
+      sneaky: { path: '.GIT/hooks/pre-commit', policy: 'symlink', source: '{main.root}/.env' },
+    }));
+
+    expect(prepared?.state).toBe('degraded');
+    expect(prepared?.detail).toContain('Git administrative paths');
+  });
+
   test('a source outside the workspace is refused', async () => {
     const place = await workspace();
     const outside = await mkdtemp(join(tmpdir(), 'wtm-outside-'));

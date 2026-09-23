@@ -159,6 +159,28 @@ test('refuses a path with a .git component and deletes nothing at all', async ()
   expect(await present(join(fixture.linkedWorktreePath, '.git'))).toBe(true);
 });
 
+test('refuses a case-variant .git component too, and deletes nothing at all', async () => {
+  // Case-insensitively: see `preparation.ts`'s `refuseTarget` for why this must not depend on
+  // whether the host filesystem happens to be case-insensitive.
+  const fixture = await worktree();
+  const inside = join(fixture.linkedWorktreePath, '.wtm-cache');
+  await mkdir(inside, { recursive: true });
+
+  const failure = await cleanupWorktreeEphemeralResources({
+    worktreeRoot: fixture.linkedWorktreePath,
+    resources: declare({
+      cache: { path: '.wtm-cache', policy: 'isolated' },
+      hook: { path: '.GIT/wtm', policy: 'ephemeral' },
+    }),
+    fileTrust,
+  }).catch((error: unknown) => error);
+
+  expect(failure).toBeInstanceOf(ResourcePathGuardError);
+  expect((failure as ResourcePathGuardError).code).toBe('RESOURCE_PATH_DENIED');
+  expect(await present(inside)).toBe(true);
+  expect(await present(join(fixture.linkedWorktreePath, '.git'))).toBe(true);
+});
+
 test('refuses a Git-tracked file declared as a resource, and the file survives', async () => {
   const fixture = await worktree();
   const tracked = join(fixture.linkedWorktreePath, 'feature.txt');
