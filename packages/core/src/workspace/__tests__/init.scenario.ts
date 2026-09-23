@@ -23,14 +23,16 @@ import type {
   RepositoryOperationLeaseRequest,
   RepositoryOperationLeaseResult,
   RepositoryRecord,
+  StateRegistrationReader,
   StateStore,
   WorkspaceInput,
   WorkspaceRecord,
+  WorktreeRecord,
 } from '../../state/store';
 import type { GitWorktreeRecord } from '../../git/worktree-parser';
 import { initializeWorkspace } from '../init';
 
-class FailingReconciliationStore implements StateStore {
+class FailingReconciliationStore implements StateStore, StateRegistrationReader {
   transactionDepth = 0;
   maximumTransactionDepth = 0;
   reconciliationCalls = 0;
@@ -44,6 +46,21 @@ class FailingReconciliationStore implements StateStore {
 
   upsertRepository(input: RepositoryInput): RepositoryRecord {
     return this.inner.upsertRepository(input);
+  }
+
+  listWorkspaces(): WorkspaceRecord[] {
+    return this.inner.listWorkspaces();
+  }
+
+  listRepositories(workspaceId?: string): RepositoryRecord[] {
+    return this.inner.listRepositories(workspaceId);
+  }
+
+  listWorktrees(repositoryId?: string): WorktreeRecord[] {
+    // Unused by any scenario this double drives -- `initializeWorkspace` only reads
+    // `listWorkspaces`/`listRepositories` for the cross-workspace registration check -- but
+    // `StateRegistrationReader` requires it to satisfy the store's own domain-membership contract.
+    return this.inner.listWorktrees(repositoryId);
   }
 
   reconcileWorktrees(repositoryId: string, snapshot: GitWorktreeRecord[]): ReconcileResult {
@@ -516,6 +533,33 @@ try {
       publicationHookCalled,
       finalConfig: await readFile(configPath, 'utf8'),
     });
+  } else if (scenario === 'duplicate-registration-linked-worktree') {
+    // Registers the workspace once at its real root, then again rooted at one of its own linked
+    // worktrees -- `discoverWorkspace` correctly resolves that worktree's identity back to the
+    // *same* repository (`commonGitDir`/`mainRoot` unchanged), but the second `wtm init` would
+    // otherwise still create a brand-new workspace + repository registration for it.
+    await initializeWorkspace({
+      root: fixture.root,
+      maxDepth: 5,
+      globalOnly: false,
+      userDataDir: fixture.userDataDir,
+      stateStore: store,
+    });
+    const error = await captureInitError(() => initializeWorkspace({
+      root: fixture.linkedWorktreePath,
+      maxDepth: 5,
+      globalOnly: false,
+      userDataDir: fixture.userDataDir,
+      stateStore: store,
+    }));
+    const database = new Database(databasePath, { readonly: true });
+    print({
+      errorCode: error.code,
+      conflict: error.context?.conflict,
+      workspaceCount: countRows(database, 'workspaces'),
+      repositoryCount: countRows(database, 'repositories'),
+    });
+    database.close();
   } else if (scenario === 'concurrent-create') {
     const configPath = join(fixture.root, 'wtm.toml');
     const concurrent = 'version = 1\n\n[workspace]\nname = "created-concurrently"\n';

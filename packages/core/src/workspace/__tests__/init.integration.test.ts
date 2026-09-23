@@ -178,6 +178,15 @@ describe('initializeWorkspace', () => {
     });
   });
 
+  test('refuses to register the same repository under a second workspace via one of its own linked worktrees', () => {
+    expect(runScenario('duplicate-registration-linked-worktree')).toEqual({
+      errorCode: 'WTM_CONFIG_INVALID',
+      conflict: 'repository-already-registered',
+      workspaceCount: 1,
+      repositoryCount: 2,
+    });
+  });
+
   test('uses no-replace publication when another actor creates the initially absent config', () => {
     expect(runScenario('concurrent-create')).toEqual({
       errorCode: 'WTM_CONFIG_INVALID',
