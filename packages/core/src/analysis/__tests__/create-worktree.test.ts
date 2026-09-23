@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { stat } from 'node:fs/promises';
+import { chmod, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createGitSafetyFixture } from '../../../../testkit/src/git-fixture';
 import type { GitSafetyFixture } from '../../../../testkit/src/git-fixture';
@@ -172,7 +172,7 @@ describe('createWorktree', () => {
     });
     if (decision.outcome !== 'plan') throw new Error('expected a plan');
 
-    const created = await createWorktree(safety.repoPath, decision.plan);
+    const { worktree: created } = await createWorktree(safety.repoPath, decision.plan);
 
     expect(created.branch).toBe('refs/heads/feat/auth');
     expect(resolve(created.path)).toBe(resolve(join(safety.root, 'main repo-feat-auth')));
@@ -195,7 +195,7 @@ describe('createWorktree', () => {
     });
     if (decision.outcome !== 'plan') throw new Error('expected a plan');
 
-    const created = await createWorktree(safety.repoPath, decision.plan);
+    const { worktree: created } = await createWorktree(safety.repoPath, decision.plan);
 
     expect(created.head).toBe(safety.featureHead);
     await safety.cleanup();
@@ -215,7 +215,7 @@ describe('createWorktree', () => {
     });
     if (decision.outcome !== 'plan') throw new Error('expected a plan');
 
-    const created = await createWorktree(safety.repoPath, decision.plan);
+    const { worktree: created } = await createWorktree(safety.repoPath, decision.plan);
 
     expect(created.branch).toBe('refs/heads/existing');
     const branches = await runGit(safety.repoPath, ['branch', '--list', 'existing']);
@@ -234,6 +234,40 @@ describe('createWorktree', () => {
       createsBranch: true,
       startPoint: 'HEAD',
     })).rejects.toMatchObject({ code: 'GIT_COMMAND_FAILED' });
+    await safety.cleanup();
+    fixtures.splice(fixtures.indexOf(safety), 1);
+  });
+
+  test('a failing post-checkout hook does not orphan the worktree it already created', async () => {
+    // `git worktree add`'s last step runs `post-checkout`; a hook that exits non-zero makes git
+    // report the whole command as failed even though the branch and working tree are real. Naively
+    // treating that as total failure would leave an orphan: a worktree on disk, a branch that
+    // exists, neither registered nor visible to `wtm list`, occupying the path for the next attempt.
+    const safety = await fixture();
+    const hookPath = join(safety.repoPath, '.git', 'hooks', 'post-checkout');
+    await safety.write(safety.repoPath, join('.git', 'hooks', 'post-checkout'), '#!/bin/sh\nexit 1\n');
+    await chmod(hookPath, 0o755);
+
+    const decision = planWorktreeCreation({
+      workspaceRoot: safety.root,
+      mainRoot: safety.repoPath,
+      branch: 'feat/hook-fails',
+      topology: await listGitWorktrees(safety.repoPath),
+      branchExists: false,
+      pathExists: () => false,
+    });
+    if (decision.outcome !== 'plan') throw new Error('expected a plan');
+
+    const result = await createWorktree(safety.repoPath, decision.plan);
+
+    expect(result.postCheckoutFailure).not.toBeNull();
+    expect(result.postCheckoutFailure?.argv).toContain('worktree');
+    expect(result.worktree.branch).toBe('refs/heads/feat/hook-fails');
+    expect(resolve(result.worktree.path)).toBe(resolve(decision.plan.path));
+    // Not just the returned record: the worktree is actually registered in git's own topology,
+    // exactly the fact that lets a caller register and use it instead of treating it as absent.
+    const topology = await listGitWorktrees(safety.repoPath);
+    expect(topology.some((entry) => resolve(entry.path) === resolve(decision.plan.path))).toBe(true);
     await safety.cleanup();
     fixtures.splice(fixtures.indexOf(safety), 1);
   });

@@ -157,7 +157,7 @@ const resumedUnregistered = await create(['feat/unregistered', '--resume'], {
 const wrongHead = await create(['feat/wrong-head', '--repos', 'web,api,worker'], {
   featureCreateApply: async (repoPath, plan) => {
     const record = await createWorktree(repoPath, plan);
-    return isRepo(repoPath, last) ? { ...record, head: '0'.repeat(40) } : record;
+    return isRepo(repoPath, last) ? { ...record, worktree: { ...record.worktree, head: '0'.repeat(40) } } : record;
   },
 });
 const wrongHeadOnDisk = exists(last, 'feat/wrong-head');

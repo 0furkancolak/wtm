@@ -35,6 +35,7 @@ import type {
   WorktreeAnalysis,
   WorktreeContext,
   WorktreeCreationPlan,
+  WorktreeCreationResult,
   WorktreeRecord,
 } from '@wtm/core';
 import {
@@ -182,7 +183,7 @@ export interface CliDependencies {
   /** The state database `wtm __complete` reads registered worktrees and workspace names from. */
   completionDatabasePath?: string;
   /** Test seam: the Git write of a multi-repository create, so a scenario can make one member fail. */
-  featureCreateApply?: (repoPath: string, plan: WorktreeCreationPlan) => Promise<GitWorktreeRecord>;
+  featureCreateApply?: (repoPath: string, plan: WorktreeCreationPlan) => Promise<WorktreeCreationResult>;
   /** Test seam: runs once a multi-repository create holds its leases, before it re-reads and re-plans. */
   featureCreateAfterLeases?: () => Promise<void>;
   /** Test seam: the topology a multi-repository create's local registration reconciles. */

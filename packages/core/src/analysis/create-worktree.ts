@@ -124,21 +124,48 @@ export async function branchExists(repoPath: string, branch: string): Promise<bo
   return result.exitCode === 0;
 }
 
+export interface WorktreeCreationResult {
+  worktree: GitWorktreeRecord;
+  /**
+   * Set when `git worktree add` exited non-zero even though the worktree was fully created --
+   * `git worktree add`'s last step runs the repository's `post-checkout` hook (and can trigger
+   * other post-checkout side effects, such as an LFS smudge filter), and git reports the whole
+   * command as failed if that step exits non-zero, independent of whether the branch and working
+   * tree it just finished creating are intact. The worktree is real and usable either way; this
+   * is the caller's only signal that whatever the hook was meant to do may not have happened.
+   */
+  postCheckoutFailure: GitCommandError | null;
+}
+
 /**
  * Creates the worktree the plan describes, and reports what Git actually produced.
  *
  * The result is read back from `git worktree list` rather than assumed from the plan: the point
  * of the read is to report the path, branch and commit Git settled on, not the ones asked for.
+ * That same read-back is what lets a `post-checkout`-hook failure (see
+ * {@link WorktreeCreationResult.postCheckoutFailure}) be told apart from `git worktree add`
+ * genuinely not having created anything -- treating every non-zero exit as total failure left an
+ * orphaned, unregistered worktree and branch occupying the computed path and branch name,
+ * invisible to `wtm list` until a later `wtm create` collided with it.
  */
 export async function createWorktree(
   repoPath: string,
   plan: WorktreeCreationPlan,
-): Promise<GitWorktreeRecord> {
+): Promise<WorktreeCreationResult> {
   await runGit(repoPath, ['check-ref-format', '--branch', plan.branch]);
   const argv = plan.createsBranch
     ? ['worktree', 'add', '-b', plan.branch, '--', plan.path, plan.startPoint ?? 'HEAD']
     : ['worktree', 'add', '--', plan.path, plan.branch];
-  await runGit(repoPath, argv);
+  let postCheckoutFailure: GitCommandError | null = null;
+  try {
+    await runGit(repoPath, argv);
+  } catch (error) {
+    if (!(error instanceof GitCommandError)) throw error;
+    const landed = (await listGitWorktrees(repoPath))
+      .some((record) => resolve(record.path) === resolve(plan.path));
+    if (!landed) throw error;
+    postCheckoutFailure = error;
+  }
   const created = (await listGitWorktrees(repoPath))
     .find((record) => resolve(record.path) === resolve(plan.path));
   if (created === undefined) {
@@ -149,7 +176,7 @@ export async function createWorktree(
       stderr: `git worktree add reported success but ${plan.path} is not in the topology`,
     });
   }
-  return created;
+  return { worktree: created, postCheckoutFailure };
 }
 
 /** The main worktree is the first record Git reports, and its HEAD is the default start point. */

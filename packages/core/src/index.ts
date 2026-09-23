@@ -52,6 +52,7 @@ export type {
   WorktreeCreationDecision,
   WorktreeCreationInput,
   WorktreeCreationPlan,
+  WorktreeCreationResult,
 } from './analysis/create-worktree';
 export { nameRepositories, planFeatureCreation, resolveCommit, resolveFeatureMembers } from './analysis/create-feature';
 export type {

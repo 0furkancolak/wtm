@@ -81,13 +81,26 @@ export async function runCreateCommand(input: CreateCommandInput): Promise<JsonE
     if (decision.outcome === 'refused') return failure(decision.error);
 
     let created: GitWorktreeRecord;
+    const warnings: WtmError[] = [];
     try {
-      created = await createWorktree(repository.mainRoot, decision.plan);
+      const result = await createWorktree(repository.mainRoot, decision.plan);
+      created = result.worktree;
+      if (result.postCheckoutFailure !== null) {
+        // The branch and worktree are real and usable -- `createWorktree` only returns instead of
+        // throwing once it has confirmed that from the topology itself -- but git still reported
+        // `worktree add` as failed, most often a failing `post-checkout` hook. Whatever that hook
+        // was meant to do (dependency install, environment setup) may not have run.
+        warnings.push({
+          code: 'GIT_COMMAND_FAILED',
+          message: `The worktree was created at ${created.path}, but git worktree add reported a `
+            + `failure while finishing it: ${message(result.postCheckoutFailure)}`,
+          severity: 'warning',
+          context: { path: created.path, command: result.postCheckoutFailure.argv.join(' ') },
+        });
+      }
     } catch (error) {
       return failure(gitFailure(error));
     }
-
-    const warnings: WtmError[] = [];
     // The daemon flushes its reconcile queue before it answers, so a daemon that answered has
     // already registered this worktree, dispatched `worktree.created` and applied
     // `[prepare] mode`. Only when it did not does the CLI do the registration half itself.

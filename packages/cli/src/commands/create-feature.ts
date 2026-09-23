@@ -24,6 +24,7 @@ import type {
   RepositoryRecord,
   WorkspaceRecord,
   WorktreeCreationPlan,
+  WorktreeCreationResult,
 } from '@wtm/core';
 import { workspaceContaining } from '../worktree-selector';
 import { gitFailure, message, notInitialized, reconciledByDaemon, type CreateRegistration } from './create';
@@ -42,7 +43,7 @@ export interface FeatureCreateCommandInput {
   readProcessStartTime: ProcessStartTimeReader;
   hostId: string;
   /** Test seam for the Git write. Defaults to `createWorktree`. */
-  applyWorktree?: ((repoPath: string, plan: WorktreeCreationPlan) => Promise<GitWorktreeRecord>) | undefined;
+  applyWorktree?: ((repoPath: string, plan: WorktreeCreationPlan) => Promise<WorktreeCreationResult>) | undefined;
   /**
    * Test seam: runs first once every lease is held, before the open creation is read again and
    * pre-flight is measured again, so a scenario can change the world between planning and leasing.
@@ -372,6 +373,7 @@ async function applyAndRegister(
 ): Promise<Envelope> {
   const apply = input.applyWorktree ?? createWorktree;
   const worktrees = new Map<string, GitWorktreeRecord>();
+  const postCheckoutFailures: WtmError[] = [];
   for (const item of work) {
     if (item.worktree !== null) worktrees.set(item.repository.id, item.worktree);
     if (item.plan === null) continue;
@@ -392,7 +394,7 @@ async function applyAndRegister(
     }
     store.advanceCreationMember(creation.id, item.repository.id, 'APPLYING', null);
     try {
-      const record = await apply(item.repository.mainRoot, plan);
+      const { worktree: record, postCheckoutFailure } = await apply(item.repository.mainRoot, plan);
       if (record.branch !== plan.branchRef) {
         throw new Error(`git worktree add left ${plan.path} on ${String(record.branch)}, not on ${plan.branchRef}.`);
       }
@@ -401,6 +403,18 @@ async function applyAndRegister(
       }
       store.advanceCreationMember(creation.id, item.repository.id, 'APPLIED', null);
       worktrees.set(item.repository.id, record);
+      if (postCheckoutFailure !== null) {
+        // The branch and worktree are real and usable -- `apply` only returns instead of throwing
+        // once it has confirmed that from the topology itself -- but git still reported
+        // `worktree add` as failed, most often a failing `post-checkout` hook.
+        postCheckoutFailures.push({
+          code: 'GIT_COMMAND_FAILED',
+          message: `The worktree in ${item.repository.mainRoot} was created at ${record.path}, but `
+            + `git worktree add reported a failure while finishing it: ${message(postCheckoutFailure)}`,
+          severity: 'warning',
+          context: { path: record.path, repository: item.repository.mainRoot, command: postCheckoutFailure.argv.join(' ') },
+        });
+      }
     } catch (error) {
       const cause = gitFailure(error);
       const after = await listGitWorktrees(item.repository.mainRoot).catch(() => null);
@@ -441,14 +455,17 @@ async function applyAndRegister(
   }
   // Only about the worktrees this run registered itself: one registered by an earlier run, or
   // one whose registration just failed, did not skip its hooks here.
-  const warnings: WtmError[] = registeredLocally.length > 0 ? [{
-    code: 'WTM_DAEMON_UNAVAILABLE',
-    message: 'The daemon is unreachable, so these worktrees were registered locally. Their '
-      + '`worktree.created` tasks did not run and `[prepare] mode = "eager"` did not prepare their '
-      + 'resources; the first task you run in each prepares them.',
-    severity: 'warning',
-    context: { paths: registeredLocally },
-  }] : [];
+  const warnings: WtmError[] = [
+    ...postCheckoutFailures,
+    ...(registeredLocally.length > 0 ? [{
+      code: 'WTM_DAEMON_UNAVAILABLE' as const,
+      message: 'The daemon is unreachable, so these worktrees were registered locally. Their '
+        + '`worktree.created` tasks did not run and `[prepare] mode = "eager"` did not prepare their '
+        + 'resources; the first task you run in each prepares them.',
+      severity: 'warning' as const,
+      context: { paths: registeredLocally },
+    }] : []),
+  ];
   if (failures.length > 0) {
     return { ...failure(failures, envelopeData(store, creation.id, worktrees, registration, resumed, recovered)), warnings };
   }
