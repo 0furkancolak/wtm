@@ -107,6 +107,15 @@ export function normalizeAllowedRemoteRefs(patterns: readonly string[]): string[
     if (wildcardIndex !== -1 && wildcardIndex !== pattern.length - 1) {
       throw new TypeError(`Allowed remote-tracking ref wildcards must be trailing: ${pattern}`);
     }
+    // The wildcard has to replace a whole path segment, not just trail inside one: matching is
+    // segment-based (a `*` remote-name segment means "every remote", a `*` final segment means
+    // "every ref under it"), so a pattern like `refs/remotes/origin*` -- a plausible typo for
+    // "origin only" missing the `/` before `*` -- would otherwise silently match any remote whose
+    // name merely *starts with* "origin" (`origin-fork`, `origin-untrusted`), treating commits
+    // that live only on a different, similarly-named remote as safely persisted.
+    if (wildcardIndex !== -1 && pattern[wildcardIndex - 1] !== '/') {
+      throw new TypeError(`Allowed remote-tracking ref wildcards must replace a whole path segment: ${pattern}`);
+    }
   }
   return unique.sort((left, right) => left.localeCompare(right));
 }

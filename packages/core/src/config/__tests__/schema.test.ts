@@ -33,6 +33,20 @@ describe('parseWtmConfig', () => {
     expect(() => parseWtmConfig({ git: { allowed_remote_refs: ['refs/remotes/*/main'] } })).toThrow();
   });
 
+  it('rejects an allowed_remote_refs wildcard that does not replace a whole path segment', () => {
+    // `origin*` reads as a plausible typo for "origin only" missing the `/` before `*`, but
+    // matching is segment-based, so it would otherwise silently match `origin-fork` too.
+    expect(() => parseWtmConfig({ git: { allowed_remote_refs: ['refs/remotes/origin*'] } })).toThrow();
+  });
+
+  it('accepts allowed_remote_refs wildcards that replace a whole path segment', () => {
+    const config = parseWtmConfig({
+      git: { allowed_remote_refs: ['refs/remotes/*', 'refs/remotes/origin/*'] },
+    });
+
+    expect(config.git?.allowed_remote_refs).toEqual(['refs/remotes/*', 'refs/remotes/origin/*']);
+  });
+
   it('rejects an empty allowed_remote_refs list', () => {
     expect(() => parseWtmConfig({ git: { allowed_remote_refs: [] } })).toThrow();
   });
