@@ -232,11 +232,20 @@ class LogOperation {
   }
 }
 
-function generation(marker: string, operation: LogOperation, target: string): number {
+/**
+ * The only markers `#recover` ever hands here are ones its own stricter phased regex already
+ * rejected, so every legitimate value this module ever writes -- a plain digit, or the full
+ * `rotating-<n>-(marker|closed|shifted|archived|opened)-<txn>` shape recovered by the caller --
+ * is handled before this function runs at all. A `rotating-`-prefixed marker that reaches here
+ * therefore names no phase this code recognizes: a flipped byte, a truncated write, or a marker
+ * from something else entirely. Guessing its generation from which files happen to exist (the
+ * loose regex this replaced did exactly that) is the one thing this file's "closed marker with
+ * missing current"/"shifted marker without an archive" tests exist to rule out for every other
+ * kind of ambiguity -- so an unrecognized marker fails closed here too, the same as a marker that
+ * is not `rotating-` shaped at all.
+ */
+function generation(marker: string): number {
   if (/^\d+$/.test(marker) && Number.isSafeInteger(Number(marker))) return Number(marker);
-  if (/^rotating-[A-Za-z0-9-]+$/.test(marker)) {
-    return !operation.has(target) || operation.size(target) === 0 && operation.has(`${target}.1`) ? 1 : 0;
-  }
   throw new Error('INVALID_LOG_GENERATION_MARKER');
 }
 
@@ -277,7 +286,7 @@ class RotatingLog extends Writable {
 
   #recover(operation: LogOperation, marker: string): number {
     const phased = /^rotating-(\d+)-(marker|closed|shifted|archived|opened)-([A-Za-z0-9-]+)$/.exec(marker);
-    if (phased === null) return generation(marker, operation, this.#target);
+    if (phased === null) return generation(marker);
     const currentGeneration = Number(phased[1]); const phase = phased[2]; const transaction = phased[3];
     if (!Number.isSafeInteger(currentGeneration) || currentGeneration >= Number.MAX_SAFE_INTEGER) throw new Error('INVALID_LOG_GENERATION_MARKER');
     const archive = `${this.#target}.1`; const markerPath = `${this.#target}.generation`;

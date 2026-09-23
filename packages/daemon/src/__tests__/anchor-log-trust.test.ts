@@ -316,6 +316,13 @@ for (const scenario of [
   { name: 'invalid marker', marker: 'not-a-generation', retained: true },
   { name: 'closed marker with missing current', marker: 'rotating-2-closed-4242', retained: true },
   { name: 'shifted marker without an archive', marker: 'rotating-2-shifted-4242', retained: false },
+  // Every legitimate marker this module ever writes is either a plain digit or one of the five
+  // named phases the stricter regex above recognizes. `rotating-2-bogus-4242` matches neither --
+  // it is exactly the shape a bit-flipped phase word or a marker from something else entirely
+  // would take -- and used to be silently accepted by a looser fallback regex that guessed a
+  // generation from which files happened to exist, instead of failing closed like every other
+  // unrecognized marker here.
+  { name: 'rotating marker with an unrecognized phase word', marker: 'rotating-2-bogus-4242', retained: true },
 ]) {
   test(`the actual log writer fails closed for ${scenario.name}`, async () => {
     const run = await fixture(undefined, { platform: process.platform === 'win32' ? 'win32' : 'linux' });
