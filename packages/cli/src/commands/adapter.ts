@@ -1,5 +1,6 @@
 import {
   AdapterTrustError,
+  PrivateDirectoryError,
   ensurePrivateDirectory,
   verifyPrivateDirectory,
   trustRepositoryAdapter,
@@ -110,6 +111,21 @@ function toAdapterCommandError(error: unknown, action: AdapterCommandInput['acti
       message: error.message,
       severity: error.severity,
       context: { action },
+    };
+  }
+  // Only `WTM_PRIVATE_DIRECTORY_UNSAFE` is a registered `WtmErrorCode` -- see
+  // `private-directory.ts`'s own doc comment on why `WTM_PRIVATE_DIRECTORY_UNAVAILABLE` is
+  // deliberately not (it covers a lookup that may just be a slow-to-arrive volume, so it stays
+  // uncoded and retried). Putting that one in the envelope would fail the contract's own strict
+  // code enum, so it falls through to the same generic refusal below, same as before this branch
+  // existed -- still accurate, since the trust operation did fail either way.
+  if (error instanceof PrivateDirectoryError && error.code === 'WTM_PRIVATE_DIRECTORY_UNSAFE') {
+    return {
+      code: error.code,
+      message: error.message,
+      severity: error.severity,
+      context: { action, ...error.context },
+      ...(error.remediation.length > 0 ? { remediation: [...error.remediation] } : {}),
     };
   }
   return {

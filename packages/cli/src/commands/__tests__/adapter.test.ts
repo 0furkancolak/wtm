@@ -43,14 +43,18 @@ test('creates the missing private WTM state parent before opening SQLite', () =>
 
 test('rejects insecure or symlinked WTM state parents before opening SQLite', () => {
   expect(runScenario('rejects-unsafe-private-parents')).toEqual({
-    insecureMode: { ok: false, code: 'ADAPTER_NOT_TRUSTED' },
-    symlinkParent: { ok: false, code: 'ADAPTER_NOT_TRUSTED' },
+    insecureMode: { ok: false, code: 'WTM_PRIVATE_DIRECTORY_UNSAFE' },
+    symlinkParent: { ok: false, code: 'WTM_PRIVATE_DIRECTORY_UNSAFE' },
   });
 });
 
 test('rejects nested symlink parents and a database parent replaced after validation', () => {
+  // `replacedParent` stays `ADAPTER_NOT_TRUSTED`: it fails identity revalidation
+  // (`verifyPrivateDirectory`) rather than the initial safety walk, which raises the uncoded
+  // `WTM_PRIVATE_DIRECTORY_UNAVAILABLE` -- not a registered `WtmErrorCode`, so it falls through to
+  // the generic refusal by design. See `toAdapterCommandError`'s own comment.
   expect(runScenario('rejects-nested-symlink-and-parent-replacement')).toEqual({
-    nestedSymlink: { ok: false, code: 'ADAPTER_NOT_TRUSTED' },
+    nestedSymlink: { ok: false, code: 'WTM_PRIVATE_DIRECTORY_UNSAFE' },
     replacedParent: { ok: false, code: 'ADAPTER_NOT_TRUSTED' },
   });
 });
