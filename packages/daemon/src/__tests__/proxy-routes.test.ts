@@ -116,7 +116,7 @@ describe('buildProxyRoutes', () => {
     // own.
     expect(routes.has('web.fix-auth-bug.wtm.localhost')).toBe(false);
     expect(routes.size).toBe(1);
-    const [[hostname, route]] = [...routes.entries()];
+    const [hostname, route] = [...routes.entries()][0]!;
     expect(hostname).not.toBe('web.fix-auth-bug.wtm.localhost');
     expect(route.worktreeId).toBe('w-late');
   });
