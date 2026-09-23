@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { StateRegistrationReader, StateStore } from '@wtm/core';
+import { selectPlatformRuntime } from '@wtm/platform';
+import { grantForeignDirectoryAccess } from '../../../../testkit/src/directory-access';
 import { runProductionInitCommand } from '../init';
 
 const roots: string[] = [];
@@ -78,6 +80,30 @@ describe('production init', () => {
     });
 
     expect((await stat(stateParent)).mode & 0o777).toBe(0o700);
+  });
+
+  test('reports an unsafe private state directory as an ok:false envelope, not a thrown rejection', async () => {
+    const root = await temporaryRoot();
+    const insecure = join(root, 'insecure');
+    await mkdir(insecure, { mode: 0o700 });
+    await grantForeignDirectoryAccess(insecure);
+
+    const envelope = await runProductionInitCommand({
+      root: '/project',
+      userDataDir: '/user-data',
+      databasePath: join(insecure, 'state.db'),
+      installAiSkill: false,
+      fileTrust: selectPlatformRuntime().fileTrust,
+    }, {
+      openStateStore: () => ({ stateStore: {} as StateStore & StateRegistrationReader, close: () => {} }),
+      runInit: async () => { throw new Error('must not be reached: the private directory check should refuse first'); },
+    });
+
+    expect(envelope.ok).toBe(false);
+    expect(envelope.errors[0]).toMatchObject({
+      code: 'WTM_PRIVATE_DIRECTORY_UNSAFE',
+      context: { command: 'init' },
+    });
   });
 });
 

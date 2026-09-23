@@ -2,6 +2,7 @@ import { basename, dirname, join } from 'node:path';
 import {
   ensurePrivateDirectory,
   initializeWorkspace,
+  PrivateDirectoryError,
   SQLiteStateStore,
   verifyPrivateDirectory,
   WtmConfigError,
@@ -163,28 +164,59 @@ export async function runProductionInitCommand(
   input: ProductionInitCommandInput,
   dependencies: ProductionInitDependencies = {},
 ): Promise<InitCommandEnvelope> {
-  const databaseParent = await ensurePrivateDirectory(dirname(input.databasePath), input.fileTrust);
-  const databasePath = join(databaseParent.path, basename(input.databasePath));
-  await verifyPrivateDirectory(databaseParent, input.fileTrust);
-  const opened = dependencies.openStateStore?.(databasePath) ?? openSqliteStateStore(databasePath);
+  const mode = input.globalOnly === true ? 'global' as const : 'local' as const;
   try {
+    const databaseParent = await ensurePrivateDirectory(dirname(input.databasePath), input.fileTrust);
+    const databasePath = join(databaseParent.path, basename(input.databasePath));
     await verifyPrivateDirectory(databaseParent, input.fileTrust);
-    return await (dependencies.runInit ?? runInitCommand)({
-      root: input.root,
-      userDataDir: input.userDataDir,
-      stateStore: opened.stateStore,
-      ...(input.maxDepth === undefined ? {} : { maxDepth: input.maxDepth }),
-      ...(input.globalOnly === undefined ? {} : { globalOnly: input.globalOnly }),
-      ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }),
-      ...(input.aiSkillInstaller === undefined ? {} : { aiSkillInstaller: input.aiSkillInstaller }),
-      ...(input.installAiSkill === undefined ? {} : { installAiSkill: input.installAiSkill }),
-      ...(input.detect === undefined ? {} : { detect: input.detect }),
-      ...(input.acceptDefaults === undefined ? {} : { acceptDefaults: input.acceptDefaults }),
-      ...(input.preset === undefined ? {} : { preset: input.preset }),
-      ...(input.presetAssetProvider === undefined ? {} : { presetAssetProvider: input.presetAssetProvider }),
-    });
-  } finally {
-    opened.close();
+    const opened = dependencies.openStateStore?.(databasePath) ?? openSqliteStateStore(databasePath);
+    try {
+      await verifyPrivateDirectory(databaseParent, input.fileTrust);
+      return await (dependencies.runInit ?? runInitCommand)({
+        root: input.root,
+        userDataDir: input.userDataDir,
+        stateStore: opened.stateStore,
+        ...(input.maxDepth === undefined ? {} : { maxDepth: input.maxDepth }),
+        ...(input.globalOnly === undefined ? {} : { globalOnly: input.globalOnly }),
+        ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }),
+        ...(input.aiSkillInstaller === undefined ? {} : { aiSkillInstaller: input.aiSkillInstaller }),
+        ...(input.installAiSkill === undefined ? {} : { installAiSkill: input.installAiSkill }),
+        ...(input.detect === undefined ? {} : { detect: input.detect }),
+        ...(input.acceptDefaults === undefined ? {} : { acceptDefaults: input.acceptDefaults }),
+        ...(input.preset === undefined ? {} : { preset: input.preset }),
+        ...(input.presetAssetProvider === undefined ? {} : { presetAssetProvider: input.presetAssetProvider }),
+      });
+    } finally {
+      opened.close();
+    }
+  } catch (error) {
+    // Only `WTM_PRIVATE_DIRECTORY_UNSAFE` is a registered `WtmErrorCode` (see
+    // `private-directory.ts`'s own doc comment on why `WTM_PRIVATE_DIRECTORY_UNAVAILABLE` is
+    // deliberately not -- it covers a lookup that may just be a slow-to-arrive volume, so it stays
+    // uncoded and keeps propagating uncaught here, same as before this branch existed). Without
+    // this, a private-directory refusal above -- unlike every other `wtm init` failure, which
+    // `runInitCommand`'s own try/catch already turns into an `ok: false` envelope -- propagated
+    // past this function, past `main.ts` (which wraps nothing here either), to `bin.ts`'s outer
+    // safety net: a bare one-line stderr message and exit 1, not the JSON envelope the `--json`
+    // contract promises every other refusal.
+    if (error instanceof PrivateDirectoryError && error.code === 'WTM_PRIVATE_DIRECTORY_UNSAFE') {
+      return {
+        schemaVersion: 1,
+        ok: false,
+        command: 'init',
+        scope: { mode },
+        data: null,
+        warnings: [],
+        errors: [{
+          code: error.code,
+          message: error.message,
+          severity: error.severity,
+          context: { ...error.context, command: 'init' },
+          ...(error.remediation.length > 0 ? { remediation: [...error.remediation] } : {}),
+        }],
+      };
+    }
+    throw error;
   }
 }
 
