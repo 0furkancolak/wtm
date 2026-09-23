@@ -419,6 +419,59 @@ describe('watch retry backoff', () => {
 
     expect(harness.starts()).toBe(closed);
   });
+
+  test('a replacement watcher that fails to start is retried through the same backoff, not stranded', async () => {
+    // `#replaceWatcher()`'s own `start()` can reject the same way a live watch reports an error
+    // (an exhausted inotify budget, e.g.) -- but unlike a live watch, a discarded replacement
+    // never gets another chance to report a fresh error, so nothing else would ever schedule a
+    // retry. Left uncaught, this stranded the daemon mid-rebuild with no timer behind it.
+    const clock = new TestClock();
+    let schedule!: (signal: ReconcileSignal) => void;
+    let starts = 0;
+    let failNextStart = false;
+    const errors: unknown[] = [];
+    const daemon = new WtmDaemon({
+      stateStore: emptyStore,
+      socketPath: '/unused/wtmd.sock',
+      clock,
+      onError: (error) => { errors.push(error); },
+      serverFactory: () => ({ start: async () => {}, close: async () => {} }),
+      watcherFactory: (_registrations, capturedSchedule) => {
+        schedule = capturedSchedule;
+        return {
+          start: async () => {
+            starts += 1;
+            if (failNextStart) throw new Error('EMFILE: inotify watch limit reached');
+          },
+          close: async () => {},
+          whenIdle: async () => {},
+        };
+      },
+    });
+    await daemon.start();
+    try {
+      expect(starts).toBe(1);
+
+      failNextStart = true;
+      schedule({ root: '/repo', kind: 'watch-error' });
+      await daemon.flush();
+      // The replacement's own start() rejected. This must not throw out of flush() (there is
+      // nothing a caller could do about a watch failure) and must not leave the daemon with
+      // nothing left to retry from.
+      expect(starts).toBe(2);
+      expect(errors.length).toBe(1);
+
+      // No watch was ever re-established, so nothing would fire another 'watch-error' signal on
+      // its own. Only a self-driven retry -- the same backoff a live watch's error goes through
+      // -- can recover from here.
+      failNextStart = false;
+      clock.advance(1_000);
+      await daemon.flush();
+      expect(starts).toBe(3);
+    } finally {
+      await daemon.close();
+    }
+  });
 });
 
 describe('the request gate reaches the runtime handler for every command it dispatches', () => {
