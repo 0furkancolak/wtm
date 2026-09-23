@@ -1280,7 +1280,19 @@ async function runProductionAnalyze(input: {
         // workspace-wide collection — another `git worktree list`, and (were `cwd` a registered
         // workspace member) the workspace-root config resolution that collection can be refused
         // over on behalf of a `--repo` this command was never given.
-        const record = topology.find(({ path }) => containsPath(path, resolve(input.cwd)));
+        //
+        // A linked worktree's own path is a *child* of the main worktree's whenever the workspace
+        // root is the repository itself — exactly the path `wtm create` documents
+        // (`<workspace-root>/<repository-directory>-<branch-slug>`) and the default, most common
+        // layout. `containsPath(mainWorktreePath, cwd)` is then also true from inside that linked
+        // worktree, so a bare `.find()` over `topology` (main worktree first, by `git worktree
+        // list`'s own order) always stopped at the main worktree and never reached the more
+        // specific match — silently analyzing the wrong worktree's safety. `worktree-selector.ts`
+        // already solves this the same way for every command that reuses it: keep every
+        // containing candidate, then take the one whose own path is longest (most specific).
+        const record = topology
+          .filter(({ path }) => containsPath(path, resolve(input.cwd)))
+          .sort((left, right) => right.path.length - left.path.length)[0];
         if (record !== undefined) selected.push({ repoPath: repositoryRoot, record });
       } else {
         const collected = await collectSelectorCandidates({ cwd: input.cwd, store, globalConfigPath: input.globalConfigPath });
