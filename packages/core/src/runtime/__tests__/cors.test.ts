@@ -49,6 +49,16 @@ describe('CORS variable detection', () => {
     expect(await detectCorsVariables(root)).toEqual([]);
   });
 
+  it('does not mistake a misspelled ALLOWED for a declared allowlist variable', async () => {
+    // The pattern's `ALLOWED_ORIGINS?` alternative used to be written `ALLOWED?_ORIGINS?`,
+    // which makes the `D` in ALLOWED optional rather than the trailing `S` on ORIGINS -- so a
+    // typo'd or unrelated `ALLOWE_ORIGIN(S)` variable matched even though it is not one of the
+    // conventional spellings this function documents itself as looking for.
+    await writeFile(join(root, '.env.example'), 'ALLOWE_ORIGIN=\nALLOWE_ORIGINS=\nMYAPP_ALLOWE_ORIGINS=\n');
+
+    expect(await detectCorsVariables(root)).toEqual([]);
+  });
+
   it('detects nothing in a repository with no declaration files', async () => {
     expect(await detectCorsVariables(root)).toEqual([]);
   });

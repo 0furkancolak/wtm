@@ -15,7 +15,7 @@ export const corsDeclarationFiles = declarationFiles;
  * spellings behind a project prefix. Deliberately narrow — a variable WTM guesses wrong about
  * is a variable it overwrites for no reason.
  */
-export const corsVariablePattern = /^(?:[A-Z0-9]+(?:_[A-Z0-9]+)*_)?(?:CORS_(?:ALLOWED_)?ORIGINS?|ALLOWED?_ORIGINS?)$/;
+export const corsVariablePattern = /^(?:[A-Z0-9]+(?:_[A-Z0-9]+)*_)?(?:CORS_(?:ALLOWED_)?ORIGINS?|ALLOWED_ORIGINS?)$/;
 
 export interface CorsResolutionInput {
   cors?: CorsConfig;
