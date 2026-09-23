@@ -108,6 +108,8 @@ describe('ci commands', () => {
       cwd: fixture.repoPath,
       taskTargetDatabasePath: databasePath,
       taskTargetGlobalConfigPath: join(fixture.root, 'config.toml'),
+      // Never the user's real socket: a running daemon would answer instead of WTM_DAEMON_UNAVAILABLE.
+      daemonSocketPath: join(fixture.root, 'absent.sock'),
       stdout: (value) => { out += value; },
       stderr: () => {},
     });
@@ -122,6 +124,8 @@ describe('ci commands', () => {
       cwd: fixture.repoPath,
       taskTargetDatabasePath: databasePath,
       taskTargetGlobalConfigPath: join(fixture.root, 'config.toml'),
+      // Never the user's real socket: a running daemon would answer instead of WTM_DAEMON_UNAVAILABLE.
+      daemonSocketPath: join(fixture.root, 'absent.sock'),
       stdout: (value) => { out += value; },
       stderr: () => {},
     });

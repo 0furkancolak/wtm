@@ -1,8 +1,10 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest, type Server } from 'node:http';
 import { join } from 'node:path';
 import { listGitWorktrees, readGitRepositoryIdentity, slugifyBranchLabel } from '@wtm/core';
 import { createWorkspaceFixture } from '../../../testkit/src/workspace-fixture';
+import { fixtureIpcAddress } from '../../../testkit/src/ipc-address';
+import { shortTmpRoot } from '../../../testkit/src/platform';
 import { createProductionDaemon } from '../runtime-factory';
 
 /**
@@ -17,6 +19,9 @@ import { createProductionDaemon } from '../runtime-factory';
  * actually reaches the overlay.
  */
 const fixture = await createWorkspaceFixture();
+// The socket lives under a short root: macOS's per-process TMPDIR pushes a socket under the
+// fixture's user-data directory past the 104-byte sun_path limit.
+const socketRoot = await mkdtemp(join(shortTmpRoot(), 'wtm-overlay-'));
 let backend: Server | undefined;
 
 try {
@@ -54,6 +59,7 @@ try {
     dataRoot: stateDirectory,
     logRoot: join(fixture.userDataDir, 'logs'),
     globalConfigPath,
+    socketPath: fixtureIpcAddress(socketRoot),
     // Mirrors `proxy.ts`'s own note: binds `127.0.0.1` alone, since a sandbox without IPv6
     // support can't bind `::1` — production always takes the full default pair.
     proxyHosts: ['127.0.0.1'],
@@ -124,4 +130,5 @@ try {
 } finally {
   await new Promise<void>((resolve) => { backend === undefined ? resolve() : backend.close(() => resolve()); });
   await fixture.cleanup();
+  await rm(socketRoot, { recursive: true, force: true });
 }
