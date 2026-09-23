@@ -39,10 +39,17 @@ export function explainDecisions(input: DecisionInput): Decision[] {
 function configDecisions(runtime: WorktreeRuntime): Decision[] {
   const decisions: Decision[] = [];
   for (const [key, provenance] of runtime.provenance) {
-    const top = key.split('.')[0] ?? '';
+    const segments = key.split('.');
+    const top = segments[0] ?? '';
     // Tasks and resources are explained as themselves below, where their whole table is
-    // visible; splitting them into one decision per leaf says less, not more.
-    if (top === 'tasks' || top === 'resources' || top === 'environment' || top === 'repos') continue;
+    // visible; splitting them into one decision per leaf says less, not more. A repo's own
+    // `[repos.*.environment]` override is explained the same way, under `env.<name>`
+    // (`environmentDecisions`'s `repoProvenanceKey`) -- but `repos.<name>.path` has no other
+    // producer, so skipping every `repos.*` leaf here silently dropped it from `wtm explain`
+    // entirely, even though it is a real, file-backed choice (`resolveRepoScope` reads it to
+    // map a repository directory to its config table).
+    if (top === 'tasks' || top === 'resources' || top === 'environment') continue;
+    if (top === 'repos' && segments[2] === 'environment') continue;
     decisions.push({
       kind: 'config',
       key,
