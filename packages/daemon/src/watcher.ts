@@ -403,6 +403,16 @@ function classifyStructuralPath(path: string, roles: ReadonlySet<WatchRole>): Re
   if (roles.has('git-admin')) return 'git-topology';
   const segments = path.replaceAll('\\', '/').split('/');
   if (segments.includes('.git')) return 'git-topology';
+  // Every third-party package an install unpacks ships its own `package.json` (and often its own
+  // lockfile), so a single `npm`/`bun`/`yarn install` writes thousands of paths that match
+  // `manifestNames` by basename alone -- `node_modules/some-pkg/package.json` is exactly as
+  // "manifest" to a basename-only check as the worktree's own `package.json`. Structural signals
+  // exist to catch changes to *this worktree's own* configuration/lock/manifest files (see
+  // docs/05-daemon-and-macos-runtime.md); a name a package manager copied in as part of someone
+  // else's package is never that, and scheduling a reconcile+adapter-discovery sweep for each one
+  // turned an ordinary dependency install into a sustained, unrelated full-daemon storm for its
+  // whole duration.
+  if (segments.includes('node_modules')) return null;
   const name = segments.at(-1) ?? '';
   if (configNames.has(name)) return 'config';
   if (manifestNames.has(name)) return 'manifest';

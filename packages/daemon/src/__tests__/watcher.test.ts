@@ -87,6 +87,35 @@ describe('StructuralWatcher', () => {
     expect(scheduled).toBe(0);
   });
 
+  test('a dependency install writing nested package.json/lockfiles under node_modules schedules zero work', async () => {
+    expect(watcherModule).not.toBeNull();
+    if (watcherModule === null) return;
+    let listener!: CapturedWatch['listener'];
+    let scheduled = 0;
+    const watcher = new watcherModule.StructuralWatcher({
+      registrations: [{ workspaceRoot: '/registered', repositories: [{
+        mainRoot: '/registered/repo', commonGitDir: '/registered/repo/.git', worktreePaths: [],
+      }] }],
+      schedule: () => { scheduled += 1; },
+      fingerprint: async () => 'stable',
+      watchFactory: (root, _options, captured) => {
+        if (root === '/registered/repo') listener = captured;
+        return { close() {}, onError: () => () => {} };
+      },
+    });
+    await watcher.start();
+    // Every nested package's own manifest/lockfile, exactly as an `npm`/`bun`/`yarn install`
+    // writes them while unpacking node_modules -- each one matches `manifestNames` by basename
+    // alone, unless the watcher also knows it is nested inside a dependency tree it doesn't own.
+    listener('change', 'node_modules/left-pad/package.json');
+    listener('change', 'node_modules/.pnpm/left-pad@1.0.0/node_modules/left-pad/package.json');
+    listener('rename', 'node_modules/some-pkg/yarn.lock');
+    await watcher.whenIdle();
+    await watcher.close();
+
+    expect(scheduled).toBe(0);
+  });
+
   test('uses a lightweight fingerprint when filename is absent', async () => {
     expect(watcherModule).not.toBeNull();
     if (watcherModule === null) return;
