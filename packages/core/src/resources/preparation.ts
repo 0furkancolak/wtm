@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { copyFile, lstat, mkdir, realpath, rename, rm, stat, symlink } from 'node:fs/promises';
+import { copyFile, link, lstat, mkdir, realpath, rm, stat, symlink } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { ResourceConfig } from '../config/schema';
 import { defaultCoreFileTrustPolicy, type FileTrustPolicy } from '../file-trust-policy';
@@ -135,15 +135,21 @@ async function create(config: ResourceConfig, path: string, source: string | nul
     await symlink(source as string, path);
     return;
   }
-  // A copy or a clone is this worktree's own file, so it is staged beside the target and moved
-  // into place: an interrupted copy leaves a `.wtm-partial` file, never a half-written resource.
+  // A copy or a clone is this worktree's own file, so it is staged beside the target first: an
+  // interrupted copy leaves only a `.wtm-partial` file, never a half-written resource. Getting it
+  // from there to `path` used to be a `rename`, which POSIX defines to atomically *replace*
+  // whatever is already at the destination — silently breaking this module's own documented
+  // invariant that a resource "does not already exist... nothing is ever replaced" the moment two
+  // preparations raced (two `wtm status --prepare`-ish calls, or a task legitimately writing the
+  // file between this policy's own `observe` and this line). `link` gives the same no-clobber
+  // guarantee `symlink` already has below: it fails with EEXIST rather than replacing anything,
+  // because staged and target share a directory and therefore a filesystem.
   const staged = `${path}.wtm-partial-${randomUUID().slice(0, 8)}`;
   try {
     await copyFile(source as string, staged);
-    await rename(staged, path);
-  } catch (error) {
+    await link(staged, path);
+  } finally {
     await rm(staged, { force: true });
-    throw error;
   }
 }
 
