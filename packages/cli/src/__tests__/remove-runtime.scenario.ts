@@ -214,6 +214,66 @@ const cases: Record<string, () => Promise<unknown>> = {
   },
 
   /**
+   * A multi-repository feature group (`wtm create --repos`) shares its endpoint leases across
+   * every worktree on the same branch, stored under whichever one resolved them first
+   * (`task-resolution.ts`'s `featureGroup`/`resolveWorktreeRuntime`). Removing that worktree
+   * while a sibling elsewhere in the group is still running must hand its leases to the sibling
+   * instead of releasing them out from under a worktree that never changed.
+   */
+  'endpoint-lease-reassignment-on-removal': async () => {
+    const prepared = await prepare();
+    const workspace = prepared.store.listWorkspaces()[0];
+    if (workspace === undefined) throw new Error('expected the removal workspace');
+    const branch = prepared.store.listWorktrees(prepared.repositoryId)
+      .find(({ id }) => id === prepared.worktreeId)?.branch;
+    if (branch === null || branch === undefined) throw new Error('expected the removal worktree to have a branch');
+
+    // A second repository in the same workspace, on the same branch -- the other half of the
+    // feature group. It never needs to exist on disk: nothing this case exercises reads it.
+    const secondRepository = prepared.store.upsertRepository({
+      workspaceId: workspace.id,
+      commonGitDir: join(prepared.fixture.root, 'second/.git'),
+      mainRoot: join(prepared.fixture.root, 'second'),
+      remoteIdentity: null,
+    });
+    const secondReconciled = prepared.store.reconcileWorktrees(secondRepository.id, [{
+      path: join(prepared.fixture.root, 'second-worktree'),
+      head: 'second-head', branch, detached: false, bare: false, lockedReason: null, prunableReason: null,
+    }]);
+    const sibling = secondReconciled.discovered[0];
+    if (sibling === undefined) throw new Error('expected the sibling worktree to be discovered');
+
+    const range = { min: 42_000, max: 42_099 };
+    prepared.store.allocateEndpoint({
+      worktreeId: prepared.worktreeId, name: 'api', protocol: 'tcp', host: '127.0.0.1', portRange: range, preferredPort: 42_000,
+    }, () => true);
+    prepared.store.allocateEndpoint({
+      worktreeId: prepared.worktreeId, name: 'web', protocol: 'tcp', host: '127.0.0.1', portRange: range, preferredPort: 42_001,
+    }, () => true);
+
+    const coordinator = createProductionRemovalCoordinator({
+      store: prepared.store,
+      globalConfigPath: prepared.globalConfigPath,
+      warn: () => {},
+    });
+    const subject = {
+      repositoryId: prepared.repositoryId,
+      worktreeId: prepared.worktreeId,
+      worktreePath: prepared.fixture.linkedWorktreePath,
+    };
+
+    const report = await coordinator.releaseEndpointLeases(subject);
+    const leases = prepared.store.listEndpointLeases().map(({ name, port, state, worktreeId }) => ({
+      name,
+      port,
+      state,
+      worktree: worktreeId === sibling.id ? 'sibling' : worktreeId === prepared.worktreeId ? 'removed' : 'unknown',
+    }));
+
+    return { released: report.released, leases };
+  },
+
+  /**
    * A worktree WTM does not know about has no managed processes, no endpoint leases and no
    * resources on record, so Git removal is the whole job — and saying so is the difference
    * between "runtime cleanup found nothing" and "runtime cleanup never ran".

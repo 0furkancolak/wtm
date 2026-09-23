@@ -27,7 +27,7 @@ import {
   type StoppedProcessesReport,
   type TemplateContext,
 } from '@wtm/core';
-import { resolveWorktreeRuntime } from '@wtm/daemon';
+import { featureGroup, resolveWorktreeRuntime } from '@wtm/daemon';
 import { selectPlatformRuntime } from '@wtm/platform';
 import type { FileTrustPolicy } from '@wtm/platform/ports';
 import type { Remediation, WtmError, WtmErrorCode } from '@wtm/protocol';
@@ -125,6 +125,26 @@ export class DaemonStopFailedError extends Error {
       worktreePath: subject.worktreePath,
     });
   }
+}
+
+/**
+ * A live sibling elsewhere in `subject`'s feature group, if one exists.
+ *
+ * `resolveWorktreeRuntime` stores a feature group's shared endpoint leases under whichever one
+ * worktree in the group resolved them first (`task-resolution.ts`'s `featureGroup`), not under
+ * each worktree's own row. Removing that worktree must hand its leases to a live sibling instead
+ * of releasing them out from under a sibling that never changed and is still running on them.
+ */
+function liveFeatureGroupSibling(store: SQLiteStateStore, subject: RemovalSubject) {
+  const worktree = store.listWorktrees(subject.repositoryId).find(({ id }) => id === subject.worktreeId);
+  if (worktree === undefined || worktree.branch === null) return undefined;
+  const repository = store.listRepositories().find(({ id }) => id === subject.repositoryId);
+  const workspace = repository === undefined
+    ? undefined
+    : store.listWorkspaces().find(({ id }) => id === repository.workspaceId);
+  if (repository === undefined || workspace === undefined) return undefined;
+  return featureGroup(store, { workspace, repository, worktree })
+    .find((member) => member.id !== subject.worktreeId);
 }
 
 export function createProductionRemovalCoordinator(
@@ -237,6 +257,11 @@ export function createProductionRemovalCoordinator(
       store.ci.deleteForWorktree(subject.worktreeId);
       store.taskOverrides.deleteForWorktree(subject.worktreeId);
       store.checklist.deleteForWorktree(subject.worktreeId);
+      // This worktree may be the one holding its whole feature group's shared endpoint leases
+      // (see `liveFeatureGroupSibling`'s doc comment). Hand them to a live sibling first, so the
+      // release below only ever gives back leases nothing else in the group still needs.
+      const sibling = liveFeatureGroupSibling(store, subject);
+      if (sibling !== undefined) store.reassignEndpointLeases(subject.worktreeId, sibling.id);
       return { released: store.releaseEndpointLeasesForWorktree(subject.worktreeId, now()) };
     },
 

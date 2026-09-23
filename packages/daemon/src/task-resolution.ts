@@ -24,6 +24,7 @@ import {
   type TemplateContext,
   type WorkspaceRecord,
   type WorktreeRecord,
+  type WorktreeState,
   type WtmConfig,
 } from '@wtm/core';
 import { selectPlatformRuntime } from '@wtm/platform';
@@ -223,8 +224,18 @@ export function featureGroup(store: StateRegistrationReader, registration: Regis
   const repositories = new Set(store.listRepositories(registration.workspace.id).map(({ id }) => id));
   return store.listWorktrees()
     .filter((worktree) => repositories.has(worktree.repositoryId) && worktree.branch === branch)
+    // A worktree Git no longer reports, or that is mid-teardown, is not a candidate to hold the
+    // group's shared endpoint leases going forward -- reconciliation and removal both already
+    // release its own leases (see `reconcileWorktrees`/`releaseEndpointLeases`), and leaving it
+    // eligible here would keep every future resolution attaching new leases to a worktree that
+    // is gone. The registration's own worktree is always kept: a caller resolving against it is
+    // free to be in any state itself.
+    .filter((worktree) => worktree.id === registration.worktree.id || !deadWorktreeStates.has(worktree.state))
     .sort((left, right) => left.path.localeCompare(right.path));
 }
+
+/** Worktree states `featureGroup` treats as no longer a candidate to hold shared endpoint leases. */
+const deadWorktreeStates = new Set<WorktreeState>(['ORPHANED', 'CLEANING', 'REMOVED', 'DEGRADED_CLEANUP']);
 
 /**
  * The proxy-hostname origins for the endpoints that already publish a dynamic-port origin, when

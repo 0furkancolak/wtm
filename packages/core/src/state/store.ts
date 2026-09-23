@@ -336,6 +336,16 @@ export interface StateStore extends AdapterTrustStateStore {
    * directory. The two paths are idempotent with respect to each other.
    */
   releaseEndpointLeasesForWorktree(worktreeId: string, releasedAt: string): number;
+  /**
+   * Moves every active endpoint lease from one worktree to another, without releasing them.
+   *
+   * A feature group's shared leases (task-resolution.ts's `featureGroup`/`resolveWorktreeRuntime`)
+   * are all stored under whichever one worktree first resolved them, not under the worktree that
+   * "owns" each individual port. Removing that worktree while a sibling elsewhere in the group is
+   * still running must move its leases to a live sibling rather than release them out from under a
+   * worktree that never changed.
+   */
+  reassignEndpointLeases(fromWorktreeId: string, toWorktreeId: string): number;
   transaction<T>(fn: () => T): T;
 }
 
