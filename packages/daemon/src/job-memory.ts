@@ -10,13 +10,19 @@ export function readHostJobMemory(readers: {
   available(): number; total(): number; constrained(): number;
 } = { available: () => process.availableMemory(), total: totalmem, constrained: () => process.constrainedMemory() }): HostJobMemory {
   let availableBytes: number | null = null;
-  let totalBytes: number | null = null;
+  let physical: number | null = null;
+  let constrained: number | null = null;
   try { availableBytes = bytes(readers.available()); } catch { /* unavailable is not zero */ }
-  try {
-    const physical = bytes(readers.total());
-    const constrained = bytes(readers.constrained());
-    if (physical !== null && physical > 0) totalBytes = constrained !== null && constrained > 0 ? Math.min(physical, constrained) : physical;
-  } catch { /* unknown total cannot prove a request unfit for the host */ }
+  // Read separately: `constrained()` (cgroup/container limits) is the newer, less portable of
+  // the two, and a host where it throws is still a host `total()` answered for just fine. A
+  // shared try/catch here used to lose that valid physical reading too, leaving `totalBytes`
+  // null and the budget check in `@wtm/core`'s own `memoryCapacity` uncapped by physical memory
+  // at all on exactly the hosts most likely to need the cap.
+  try { physical = bytes(readers.total()); } catch { /* unknown total cannot prove a request unfit for the host */ }
+  try { constrained = bytes(readers.constrained()); } catch { /* no constraint is not zero */ }
+  const totalBytes = physical !== null && physical > 0
+    ? (constrained !== null && constrained > 0 ? Math.min(physical, constrained) : physical)
+    : null;
   return { availableBytes, totalBytes };
 }
 
