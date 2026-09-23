@@ -57,7 +57,15 @@ export function renderConfigDraft(input: ConfigDraftInput): ConfigDraft {
   // error — so when one is in force, the draft fits itself to it and says what it left out.
   const inForce = input.existing?.ports === undefined ? null : parsePortRange(input.existing.ports.range);
   const range = inForce === null ? portRange(services) : null;
-  const outOfRange = inForce === null ? [] : excludedPorts(services, inForce);
+  // `portRange` floors its band at 1024 (never proposing a range of privileged ports), so a
+  // preferred port below that -- a real, valid `PORT=80` a repository's own `.env.example` might
+  // declare -- can fall outside a freshly built range exactly as it can fall outside one already
+  // in the file. Running the same exclusion check against whichever range is actually in force
+  // (existing or freshly proposed) is what makes the per-service block below correctly omit
+  // `preferred = 80` and explain why, instead of writing a range and a preferred port that
+  // contradict each other in the same draft.
+  const effectiveRange = inForce ?? (range === null ? null : parsePortRange(range));
+  const outOfRange = effectiveRange === null ? [] : excludedPorts(services, effectiveRange);
   if (range !== null) {
     blocks.push(block('ports', hasPath(input.existing, ['ports']), [
       '# The band every endpoint is allocated from. It has to contain the preferred ports below,',

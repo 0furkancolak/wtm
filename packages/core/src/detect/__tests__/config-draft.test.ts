@@ -55,6 +55,23 @@ describe('configuration drafting', () => {
     expect(range).toBe('4000-5373');
   });
 
+  it('flags a preferred port below the 1024 floor of a freshly built range too, instead of writing a self-contradicting draft', () => {
+    // portRange() never proposes a band of privileged ports, so a real `PORT=80` still falls
+    // outside a *freshly computed* range exactly as it would fall outside one already on disk --
+    // the exclusion check must not only run for the "range already in force" branch.
+    const legacy = service({
+      name: 'legacy',
+      port: { env: 'PORT', preferred: 80, evidence: [{ file: 'legacy/.env.example', detail: 'PORT=' }] },
+    });
+    const draft = renderConfigDraft({ detection: detection(api, legacy) });
+    const range = parsePortRangeFrom(draft.document) as string;
+
+    expect(draft.outOfRange).toEqual([{ service: 'legacy', preferred: 80, range, suggested: `80-${range.split('-')[1]}` }]);
+    expect(draft.document).not.toContain('\npreferred = 80');
+    expect(draft.document).toContain(`Widen the range to "80-${range.split('-')[1]}", then add: preferred = 80`);
+    expect(() => parseWtmConfig(parse(`version = 1\n\n${draft.document}`))).not.toThrow();
+  });
+
   it('fits itself to a range already in force, and says what it left out', () => {
     // A second [ports] table is a TOML error, so the range cannot be widened from here — and a
     // preferred port outside it is one the allocator would never offer.
