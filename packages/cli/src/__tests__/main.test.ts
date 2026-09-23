@@ -247,6 +247,55 @@ describe('Commander CLI', () => {
     }
   }, 20_000);
 
+  test('a flag value that equals -h is not mistaken for a real --help request', async () => {
+    // Regression: `hasOptionIntent`/`isHelpInvocation` scanned raw, unparsed argv for an exact
+    // `-h`/`--help` token before Commander ever assigns option values, so `--description -h`
+    // (which Commander correctly consumes as `--description`'s value, not a flag) looked
+    // identical to a real `-h`. `isHelpInvocation` then skipped building the daemon client
+    // entirely, so a genuinely reachable daemon was reported as `WTM_DAEMON_UNAVAILABLE`.
+    const fixture = await createGitSafetyFixture();
+    repositoryFixtures.push(fixture);
+    const directory = await mkdtemp(join(tmpdir(), 'wtm-help-collision-'));
+    const socketPath = join(directory, 'd.sock');
+    let connections = 0;
+    const server = createServer((socket) => { connections += 1; socket.destroy(); });
+    await new Promise<void>((resolve) => { server.listen(socketPath, () => resolve()); });
+
+    try {
+      const output = capture();
+      await runCli(['task', 'set', 'mytask', '--description', '-h', '--json'], {
+        cwd: fixture.repoPath,
+        daemonSocketPath: socketPath,
+        taskTargetDatabasePath: join(fixture.root, 'state.db'),
+        taskTargetGlobalConfigPath: join(fixture.root, 'config.toml'),
+        ...output.io,
+      });
+      expect(connections).toBeGreaterThan(0);
+    } finally {
+      await new Promise<void>((resolve) => { server.close(() => resolve()); });
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test('a flag value that equals --json does not flip an unrelated usage error onto stdout', async () => {
+    // Same root cause as the -h collision above: the pre-parse `jsonRequested` scan matched raw
+    // argv tokens, so `--description --json` (Commander consumes `--json` as the value) was
+    // indistinguishable from a real `--json` flag -- an unrelated usage error (an unknown flag)
+    // then rendered as a JSON envelope on stdout instead of the usual human text on stderr.
+    const output = capture();
+    const control = capture();
+
+    const exitCode = await runCli(['task', 'set', 'mytask', '--description', '--json', '--not-a-real-flag'], output.io);
+    const controlExitCode = await runCli(['task', 'set', 'mytask', '--description', 'hello', '--not-a-real-flag'], control.io);
+
+    expect(exitCode).toBe(2);
+    expect(controlExitCode).toBe(2);
+    expect(output.stdout()).toBe('');
+    expect(output.stderr()).toContain("unknown option '--not-a-real-flag'");
+    expect(control.stdout()).toBe('');
+    expect(control.stderr()).toContain("unknown option '--not-a-real-flag'");
+  });
+
   test('skill print emits exactly the canonical skill without an added newline or envelope', async () => {
     const output = capture();
     const canonical = await readFile(join(import.meta.dir, '../../../../skills/wtm/SKILL.md'), 'utf8');
