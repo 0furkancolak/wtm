@@ -247,10 +247,15 @@ export function createStateDiagnosticDataSource(
   // and report an empty resources list with `ok: true` -- the one diagnostic command that hid a
   // genuine config failure instead of reporting it, so a caller scripting against `wtm status
   // --json` to check workspace health got a false "all clear".
-  const declaredResources = async (): Promise<StatusDiagnostic['resources']> =>
+  //
+  // `cwd` defaults to `options.cwd` for the single-workspace caller below, but every `--global`
+  // caller must pass the specific workspace's own current worktree's path instead (see
+  // `adapterFinding`'s comment on `findRegistration` for why an unscoped `options.cwd` resolves
+  // to whichever registered worktree is deepest, not necessarily this workspace's own).
+  const declaredResources = async (cwd = options.cwd): Promise<StatusDiagnostic['resources']> =>
     await inspectRuntimeResources(await resolveWorktreeRuntime({
       store,
-      cwd: options.cwd,
+      cwd,
       globalConfigPath: options.globalConfigPath,
     }));
 
@@ -557,32 +562,43 @@ export function createStateDiagnosticDataSource(
   const adapterFinding = async (
     current: WorktreeRecord | undefined,
   ): Promise<DoctorDiagnostic['findings'][number]> => {
-    let registration;
-    try {
-      registration = findRegistration(store, options.cwd);
-    } catch {
-      // "This directory is not inside a worktree WTM has registered" used to arrive here, as an
-      // `adapters` finding of status `unknown` — the one heading a reader asking why WTM does
-      // not know about this directory would never open. It is the `registration` check's answer
-      // now, and this check says only why it has nothing of its own to report.
-      return {
-        check: 'adapters',
-        status: 'unknown',
-        message: 'Adapter detection needs a registered worktree; see the registration check.',
-      };
-    }
-    // The worktree `findRegistration` found belongs to a different workspace than the one this
+    // A worktree found for `options.cwd` can belong to a different workspace than the one this
     // finding is being built for — a `--global` sweep asking every workspace about the one
     // directory the command was run from. Reporting that other worktree's adapters under this
     // workspace's name is a real cross-workspace leak, not a repeated true fact (see
     // `registrationFinding` for the same reasoning).
     if (current === undefined) {
+      // `current === undefined` alone does not say *why* -- `cwd` might not be registered
+      // anywhere at all (the registration check's own answer to give), or it might belong to a
+      // different, sibling workspace (a real leak to refuse). A cheap global lookup tells the
+      // two apart without resolving anything this workspace would report.
+      try {
+        findRegistration(store, options.cwd);
+      } catch {
+        // "This directory is not inside a worktree WTM has registered" used to arrive here, as
+        // an `adapters` finding of status `unknown` — the one heading a reader asking why WTM
+        // does not know about this directory would never open. It is the `registration` check's
+        // answer now, and this check says only why it has nothing of its own to report.
+        return {
+          check: 'adapters',
+          status: 'unknown',
+          message: 'Adapter detection needs a registered worktree; see the registration check.',
+        };
+      }
       return {
         check: 'adapters',
         status: 'unknown',
         message: 'Adapter detection answers for the workspace the command was run from; this is a different workspace.',
       };
     }
+    // Resolved from `current.path`, not `options.cwd`: `current` already proves this workspace's
+    // own worktree contains `cwd`, but a separately registered, more deeply nested workspace's
+    // worktree can *also* contain `cwd` (a vendored/nested repository, its own `wtm init`) --
+    // `options.cwd` would then resolve, unscoped, to whichever is deepest, never necessarily this
+    // one. No other registered worktree's path can both contain `current.path` and be longer
+    // than it, so resolving from `current.path` can only ever land back on `current`'s own
+    // registration.
+    const registration = findRegistration(store, current.path);
     let inspection;
     try {
       inspection = await inspectAdapters(adapterContext(registration));
@@ -612,12 +628,12 @@ export function createStateDiagnosticDataSource(
   const resourceFinding = async (
     current: WorktreeRecord | undefined,
   ): Promise<DoctorDiagnostic['findings'][number]> => {
-    // `declaredResources` resolves from `options.cwd`, same as `findRegistration` in
-    // `adapterFinding`/`registrationFinding` above -- and for the same reason, must not run at
-    // all for a workspace that is not the one `cwd` is actually in. Falling back to an empty
-    // list here (the way `readStatus`'s own use of `declaredResources` does for a `--global`
-    // sweep) would report "declares no resources", which is a different and equally wrong claim
-    // about a workspace this command has nothing to say about; `unknown` is the honest answer.
+    // Passing `current.path` rather than `options.cwd` is what keeps this scoped to this
+    // workspace even when a more deeply nested, separately registered workspace's worktree also
+    // contains `cwd` (see `adapterFinding`'s comment). Falling back to an empty list here (the
+    // way `readStatus`'s own use of `declaredResources` does for a `--global` sweep) would report
+    // "declares no resources", which is a different and equally wrong claim about a workspace
+    // this command has nothing to say about; `unknown` is the honest answer.
     if (current === undefined) {
       return {
         check: 'resources',
@@ -633,7 +649,7 @@ export function createStateDiagnosticDataSource(
     // is the exact defect `doctor`'s own doc comment above was written to fix.
     let resources: StatusDiagnostic['resources'];
     try {
-      resources = await declaredResources();
+      resources = await declaredResources(current.path);
     } catch {
       return { check: 'resources', status: 'unknown', message: 'Resource diagnostics are unavailable; see the config check.' };
     }
@@ -774,8 +790,11 @@ export function createStateDiagnosticDataSource(
         processes,
         // Only for the worktree the question is actually about: a `--global` status walks
         // workspaces this directory is nowhere near, and there is nothing to observe there.
+        // Resolved from `worktree.path`, not `options.cwd`: a more deeply nested, separately
+        // registered workspace's worktree can also contain `options.cwd` (see `adapterFinding`'s
+        // comment), and `declaredResources` would otherwise silently answer for that one instead.
         resources: worktree !== undefined && containsPath(worktree.path, options.cwd)
-          ? await declaredResources()
+          ? await declaredResources(worktree.path)
           : [],
         ...(statusOptions?.pr === true ? { pr: await prLookup(workspace, worktree) } : {}),
       } satisfies StatusDiagnostic;
