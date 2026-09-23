@@ -1,4 +1,4 @@
-import type { PreparedResource, Provenance } from '@wtm/core';
+import { resolveRepoScope, type PreparedResource, type Provenance } from '@wtm/core';
 import type { AdapterReport, WorktreeRuntime } from '@wtm/daemon';
 import type { ExplainDiagnostic } from './diagnostics';
 
@@ -44,7 +44,7 @@ function configDecisions(runtime: WorktreeRuntime): Decision[] {
     // Tasks and resources are explained as themselves below, where their whole table is
     // visible; splitting them into one decision per leaf says less, not more. A repo's own
     // `[repos.*.environment]` override is explained the same way, under `env.<name>`
-    // (`environmentDecisions`'s `repoProvenanceKey`) -- but `repos.<name>.path` has no other
+    // (`environmentDecisions`'s repo-scoped provenance lookup) -- but `repos.<name>.path` has no other
     // producer, so skipping every `repos.*` leaf here silently dropped it from `wtm explain`
     // entirely, even though it is a real, file-backed choice (`resolveRepoScope` reads it to
     // map a repository directory to its config table).
@@ -70,14 +70,26 @@ function environmentDecisions(input: DecisionInput): Decision[] {
   const { runtime } = input;
   const repo = runtime.repoEnvironment ?? {};
   const workspace = runtime.config.environment ?? {};
+  // A workspace can declare `[repos.*.environment]` overrides for several repositories in one
+  // file, so `runtime.provenance` holds one `repos.<name>.environment.<VAR>` entry per repo that
+  // declares a variable of that name -- not just this worktree's own. Resolving the scope once,
+  // the same way `repoEnvironment` itself did to build `runtime.repoEnvironment`, is what makes
+  // the provenance key point at *this* repository's table instead of whichever one happens to
+  // sort first.
+  const repoScopeName = resolveRepoScope(runtime.config, {
+    workspaceRoot: runtime.registration.workspace.root,
+    repoRoot: runtime.registration.repository.mainRoot,
+  })?.name;
   return Object.entries(input.environment).map(([name, value]) => {
     if (Object.hasOwn(repo, name)) {
-      const key = repoProvenanceKey(runtime.provenance, name);
+      const provenance = repoScopeName === undefined
+        ? undefined
+        : runtime.provenance.get(`repos.${repoScopeName}.environment.${name}`);
       return {
         kind: 'config' as const,
         key: `env.${name}`,
         value: toJson(value),
-        provenance: key === undefined ? { source: wtmSource } : runtime.provenance.get(key) as Provenance,
+        provenance: provenance ?? { source: wtmSource },
         reason: `Set by this repository's own [repos.*.environment], which is layered over the workspace's.`,
       };
     }
@@ -177,14 +189,6 @@ function firstProvenance(provenance: Map<string, Provenance>, prefix: string): P
     if (best === undefined || (value.line ?? Infinity) < (best.line ?? Infinity)) best = value;
   }
   return best;
-}
-
-function repoProvenanceKey(provenance: Map<string, Provenance>, name: string): string | undefined {
-  const suffix = `.environment.${name}`;
-  for (const key of provenance.keys()) {
-    if (key.startsWith('repos.') && key.endsWith(suffix)) return key;
-  }
-  return undefined;
 }
 
 function reasonFor(provenance: Provenance): string {
