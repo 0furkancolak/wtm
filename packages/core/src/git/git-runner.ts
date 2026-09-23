@@ -156,8 +156,14 @@ export async function listGitWorktrees(
 export async function readGitRepositoryIdentity(repoPath: string): Promise<GitRepositoryIdentity> {
   const args = ['rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel'];
   const result = await runGit(repoPath, args);
-  const [commonGitDir, topLevel] = result.stdout.toString('utf8').trimEnd().split('\n');
-  if (commonGitDir === undefined || topLevel === undefined) {
+  const parts = result.stdout.toString('utf8').trimEnd().split('\n');
+  const [commonGitDir, topLevel] = parts;
+  // Either path git reports here can itself contain an embedded newline -- a legal byte in a
+  // POSIX path -- which would silently shift every field after it: `parts.length !== 2` is the
+  // guard that actually catches that, not just checking the two destructured slots for
+  // `undefined`, which stay defined (just wrong) when a newline in `commonGitDir` bleeds into
+  // `topLevel`. See `readGitCommonDirectory` below for the identical concern on its one value.
+  if (parts.length !== 2 || commonGitDir === undefined || topLevel === undefined) {
     throw new GitCommandError({
       argv: gitArgv(repoPath, args),
       exitCode: 0,
