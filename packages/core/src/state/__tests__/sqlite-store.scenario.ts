@@ -1768,6 +1768,40 @@ function prunableWorktreeRelease() {
   });
 }
 
+/**
+ * A worktree that stays prunable (nothing ever ran `git worktree prune`/`remove --force` on it)
+ * must not flip between ORPHANED and DISCOVERED on alternating reconciles: real git keeps
+ * reporting a `rm -rf`'d worktree as prunable forever, so the state has to settle, not oscillate.
+ */
+function prunableWorktreeSettles() {
+  return withDatabase((_, open, close) => {
+    const store = open();
+    try {
+      const repository = createRepository(store);
+      store.reconcileWorktrees(repository.id, [
+        worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
+        worktree('/projects/demo/repo-feature', 'feature-head', 'refs/heads/feature'),
+      ]);
+      const snapshot = [
+        worktree('/projects/demo/repo', 'main-head', 'refs/heads/main'),
+        { ...worktree('/projects/demo/repo-feature', 'feature-head', 'refs/heads/feature'), prunableReason: 'gitdir file points to non-existent location' },
+      ];
+      const passes: { state: string | undefined; orphanedThisPass: boolean }[] = [];
+      for (let pass = 0; pass < 4; pass += 1) {
+        const result = store.reconcileWorktrees(repository.id, snapshot);
+        const feature = [...result.orphaned, ...result.updated].find(({ path }) => path.endsWith('-feature'));
+        passes.push({
+          state: feature?.state,
+          orphanedThisPass: result.orphaned.some(({ path }) => path.endsWith('-feature')),
+        });
+      }
+      return { passes };
+    } finally {
+      close();
+    }
+  });
+}
+
 /** Retiring a registration takes its operation leases with it, and nothing else's. */
 function operationLeaseRetirement() {
   return withDatabase((_, open, close) => {
@@ -1875,6 +1909,7 @@ const scenarios: Record<string, () => unknown> = {
   'endpoint-lease-reassignment': endpointLeaseReassignment,
   'worktree-endpoint-release': worktreeEndpointRelease,
   'prunable-worktree-release': prunableWorktreeRelease,
+  'prunable-worktree-settles': prunableWorktreeSettles,
   'operation-lease-retirement': operationLeaseRetirement,
   'operation-lease-blocks-forget': operationLeaseBlocksForget,
 };

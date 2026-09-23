@@ -387,6 +387,22 @@ describe('SQLiteStateStore', () => {
     });
   });
 
+  test('a worktree that stays prunable settles at ORPHANED instead of oscillating with DISCOVERED', () => {
+    // Real git reports a `rm -rf`'d worktree as prunable forever, until something runs
+    // `git worktree prune`/`remove --force` -- which WTM itself never does automatically. A fix
+    // that only handles the pass where the state *first* becomes ORPHANED, and then
+    // unconditionally revives ORPHANED -> DISCOVERED on the next pass regardless of whether the
+    // worktree is still prunable, flips forever instead of settling.
+    expect(runScenario('prunable-worktree-settles')).toEqual({
+      passes: [
+        { state: 'ORPHANED', orphanedThisPass: true },
+        { state: 'ORPHANED', orphanedThisPass: false },
+        { state: 'ORPHANED', orphanedThisPass: false },
+        { state: 'ORPHANED', orphanedThisPass: false },
+      ],
+    });
+  });
+
   test('retires a repository with its operation leases and leaves the other repository holding its own', () => {
     expect(runScenario('operation-lease-retirement')).toEqual({
       forgotRepository: true,
