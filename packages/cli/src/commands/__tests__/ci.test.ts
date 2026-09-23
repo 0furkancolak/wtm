@@ -156,5 +156,17 @@ describe('ci commands', () => {
         remediation: [{ kind: 'command-suggestion', argv: ['wtm', 'ci', 'status', '--all'] }],
       });
     });
+
+    test('stops reporting a watch once its worktree is reconciled away by a removal', () => {
+      const result = runScenario('node', ['--import', 'tsx', statusScenarioPath, 'status-excludes-removed-worktree']);
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stderr).toBe('');
+      const report = JSON.parse(result.stdout) as Record<string, unknown>;
+      expect(report).toMatchObject({
+        beforeRemovalCount: 1,
+        singleOk: false, singleCode: 'WTM_WORKSPACE_NOT_FOUND',
+        allOk: true, allWorktreePaths: [],
+      });
+    });
   });
 });

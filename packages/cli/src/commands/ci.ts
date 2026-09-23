@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { containsPath, readWorktreeHead, type CiWatchRecord } from '@wtm/core';
+import { containsPath, readWorktreeHead, type CiWatchRecord, type WorktreeState } from '@wtm/core';
 import {
   ciArgumentSchemas, ciUnwatchResultSchema, ciWatchAcceptanceSchema,
   type CiWatch, type JsonEnvelope, type WtmError,
@@ -19,6 +19,20 @@ export function publicWatch(record: CiWatchRecord): CiWatch {
     runs: record.runs,
     ...(record.detail === null ? {} : { detail: record.detail }),
   };
+}
+
+/**
+ * A local copy of the daemon's `#registration` worktree filter (`packages/daemon/src/ci/
+ * watcher.ts`): `wtm remove` reconciles a removed worktree's row to `ORPHANED` (`reconcileWorktrees`,
+ * `packages/core/src/state/sqlite-store.ts`) rather than deleting it, and its CI watch record is
+ * never pruned by a single removal (only whole-repository deregistration clears `ci_watches`).
+ * Without this filter, `wtm ci status` would keep matching a `cwd` still on disk from before the
+ * removal (or simply the stale path argument of a script) against the dead row's still-stored
+ * path and report its last, now-meaningless CI result as current -- disagreeing with `wtm ci
+ * watch`/`unwatch`, which already refuse the same worktree.
+ */
+function isLive(state: WorktreeState): boolean {
+  return state !== 'ORPHANED' && state !== 'REMOVED';
 }
 
 /** Reads HEAD locally, then hands the watch to the daemon; it never waits for CI. */
@@ -77,7 +91,7 @@ export function readCiStatus(input: { cwd: string; all: boolean; databasePath: s
       }
       const repositories = new Set(store.listRepositories(workspace.id).map(({ id }) => id));
       const watches = store.listWorktrees()
-        .filter(({ repositoryId }) => repositories.has(repositoryId))
+        .filter(({ repositoryId, state }) => repositories.has(repositoryId) && isLive(state))
         .flatMap((worktree) => {
           const watch = safeLatest(store, worktree.id);
           return watch === null ? [] : [{ worktreePath: worktree.path, watch: publicWatch(watch) }];
@@ -86,7 +100,7 @@ export function readCiStatus(input: { cwd: string; all: boolean; databasePath: s
       return success('ci status', { watches });
     }
     const worktree = store.listWorktrees()
-      .filter(({ path }) => containsPath(path, current))
+      .filter(({ path, state }) => isLive(state) && containsPath(path, current))
       .sort((left, right) => right.path.length - left.path.length)[0];
     if (worktree === undefined) {
       return failure('ci status', {
