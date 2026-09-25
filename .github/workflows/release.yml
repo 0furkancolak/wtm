@@ -712,4 +712,3 @@ jobs:
           name: scoop-manifest
           path: artifacts/scoop/wtm.json
           if-no-files-found: error
-          if-no-files-found: error
