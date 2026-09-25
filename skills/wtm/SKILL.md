@@ -53,7 +53,7 @@ failure, `2` usage or configuration, `3` safety refusal or conflict, `4` daemon 
 | `wtm start <task>` | Start a long-running task under supervision. `--wait --timeout <duration> --json` waits for its healthcheck. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm stop [task]` | Stop one managed task, or all of this worktree's. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm restart <task>` | Stop and start a managed task; accepts `--wait --timeout`. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
-| `wtm ps --json` | List WTM-managed process groups. |
+| `wtm ps --json` | Live runs and each task's latest crash (`exitCode`/`exitSignal`); `--all` for history. |
 | `wtm logs [task]` | Read managed task logs; `--follow` streams raw output. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm exec -- <argv>` | Run raw argv in this worktree with its resolved environment. `--worktree <selector>` (`--repo <name>`), before `--`, targets another worktree. |
 | `wtm tui [selector]` | Interactive terminal dashboard for one worktree: identity, running tasks, ports and health, polling `status`/`doctor` on a timer. Needs a real TTY; not for agent/scripted use — read `status`/`doctor --json` instead. |
