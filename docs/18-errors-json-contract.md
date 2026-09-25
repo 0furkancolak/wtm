@@ -132,12 +132,9 @@ exits 1, like a dozen ordinary refusals — so WTM classifies the condition rath
 off the exit code, which is why it is one diagnosable answer on both platforms instead of a generic
 request failure on one of them. It exits with code 4.
 
-A runtime command whose connect is refused (the socket is missing, or nothing is listening on it)
-is retried for about a second before it is reported: that is what a daemon between exiting and
-binding its socket again looks like, and nothing has been sent yet. A request that was sent and
-then lost its connection is not retried, since the daemon may have acted on it; it is still
-`WTM_DAEMON_UNAVAILABLE`, with `context.reason` `connection-lost` and a message that says the
-request may or may not have taken effect.
+A request that was sent and then lost its connection is not retried, since the daemon may have
+acted on it. It is still `WTM_DAEMON_UNAVAILABLE`, with `context.reason` `connection-lost` and a
+message that says the request may or may not have taken effect.
 
 `WTM_DAEMON_TIMEOUT` means the daemon accepted the request but did not answer in time. The
 daemon is running, and it may still complete the request, so the remedy is to look (`wtm ps`)

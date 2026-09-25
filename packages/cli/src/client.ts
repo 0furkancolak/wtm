@@ -16,16 +16,6 @@ import {
 const defaultTransportTimeoutMs = 5_000;
 
 /**
- * How long `start()` waits between connect attempts the daemon refused. A daemon that is being
- * restarted removes its socket on the way out and binds it again only after recovering its
- * process records, and a command that lands in that gap used to fail outright. Nothing has been
- * sent at that point, so trying again cannot repeat an action. About a second in total: long
- * enough to cover a restart's rebind, short enough that a daemon that is simply not installed
- * is still reported promptly.
- */
-const defaultConnectRetryDelaysMs: readonly number[] = [100, 300, 600];
-
-/**
  * The daemon took the request and did not answer in time. Unlike an unreachable daemon, the
  * request may still be carried out -- a `start` waiting behind a previous run's exit, a `stop`
  * inside its grace period -- so the caller must not assume it failed.
@@ -62,8 +52,6 @@ export interface DaemonClientOptions {
   transportTimeoutMs?: number;
   /** Fault injection stays at the socket boundary; ordinary callers use a real connection. */
   connect?: (address: string) => Socket;
-  /** The waits between refused connect attempts; see {@link defaultConnectRetryDelaysMs}. */
-  connectRetryDelaysMs?: readonly number[];
 }
 
 export interface FollowLogsOptions {
@@ -94,7 +82,6 @@ export class DaemonClient {
   readonly #transportTimeoutMs: number;
   readonly #maxFrameBytes: number;
   readonly #openSocket: (address: string) => Socket;
-  readonly #connectRetryDelaysMs: readonly number[];
   readonly #pending = new Map<string, PendingRequest>();
   readonly #timedOutRequestTombstones = new Set<string>();
   #socket: Socket | null = null;
@@ -107,7 +94,6 @@ export class DaemonClient {
     this.#maxFrameBytes = options.maxFrameBytes ?? defaultMaxIpcFrameBytes;
     this.#transportTimeoutMs = options.transportTimeoutMs ?? defaultTransportTimeoutMs;
     this.#openSocket = options.connect ?? ((address) => createConnection(address));
-    this.#connectRetryDelaysMs = options.connectRetryDelaysMs ?? defaultConnectRetryDelaysMs;
     if (!Number.isInteger(this.#requestTimeoutMs) || this.#requestTimeoutMs < 1) {
       throw new RangeError('Daemon request timeout must be a positive integer');
     }
@@ -121,26 +107,8 @@ export class DaemonClient {
     if (this.#socket !== null && !this.#socket.destroyed) return Promise.resolve();
     if (this.#socket?.destroyed) this.#socket = null;
     if (this.#starting !== null) return this.#starting;
-    this.#starting = this.#connectWithRetry().finally(() => { this.#starting = null; });
+    this.#starting = this.#connect().finally(() => { this.#starting = null; });
     return this.#starting;
-  }
-
-  /**
-   * Retries only a connect the peer refused or closed. A transport that went silent already cost
-   * a whole `transportTimeoutMs`, and trying it again would multiply that wait for nothing.
-   */
-  async #connectWithRetry(): Promise<void> {
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        await this.#connect();
-        return;
-      } catch (error) {
-        const delay = this.#connectRetryDelaysMs[attempt];
-        const refused = error instanceof Error && error.message !== 'Daemon connection timed out';
-        if (delay === undefined || !refused || this.#closed) throw error;
-        await new Promise((resolve) => { setTimeout(resolve, delay).unref(); });
-      }
-    }
   }
 
   request(command: string, args?: unknown, options: DaemonRequestOptions = {}): Promise<JsonEnvelope<unknown>> {

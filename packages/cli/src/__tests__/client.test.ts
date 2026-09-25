@@ -301,7 +301,7 @@ describe('DaemonClient', () => {
 
   test('start refuses a connection the transport closes without reporting an error', async () => {
     const transport = scriptedTransport();
-    const client = new DaemonClient({ socketPath: 'fixture', connectRetryDelaysMs: [], connect: () => transport.socket });
+    const client = new DaemonClient({ socketPath: 'fixture', connect: () => transport.socket });
     cleanups.push(() => client.close());
 
     const started = client.start();
@@ -346,55 +346,6 @@ describe('DaemonClient', () => {
     transport.deliver('close');
 
     expect(await pending).toBeInstanceOf(DaemonConnectionLostError);
-  }, 10_000);
-
-  test('start retries a refused connect, which is what a daemon between exit and rebind looks like', async () => {
-    const transports: ScriptedTransport[] = [];
-    const client = new DaemonClient({
-      socketPath: 'fixture',
-      connectRetryDelaysMs: [1, 1],
-      connect: () => {
-        const transport = scriptedTransport();
-        transports.push(transport);
-        // The first two attempts are refused; the third finds the daemon listening again.
-        queueMicrotask(() => transport.deliver(transports.length < 3 ? 'close' : 'connect'));
-        return transport.socket;
-      },
-    });
-    cleanups.push(() => client.close());
-
-    await client.start();
-
-    expect(transports).toHaveLength(3);
-    expect(transports.slice(0, 2).every((transport) => transport.destroyed())).toBe(true);
-  }, 10_000);
-
-  test('start gives up once the retries are spent, and never retries a transport that went silent', async () => {
-    let refused = 0;
-    const refusing = new DaemonClient({
-      socketPath: 'fixture',
-      connectRetryDelaysMs: [1, 1],
-      connect: () => {
-        refused += 1;
-        const transport = scriptedTransport();
-        queueMicrotask(() => transport.deliver('close'));
-        return transport.socket;
-      },
-    });
-    cleanups.push(() => refusing.close());
-    await expect(refusing.start()).rejects.toThrow('Daemon connection closed');
-    expect(refused).toBe(3);
-
-    let silent = 0;
-    const wedged = new DaemonClient({
-      socketPath: 'fixture',
-      transportTimeoutMs: 10,
-      connectRetryDelaysMs: [1, 1],
-      connect: () => { silent += 1; return scriptedTransport().socket; },
-    });
-    cleanups.push(() => wedged.close());
-    await expect(wedged.start()).rejects.toThrow('Daemon connection timed out');
-    expect(silent).toBe(1);
   }, 10_000);
 
   test('refuses a transport bound that cannot bound anything', () => {

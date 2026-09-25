@@ -66,9 +66,6 @@ are unstable, and a breaking change may land in a minor release without a deprec
 - `wtm start`, `wtm restart` and `wtm stop` waited only 5 seconds for the daemon. That is shorter
   than a `stop` inside a 5s `grace_period`, or a `start` queued behind the previous run's exit, so
   the first call after a crash could fail while the second succeeded. They now wait 60 seconds.
-- A runtime command no longer fails when it lands in the moment a restarting daemon has removed
-  its socket but not yet bound it again. A refused connect is retried for about a second. A
-  request that was already sent is never re-sent.
 
 ## [0.2.0-rc.2] - 2026-09-23
 
