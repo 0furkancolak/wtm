@@ -20,7 +20,7 @@ describe('start and restart readiness CLI', () => {
     const unavailable = await runStartCommand({ cwd: '/repo', taskName: 'dev', wait: true }, { request: async () => { throw new Error('connection failed'); } });
     expect(unavailable.errors[0]?.code).toBe('WTM_DAEMON_UNAVAILABLE');
   });
-  test('passes bounded waits and a longer per-request transport timeout without changing ordinary requests', async () => {
+  test('passes bounded waits and a longer per-request transport timeout, and the lifecycle bound otherwise', async () => {
     const calls: unknown[] = [];
     const client: RuntimeDaemonClient = { request: async (command, args, options) => {
       calls.push({ command, args, options });
@@ -35,7 +35,8 @@ describe('start and restart readiness CLI', () => {
     expect(calls).toEqual([
       { command: 'start', args: { cwd: '/repo', taskName: 'dev', wait: true, waitTimeoutMs: 6000 }, options: { timeoutMs: 36000, cancelRemote: true } },
       { command: 'restart', args: { cwd: '/repo', taskName: 'dev', wait: true }, options: { timeoutMs: 330000, cancelRemote: true } },
-      { command: 'start', args: { cwd: '/repo', taskName: 'dev' }, options: undefined },
+      // An ordinary start waits as long as the daemon's own stop and launch bounds, not 5s.
+      { command: 'start', args: { cwd: '/repo', taskName: 'dev' }, options: { timeoutMs: 60000 } },
     ]);
   });
 
