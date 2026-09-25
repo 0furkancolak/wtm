@@ -1,5 +1,6 @@
 import {
   resolveTask,
+  WtmTemplateError,
   type ResolvedTask,
   type TaskResolutionInput,
 } from '@wtm/core';
@@ -30,9 +31,34 @@ export async function runResolveCommand(input: ResolveCommandInput): Promise<Res
       scope: commandScope(input),
       data: null,
       warnings: [],
-      errors: [toRuntimeCommandError(error, 'resolve', input.taskName)],
+      errors: [unleasedEndpointError(error, input) ?? toRuntimeCommandError(error, 'resolve', input.taskName)],
     };
   }
+}
+
+/**
+ * `wtm resolve` answers from the leases the feature already holds and never takes one: a report
+ * that allocates is a report whose answer is whatever it just decided, and a later `resolve`
+ * after a release decided something else. An endpoint the configuration declares but nothing has
+ * leased yet is therefore a normal state here, and "unable to resolve {port.web}" read like a
+ * typo in the configuration.
+ */
+function unleasedEndpointError(error: unknown, input: ResolveCommandInput): WtmError | null {
+  if (!(error instanceof WtmTemplateError)) return null;
+  const variable = error.context['variable'];
+  if (typeof variable !== 'string' || !variable.startsWith('port.')) return null;
+  const endpoint = variable.slice('port.'.length);
+  const declared = input.config.ports?.[endpoint];
+  if (typeof declared !== 'object' || declared === null) return null;
+  return {
+    code: 'WTM_TEMPLATE_UNRESOLVED',
+    message: `Endpoint ${endpoint} has no port leased yet for this feature. \`wtm resolve\` reports the `
+      + `ports a feature holds and never takes one; \`wtm start ${input.taskName}\` or \`wtm run ${input.taskName}\` `
+      + 'leases every endpoint of the feature.',
+    severity: 'error',
+    context: { variable, endpoint, command: 'resolve', taskName: input.taskName },
+    remediation: [{ kind: 'command-suggestion', argv: ['wtm', 'start', input.taskName] }],
+  };
 }
 
 export function toRuntimeCommandError(

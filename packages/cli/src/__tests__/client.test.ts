@@ -13,7 +13,7 @@ import {
   type IpcResponse,
   type JsonEnvelope,
 } from '@wtm/protocol';
-import { DaemonClient } from '../client';
+import { DaemonClient, DaemonConnectionLostError, DaemonRequestTimeoutError } from '../client';
 import { fixtureIpcAddress } from '../../../testkit/src/ipc-address';
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -186,7 +186,7 @@ describe('DaemonClient', () => {
     const pending = client.request('first');
     first.deliver('data', response(first.requestAt(0), 'partial').subarray(0, 2));
     first.deliver('close');
-    await expect(pending).rejects.toThrow('connection closed');
+    await expect(pending).rejects.toThrow(DaemonConnectionLostError);
 
     await connect(client, () => transports[1] as ScriptedTransport);
     const second = transports[1] as ScriptedTransport;
@@ -253,7 +253,7 @@ describe('DaemonClient', () => {
       cleanups.push(() => client.close());
       await client.start();
 
-      await expect(client.request('first')).rejects.toThrow('connection closed');
+      await expect(client.request('first')).rejects.toThrow(DaemonConnectionLostError);
       await client.start();
       await expect(client.request('second')).resolves.toEqual(success('second', 'reconnected'));
       expect(requests).toBe(2);
@@ -322,6 +322,30 @@ describe('DaemonClient', () => {
 
     await expect(client.start()).rejects.toThrow('Daemon connection timed out');
     expect(transport.destroyed()).toBe(true);
+  }, 10_000);
+
+  test('a request the daemon never answers rejects as a timeout, not as an unreachable daemon', async () => {
+    const transport = scriptedTransport();
+    const client = new DaemonClient({ socketPath: 'fixture', requestTimeoutMs: 10, connect: () => transport.socket });
+    cleanups.push(() => client.close());
+    await connect(client, () => transport);
+
+    const error = await client.request('start').catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(DaemonRequestTimeoutError);
+    expect(error).toMatchObject({ command: 'start', timeoutMs: 10 });
+  }, 10_000);
+
+  test('a connection that drops with a request in flight says so, since the daemon may have acted', async () => {
+    const transport = scriptedTransport();
+    const client = new DaemonClient({ socketPath: 'fixture', connect: () => transport.socket });
+    cleanups.push(() => client.close());
+    await connect(client, () => transport);
+
+    const pending = client.request('stop').catch((caught: unknown) => caught);
+    transport.deliver('close');
+
+    expect(await pending).toBeInstanceOf(DaemonConnectionLostError);
   }, 10_000);
 
   test('refuses a transport bound that cannot bound anything', () => {

@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import type {
   ManagedProcessRecord, ManagedProcessState, ManagedProcessInput, ManagedProcessQuery,
-  ManagedProcessUpdate, ManagedProcessCreateOptions, ManagedProcessReservationOptions,
+  ManagedProcessUpdate, ManagedProcessCreateOptions, ManagedProcessReservationOptions, ManagedProcessExit,
 } from '@wtm/core';
 import { selectPlatformRuntime, selfRuntimeInvocation } from '@wtm/platform';
 import { processObservationBudgetFor } from '@wtm/platform/process';
@@ -12,7 +12,7 @@ import type {
   ObservedProcessIdentity, PlatformId, PlatformRuntime, ProcessPlatform,
   ProcessInspection as PlatformProcessInspection,
 } from '@wtm/platform/ports';
-import { ManagedLogStore, type PreparedManagedLogs } from './logs';
+import { ManagedLogStore, type ManagedTaskExit, type PreparedManagedLogs } from './logs';
 
 /**
  * The three `ps` readers this module used to contain now live in `@wtm/platform`, one macOS
@@ -244,7 +244,7 @@ export class ManagedProcessSupervisor {
     return await this.#serialize(ownerKey(selector.worktreeId, selector.taskName), async () => {
       const record = this.#stateStore.findActiveManagedProcess(selector.worktreeId, selector.taskName);
       if (record === null) throw taskNotRunning(selector);
-      return await this.#stopLocked(record);
+      return await this.#stopActive(record);
     });
   }
 
@@ -258,7 +258,7 @@ export class ManagedProcessSupervisor {
           && (await this.#inspectGroup(current.pgid)).status === 'absent') return this.#transition(current, current.state, false);
         return current;
       }
-      return await this.#stopLocked(current);
+      return await this.#stopActive(current);
     });
   }
 
@@ -301,7 +301,7 @@ export class ManagedProcessSupervisor {
         });
       }
       try {
-        if (existing !== null) await this.#stopLocked(existing);
+        if (existing !== null) await this.#stopActive(existing);
         const result = await this.#spawn(input, token);
         this.#stateStore.releaseManagedProcessStart(input.worktreeId, input.taskName, token);
         return result;
@@ -311,6 +311,17 @@ export class ManagedProcessSupervisor {
         throw error;
       }
     });
+  }
+
+  /**
+   * How the task's own process ended, when it has: the anchor writes this the moment the task
+   * exits, while any children it left behind still hold the group (and the record) open. `null`
+   * while the task runs, for a run from before the marker existed, and for a marker that fails its
+   * identity or trust checks -- it is evidence about a run, never a reason to fail reading one.
+   */
+  async taskExit(record: ManagedProcessRecord): Promise<ManagedTaskExit | null> {
+    try { return await this.#logs.readTaskExit(record.stdoutPath, record.pid); }
+    catch { return null; }
   }
 
   list(worktreeId?: string): ManagedProcessRecord[] {
@@ -359,10 +370,16 @@ export class ManagedProcessSupervisor {
       } else if (inspection.status === 'absent') {
         const group = await this.#inspectGroup(record.pgid);
         if (group.status === 'absent') {
+          // It ended while no daemon was listening. Its anchor wrote down how, unless the anchor
+          // itself was killed; without that record the end is unknown, and STOPPED stays the
+          // answer rather than a guess at a crash.
+          const ended = record.state === 'STARTING' || record.state === 'RUNNING'
+            ? await this.#completedExit(record) : null;
           recovered.push(this.#transition(
             record,
-            record.state === 'FAILED' ? 'FAILED' : 'STOPPED',
+            record.state === 'FAILED' || (ended !== null && !ended.clean) ? 'FAILED' : 'STOPPED',
             false,
+            ended?.exit,
           ));
           this.#releaseReservationAfterRecovery(record);
         } else {
@@ -441,7 +458,12 @@ export class ManagedProcessSupervisor {
       }
       const inspection = await this.#inspectProcess(existing.pid);
       if (inspection.status === 'present' && identityMatches(existing, inspection.identity)) {
-        return { record: this.#transition(existing, 'RUNNING'), existing: true };
+        // A live anchor is not a live task: children the task left behind keep the anchor, and
+        // with it this record, alive after the task itself has exited.
+        const exited = existing.state === 'RUNNING' ? await this.taskExit(existing) : null;
+        if (exited === null) return { record: this.#transition(existing, 'RUNNING'), existing: true };
+        await this.#retireExited(existing, exited);
+        continue;
       }
       if (inspection.status === 'present') {
         this.#transition(existing, 'STALE_IDENTITY');
@@ -632,8 +654,37 @@ export class ManagedProcessSupervisor {
     }
   }
 
-  async #stopLocked(record: ManagedProcessRecord): Promise<ManagedProcessRecord> {
+  /** Stops a run, recording how its task ended when the task had already exited on its own. */
+  async #stopActive(record: ManagedProcessRecord): Promise<ManagedProcessRecord> {
+    const exited = record.state === 'RUNNING' ? await this.taskExit(record) : null;
+    return exited === null ? await this.#stopLocked(record) : await this.#retireExited(record, exited);
+  }
+
+  /**
+   * Ends a run whose task exited while what it left behind kept the group alive. The leftovers
+   * get the same TERM-then-KILL a stop gives them; the run then records the task's own exit, so a
+   * crash reads FAILED with its status rather than as a stop somebody asked for.
+   */
+  async #retireExited(record: ManagedProcessRecord, exited: ManagedTaskExit): Promise<ManagedProcessRecord> {
+    return await this.#stopLocked(record, {
+      state: exited.exitCode === 0 && exited.signal === null ? 'STOPPED' : 'FAILED',
+      exit: { code: exited.exitCode, signal: exited.signal },
+    });
+  }
+
+  /**
+   * `ended` is how the run is recorded once its group is confirmed gone: STOPPED by default, or the
+   * task's own exit when it had already ended by itself. A terminal state is final in the store, so
+   * it is chosen here rather than corrected afterwards.
+   */
+  async #stopLocked(
+    record: ManagedProcessRecord,
+    ended: { state: 'STOPPED' | 'FAILED'; exit: ManagedProcessExit } | null = null,
+  ): Promise<ManagedProcessRecord> {
     const stopping = record.state === 'STOPPING' ? record : this.#transition(record, 'STOPPING');
+    const gone = () => ended === null
+      ? this.#transition(stopping, 'STOPPED')
+      : this.#transition(stopping, ended.state, stopping.cleanupRequired, ended.exit);
     try {
       const inspected = await inspectWithRetry(
         stopping.pid,
@@ -646,7 +697,7 @@ export class ManagedProcessSupervisor {
         const group = await this.#inspectGroup(stopping.pgid);
         if (group.status === 'failed') throw new Error(group.reason);
         if (group.status === 'present') throw new Error('OWNERSHIP_ANCHOR_MISSING');
-        return this.#transition(stopping, 'STOPPED');
+        return gone();
       }
       if (!identityMatches(stopping, inspected.identity)) return this.#transition(stopping, 'STALE_IDENTITY');
 
@@ -655,11 +706,11 @@ export class ManagedProcessSupervisor {
       const termResult = await waitForOwnedGroupChange(
         stopping, this.#inspectProcess, this.#inspectGroup, this.#gracePeriodMs, this.#pollIntervalMs,
       );
-      if (termResult === 'gone') return this.#transition(stopping, 'STOPPED');
+      if (termResult === 'gone') return gone();
       if (termResult === 'mismatch') {
         const group = await this.#inspectGroup(stopping.pgid);
         if (group.status === 'failed') throw new Error(group.reason);
-        return this.#transition(stopping, group.status === 'absent' ? 'STOPPED' : 'STALE_IDENTITY');
+        return group.status === 'absent' ? gone() : this.#transition(stopping, 'STALE_IDENTITY');
       }
       if (termResult === 'failed') throw new Error('PROCESS_INSPECTION_FAILED');
 
@@ -673,7 +724,7 @@ export class ManagedProcessSupervisor {
       if (beforeKill.status === 'absent') {
         const group = await this.#inspectGroup(stopping.pgid);
         if (group.status === 'failed') throw new Error(group.reason);
-        if (group.status === 'absent') return this.#transition(stopping, 'STOPPED');
+        if (group.status === 'absent') return gone();
         throw new Error('OWNERSHIP_ANCHOR_MISSING');
       }
       if (!identityMatches(stopping, beforeKill.identity)) return this.#transition(stopping, 'STALE_IDENTITY');
@@ -684,7 +735,7 @@ export class ManagedProcessSupervisor {
         this.#groupAbsenceFloorMs(),
       );
       if (killed !== 'gone') throw new Error(killed === 'failed' ? 'PROCESS_INSPECTION_FAILED' : 'GROUP_REMAINED_ALIVE');
-      return this.#transition(stopping, 'STOPPED');
+      return gone();
     } catch (error) {
       const failed = this.#transition(stopping, 'FAILED', true);
       throw new ManagedProcessError('RUNTIME_STOP_FAILED', 'Managed task could not be stopped safely.', {
@@ -710,7 +761,13 @@ export class ManagedProcessSupervisor {
       const state: ManagedProcessState = group === 'gone'
         ? (record.state === 'STOPPING' || (exitCode === 0 && signal === null) ? 'STOPPED' : 'FAILED')
         : 'FAILED';
-      if (isActiveState(record.state)) this.#transition(record, state, group !== 'gone');
+      // A run stopped on request ended because it was asked to; only one that ended by itself
+      // records how. The anchor's own status is derived from the task's (128 + n for a signal),
+      // so the task's, from its completion marker, is preferred when the marker is readable.
+      const exit = record.state === 'STOPPING'
+        ? undefined
+        : (await this.#completedExit(record))?.exit ?? { code: exitCode, signal };
+      if (isActiveState(record.state)) this.#transition(record, state, group !== 'gone', exit);
       this.#onExit(this.#stateStore.getManagedProcess(recordId) ?? record, { exitCode, signal, groupAbsent: group === 'gone', exitedAt });
     }).catch((error) => this.#reportError(error));
   }
@@ -719,6 +776,7 @@ export class ManagedProcessSupervisor {
     record: ManagedProcessRecord,
     state: ManagedProcessState,
     cleanupRequired = record.cleanupRequired,
+    exit?: ManagedProcessExit,
   ): ManagedProcessRecord {
     if (record.state === state && record.cleanupRequired === cleanupRequired) return record;
     const updated = this.#stateStore.updateManagedProcess(record.id, {
@@ -726,8 +784,25 @@ export class ManagedProcessSupervisor {
       state,
       stoppedAt: isActiveState(state) ? null : this.#now().toISOString(),
       cleanupRequired,
+      ...(exit === undefined || isActiveState(state) ? {} : { exit }),
     });
     return updated ?? this.#stateStore.getManagedProcess(record.id) ?? record;
+  }
+
+  /**
+   * How the run's task ended, from the completion marker its anchor wrote, or `null` when there
+   * is none to read. A marker that fails its identity or trust checks is treated as absent: it is
+   * evidence about a run, never a reason to fail recovering one.
+   */
+  async #completedExit(record: ManagedProcessRecord): Promise<{ exit: ManagedProcessExit; clean: boolean } | null> {
+    let completion;
+    try { completion = await this.#logs.readCompletion(record.stdoutPath, record.pid); }
+    catch { return null; }
+    if (completion === null) return null;
+    return {
+      exit: { code: completion.exitCode, signal: completion.signal },
+      clean: completion.exitCode === 0 && completion.signal === null && completion.timedOut !== true && !completion.logFailed,
+    };
   }
 
   async #serialize<T>(key: string, operation: () => Promise<T>): Promise<T> {

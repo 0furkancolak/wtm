@@ -154,11 +154,22 @@ class MemoryProcessStore implements ManagedProcessStateStore {
     const record = this.#records.get(id);
     if (record === undefined) throw new Error('Unknown managed process');
     if (!update.expectedStates.includes(record.state)) return null;
+    // The SQLite store's rule: a terminal state is final. Without it this store accepted a
+    // STOPPED -> FAILED correction the real one refuses.
+    const terminal = ['STOPPED', 'FAILED', 'STALE_IDENTITY'];
+    if (record.state !== update.state && terminal.includes(record.state)) {
+      throw new Error(`Invalid managed process transition: ${record.state} -> ${update.state}`);
+    }
     if (
       update.reservationToken !== undefined
       && this.#reservations.get(`${record.worktreeId}\0${record.taskName}`)?.token !== update.reservationToken
     ) throw new Error('Reservation not owned');
-    const updated = { ...record, ...update, stoppedAt: update.stoppedAt ?? null };
+    const { exit, ...rest } = update;
+    const updated = {
+      ...record, ...rest, stoppedAt: update.stoppedAt ?? null,
+      ...(exit?.code === null || exit === undefined ? {} : { exitCode: exit.code }),
+      ...(exit?.signal === null || exit === undefined ? {} : { exitSignal: exit.signal }),
+    };
     this.#records.set(id, updated);
     return { ...updated };
   }
@@ -763,6 +774,52 @@ describe('ManagedProcessSupervisor', () => {
     expect(await readFile(started.record.stderrPath, 'utf8')).toBe('natural stderr\n');
   });
 
+  test('a task that exits non-zero on its own is FAILED, and keeps its exit status', async () => {
+    const { root, store, worktree, supervisor } = await setup();
+    const started = await supervisor.start({
+      worktreeId: worktree.id, taskName: 'crash', argv: ['node', '-e', 'process.exit(3)'], cwd: root, env: process.env,
+    });
+
+    await waitFor(() => store.getManagedProcess(started.record.id)?.state === 'FAILED');
+    const record = store.getManagedProcess(started.record.id);
+    expect(record?.exitCode).toBe(3);
+    expect(record).not.toHaveProperty('exitSignal');
+  });
+
+  test('a task that exits 0 on its own is STOPPED, and says it exited 0', async () => {
+    const { root, store, worktree, supervisor } = await setup();
+    const started = await supervisor.start({
+      worktreeId: worktree.id, taskName: 'done', argv: immediateExitArgv, cwd: root, env: process.env,
+    });
+
+    await waitFor(() => store.getManagedProcess(started.record.id)?.state === 'STOPPED');
+    expect(store.getManagedProcess(started.record.id)?.exitCode).toBe(0);
+  });
+
+  test('a run that ended while no daemon watched is recovered from its completion marker', async () => {
+    // The daemon that started it is gone (restart, upgrade, crash) when the task dies, so no exit
+    // listener sees it. Its anchor still wrote how it ended; recovery used to call every such run
+    // STOPPED, a crash included.
+    const root = await mkdtemp(join(tmpdir(), 'wtm-supervisor-recover-exit-'));
+    const store = new MemoryProcessStore();
+    const logs = () => new ManagedLogStore({ root: join(root, 'logs') });
+    const first = createSupervisor({ stateStore: store, logs: logs(), gracePeriodMs: 1_000, pollIntervalMs: 10 });
+    cleanups.push(async () => { await removeRootDirectory(root); });
+    const started = await first.start({
+      worktreeId: 'worktree-1', taskName: 'crash-while-away',
+      argv: ['node', '-e', 'setTimeout(() => process.exit(4), 300)'], cwd: root, env: process.env,
+    });
+    await first.close();
+    await waitFor(async () => (await inspectProcessGroup(started.record.pgid)).status === 'absent', 5_000);
+    expect(store.getManagedProcess(started.record.id)?.state).toBe('RUNNING');
+
+    const second = createSupervisor({ stateStore: store, logs: logs(), gracePeriodMs: 1_000, pollIntervalMs: 10 });
+    cleanups.push(async () => { await second.close(); });
+    await second.recover();
+
+    expect(store.getManagedProcess(started.record.id)).toMatchObject({ state: 'FAILED', exitCode: 4 });
+  });
+
   test('anchor-owned writers rotate a fast stream without gaps or duplicate bytes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wtm-anchor-rotation-'));
     const store = new MemoryProcessStore();
@@ -908,6 +965,58 @@ describe('ManagedProcessSupervisor', () => {
     const stopped = await supervisor.stop({ worktreeId: worktree.id, taskName: 'descendant' });
     expect(stopped.state).toBe('STOPPED');
     await waitFor(() => !pidExists(pids.childPid));
+  });
+
+  test('start after the task crashed but left its group behind starts a new run instead of reporting the dead one', async () => {
+    // marcapony, 2026-09-25: wrangler died and its workerd children held the group for 30 s. The
+    // record stayed RUNNING for that window, and `wtm start` answered `existing: true` for a task
+    // that no longer ran.
+    const { root, store, worktree, supervisor } = await setup(500);
+    const pidFile = join(root, 'crashed.json');
+    const argv = ['node', '--import', tsxLoader, fixturePath, 'parent', pidFile, 'crash-parent'];
+    const first = await supervisor.start({ worktreeId: worktree.id, taskName: 'lingering', argv, cwd: root, env: process.env });
+    const pids = await waitForJson(pidFile) as { parentPid: number; childPid: number };
+    await waitFor(() => !pidExists(pids.parentPid));
+    await waitFor(async () => await supervisor.taskExit(first.record) !== null);
+    expect(store.getManagedProcess(first.record.id)?.state).toBe('RUNNING');
+    expect(await supervisor.taskExit(first.record)).toMatchObject({ exitCode: 7, signal: null });
+
+    await rm(pidFile);
+    const second = await supervisor.start({ worktreeId: worktree.id, taskName: 'lingering', argv, cwd: root, env: process.env });
+
+    expect(second.existing).toBe(false);
+    expect(second.record.id).not.toBe(first.record.id);
+    expect(store.getManagedProcess(first.record.id)).toMatchObject({ state: 'FAILED', exitCode: 7, cleanupRequired: false });
+    expect(pidExists(pids.childPid)).toBe(false);
+    await supervisor.stop({ worktreeId: worktree.id, taskName: 'lingering' });
+  });
+
+  test('stopping a run whose task already exited records how the task ended', async () => {
+    const { root, store, worktree, supervisor } = await setup(500);
+    const pidFile = join(root, 'crashed-stop.json');
+    const started = await supervisor.start({
+      worktreeId: worktree.id, taskName: 'lingering-stop',
+      argv: ['node', '--import', tsxLoader, fixturePath, 'parent', pidFile, 'crash-parent'],
+      cwd: root, env: process.env,
+    });
+    const pids = await waitForJson(pidFile) as { parentPid: number; childPid: number };
+    await waitFor(async () => await supervisor.taskExit(started.record) !== null);
+
+    const stopped = await supervisor.stop({ worktreeId: worktree.id, taskName: 'lingering-stop' });
+
+    expect(stopped).toMatchObject({ state: 'FAILED', exitCode: 7, cleanupRequired: false });
+    expect(store.findActiveManagedProcess(worktree.id, 'lingering-stop')).toBeNull();
+    await waitFor(() => !pidExists(pids.childPid));
+  });
+
+  test('a running task has no exit marker', async () => {
+    const { root, worktree, supervisor } = await setup();
+    const started = await supervisor.start({
+      worktreeId: worktree.id, taskName: 'alive', argv: longRunningArgv, cwd: root, env: process.env,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await supervisor.taskExit(started.record)).toBeNull();
+    await supervisor.stop({ worktreeId: worktree.id, taskName: 'alive' });
   });
 
   test('TERM-honoring task leader with TERM-ignoring descendant escalates through the verified anchor', async () => {

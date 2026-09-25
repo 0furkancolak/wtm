@@ -51,6 +51,8 @@ export const taskOverrideValueSchema = z.object({
   on_failure: z.enum(['fail', 'warn', 'continue']).optional(),
   requires: z.array(z.string().min(1)).optional(),
   env: z.record(z.string(), z.string()).optional(),
+  /** Same pattern as `packages/core/src/config/schema.ts`'s `environmentNamePattern`. */
+  worker_vars: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/)).optional(),
 }).strict();
 export type TaskOverrideValue = z.infer<typeof taskOverrideValueSchema>;
 

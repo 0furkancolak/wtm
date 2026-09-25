@@ -80,6 +80,12 @@ Only variable names and safe values — a port, or a bare `http(s)` address — 
 
 Shows resolved worktree identity, state, endpoints, processes and runtime resources.
 
+A process's `state` is `running`, `exited`, `stopped`, `failed` or `stale`. `failed` is a run that crashed
+or could not be cleaned up; it used to read `stopped`, the same as a deliberate stop. `exited` is a
+run whose task has ended while processes it started still hold its process group (see `wtm ps`);
+it carries the task's `exitCode` or `exitSignal`. A run that ended by itself also carries
+`exitCode` or `exitSignal`, as in `wtm ps`.
+
 `--pr` adds this worktree's pull request as an optional `pr` section: `{ summary, detail? }`.
 `summary` is the PR's number, URL, state, mergeability and rolled-up check status, or `null` when
 the branch has none. Without `--pr`, `status` never touches the network; with it, this is the one
@@ -92,8 +98,8 @@ substitute for it.
 
 ### `wtm doctor [selector]`
 
-Runs deterministic checks for Git, config, adapters, resources, ports, process records and the
-host platform.
+Runs deterministic checks for Git, config, adapters, worker environments, resources, ports,
+process records and the host platform.
 
 The last two rows are host-scoped: they describe this machine rather than this workspace, and
 they are the same answer in every workspace on it. `platform` comes before `socket-path` because
@@ -106,6 +112,7 @@ it is the cause — the limit `socket-path` measures against is that platform's 
 | `git` | Whether every registered repository is still on disk |
 | `config` | Whether the configuration resolves, and whether `[ports].range` can offer the ports it prefers |
 | `adapters` | Which built-in adapters are in force, and why a detected one was left out |
+| `worker-env` | For every Cloudflare worker configuration in this worktree (`wrangler.json`/`.jsonc`/`.toml`, plus the one each `wrangler dev` task points at), which variables WTM sets that the worker's own files (`vars`, `.dev.vars`, `.env`) also define and that no `worker_vars`/`--var` forwards. For a configuration no `wrangler dev` task runs, only its `vars` count: app code that reads the wrangler config misses WTM's value, while `.env` loses to the process environment. A `warning` names the files, the variables and the `worker_vars` line that fixes it. Reads variable names only, and leases nothing |
 | `resources` | How many declared resources are in place, and why one is not |
 | `ports` | How many endpoints the workspace holds, and whether two worktrees hold the same one |
 | `process-records` | How many supervised tasks are running, and which records name a process that is gone |
@@ -386,7 +393,8 @@ as `state: 'unavailable'` with `detail`, not as a command error.
 wtm task list --json
 wtm task show <name> --json
 wtm task set <name> [--run <command> --shell | --argv <item>...] [--cwd <path>] [--background]
-  [--singleton] [--description <text>] [--env <KEY=VALUE>...] [--task-json <definition>] --json
+  [--singleton] [--description <text>] [--env <KEY=VALUE>...] [--worker-var <NAME>...]
+  [--task-json <definition>] --json
 wtm task unset <name> --json
 wtm task export <name>
 ```
@@ -406,7 +414,8 @@ execution commands above.
 task object as JSON, in place of every other flag) — the path an agent skill should prefer for
 full fidelity, since not every task field (`healthcheck`, `queue`, `requires`, …) has its own flag
 yet. `--run <command> --shell` is a shell string; `--argv <item>` (repeatable) is an argv array and
-takes no `--shell`. Cross-field rules (`--run` requires `--shell`, `queue_env` requires `queue`,
+takes no `--shell`. `--worker-var <NAME>` (repeatable) sets `worker_vars`, which needs `--argv`.
+Cross-field rules (`--run` requires `--shell`, `queue_env` requires `queue`,
 and so on) are enforced when the daemon writes the row — `WTM_CONFIG_INVALID` on a violation — not
 before, so a shape-valid-but-inconsistent definition still round-trips through `wtm task show`
 until it is written.
@@ -533,6 +542,12 @@ currently active can be refused by it, the same as `start` above.
 Prints the final command, cwd and environment delta without running it.
 Use `--json` for the stable V1 envelope. The argument is always a configured task name; it is not a worktree selector.
 
+`resolve` is a report: it answers from the ports the feature already holds and never leases one.
+Repeated calls return the same ports for as long as the leases exist. When the task references an
+endpoint nothing has leased yet, it fails with `WTM_TEMPLATE_UNRESOLVED`. `context.endpoint` names
+the endpoint, and the remediation is `wtm start <task>`, since `start` and `run` lease every endpoint
+of the feature.
+
 `--worktree <selector>` runs the command against another worktree instead of the one containing the
 current directory: a branch, a worktree directory name, a registered number, or a path. `--repo
 <name>` names the repository when the selector matches worktrees in several; it is refused without
@@ -578,6 +593,27 @@ SHA-256 check on its own; `untrust` is for ending trust deliberately, without wa
 ### `wtm ps`
 
 Lists the WTM-managed process groups of the whole workspace — a feature that spans two repositories runs two servers, and both are the answer.
+
+By default it lists the runs that are live (`STARTING`, `RUNNING`, `STOPPING`), any in
+`STALE_IDENTITY` or still owed a cleanup, and, for each task that is not running, its latest run
+when that run `FAILED`. A crash stays visible until the task is started again, and a clean stop
+drops out. `data.omitted` counts the runs left out. `--all` lists every recorded run, and has no
+`omitted`. Runs are never deleted; `wtm logs` and `--all` still reach them.
+
+A run that ended by itself carries how it ended: `exitCode` (the task's own exit status) or
+`exitSignal` (the signal that ended it). Both are absent for a run stopped on request, and for one
+whose end no daemon observed, so absent means "not known", never "exited 0". A task that exits
+non-zero on its own is `FAILED`. One that ends while no daemon is running is `FAILED` or `STOPPED`
+according to the completion marker its anchor wrote, and `STOPPED` when there is no marker.
+Records never carry the start reservation's `cleanupOwnerToken`.
+
+A `RUNNING` run whose task has already exited carries `taskExited: { exitCode, signal, exitedAt }`.
+The task's own process ended, and processes it started (wrangler's `workerd`, say) still hold its
+process group, so the run is not over. The anchor records the task's exit the moment it happens.
+`wtm start` on such a run stops what is left (TERM, then KILL after the grace period), records the
+run `FAILED` with the task's exit status, or `STOPPED` for exit 0, and starts a new run. It no
+longer answers `existing: true` for a task that is not running. `wtm stop` and `wtm restart`
+record the task's exit status the same way.
 
 ### `wtm ports`
 
@@ -957,6 +993,21 @@ Dependency cache GC requires adapter-native cleanup plans and is never included 
 GC never walks a Git working tree, so the resources `[resources]` creates inside a worktree are
 outside every plan. `gc` warns which ones those are rather than leaving the silence to be read
 as "there is nothing else"; removing the worktree removes them.
+
+`data.leases` lists the port leases of each feature of the workspace (one branch across its
+repositories) none of whose worktrees has ever run a managed task:
+
+- `reclaimable`: a dry run would give them back.
+- `released`: `--apply` gave them back.
+- `in-use`: something listens on one of the ports that no managed task accounts for, such as a
+  foreground `wtm run` or a server started from `eval "$(wtm env)"`. Every port of the feature
+  stays.
+- `started`: a task of the feature recorded a run between planning and releasing, so they stay.
+
+Each entry names the `branch`, its `worktrees` and the `endpoints` (`name`, `port`). A feature
+that has run a task keeps its leases, however long ago that was. Its `{port.x}` values are a
+promise to whatever was configured with them. The next `wtm start` of a reclaimed feature leases
+its endpoints again, preferring the same ports when they are free.
 
 ## Registration
 

@@ -48,12 +48,12 @@ failure, `2` usage or configuration, `3` safety refusal or conflict, `4` daemon 
 | `wtm plan [selector] --json` | See the declarative changes WTM would make, without applying them. |
 | `wtm env [selector] --json` | Read the resolved environment delta. |
 | `wtm ports [selector] --json` | Read endpoint leases (the ports). |
-| `wtm resolve <task> --json` | Read a task's exact argv, working directory and environment without running it. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
+| `wtm resolve <task> --json` | Read a task's exact argv, working directory and environment without running it. Never leases a port: an endpoint nothing has leased yet fails with `WTM_TEMPLATE_UNRESOLVED` until `wtm start`/`wtm run` leases it. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm run <task>` | Run a task in the foreground. `--enqueue --idempotency-key <key> --json` queues a heavy one. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm start <task>` | Start a long-running task under supervision. `--wait --timeout <duration> --json` waits for its healthcheck. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm stop [task]` | Stop one managed task, or all of this worktree's. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm restart <task>` | Stop and start a managed task; accepts `--wait --timeout`. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
-| `wtm ps --json` | List WTM-managed process groups. |
+| `wtm ps --json` | Live runs and each task's latest crash (`exitCode`/`exitSignal`); `taskExited` = task dead, children linger (`wtm start` replaces it); `--all` for history. |
 | `wtm logs [task]` | Read managed task logs; `--follow` streams raw output. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm exec -- <argv>` | Run raw argv in this worktree with its resolved environment. `--worktree <selector>` (`--repo <name>`), before `--`, targets another worktree. |
 | `wtm tui [selector]` | Interactive terminal dashboard for one worktree: identity, running tasks, ports and health, polling `status`/`doctor` on a timer. Needs a real TTY; not for agent/scripted use — read `status`/`doctor --json` instead. |
@@ -74,7 +74,7 @@ failure, `2` usage or configuration, `3` safety refusal or conflict, `4` daemon 
 | `wtm create <branch> --json` | Create a registered worktree for a branch. `--from <ref>`, `--repos <a,b>` (from the workspace root), `--resume`. |
 | `wtm analyze [selector] --json` | Report removal safety; `--all`, `--cleanup-candidates`, `--refresh-remotes`. |
 | `wtm remove <selector> --json` | Remove a worktree safely; `--refresh-remotes`, `--resume` (only when an error asks for it). |
-| `wtm gc --json` | Plan resource garbage collection; `--apply` performs the guarded plan. |
+| `wtm gc --json` | Plan resource GC and never-started features' port leases (`data.leases`); `--apply` performs it. |
 | `wtm disk --json` | Report logical and allocated resource usage. |
 | `wtm forget [selector] --json` | Retire a registration whose directory is gone; `--force` if it still exists. |
 | `wtm init [path] --yes --json` | Initialize and register a workspace; `--no-detect`, `--max-depth <n>`, `--ai-skill`. |
@@ -247,7 +247,7 @@ every port; that is how a web application reaches the API of its own branch.
 
 ## Configuration WTM writes for itself
 
-`wtm init` reads each repository (`.env.example`, `package.json`, compose files, `Makefile`) and
+`wtm init` reads each repository (`variables.toml`, `.env.example`, `package.json`, compose files, `Makefile`) and
 writes the port each repository wants, its variable, its CORS allowlist variable and any address
 pointing at another repository into `wtm.toml`.
 
@@ -255,7 +255,7 @@ pointing at another repository into `wtm.toml`.
   port; `wtm detect --write --json` appends the tables `wtm.toml` lacks.
 - Read `data.additions` for the exact TOML, and `warnings` for what was left alone and why.
 - Neither edits an existing line. If detection is wrong, correct `wtm.toml`: it is the source of truth.
-- Values come only from `.env` example files, and only ports or bare `http(s)` addresses. Never put a
+- Values come only from `variables.toml` and `.env` example files, and only ports or bare `http(s)` addresses. Never put a
   secret where WTM would have to carry it.
 
 ## Rules
@@ -272,6 +272,10 @@ pointing at another repository into `wtm.toml`.
 - To fix one worktree's `cwd`, port template or argv for a task, use `wtm task set`
   (`--task-json` for full fidelity), not a hand edit to `wtm.toml`. Edit `wtm.toml` only when the
   fix should apply to every worktree of the workspace, not just this one.
+- A `wrangler dev` worker never reads the process environment: its `env` comes from wrangler
+  config `vars` and `.dev.vars`. If `wtm doctor --json`'s `worker-env` check warns, add the
+  variables it names to the task's `worker_vars` (argv tasks; `wtm task set --worker-var` for one
+  worktree) instead of hand-writing `--var` or editing a shared `.dev.vars`.
 - After finishing implementation work, leave review/test steps with `wtm checklist set --item
   "..." --json` instead of listing them in chat; the dev overlay shows them as checkboxes.
 

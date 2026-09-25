@@ -438,3 +438,50 @@ describe('release workflow', () => {
     expect(filterStep?.run ?? '').toMatch(/\[\[ ! "\$WIN32_TEST_FILTER" =~ .*\]\]/u);
   });
 });
+
+/**
+ * The keys defined twice within one mapping. `Bun.YAML.parse` keeps the last value and says
+ * nothing, but GitHub refuses the whole file: a doubled `if-no-files-found` in `release.yml` made
+ * every push report "workflow file issue", and no tag could publish anything.
+ */
+function duplicateKeys(source: string): string[] {
+  const duplicates: string[] = [];
+  const scopes: Array<{ indent: number; keys: Set<string> }> = [];
+  let scalarIndent: number | null = null;
+  source.split('\n').forEach((line, index) => {
+    if (line.trim() === '' || line.trimStart().startsWith('#')) return;
+    const indent = line.length - line.trimStart().length;
+    if (scalarIndent !== null) {
+      if (indent > scalarIndent) return;
+      scalarIndent = null;
+    }
+    const match = /^(\s*)(- )?([A-Za-z0-9_.-]+):(?:\s|$)(.*)$/u.exec(line);
+    if (match === null) return;
+    // A sequence item opens a new mapping whose keys sit two columns further in.
+    const keyIndent = indent + (match[2] === undefined ? 0 : 2);
+    while (scopes.length > 0 && (scopes.at(-1)!.indent > keyIndent
+      || (match[2] !== undefined && scopes.at(-1)!.indent === keyIndent))) scopes.pop();
+    if (scopes.at(-1)?.indent !== keyIndent) scopes.push({ indent: keyIndent, keys: new Set() });
+    const scope = scopes.at(-1)!;
+    if (scope.keys.has(match[3]!)) duplicates.push(`line ${index + 1}: ${match[3]}`);
+    scope.keys.add(match[3]!);
+    if (/^[|>][-+]?\s*$/u.test(match[4] ?? '')) scalarIndent = keyIndent;
+  });
+  return duplicates;
+}
+
+describe('workflow files', () => {
+  test('define no key twice in one mapping', () => {
+    for (const name of ['ci.yml', 'release.yml']) {
+      expect({ name, duplicates: duplicateKeys(readFileSync(`${root}.github/workflows/${name}`, 'utf8')) })
+        .toEqual({ name, duplicates: [] });
+    }
+  });
+
+  test('the duplicate-key check finds a doubled key and passes distinct siblings', () => {
+    const doubled = 'jobs:\n  a:\n    steps:\n      - uses: x\n        with:\n          name: n\n          name: m\n';
+    const siblings = 'jobs:\n  a:\n    steps:\n      - run: |\n          name: n\n          name: n\n      - name: one\n      - name: two\n';
+    expect(duplicateKeys(doubled)).toEqual(['line 7: name']);
+    expect(duplicateKeys(siblings)).toEqual([]);
+  });
+});

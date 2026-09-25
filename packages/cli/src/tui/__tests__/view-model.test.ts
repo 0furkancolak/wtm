@@ -89,6 +89,7 @@ describe('buildTuiViewModel', () => {
       { check: 'git', status: 'pass', message: 'Git repository is readable.' },
       { check: 'config', status: 'unknown', message: 'Config diagnostics are unavailable.' },
       { check: 'adapters', status: 'unknown', message: 'Adapter diagnostics are unavailable.' },
+      { check: 'worker-env', status: 'unknown', message: 'Worker environment diagnostics are unavailable.' },
       { check: 'resources', status: 'unknown', message: 'Resource diagnostics are unavailable.' },
       { check: 'ports', status: 'warning', message: 'One endpoint has little headroom.' },
       { check: 'process-records', status: 'unknown', message: 'Process record diagnostics are unavailable.' },

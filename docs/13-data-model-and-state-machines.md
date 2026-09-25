@@ -504,6 +504,21 @@ STARTING -> RUNNING -> STOPPING -> STOPPED
 
 `STALE_IDENTITY` means the stored PID no longer matches the originally tracked process. WTM drops/repairs the record and never signals the unrelated process.
 
+A run that ends by itself goes to `STOPPED` on exit status 0 and `FAILED` otherwise, and records
+`exit_code` or `exit_signal` (migration 019). The daemon prefers the task's own status from the
+anchor's `completion.json` over the anchor's exit status, which is derived from it (`128 + n` for a
+signal). Recovery after a daemon restart reads the same marker for a run whose process and group
+are both gone. Without a marker the end is unknown, and the run is `STOPPED` with neither column
+set. A run stopped on request records neither column.
+
+The anchor stays until the task's whole process group is gone, so a task that exits and leaves
+children behind keeps its run `RUNNING`. The anchor therefore also writes `exited.json`
+(`pid`, `exitCode`, `signal`, `exitedAt`) the moment the task's own process exits, under the same
+directory, size and identity checks as `completion.json`. A `RUNNING` run with that marker is not a
+running task. `wtm start` stops what is left and records the task's exit, `FAILED` unless it was
+0, before starting a new run. `wtm stop` and `wtm restart` record it the same way, still through
+`STOPPING`, because a terminal state is final in the store.
+
 ## Heavy job state
 
 ```text

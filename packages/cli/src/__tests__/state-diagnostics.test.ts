@@ -1043,3 +1043,186 @@ const linuxHost = () => selectPlatformRuntime({
   home: '/home/x',
   env: { XDG_RUNTIME_DIR: '/run/user/501' },
 });
+
+describe('the worker-env check', () => {
+  /**
+   * A workspace whose one repository runs a Cloudflare worker: `wtm.toml` at `root`, the
+   * repository at `root/repo`, and whatever worker files `files` writes there.
+   */
+  async function doctorForWorker(toml: string, files: Record<string, string>) {
+    const root = mkdtempSync(join(tmpdir(), 'wtm-worker-env-doctor-'));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, 'repo'));
+    writeFileSync(join(root, 'wtm.toml'), toml);
+    for (const [name, contents] of Object.entries(files)) writeFileSync(join(root, 'repo', name), contents);
+    return (await doctorIn(root)).find(({ check }) => check === 'worker-env');
+  }
+
+  const workerToml = (task: string) => [
+    'version = 1',
+    '[repos.api]',
+    'path = "repo"',
+    '[repos.api.environment]',
+    'API_URL = "http://localhost:1"',
+    'FRONTEND_URL = "http://localhost:2"',
+    'WTM_ONLY = "x"',
+    '[tasks."api:dev"]',
+    task,
+    'background = true',
+  ].join('\n');
+
+  const workerFiles = {
+    'wrangler.jsonc': '{ "name": "api", /* c */ "vars": { "APP_ENV": "dev" } }',
+    // Values here stand in for the secrets a real `.dev.vars` holds; none may leave this file.
+    '.dev.vars': 'API_URL=http://localhost:4000\nFRONTEND_URL=http://localhost:3000\nSESSION_SECRET=hunter2\n',
+  };
+
+  it('warns when WTM sets a variable the worker also defines, and names the fix', async () => {
+    const finding = await doctorForWorker(workerToml('run = ["bunx", "wrangler", "dev", "-c", "wrangler.jsonc"]'), workerFiles);
+
+    expect(finding).toMatchObject({
+      status: 'warning',
+      details: { workers: 1, tasks: 'api:dev', unforwardedBy: 'api:dev', shadowed: 'API_URL, FRONTEND_URL' },
+    });
+    expect(finding?.message).toContain('api:dev runs `wrangler dev`');
+    expect(finding?.message).toContain('.dev.vars defines API_URL, FRONTEND_URL');
+    expect(finding?.message).toContain('Add worker_vars = ["API_URL", "FRONTEND_URL"] to [tasks."api:dev"].');
+    expect(JSON.stringify(finding)).not.toContain('hunter2');
+    expect(JSON.stringify(finding)).not.toContain('localhost:4000');
+  });
+
+  it('passes once every shadowed variable is forwarded, by worker_vars or a literal --var', async () => {
+    const forwarded = await doctorForWorker(workerToml([
+      'run = ["bunx", "wrangler", "dev", "--var", "API_URL:{env.API_URL}"]',
+      'worker_vars = ["FRONTEND_URL"]',
+    ].join('\n')), workerFiles);
+
+    expect(forwarded).toMatchObject({ status: 'pass', details: { workers: 1, tasks: 'api:dev', unforwardedBy: '', shadowed: '' } });
+  });
+
+  it('names only the tasks that leave a variable behind, when several run the same worker', async () => {
+    const finding = await doctorForWorker(workerToml([
+      'run = ["bunx", "wrangler", "dev"]',
+      'worker_vars = ["API_URL", "FRONTEND_URL"]',
+      '[tasks."api:dev-bare"]',
+      'run = ["bunx", "wrangler", "dev"]',
+    ].join('\n')), workerFiles);
+
+    expect(finding).toMatchObject({
+      status: 'warning',
+      details: { workers: 1, tasks: 'api:dev, api:dev-bare', unforwardedBy: 'api:dev-bare', shadowed: 'API_URL, FRONTEND_URL' },
+    });
+    expect(finding?.message).toStartWith('api:dev-bare runs `wrangler dev`');
+    expect(finding?.message).toContain('to [tasks."api:dev-bare"].');
+  });
+
+  it('points at a wrangler config that app code reads directly, even with no wrangler dev task', async () => {
+    const finding = await doctorForWorker(
+      workerToml('run = ["bun", "run", "dev"]').replace('WTM_ONLY', 'NEXT_PUBLIC_API_URL'),
+      { 'wrangler.json': '{ "vars": { "NEXT_PUBLIC_API_URL": "https://api.example.com" } }' },
+    );
+
+    expect(finding).toMatchObject({ status: 'warning', details: { workers: 1, tasks: '', unforwardedBy: '', shadowed: 'NEXT_PUBLIC_API_URL' } });
+    expect(finding?.message).toContain('wrangler.json defines NEXT_PUBLIC_API_URL');
+    expect(finding?.message).toContain('reads it from wrangler.json');
+  });
+
+  it('does not count .env or .dev.vars where no wrangler dev task runs, since only wrangler reads them over the environment', async () => {
+    const finding = await doctorForWorker(
+      workerToml('run = ["bun", "run", "dev"]'),
+      { 'wrangler.json': '{ "vars": { "APP_ENV": "dev" } }', '.env': 'API_URL=http://localhost:4000\n' },
+    );
+
+    expect(finding).toMatchObject({ status: 'pass', details: { workers: 1, shadowed: '' } });
+  });
+
+  it('passes quietly where there is no worker at all', async () => {
+    expect(await doctorForWorker(workerToml('run = ["bun", "run", "dev"]'), {}))
+      .toMatchObject({ status: 'pass', details: { workers: 0 } });
+  });
+});
+
+describe('process states in status', () => {
+  it('reports a run that crashed as failed, with how it ended, rather than as stopped', async () => {
+    const run = (id: string, state: ManagedProcessRecord['state'], extra: Partial<ManagedProcessRecord> = {}): ManagedProcessRecord => ({
+      id, worktreeId: 'web-feature', taskName: id, pid: 4242, pgid: 4242, processStartTime: 'start',
+      commandFingerprint: 'fingerprint', state, startedAt: '2026-09-25T07:21:21.232Z',
+      stoppedAt: '2026-09-25T07:27:41.729Z', stdoutPath: '/dev/null', stderrPath: '/dev/null', cleanupRequired: false,
+      ...extra,
+    });
+    const source = createStateDiagnosticDataSource({
+      ...store,
+      listManagedProcesses: () => [
+        run('crashed', 'FAILED', { exitCode: 1 }),
+        run('killed', 'FAILED', { exitSignal: 'SIGKILL' }),
+        run('stopped', 'STOPPED'),
+      ],
+    } as unknown as DaemonStateStore, { cwd: '/workspace/web-feature', globalConfigPath: '/workspace/config.toml' });
+
+    const processes = (await source.readStatus(registered)).processes;
+
+    expect(processes.map(({ task, state }) => [task, state])).toEqual([
+      ['crashed', 'failed'], ['killed', 'failed'], ['stopped', 'stopped'],
+    ]);
+    expect(processes[0]).toMatchObject({ exitCode: 1 });
+    expect(processes[1]).toMatchObject({ exitSignal: 'SIGKILL' });
+    expect(processes[2]).not.toHaveProperty('exitCode');
+  });
+
+  it('reports a running record whose task already exited as exited, with how the task ended', async () => {
+    // The task died and children it started still hold its process group, so its record is
+    // RUNNING until they go. Calling it running is what made `wtm start` look like a no-op.
+    const run = (id: string): ManagedProcessRecord => ({
+      id, worktreeId: 'web-feature', taskName: id, pid: 4242, pgid: 4242, processStartTime: 'start',
+      commandFingerprint: 'fingerprint', state: 'RUNNING', startedAt: '2026-09-25T07:21:21.232Z',
+      stoppedAt: null, stdoutPath: '/dev/null', stderrPath: '/dev/null', cleanupRequired: false,
+    });
+    const source = createStateDiagnosticDataSource({
+      ...store,
+      listManagedProcesses: () => [run('api'), run('web')],
+    } as unknown as DaemonStateStore, {
+      cwd: '/workspace/web-feature', globalConfigPath: '/workspace/config.toml',
+      readTaskExit: async (record) => record.taskName === 'api' ? { exitCode: 1, signal: null } : null,
+    });
+
+    const processes = (await source.readStatus(registered)).processes;
+
+    expect(processes.map(({ task, state }) => [task, state])).toEqual([['api', 'exited'], ['web', 'running']]);
+    expect(processes[0]).toMatchObject({ exitCode: 1 });
+    expect(processes[1]).not.toHaveProperty('exitCode');
+  });
+});
+
+describe('reports take no ports', () => {
+  it('status and doctor answer without leasing an endpoint', async () => {
+    // Every agent session starts with `wtm status`/`wtm doctor`, in every worktree it touches.
+    // Both used to lease every [ports.*] endpoint on the way to an answer, which is how a
+    // worktree that never ran a task came to hold seventeen ports.
+    const root = mkdtempSync(join(tmpdir(), 'wtm-report-no-lease-'));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, 'repo'));
+    writeFileSync(join(root, 'wtm.toml'), [
+      'version = 1', '[ports]', 'range = "46200-46299"', '[ports.web]', 'preferred = 46250',
+      '[resources.env]', 'path = ".env"', 'policy = "ignore"',
+    ].join('\n'));
+    const local: WorkspaceRecord = { ...workspace, root, configPath: null };
+    const repository: RepositoryRecord = { ...repositories[0] as RepositoryRecord, commonGitDir: join(root, 'repo/.git'), mainRoot: join(root, 'repo') };
+    let allocations = 0;
+    const source = createStateDiagnosticDataSource({
+      listWorkspaces: () => [local],
+      listRepositories: () => [repository],
+      listWorktrees: () => [worktree('only', repository.id, join(root, 'repo'), 1)],
+      listManagedProcesses: () => [],
+      listEndpointLeases: () => [],
+      allocateEndpoint: () => { allocations += 1; throw new Error('a report must not lease'); },
+    } as unknown as DaemonStateStore, { cwd: join(root, 'repo'), globalConfigPath: join(root, 'config.toml') });
+    const registeredLocal = { id: local.id, name: local.name, root: local.root, scope: local.scope };
+
+    const status = await source.readStatus(registeredLocal);
+    const findings = (await source.readDoctor(registeredLocal)).findings;
+
+    expect(allocations).toBe(0);
+    expect(status.resources.map(({ name }) => name)).toEqual(['env']);
+    expect(findings.find(({ check }) => check === 'resources')?.status).toBe('pass');
+  });
+});

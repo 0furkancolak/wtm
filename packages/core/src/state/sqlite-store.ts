@@ -128,6 +128,8 @@ interface ManagedProcessRow {
   stderr_path: string;
   cleanup_required: 0 | 1;
   cleanup_owner_token: string | null;
+  exit_code: number | null;
+  exit_signal: string | null;
 }
 
 interface RepositoryOperationLeaseRow {
@@ -250,6 +252,8 @@ function managedProcessFromRow(row: ManagedProcessRow): ManagedProcessRecord {
     stderrPath: row.stderr_path,
     cleanupRequired: row.cleanup_required === 1,
     ...(row.cleanup_owner_token === null ? {} : { cleanupOwnerToken: row.cleanup_owner_token }),
+    ...(row.exit_code === null ? {} : { exitCode: row.exit_code }),
+    ...(row.exit_signal === null ? {} : { exitSignal: row.exit_signal }),
   };
 }
 
@@ -410,9 +414,7 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
         // since only full absence from the snapshot (the loop below) used to trigger release.
         // Skip mid-teardown states: something else already owns releasing their leases.
         if (snapshotRecord.prunableReason !== null && !cleanupOwnedStates.has(existing.state)) {
-          this.#database.prepare(`
-            UPDATE endpoint_leases SET state = 'RELEASED' WHERE worktree_id = ? AND state = 'ACTIVE'
-          `).run(existing.id);
+          this.#releaseOrHandOverLeases(existing, repository.workspace_id);
           this.#database.prepare("UPDATE worktrees SET state = 'ORPHANED', last_seen_at = ? WHERE id = ?")
             .run(timestamp, existing.id);
           const row = this.#database.prepare('SELECT * FROM worktrees WHERE id = ?').get(existing.id) as WorktreeRow;
@@ -466,9 +468,7 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
           // an older version, or by an interruption at exactly that moment — held its port for
           // the life of the database, with nothing able to reach it again. The statement costs
           // nothing once there is nothing left to release.
-          this.#database.prepare(`
-            UPDATE endpoint_leases SET state = 'RELEASED' WHERE worktree_id = ? AND state = 'ACTIVE'
-          `).run(existing.id);
+          this.#releaseOrHandOverLeases(existing, repository.workspace_id);
         }
         // CLEANING means a removal already reached its own `release-endpoints` stage
         // (`markWorktreeCleaning`) — the same removal's own `reconcile` stage, right here, is
@@ -1194,31 +1194,81 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
     `).run(releasedAt, worktreeId).changes);
   }
 
+  /**
+   * Gives back the ports of a feature none of whose worktrees has ever run a managed task, and says
+   * how many; `null`, releasing nothing, when one of them has. The check and the release are one
+   * transaction, so a start that records its run after `wtm gc` planned keeps the ports it got.
+   */
+  releaseNeverStartedEndpointLeases(worktreeIds: readonly string[], releasedAt: string): number | null {
+    this.#assertOpen();
+    if (worktreeIds.length === 0) return 0;
+    const placeholders = worktreeIds.map(() => '?').join(', ');
+    return this.transaction(() => {
+      const ran = this.#database.prepare(`
+        SELECT 1 FROM managed_processes WHERE worktree_id IN (${placeholders}) LIMIT 1
+      `).get(...worktreeIds);
+      if (ran !== undefined) return null;
+      return this.#database.prepare(`
+        UPDATE endpoint_leases SET state = 'RELEASED', last_verified_at = ?
+        WHERE worktree_id IN (${placeholders}) AND state = 'ACTIVE'
+      `).run(releasedAt, ...worktreeIds).changes;
+    });
+  }
+
   reassignEndpointLeases(fromWorktreeId: string, toWorktreeId: string): number {
     this.#assertOpen();
-    return this.transaction(() => {
-      const leases = this.#database.prepare(`
-        SELECT * FROM endpoint_leases WHERE worktree_id = ? AND state = 'ACTIVE'
-      `).all(fromWorktreeId) as EndpointRow[];
-      let reassigned = 0;
-      for (const lease of leases) {
-        // `(worktree_id, name)` is unique, so a straight UPDATE can collide with a row the
-        // target already holds for the same name -- most plausibly a stale RELEASED lease from
-        // before this worktree joined the group. A live ACTIVE row at the target is left alone
-        // (something else already gave this name a home there); a stale one is cleared first.
-        const existingAtTarget = this.#database.prepare(`
-          SELECT id, state FROM endpoint_leases WHERE worktree_id = ? AND name = ?
-        `).get(toWorktreeId, lease.name) as { id: string; state: string } | undefined;
-        if (existingAtTarget?.state === 'ACTIVE') continue;
-        if (existingAtTarget !== undefined) {
-          this.#database.prepare('DELETE FROM endpoint_leases WHERE id = ?').run(existingAtTarget.id);
-        }
-        this.#database.prepare('UPDATE endpoint_leases SET worktree_id = ? WHERE id = ?')
-          .run(toWorktreeId, lease.id);
-        reassigned += 1;
+    return this.transaction(() => this.#reassignActiveLeases(fromWorktreeId, toWorktreeId));
+  }
+
+  #reassignActiveLeases(fromWorktreeId: string, toWorktreeId: string): number {
+    const leases = this.#database.prepare(`
+      SELECT * FROM endpoint_leases WHERE worktree_id = ? AND state = 'ACTIVE'
+    `).all(fromWorktreeId) as EndpointRow[];
+    let reassigned = 0;
+    for (const lease of leases) {
+      // `(worktree_id, name)` is unique, so a straight UPDATE can collide with a row the
+      // target already holds for the same name -- most plausibly a stale RELEASED lease from
+      // before this worktree joined the group. A live ACTIVE row at the target is left alone
+      // (something else already gave this name a home there); a stale one is cleared first.
+      const existingAtTarget = this.#database.prepare(`
+        SELECT id, state FROM endpoint_leases WHERE worktree_id = ? AND name = ?
+      `).get(toWorktreeId, lease.name) as { id: string; state: string } | undefined;
+      if (existingAtTarget?.state === 'ACTIVE') continue;
+      if (existingAtTarget !== undefined) {
+        this.#database.prepare('DELETE FROM endpoint_leases WHERE id = ?').run(existingAtTarget.id);
       }
-      return reassigned;
-    });
+      this.#database.prepare('UPDATE endpoint_leases SET worktree_id = ? WHERE id = ?')
+        .run(toWorktreeId, lease.id);
+      reassigned += 1;
+    }
+    return reassigned;
+  }
+
+  /**
+   * Gives up the leases of a worktree Git no longer reports -- unless another live worktree of
+   * the workspace is on the same branch. A feature's endpoints are leased once, on one of its
+   * worktrees, and every repository on the branch reads them; releasing them because that one
+   * worktree went away (removed outside `wtm remove`, or renamed, which on a case-insensitive
+   * disk can be a change of case alone) took the ports from siblings still running on them, and
+   * the next allocation found the preferred port busy with those very tasks and moved the whole
+   * feature. The sibling with the lowest path inherits them, which in a rename is the renamed
+   * worktree itself. Whatever it already held under the same name stays; the rest is released.
+   */
+  #releaseOrHandOverLeases(worktree: WorktreeRow, workspaceId: string): void {
+    if (worktree.branch !== null) {
+      const heir = this.#database.prepare(`
+        SELECT candidate.id FROM worktrees AS candidate
+        JOIN repositories AS repository ON repository.id = candidate.repository_id
+        WHERE repository.workspace_id = ? AND candidate.branch = ? AND candidate.id != ?
+          AND candidate.state NOT IN ('ORPHANED', 'CLEANING', 'REMOVED', 'DEGRADED_CLEANUP')
+        ORDER BY candidate.path, candidate.id
+        LIMIT 1
+      `).get(workspaceId, worktree.branch, worktree.id) as { id: string } | undefined;
+      if (heir !== undefined) this.#reassignActiveLeases(worktree.id, heir.id);
+    }
+    this.#database.prepare(`
+      UPDATE endpoint_leases SET state = 'RELEASED' WHERE worktree_id = ? AND state = 'ACTIVE'
+    `).run(worktree.id);
   }
 
   createManagedProcess(
@@ -1297,12 +1347,18 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
       }
       const result = this.#database.prepare(`
         UPDATE managed_processes SET state = ?, stopped_at = ?,
-          cleanup_required = COALESCE(?, cleanup_required)
+          cleanup_required = COALESCE(?, cleanup_required),
+          exit_code = CASE WHEN ? = 1 THEN ? ELSE exit_code END,
+          exit_signal = CASE WHEN ? = 1 THEN ? ELSE exit_signal END
         WHERE id = ? AND state IN (${placeholders})
       `).run(
         update.state,
         update.stoppedAt ?? null,
         update.cleanupRequired === undefined ? null : update.cleanupRequired ? 1 : 0,
+        update.exit === undefined ? 0 : 1,
+        update.exit?.code ?? null,
+        update.exit === undefined ? 0 : 1,
+        update.exit?.signal ?? null,
         id,
         ...update.expectedStates,
       );

@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import {
   applyTaskOverrides,
@@ -7,8 +8,10 @@ import {
   inspectResources,
   prepareResources,
   repoEnvironment,
+  detectCorsVariables,
   resolveCors,
   resolveEndpoints,
+  resolveTemplate,
   resolveEnvironment,
   resolveExistingEndpoints,
   resolveWorkspaceConfig,
@@ -50,6 +53,11 @@ export interface WorktreeRuntime {
   automaticEnvironment: Record<string, string>;
   /** The `[repos.<name>.environment]` of the repository this worktree belongs to, if any. */
   repoEnvironment?: Record<string, string>;
+  /**
+   * Variables WTM derived for one task only, keyed by task name: the CORS allowlist under the
+   * name the task's own working directory declares, when that is not the worktree root.
+   */
+  taskAutomaticEnvironment?: Record<string, Record<string, string>>;
   endpoints: ResolvedEndpoints;
   /**
    * Which file, and which line of it, each configuration key came from. `wtm explain` exists
@@ -93,7 +101,7 @@ export async function resolveWorktreeRuntime(input: WorktreeRuntimeInput): Promi
     globalConfigPath: input.globalConfigPath,
   });
   const group = featureGroup(input.store, registration);
-  const owner = group[0] ?? registration.worktree;
+  const owner = leaseOwner(group, registration);
   const observed = input.allocate === false
     ? resolveExistingEndpoints(input.store, {
       ...(config.value.ports === undefined ? {} : { ports: config.value.ports }),
@@ -129,10 +137,15 @@ export async function resolveWorktreeRuntime(input: WorktreeRuntimeInput): Promi
     Object.fromEntries(overrides.map((override) => [override.taskName, override.task])),
   );
 
+  const context = templateContext(registration, endpoints, cors.value);
+  const taskCors = config.value.cors?.enabled === false || config.value.cors?.env !== undefined || cors.value === ''
+    ? {}
+    : await taskDirectoryCors(resolved.value, context, registration.worktree.path, cors.value, cors.variables);
+
   return {
     registration,
     config: resolved.value,
-    context: templateContext(registration, endpoints, cors.value),
+    context,
     automaticEnvironment: {
       ...endpoints.env,
       ...Object.fromEntries(cors.variables.map((name) => [name, cors.value])),
@@ -141,7 +154,45 @@ export async function resolveWorktreeRuntime(input: WorktreeRuntimeInput): Promi
     provenance: resolved.provenance,
     ...(observed === undefined ? {} : { observedEndpoints: observed.endpoints }),
     ...(repo === undefined ? {} : { repoEnvironment: repo }),
+    ...(Object.keys(taskCors).length === 0 ? {} : { taskAutomaticEnvironment: taskCors }),
   };
+}
+
+/**
+ * The CORS allowlist, published for each task under the variable its own working directory
+ * declares. The worktree root is not always where an app lives: a monorepo's API keeps its
+ * `variables.toml` or `.env.example` in `apps/api`, and a task started there with
+ * `cwd = "{worktree.root}/apps/api"` reads its allowlist from a name the root never mentions.
+ * Only names the root did not already publish are added, and only to the tasks that run there.
+ */
+async function taskDirectoryCors(
+  config: WtmConfig,
+  context: TemplateContext,
+  worktreeRoot: string,
+  value: string,
+  rootVariables: readonly string[],
+): Promise<Record<string, Record<string, string>>> {
+  const byDirectory = new Map<string, Promise<string[]>>();
+  const result: Record<string, Record<string, string>> = {};
+  for (const [taskName, task] of Object.entries(config.tasks ?? {})) {
+    if (task.cwd === undefined) continue;
+    let directory: string;
+    try {
+      directory = resolve(worktreeRoot, resolveTemplate(task.cwd, context));
+    } catch {
+      // A cwd that needs a port not leased yet is resolved when the task is; nothing to add here.
+      continue;
+    }
+    if (directory === worktreeRoot) continue;
+    let detected = byDirectory.get(directory);
+    if (detected === undefined) {
+      detected = detectCorsVariables(directory);
+      byDirectory.set(directory, detected);
+    }
+    const names = (await detected).filter((name) => !rootVariables.includes(name));
+    if (names.length > 0) result[taskName] = Object.fromEntries(names.map((name) => [name, value]));
+  }
+  return result;
 }
 
 /**
@@ -197,7 +248,7 @@ export function taskResolutionInput(runtime: WorktreeRuntime, taskName: string):
     taskName,
     isMain: runtime.registration.worktree.isMain,
     context: runtime.context,
-    automaticEnvironment: runtime.automaticEnvironment,
+    automaticEnvironment: { ...runtime.automaticEnvironment, ...runtime.taskAutomaticEnvironment?.[taskName] },
     ...(runtime.repoEnvironment === undefined ? {} : { repoEnvironment: runtime.repoEnvironment }),
   };
 }
@@ -276,11 +327,50 @@ function proxyHostnameOrigins(
   return origins;
 }
 
-export function findRegistration(store: StateRegistrationReader, cwd: string): Registration {
+/**
+ * The group member new shared leases are recorded on: its first live worktree. `featureGroup`
+ * keeps the caller's own worktree whatever its state, and a dead one that sorts first used to
+ * become the owner -- so a lease landed on a row reconcile releases on its next pass, and the
+ * following allocation moved the feature to another port while its tasks were still running.
+ */
+export function leaseOwner(group: readonly WorktreeRecord[], registration: Registration): WorktreeRecord {
+  return group.find((worktree) => !deadWorktreeStates.has(worktree.state)) ?? registration.worktree;
+}
+
+/**
+ * The directory's real path, which on a case-insensitive filesystem is also its real case, or
+ * `null` when it cannot be read (it no longer exists).
+ */
+function canonicalPath(path: string): string | null {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return null;
+  }
+}
+
+export function findRegistration(
+  store: StateRegistrationReader,
+  cwd: string,
+  canonical: (path: string) => string | null = canonicalPath,
+): Registration {
   const absolute = resolve(cwd);
-  const worktree = store.listWorktrees()
-    .filter((candidate) => containsPath(candidate.path, absolute))
-    .sort((left, right) => right.path.length - left.path.length)[0];
+  const worktrees = store.listWorktrees();
+  const containing = (path: string) => worktrees
+    .filter((candidate) => containsPath(candidate.path, path))
+    .sort((left, right) => right.path.length - left.path.length);
+  let worktree = containing(absolute)[0];
+  // A directory renamed under a running shell keeps the shell's old spelling in `cwd`. On a
+  // case-insensitive disk a change of case alone is such a rename, and the old spelling still
+  // reaches the directory, so it matched the old record Git no longer lists -- dead, and the
+  // wrong answer. The directory's real path names the record Git does list.
+  if (worktree === undefined || deadWorktreeStates.has(worktree.state)) {
+    const real = canonical(absolute);
+    const live = real === null || real === absolute
+      ? undefined
+      : containing(real).find((candidate) => !deadWorktreeStates.has(candidate.state));
+    worktree = live ?? worktree;
+  }
   if (worktree === undefined) {
     throw new DaemonRegistrationError(
       'This directory is not inside a worktree WTM has registered. Run `wtm init` in the workspace root.',

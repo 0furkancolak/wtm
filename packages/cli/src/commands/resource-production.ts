@@ -20,6 +20,7 @@ import type { FileTrustPolicy } from '@wtm/platform/ports';
 import { inspectRuntimeResources, resolveWorktreeRuntime } from '@wtm/daemon';
 import { runDiskCommand, type DiskCommandResult, type DiskUsageSummary } from './disk';
 import { runGcCommand, type GcCommandResult } from './gc';
+import { reclaimNeverStartedLeases } from './lease-reclaim';
 
 export async function runProductionDiskCommand(input: {
   databasePath: string;
@@ -240,11 +241,15 @@ export async function runProductionGcCommand(input: {
       }
     }
 
+    const leases = localWorkspace === undefined ? [] : await reclaimNeverStartedLeases({
+      store, workspaceId: localWorkspace.id, apply: input.apply, now: now.toISOString(),
+    });
     const data: GcCommandResult = {
       mode: input.apply ? 'apply' : 'dry-run',
       planned,
       excluded,
       items,
+      leases,
     };
     // Worktree-local resources are deliberately outside every sandbox, so they never appear in
     // a plan. Silence there reads as "there is nothing else", which is the wrong thing to

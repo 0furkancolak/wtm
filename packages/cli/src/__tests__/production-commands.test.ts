@@ -24,6 +24,13 @@ test('the production CLI wires persistent diagnostics and the foreground task ru
       foregroundRun: [0, true, ['node', '-e', 'console.log("greeting")'], 0],
       multiRepoRootResolve: [2, false, 'WTM_WORKSPACE_NOT_FOUND', true, false, false, ['api', 'web']],
       multiRepoRootRunWithoutRepositories: [2, false, 'WTM_WORKSPACE_NOT_FOUND', true],
+      resolveDoesNotLease: {
+        unleased: [1, 'WTM_TEMPLATE_UNRESOLVED', 'web', true],
+        leasesBefore: 0,
+        ran: [0, '46150'],
+        resolvedPorts: ['46150', '46150'],
+        leasesUnchanged: true,
+      },
       // `--global` scopes a read for the diagnostic commands but chooses a destination here.
       scopedHelp: [
         'register in user WTM data instead of wtm.toml',

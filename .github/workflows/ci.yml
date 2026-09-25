@@ -165,7 +165,10 @@ jobs:
           WIN32_TEST_FILTER: ${{ inputs.win32_test_filter }}
         run: |
           # Workflow commands are read from a step's stdout, so the annotation must not go to stderr.
-          if [[ ! "$WIN32_TEST_FILTER" =~ ^[A-Za-z0-9_./ *-]+$ ]]; then
+          # Held in a variable: an unquoted space inside `[[ =~ ]]` ends the pattern, and bash then
+          # rejects the whole conditional before a single test runs.
+          allowed='^[A-Za-z0-9_./ *-]+$'
+          if [[ ! "$WIN32_TEST_FILTER" =~ $allowed ]]; then
             echo "::error::win32_test_filter allows only [A-Za-z0-9_./*-] and spaces"
             exit 1
           fi

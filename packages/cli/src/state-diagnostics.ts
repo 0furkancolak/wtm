@@ -27,6 +27,7 @@ import {
   inspectAdapters,
   inspectProcessIdentity,
   inspectRuntimeResources,
+  ManagedLogStore,
   resolveWorktreeRuntime,
   type AdapterReport,
   type ProcessIdentity,
@@ -38,6 +39,7 @@ import { planChanges } from './changes';
 import { createDaemonStartupDiagnostic } from './daemon-startup-diagnostic';
 import { formatRemediation, hostDaemonStatusPath } from './daemon-status';
 import { explainDecisions } from './decisions';
+import { inspectWorkerEnvironments, workerEnvironmentFinding } from './worker-env';
 import type {
   DiagnosticDataSource,
   DoctorDiagnostic,
@@ -82,6 +84,12 @@ export interface StateDiagnosticOptions {
    */
   selectPlatform?: () => PlatformRuntime;
   /**
+   * How a RUNNING record's task exited, when its anchor recorded that while children it left keep
+   * the group alive. Defaults to reading the anchor's marker under this host's log root; tests
+   * answer it directly. `null` means the task is running, or that there is nothing to read.
+   */
+  readTaskExit?: (record: ManagedProcessRecord) => Promise<{ exitCode: number | null; signal: string | null } | null>;
+  /**
    * The CI provider `wtm status --pr` (item 13) resolves a PR through. Defaults to a live `gh`
    * invocation, resolved the same way the daemon's `CiWatcher` resolves it
    * (`packages/daemon/src/runtime-factory.ts`) — this is the seam tests fake, since `--pr` must
@@ -124,6 +132,14 @@ export function createStateDiagnosticDataSource(
   const chooseHost = options.selectPlatform ?? (() => selectPlatformRuntime());
   let host: { runtime: PlatformRuntime; refusal: null } | { runtime: null; refusal: unknown } | null = null;
   const platform = () => (host ??= selectHost(chooseHost));
+  const readTaskExit = options.readTaskExit ?? (async (record: ManagedProcessRecord) => {
+    const runtime = platform().runtime;
+    if (runtime === null) return null;
+    try {
+      return await new ManagedLogStore({ root: runtime.paths.logRoot, fileTrust: runtime.fileTrust })
+        .readTaskExit(record.stdoutPath, record.pid);
+    } catch { return null; }
+  });
 
   /**
    * The address `doctor` measures and probes, or `null` when there is no platform to derive one
@@ -252,12 +268,12 @@ export function createStateDiagnosticDataSource(
   // caller must pass the specific workspace's own current worktree's path instead (see
   // `adapterFinding`'s comment on `findRegistration` for why an unscoped `options.cwd` resolves
   // to whichever registered worktree is deepest, not necessarily this workspace's own).
+  //
+  // Resolved without allocating: this is a report, and every agent session begins with one in
+  // every worktree it touches. Leasing here is how a worktree that never ran a task came to hold
+  // a port for every endpoint in `[ports]`.
   const declaredResources = async (cwd = options.cwd): Promise<StatusDiagnostic['resources']> =>
-    await inspectRuntimeResources(await resolveWorktreeRuntime({
-      store,
-      cwd,
-      globalConfigPath: options.globalConfigPath,
-    }));
+    await inspectRuntimeResources(await worktreeRuntime(false, cwd));
 
 
   /**
@@ -301,6 +317,7 @@ export function createStateDiagnosticDataSource(
 
     findings.push(await configFinding(workspace, current));
     findings.push(await adapterFinding(current));
+    findings.push(await workerFinding(current));
     findings.push(await resourceFinding(current));
     findings.push(portFinding(workspace, worktrees));
     findings.push(await processFinding(worktrees));
@@ -625,6 +642,33 @@ export function createStateDiagnosticDataSource(
     };
   };
 
+  /**
+   * Which variables WTM sets that a Cloudflare worker in this worktree never sees. `wrangler dev`
+   * builds a worker's env from its own files, so a CORS allowlist WTM derived for this feature
+   * reaches the wrangler process and stops there -- which looks like an authorization bug from
+   * the browser, and is the hardest kind of misconfiguration to trace back to its cause.
+   *
+   * Resolved without allocating: the answer needs variable names, never a port.
+   */
+  const workerFinding = async (
+    current: WorktreeRecord | undefined,
+  ): Promise<DoctorDiagnostic['findings'][number]> => {
+    if (current === undefined) {
+      return {
+        check: 'worker-env',
+        status: 'unknown',
+        message: 'Worker environment diagnostics need a registered worktree in this workspace; see the registration check.',
+      };
+    }
+    try {
+      return workerEnvironmentFinding(await inspectWorkerEnvironments(await worktreeRuntime(false, current.path)));
+    } catch {
+      // Same reasoning as `resourceFinding`: a configuration that does not resolve is the `config`
+      // check's finding, and must not cost the reader every other one.
+      return { check: 'worker-env', status: 'unknown', message: 'Worker environment diagnostics are unavailable; see the config check.' };
+    }
+  };
+
   const resourceFinding = async (
     current: WorktreeRecord | undefined,
   ): Promise<DoctorDiagnostic['findings'][number]> => {
@@ -734,6 +778,7 @@ export function createStateDiagnosticDataSource(
       adapters: await adapters(runtime),
       resources: await inspectRuntimeResources(runtime),
       environment: execEnvironment(runtime),
+      workers: (await inspectWorkerEnvironments(runtime)).tasks,
     });
   };
 
@@ -758,12 +803,20 @@ export function createStateDiagnosticDataSource(
     readDaemonStartupFailure: () => startup.failureItem(),
     readStatus: async (workspace, statusOptions) => {
       const worktree = currentWorktree(workspace.id);
-      const processes = worktree === undefined ? [] : store.listManagedProcesses({ worktreeId: worktree.id }).map((process) => ({
-        task: process.taskName,
-        pid: process.state === 'RUNNING' ? process.pid : null,
-        state: process.state === 'RUNNING' ? 'running' as const : process.state === 'STALE_IDENTITY' ? 'stale' as const : 'stopped' as const,
-        startedAt: process.startedAt,
-        argv: [],
+      const records = worktree === undefined ? [] : store.listManagedProcesses({ worktreeId: worktree.id });
+      const processes = await Promise.all(records.map(async (process) => {
+        const exited = process.state === 'RUNNING' ? await readTaskExit(process) : null;
+        const exitCode = exited === null ? process.exitCode : exited.exitCode ?? undefined;
+        const exitSignal = exited === null ? process.exitSignal : exited.signal ?? undefined;
+        return {
+          task: process.taskName,
+          pid: process.state === 'RUNNING' ? process.pid : null,
+          state: exited === null ? statusProcessState(process.state) : 'exited' as const,
+          startedAt: process.startedAt,
+          argv: [],
+          ...(exitCode === undefined ? {} : { exitCode }),
+          ...(exitSignal === undefined ? {} : { exitSignal }),
+        };
       }));
       return {
         workspace,
@@ -836,6 +889,17 @@ export function createStateDiagnosticDataSource(
       }),
     }),
   };
+}
+
+/**
+ * A crash used to read as `stopped` here, the same word as a run someone stopped on purpose, so
+ * the one row that explained a broken environment looked like every other.
+ */
+function statusProcessState(state: ManagedProcessRecord['state']): StatusDiagnostic['processes'][number]['state'] {
+  if (state === 'RUNNING') return 'running';
+  if (state === 'STALE_IDENTITY') return 'stale';
+  if (state === 'FAILED') return 'failed';
+  return 'stopped';
 }
 
 async function isDirectory(path: string): Promise<boolean> {

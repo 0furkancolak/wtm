@@ -66,9 +66,24 @@ export interface PreparedManagedLogs {
   stderrPath: string;
   launchMarkerPath: string;
   completionMarkerPath: string;
+  exitMarkerPath: string;
   rotationBytes: number;
   retainedFiles: number;
 }
+
+/**
+ * Written by the anchor the moment the task's own process exits, before it waits for the rest of
+ * the group. A task that dies and leaves children behind (wrangler leaving `workerd`) keeps its
+ * anchor, and so its RUNNING record, alive until they go; this marker is how the daemon tells that
+ * window apart from a task that is still running.
+ */
+const taskExitSchema = z.object({
+  pid: z.number().int().positive(),
+  exitCode: z.number().int().nonnegative().nullable(),
+  signal: z.string().regex(/^SIG[A-Z0-9]+$/).max(32).nullable(),
+  exitedAt: z.string().datetime(),
+}).strict();
+export type ManagedTaskExit = z.infer<typeof taskExitSchema>;
 
 const completionSchema = z.object({
   pid: z.number().int().positive(),
@@ -120,9 +135,10 @@ export class ManagedLogStore {
     await opened.close();
     const launchMarkerPath = join(resolve(opened.stdoutPath, '..'), 'launch.json');
     const completionMarkerPath = join(resolve(opened.stdoutPath, '..'), 'completion.json');
+    const exitMarkerPath = join(resolve(opened.stdoutPath, '..'), 'exited.json');
     const directory = resolve(launchMarkerPath, '..');
     const parent = await directoryIdentity(directory, this.#fileTrust);
-    for (const marker of [launchMarkerPath, completionMarkerPath]) {
+    for (const marker of [launchMarkerPath, completionMarkerPath, exitMarkerPath]) {
       if (await safeLogStat(marker, this.#fileTrust) === null) continue;
       await assertDirectoryIdentity(directory, parent, this.#fileTrust);
       await rm(marker);
@@ -134,6 +150,7 @@ export class ManagedLogStore {
       stderrPath: opened.stderrPath,
       launchMarkerPath,
       completionMarkerPath,
+      exitMarkerPath,
       rotationBytes: this.#rotationBytes,
       retainedFiles: this.#retainedFiles,
     };
@@ -296,21 +313,32 @@ export class ManagedLogStore {
 
   /** Completion belongs to this unique job log directory and the exact recorded anchor PID. */
   async readCompletion(stdoutPath: string, pid: number): Promise<ManagedProcessCompletion | null> {
+    return await this.#readMarker(stdoutPath, 'completion.json', 'completion', completionSchema, pid);
+  }
+
+  /** The task-exit marker, under the same directory, size and anchor-identity rules as completion. */
+  async readTaskExit(stdoutPath: string, pid: number): Promise<ManagedTaskExit | null> {
+    return await this.#readMarker(stdoutPath, 'exited.json', 'exit', taskExitSchema, pid);
+  }
+
+  async #readMarker<T extends { pid: number }>(
+    stdoutPath: string, name: string, label: string, schema: z.ZodType<T>, pid: number,
+  ): Promise<T | null> {
     const directory = resolve(stdoutPath, '..');
     assertContained(this.#root, directory);
     await assertSecureDirectoryChain(this.#root, directory, this.#fileTrust);
     const parent = await directoryIdentity(directory, this.#fileTrust);
     let handle: FileHandle;
-    try { handle = await openExistingSafeLog(join(directory, 'completion.json'), this.#fileTrust); }
+    try { handle = await openExistingSafeLog(join(directory, name), this.#fileTrust); }
     catch (error) { if (isMissing(error)) return null; throw error; }
     try {
       const stat = await handle.stat();
-      if (stat.size > 1024) throw new Error('Invalid completion marker');
+      if (stat.size > 1024) throw new Error(`Invalid ${label} marker`);
       const bytes = Buffer.alloc(stat.size);
       const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
-      const parsed = completionSchema.safeParse(JSON.parse(bytes.subarray(0, bytesRead).toString('utf8')));
+      const parsed = schema.safeParse(JSON.parse(bytes.subarray(0, bytesRead).toString('utf8')));
       await assertDirectoryIdentity(directory, parent, this.#fileTrust);
-      if (!parsed.success || parsed.data.pid !== pid) throw new Error('Invalid completion identity');
+      if (!parsed.success || parsed.data.pid !== pid) throw new Error(`Invalid ${label} identity`);
       return parsed.data;
     } finally { await handle.close(); }
   }
@@ -323,7 +351,7 @@ export class ManagedLogStore {
     catch (error) { if (isMissing(error)) return; throw error; }
     const parent = await directoryIdentity(directory, this.#fileTrust);
     const files = await readdir(directory);
-    if (files.length > 64 || files.some((file) => !/^(?:stdout\.log|stderr\.log)(?:\.\d+|\.generation)?$|^(?:launch|completion)\.json$/.test(file))) {
+    if (files.length > 64 || files.some((file) => !/^(?:stdout\.log|stderr\.log)(?:\.\d+|\.generation)?$|^(?:launch|completion|exited)\.json$/.test(file))) {
       throw new Error('Unexpected file in job log directory');
     }
     for (const file of files) {

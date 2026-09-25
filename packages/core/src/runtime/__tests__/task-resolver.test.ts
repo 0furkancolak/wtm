@@ -274,3 +274,76 @@ describe('resolveTask unknown-task reporting', () => {
     expect(over.context.knownTasks).toEqual(taskNames(11));
   });
 });
+
+describe('resolveTask worker_vars', () => {
+  // `wrangler dev` builds a worker's `env` from wrangler config `vars` and `.dev.vars`, never
+  // from the process environment, so a variable WTM sets only reaches the worker as `--var`.
+  const wranglerTask = (extra: Record<string, unknown> = {}) => ({
+    run: ['bunx', 'wrangler', 'dev', '--port', '{port.web}'],
+    worker_vars: ['CORS_ALLOWED_ORIGINS', 'API_URL'],
+    ...extra,
+  });
+
+  test('appends one --var NAME:VALUE pair per name, carrying the layered value', () => {
+    const resolved = resolveTask({
+      config: { environment: { API_URL: 'http://localhost:1' }, tasks: { 'api:dev': wranglerTask() } },
+      taskName: 'api:dev',
+      isMain: false,
+      context: { ...baseContext, cors: { origins: 'http://localhost:3125,http://localhost:3129' } },
+      automaticEnvironment: { CORS_ALLOWED_ORIGINS: 'http://localhost:3125,http://localhost:3129' },
+      repoEnvironment: { API_URL: 'http://localhost:{port.web}' },
+    });
+
+    expect(resolved.argv).toEqual([
+      'bunx', 'wrangler', 'dev', '--port', '23001',
+      '--var', 'CORS_ALLOWED_ORIGINS:http://localhost:3125,http://localhost:3129',
+      '--var', 'API_URL:http://localhost:23001',
+    ]);
+    expect(resolved.envDelta.API_URL).toBe('http://localhost:23001');
+  });
+
+  test('passes a value verbatim as one argument, whatever characters it holds', () => {
+    const value = `a b;$(rm -rf /)'"\`,x:y`;
+    const resolved = resolveTask({
+      config: { tasks: { dev: { run: ['wrangler', 'dev'], worker_vars: ['ODD'], env: { ODD: value } } } },
+      taskName: 'dev',
+      isMain: true,
+      context: baseContext,
+    });
+
+    expect(resolved.argv).toEqual(['wrangler', 'dev', '--var', `ODD:${value}`]);
+  });
+
+  test('inserts the pairs ahead of a -- terminator so they stay wrangler options', () => {
+    const resolved = resolveTask({
+      config: { tasks: { dev: { run: ['wrangler', 'dev', '--', 'extra'], worker_vars: ['X'], env: { X: '1' } } } },
+      taskName: 'dev',
+      isMain: true,
+      context: baseContext,
+    });
+
+    expect(resolved.argv).toEqual(['wrangler', 'dev', '--var', 'X:1', '--', 'extra']);
+  });
+
+  test('refuses a name no WTM environment layer sets, rather than forwarding the daemon\'s own', () => {
+    // `SHARED` is in the ambient (inherited) environment only: forwarding it would hand the
+    // worker whatever the daemon happened to start with, which is not a WTM decision.
+    let error: unknown;
+    try {
+      resolveTask({
+        config: { tasks: { 'api:dev': { run: ['wrangler', 'dev'], worker_vars: ['SHARED'] } } },
+        taskName: 'api:dev',
+        isMain: true,
+        context: baseContext,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(WtmTaskResolutionError);
+    expect((error as WtmTaskResolutionError).message)
+      .toBe('Task api:dev lists SHARED in worker_vars, but no WTM environment layer sets it. '
+        + 'Set it in [environment], [repos.<name>.environment] or [tasks."api:dev".env].');
+    expect((error as WtmTaskResolutionError).context).toEqual({ taskName: 'api:dev', variable: 'SHARED' });
+  });
+});

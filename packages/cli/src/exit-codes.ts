@@ -13,7 +13,7 @@ import type { WtmErrorCode } from '@wtm/protocol';
  * needs an exit status for a `WtmErrorCode` calls this.
  */
 export function exitCodeForError(code: WtmErrorCode): number {
-  if (code === 'WTM_DAEMON_UNAVAILABLE') return 4;
+  if (code === 'WTM_DAEMON_UNAVAILABLE' || code === 'WTM_DAEMON_TIMEOUT') return 4;
   if (code === 'ADAPTER_PROTOCOL_INCOMPATIBLE' || code === 'ADAPTER_INVALID_RESPONSE') return 5;
   // Configuration the user has to change, not something a retry can fix. `exitCodeForError` is
   // a partial mapping with a `return 1` default, so a code left out of it does not fail to

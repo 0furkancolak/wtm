@@ -7,7 +7,7 @@ All notable changes are documented here. This project follows Semantic Versionin
 Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract
 are unstable, and a breaking change may land in a minor release without a deprecation window.
 
-## [0.2.0-rc.2] - 2026-09-23
+## [0.2.0-rc.3] - 2026-09-25
 
 Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract
 are unstable, and a breaking change may land in a minor release without a deprecation window.
@@ -28,6 +28,96 @@ Installing with `curl` and `tar` as the README describes is unaffected — neith
 quarantine attribute. This note is a workaround for a defect and is removed once the stable macOS
 binaries are Developer ID signed and notarized.
 <!-- gatekeeper-quarantine:end -->
+
+### Added
+
+- `worker_vars` on a task (and `wtm task set --worker-var`): names from the task's resolved
+  environment that WTM passes to a `wrangler dev` worker as `--var NAME:VALUE`. wrangler builds a
+  worker's `env` from its config `vars` and `.dev.vars`, never from the process environment, so a
+  CORS allowlist or port WTM derived used to reach the wrangler process and stop there. The worker
+  kept a symlinked `.dev.vars`'s static origins, and a browser on the WTM-leased port was refused
+  by CORS. argv tasks only: values are passed one argument each and are never shell-parsed.
+- `wtm doctor` has a `worker-env` check, and `wtm explain` a `<task>.worker_env` decision. Both say
+  which WTM variables a worker's own files (`vars`, `.dev.vars`, `.env`) also define and that
+  nothing forwards. This includes a `wrangler.json` that app code reads directly. Files are read
+  for variable names only.
+- `variables.toml`, the checked-in public half of `.env` some apps keep, is now a declaration
+  file. CORS detection and `wtm init`/`wtm detect` read it ahead of the `.env` example files:
+  names from `[vars]` and every `[env.<name>.vars]`, and safe port or URL values from `[vars]`
+  and the `development`/`dev`/`local` tables. The app's tooling fills only variables the
+  environment leaves empty, so WTM's value wins without any `worker_vars`. CORS variables are
+  also detected in a task's own `cwd`. A monorepo app in `apps/api` gets the allowlist under the
+  name its own `variables.toml` or `.env.example` declares, and other tasks don't.
+- `WTM_DAEMON_TIMEOUT` (exit 4): the daemon accepted a request but did not answer in time, and
+  may still complete it.
+- Managed runs record how they ended: `exitCode` or `exitSignal` on `wtm ps` records and on
+  `wtm status` processes (migration 019). `RUNTIME_START_FAILED` names the exit status and points
+  at `wtm logs <task>`.
+- `wtm ps --all` lists every recorded run.
+- `wtm gc` reports, and with `--apply` gives back, the port leases of a feature none of whose
+  worktrees has ever run a managed task (`data.leases`). Earlier versions leased every
+  `[ports.*]` endpoint whenever `wtm status` or `wtm doctor` was run, and those leases stayed. A
+  feature whose ports something is still listening on (a foreground `wtm run`, or a server started
+  from `eval "$(wtm env)"`) keeps all of them. A feature that has run a task keeps them regardless.
+
+### Changed
+
+- `wtm resolve`, `wtm status` and `wtm doctor` (and `wtm tui`, which polls the last two) no longer
+  lease ports. They answer from the leases a feature already holds. A worktree that never ran a
+  task used to hold a port for every `[ports.*]` endpoint as soon as an agent ran `wtm status` in
+  it. That used up the range and pushed features off their preferred ports. `wtm resolve` on an
+  endpoint nothing has leased yet fails with `WTM_TEMPLATE_UNRESOLVED`, naming the endpoint and
+  suggesting `wtm start <task>`. `wtm start`, `wtm run`, `wtm exec`, `wtm env` and `wtm explain`
+  still lease.
+- `wtm ps` lists live runs, and each stopped task's latest run when that run failed, instead of
+  every run ever recorded across the workspace. In a busy workspace that was dozens of rows per
+  task, labelled only by worktree id, and a crash was easy to miss among clean stops.
+  `data.omitted` counts what was left out; `--all` restores the full list.
+
+### Fixed
+
+- A feature's ports could move while its tasks were running. When the worktree holding the
+  feature's shared leases left Git's listing (removed outside `wtm remove`, or renamed, which on a
+  case-insensitive disk can be a change of case alone), reconciliation released the leases. The
+  next allocation then found the preferred port busy with the feature's own task and took another
+  port. The leases now pass to a live worktree on the same branch.
+- A shell whose working directory still spelled a renamed worktree's old path resolved to the old,
+  orphaned worktree record. It then became the owner of the feature's new leases, which the next
+  reconcile released. WTM now resolves such a directory through its real path, and never records a
+  new lease on a dead worktree.
+- `wtm status` reported a crashed run as `stopped`, the same word as a deliberate stop. It is now
+  `failed`.
+- A run that ended while no daemon was watching (daemon restarted, upgraded or crashed) was always
+  recovered as `STOPPED`, even when it had crashed. Recovery now reads the anchor's completion
+  marker and records `FAILED` with the exit status.
+- `wtm ps`, `wtm start` and `wtm stop` records no longer include the start reservation's
+  `cleanupOwnerToken`.
+- A runtime command whose request timed out, or whose connection dropped mid-request, was
+  reported as `WTM_DAEMON_UNAVAILABLE` ("WTM daemon is unavailable."), even though the daemon was
+  running and often finished the request. `wtm daemon status` then showed it as reachable a moment
+  later. A timeout is now `WTM_DAEMON_TIMEOUT`. A dropped connection says the request may have
+  taken effect.
+- A task that died while processes it started lived on (wrangler leaving `workerd` behind) kept its
+  record `RUNNING` until they exited, 30 seconds in the reported case. For that whole window
+  `wtm start` answered `existing: true` for a task that no longer ran. The anchor now writes an
+  `exited.json` marker the moment the task's own process exits. `wtm start` then stops what is
+  left, records the run `FAILED` with the task's exit status, and starts a new run. `wtm stop` and
+  `wtm restart` record the exit status the same way. `wtm ps` marks such a run with `taskExited`,
+  and `wtm status` shows it as `exited`.
+- The tag-triggered release workflow never ran. `release.yml` defined `if-no-files-found` twice in
+  one step, which GitHub rejects for the whole file ("workflow file issue"), so every push reported
+  a failed run and no tag could publish an archive. A test now fails on any key defined twice in a
+  workflow mapping.
+- CI's `win32_test_filter` dispatch failed before running a test. An unquoted space in its
+  `[[ =~ ]]` pattern made bash reject the conditional. The pattern is now held in a variable.
+- `wtm start`, `wtm restart` and `wtm stop` waited only 5 seconds for the daemon. That is shorter
+  than a `stop` inside a 5s `grace_period`, or a `start` queued behind the previous run's exit, so
+  the first call after a crash could fail while the second succeeded. They now wait 60 seconds.
+
+## [0.2.0-rc.2] - 2026-09-23
+
+Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract
+are unstable, and a breaking change may land in a minor release without a deprecation window.
 
 ### Fixed
 

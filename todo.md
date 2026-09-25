@@ -2436,6 +2436,50 @@ listeli: `docs/superpowers/specs/2026-09-14-ci-watch-design.md`.
 
 ---
 
+### [x] 55. Task çıktıktan sonra grubunda kalan süreçler, task'ı "RUNNING" gösteriyor
+
+2026-09-25 marcapony bulgusu (`api:dev`, wrangler 4.127.1). wrangler kendi `ProxyWorker`'ında
+"Network connection lost." ile 07:27:11Z'de çıktı; workerd çocukları süreç grubunda ~30 sn daha
+yaşadı. Anchor grubun boşalmasını beklediği için kayıt o süre boyunca `RUNNING` kaldı ve
+`wtm start api:dev` `existing: true` döndürdü.
+
+**Kapandı (2026-09-25):**
+
+- [x] Anchor, task çıktığı anda `exited.json` (`pid`/`exitCode`/`signal`/`exitedAt`) yazıyor;
+      `completion.json` ile aynı log-store yolu (ACL/kimlik kontrolleri, Windows dahil), `prepare()`
+      eski işareti siliyor, `removeJob` izin listesinde.
+- [x] `wtm start` bu işareti gören `RUNNING` kayıtta kalan grubu TERM→KILL ile durduruyor, eski
+      koşuyu task'ın çıkış koduyla `FAILED` (0 ise `STOPPED`) kaydediyor ve yeni koşuyu başlatıyor.
+      `wtm stop`/`wtm restart` da çıkış kodunu kaydediyor (`STOPPING` üzerinden; terminal durum
+      store'da değiştirilemiyor).
+- [x] `wtm ps` kayda `taskExited` ekliyor, `wtm status` `exited` gösteriyor.
+- [x] Windows: kod yolu platformdan bağımsız (aynı anchor log store'u, `taskkill /T`). win32
+      filter koşusu `36120644004`: `heavy-job-logs` + `anchor-log-capability` 7/7 yeşil (işaret
+      okuma, kimlik, `prepare()` temizliği, `removeJob`). Uçtan uca kalan-grup senaryosu
+      (`process-supervisor.test.ts`) Windows'ta item 9 kapsamındaki bilinen hatalar yüzünden koşmuyor.
+
+---
+
+### [x] 56. Hiç başlatılmamış feature'ların port lease'lerini geri al
+
+2026-09-25 marcapony bulgusu: `ECW-893-api` 17 `[ports.*]` endpoint'inin hepsini 2026-09-17'den beri
+`ACTIVE` tutuyordu.
+
+**Kapandı (2026-09-25):**
+
+- [x] `wtm gc` (dry-run varsayılan) `data.leases` altında, hiçbir worktree'sinde hiç
+      `managed_processes` kaydı olmayan feature'ların lease'lerini raporluyor; `--apply` ile
+      serbest bırakıyor. Kontrol ve bırakma tek transaction'da. Portlardan birini dinleyen bir süreç
+      varsa (ön planda `wtm run`, `eval "$(wtm env)"` ile başlatılan sunucu) feature'ın hiçbir
+      portuna dokunulmuyor (`in-use`).
+- [x] Karar: `wtm env`/`wtm explain` lease almaya devam ediyor. İkisi de task'ın alacağı değerleri
+      cevaplıyor; lease'siz cevap ya `{port.x}` üzerinde hata verir ya da sonraki `start`'ın
+      değiştirebileceği bir sayı gösterir. Başlatılmamış bir feature için aldıkları lease'leri
+      `wtm gc --apply` geri alıyor (bkz. `docs/07-process-port-runtime.md`).
+- [x] Port başına tembel lease yapılmadı (aynı `{port.x}` ve tam `{cors.origins}` garantisi).
+
+---
+
 ## P2 — Ürünü belirgin biçimde farklılaştıracak işler
 
 ### [ ] 12. Local reverse proxy / stable feature domains

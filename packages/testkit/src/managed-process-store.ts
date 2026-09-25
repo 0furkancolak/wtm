@@ -23,7 +23,12 @@ export class MemoryManagedProcessStore implements ManagedProcessStateStore {
   updateManagedProcess(id: string, update: ManagedProcessUpdate): ManagedProcessRecord | null {
     const record = this.#records.get(id);
     if (record === undefined || !update.expectedStates.includes(record.state)) return null;
-    const updated = { ...record, ...update, stoppedAt: update.stoppedAt ?? null };
+    const { exit, ...rest } = update;
+    const updated = {
+      ...record, ...rest, stoppedAt: update.stoppedAt ?? null,
+      ...(exit?.code === null || exit === undefined ? {} : { exitCode: exit.code }),
+      ...(exit?.signal === null || exit === undefined ? {} : { exitSignal: exit.signal }),
+    };
     this.#records.set(id, updated);
     return { ...updated };
   }

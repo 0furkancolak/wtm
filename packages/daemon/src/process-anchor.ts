@@ -526,7 +526,16 @@ async function launch() {
     reportLaunch('ERROR ' + (/^[A-Z0-9_]+$/.test(error.code || '') ? error.code : 'SPAWN_FAILED'));
     taskExited = true; taskExit = { code: 127, signal: null }; checkGroup();
   });
-  child.once('exit', (code, signal) => { taskExited = true; taskExit = { code, signal }; checkGroup(); });
+  child.once('exit', (code, signal) => {
+    taskExited = true; taskExit = { code, signal };
+    // Written now, not when the group empties: children the task leaves behind keep this anchor
+    // alive, and the daemon reads this marker to tell a dead task from a running one meanwhile.
+    // Publications are serialized, so it always lands before the completion marker.
+    void logStore.publishExit(() => ({
+      pid: process.pid, exitCode: code, signal, exitedAt: new Date().toISOString()
+    })).catch(() => {});
+    checkGroup();
+  });
   if (child.stdout) pipeline(child.stdout, stdoutLog, (error) => { logFailed ||= error !== undefined && error !== null; stdoutDrained = true; checkGroup(); });
   else { stdoutLog.end(() => { stdoutDrained = true; checkGroup(); }); }
   if (child.stderr) pipeline(child.stderr, stderrLog, (error) => { logFailed ||= error !== undefined && error !== null; stderrDrained = true; checkGroup(); });

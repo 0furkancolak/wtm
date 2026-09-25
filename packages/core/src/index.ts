@@ -116,6 +116,14 @@ export type { TemplateContext } from './templates/resolve';
 export { resolveEnvironment, WtmEnvironmentError } from './runtime/environment';
 export type { EnvironmentResolutionInput } from './runtime/environment';
 export { resolveTask, WtmTaskResolutionError } from './runtime/task-resolver';
+export {
+  analyzeWorkerEnvironment,
+  findWranglerConfig,
+  readWorkerDefinitions,
+  wranglerDevCommand,
+  type WorkerEnvironmentReport,
+  type WranglerDevCommand,
+} from './runtime/worker-env';
 export type { ResolvedTask, TaskResolutionInput } from './runtime/task-resolver';
 export {
   allocateStableEndpoint,
@@ -145,7 +153,7 @@ export {
   wtmLocalhostSuffix,
 } from './runtime/proxy-hostname';
 export type { ProxyHostnameWorktree } from './runtime/proxy-hostname';
-export { declarationFiles, exampleDeclarationFiles, readDeclaredNames, readEnvDeclarations } from './detect/declarations';
+export { declarationFiles, exampleDeclarationFiles, readDeclaredNames, readDefinedNames, readEnvDeclarations } from './detect/declarations';
 export type { EnvDeclaration } from './detect/declarations';
 export { composeFiles, parseComposeServices, readComposeFile } from './detect/compose';
 export type { ComposeFileReport, ComposeService } from './detect/compose';
@@ -194,6 +202,7 @@ export type {
   ManagedProcessReservationOptions,
   ManagedProcessState,
   ManagedProcessUpdate,
+  ManagedProcessExit,
   DaemonStateStore,
   PortRange,
   ReconcileResult,

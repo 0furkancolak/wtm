@@ -20,6 +20,7 @@ export type {
   ManagedProcessReservationOptions,
   ManagedProcessState,
   ManagedProcessUpdate,
+  ManagedProcessExit,
   DaemonStateStore,
   PortRange,
   ReconcileResult,

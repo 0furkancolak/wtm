@@ -207,3 +207,22 @@ describe('parseWtmConfig', () => {
     });
   });
 });
+
+describe('parseWtmConfig worker_vars', () => {
+  it('accepts a list of variable names on an argv task', () => {
+    const config = parseWtmConfig({ tasks: { dev: { run: ['wrangler', 'dev'], worker_vars: ['API_URL', 'CORS_ORIGINS'] } } });
+
+    expect(config.tasks?.dev?.worker_vars).toEqual(['API_URL', 'CORS_ORIGINS']);
+  });
+
+  it('refuses worker_vars on a shell command, which would need quoting WTM cannot do for every shell', () => {
+    expect(() => parseWtmConfig({ tasks: { dev: { run: 'wrangler dev', shell: true, worker_vars: ['API_URL'] } } }))
+      .toThrow(WtmConfigError);
+  });
+
+  it('refuses a name that is not an environment variable name, or a repeated one', () => {
+    expect(() => parseWtmConfig({ tasks: { dev: { run: ['wrangler', 'dev'], worker_vars: ['API URL'] } } })).toThrow(WtmConfigError);
+    expect(() => parseWtmConfig({ tasks: { dev: { run: ['wrangler', 'dev'], worker_vars: ['A:B'] } } })).toThrow(WtmConfigError);
+    expect(() => parseWtmConfig({ tasks: { dev: { run: ['wrangler', 'dev'], worker_vars: ['A', 'A'] } } })).toThrow(WtmConfigError);
+  });
+});

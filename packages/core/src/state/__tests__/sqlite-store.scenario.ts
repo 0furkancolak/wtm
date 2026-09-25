@@ -771,6 +771,16 @@ function managedProcessLifecycle() {
     } catch {
       rejectedNonterminalTimestamp = true;
     }
+    const exited = (taskName: string, exit: { code: number | null; signal: string | null }) => {
+      const record = store.createManagedProcess({ ...base, taskName, state: 'RUNNING' });
+      const failed = store.updateManagedProcess(record.id, {
+        expectedStates: ['RUNNING'], state: 'FAILED', stoppedAt: '2026-08-27T10:03:00.000Z', exit,
+      });
+      // Read back through a fresh lookup, not the update's return, so the columns are proven stored.
+      const stored = store.getManagedProcess(record.id);
+      if (failed === null || stored === null) throw new Error('Expected FAILED transition');
+      return { state: stored.state, exitCode: stored.exitCode ?? null, exitSignal: stored.exitSignal ?? null };
+    };
     return {
       wrongExpectedStateReturnedNull: wrongExpected === null,
       runningState: running.state,
@@ -779,6 +789,9 @@ function managedProcessLifecycle() {
       rejectedRevival,
       rejectedTerminalWithoutTimestamp,
       rejectedNonterminalTimestamp,
+      failedExit: exited('exit-code', { code: 3, signal: null }),
+      signalledExit: exited('exit-signal', { code: null, signal: 'SIGKILL' }),
+      stoppedWithoutExit: { hasExitCode: 'exitCode' in stopped, hasExitSignal: 'exitSignal' in stopped },
     };
   });
 }
@@ -1157,6 +1170,66 @@ function lifecycleEventClaims() {
 /**
  * A worktree Git stops reporting gives its ports back, and gets them again if it returns.
  */
+/**
+ * A feature's endpoints are leased once, on one of its worktrees, and every repository on the
+ * branch reads them. When that one worktree leaves Git's listing -- removed outside `wtm remove`,
+ * or renamed, which on a case-insensitive disk can be a change of case alone -- releasing its
+ * leases took the ports away from the siblings still running on them, and the next allocation
+ * found the preferred port busy (held by those very tasks) and moved the feature elsewhere.
+ */
+function featureLeaseSurvivesOwnerAbsence() {
+  return withDatabase((_, open, close) => {
+    const store = open();
+    try {
+      const api = createRepository(store);
+      const web = store.upsertRepository({
+        workspaceId: api.workspaceId, commonGitDir: '/projects/demo/web/.git', mainRoot: '/projects/demo/web', remoteIdentity: null,
+      });
+      const other = store.upsertRepository({
+        workspaceId: api.workspaceId, commonGitDir: '/projects/demo/docs/.git', mainRoot: '/projects/demo/docs', remoteIdentity: null,
+      });
+      const apiTrees = [
+        worktree('/projects/demo/repo', 'a', 'refs/heads/main'),
+        worktree('/projects/demo/.worktrees/ecw-1-api', 'b', 'refs/heads/feat/x'),
+      ];
+      const apiFeature = store.reconcileWorktrees(api.id, apiTrees).discovered.find(({ path }) => path.endsWith('ecw-1-api'));
+      const webFeature = store.reconcileWorktrees(web.id, [
+        worktree('/projects/demo/web', 'c', 'refs/heads/main'),
+        worktree('/projects/demo/.worktrees/ECW-1-web', 'd', 'refs/heads/feat/x'),
+      ]).discovered.find(({ path }) => path.endsWith('ECW-1-web'));
+      const otherBranch = store.reconcileWorktrees(other.id, [
+        worktree('/projects/demo/docs', 'e', 'refs/heads/main'),
+        worktree('/projects/demo/.worktrees/ECW-2-docs', 'f', 'refs/heads/feat/y'),
+      ]).discovered.find(({ path }) => path.endsWith('ECW-2-docs'));
+      if (apiFeature === undefined || webFeature === undefined || otherBranch === undefined) throw new Error('Expected worktrees');
+      const holder = (id: string) => id === webFeature.id ? 'web-feature' : id === apiFeature.id ? 'api-feature' : 'other';
+      const allocate = (worktreeId: string, name: string, preferredPort: number) => store.allocateEndpoint({
+        worktreeId, name, protocol: 'tcp', host: '127.0.0.1', portRange: { min: 4100, max: 4199 }, preferredPort,
+      });
+      const shared = allocate(apiFeature.id, 'web', 4100);
+      const alone = allocate(otherBranch.id, 'docs', 4150);
+
+      // The api worktree's directory is renamed: Git now lists it under a new path only.
+      store.reconcileWorktrees(api.id, [apiTrees[0] as ReturnType<typeof worktree>, worktree('/projects/demo/.worktrees/ECW-1-api', 'b', 'refs/heads/feat/x')]);
+      const renamed = store.listWorktrees(api.id).find(({ path }) => path.endsWith('ECW-1-api'));
+      const handedOver = store.listEndpointLeases({ states: ['ACTIVE'] })
+        .filter(({ name }) => name === 'web')
+        .map(({ port, worktreeId }) => ({ port, holder: worktreeId === renamed?.id ? 'renamed-api' : holder(worktreeId) }));
+
+      // A worktree with no sibling on its branch still gives its ports back.
+      store.reconcileWorktrees(other.id, [worktree('/projects/demo/docs', 'e', 'refs/heads/main')]);
+      return {
+        sharedPort: shared.port,
+        handedOver,
+        loneLease: store.listEndpointLeases({ worktreeIds: [otherBranch.id] }).map(({ port, state }) => ({ port, state })),
+        alonePort: alone.port,
+      };
+    } finally {
+      close();
+    }
+  });
+}
+
 function orphanedEndpointRelease() {
   return withDatabase((_, open, close) => {
     const store = open();
@@ -1903,6 +1976,7 @@ const scenarios: Record<string, () => unknown> = {
   'database-pragmas': databasePragmas,
   'state-enum-constraints': stateEnumConstraints,
   'failed-initialization-cleanup': failedInitializationCleanup,
+  'feature-lease-survives-owner-absence': featureLeaseSurvivesOwnerAbsence,
   'managed-process-crud': managedProcessCrud,
   'managed-process-lifecycle': managedProcessLifecycle,
   'managed-process-reservations': managedProcessReservations,

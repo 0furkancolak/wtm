@@ -214,6 +214,75 @@ describe('DaemonRuntimeController', () => {
       .toEqual({ mode: 'local', workspaceId: 'workspace-1', worktreeId: 'worktree-7' });
   });
 
+  test('ps lists live runs and each task\'s latest crash by default, and every run with all', async () => {
+    const row = (id: string, taskName: string, state: ManagedProcessRecord['state'], extra: Partial<ManagedProcessRecord> = {}) => ({
+      ...processRecord, id, taskName, state, startedAt: `2026-09-25T07:0${id.slice(-1)}:00.000Z`,
+      stoppedAt: state === 'RUNNING' || state === 'STALE_IDENTITY' ? null : '2026-09-25T08:00:00.000Z', ...extra,
+    }) as ManagedProcessRecord;
+    const records = [
+      row('run-1', 'dev', 'STOPPED'),
+      row('run-2', 'dev', 'FAILED', { exitCode: 1 }),
+      row('run-3', 'dev', 'RUNNING'),
+      row('run-4', 'api', 'STOPPED'),
+      row('run-5', 'api', 'FAILED', { exitCode: 1, cleanupOwnerToken: 'reservation-secret' }),
+      row('run-6', 'web', 'FAILED', { exitSignal: 'SIGKILL' }),
+      row('run-7', 'web', 'STOPPED'),
+      row('run-8', 'worker', 'STALE_IDENTITY'),
+      row('run-9', 'queue', 'FAILED', { cleanupRequired: true }),
+    ];
+    const controller = new DaemonRuntimeController({
+      supervisor: { ...noProcesses(), list: () => records },
+      logs: { read: async () => '' },
+      resolver: {
+        resolveTask: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
+        resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
+      },
+    });
+
+    const live = await controller.handle(request('ps', { cwd: '/repo/wt' }));
+    const every = await controller.handle(request('ps', { cwd: '/repo/wt', all: true }));
+
+    // A clean stop is history; a crash stays visible until the task is started again.
+    expect((live.data as { processes: ManagedProcessRecord[] }).processes.map(({ id }) => id))
+      .toEqual(['run-3', 'run-5', 'run-8', 'run-9']);
+    expect((live.data as { omitted: number }).omitted).toBe(5);
+    expect((every.data as { processes: ManagedProcessRecord[] }).processes).toHaveLength(9);
+    expect(every.data).not.toHaveProperty('omitted');
+    // The reservation token is a capability to release a start, not something to print.
+    expect(JSON.stringify([live, every])).not.toContain('reservation-secret');
+  });
+
+  test('ps marks a running record whose task already exited, while what it left behind lingers', async () => {
+    const records = [
+      { ...processRecord, id: 'run-1', taskName: 'api', state: 'RUNNING', stoppedAt: null },
+      { ...processRecord, id: 'run-2', taskName: 'web', state: 'RUNNING', stoppedAt: null },
+    ] as ManagedProcessRecord[];
+    const controller = new DaemonRuntimeController({
+      supervisor: {
+        ...noProcesses(),
+        list: () => records,
+        taskExit: async (record) => record.id === 'run-1'
+          ? { pid: record.pid, exitCode: 1, signal: null, exitedAt: '2026-09-25T07:27:11.000Z' }
+          : null,
+      },
+      logs: { read: async () => '' },
+      resolver: {
+        resolveTask: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
+        resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
+      },
+    });
+
+    const processes = ((await controller.handle(request('ps', { cwd: '/repo/wt' }))).data as {
+      processes: Array<ManagedProcessRecord & { taskExited?: unknown }>;
+    }).processes;
+
+    expect(processes.find(({ id }) => id === 'run-1')?.taskExited)
+      .toEqual({ exitCode: 1, signal: null, exitedAt: '2026-09-25T07:27:11.000Z' });
+    expect(processes.find(({ id }) => id === 'run-2')).not.toHaveProperty('taskExited');
+  });
+
   test('strictly rejects command-specific unknown argument keys before resolution', async () => {
     let resolutions = 0;
     const controller = new DaemonRuntimeController({

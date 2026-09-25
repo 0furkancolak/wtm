@@ -156,6 +156,19 @@ export interface ManagedProcessInput {
 export interface ManagedProcessRecord extends Omit<ManagedProcessInput, 'cleanupRequired'> {
   id: string;
   cleanupRequired: boolean;
+  /**
+   * How the run ended, present only when the daemon observed it end on its own: the task's exit
+   * status, or `exitSignal` when a signal ended it. Absent for a run stopped on request, and for
+   * one whose end nobody saw -- absent means "not known", never "exited 0".
+   */
+  exitCode?: number;
+  exitSignal?: string;
+}
+
+/** How a run ended, as its anchor reported it. */
+export interface ManagedProcessExit {
+  code: number | null;
+  signal: string | null;
 }
 
 export interface ManagedProcessUpdate {
@@ -164,6 +177,8 @@ export interface ManagedProcessUpdate {
   stoppedAt?: string | null;
   reservationToken?: string;
   cleanupRequired?: boolean;
+  /** Recorded with a terminal transition the daemon observed; see {@link ManagedProcessRecord}. */
+  exit?: ManagedProcessExit;
 }
 
 export interface ManagedProcessCreateOptions {

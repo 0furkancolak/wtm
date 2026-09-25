@@ -4,6 +4,9 @@ import { idleTimeoutMs, queueTaskTimeoutMs } from './task-timeout';
 import { healthcheckSchema } from './healthcheck';
 import { idleSchema } from './idle';
 
+/** What an environment variable may be called, and so what `worker_vars` may name. */
+export const environmentNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 const commandSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
 
 /**
@@ -34,6 +37,13 @@ const taskShape = z.object({
   on_failure: z.enum(['fail', 'warn', 'continue']).optional(),
   requires: z.array(z.string().min(1)).optional(),
   env: z.record(z.string(), z.string()).optional(),
+  /**
+   * Variables of this task's own resolved environment to hand a `wrangler dev` worker as
+   * `--var NAME:VALUE`. A worker's `env` is built from wrangler's own configuration `vars` and
+   * `.dev.vars`, never from the process environment, so without this a value WTM derived -- a
+   * port, the CORS allowlist -- reaches wrangler and stops there.
+   */
+  worker_vars: z.array(z.string().regex(environmentNamePattern, 'worker_vars entries must be environment variable names')).optional(),
 }).strict();
 
 export const taskSchema = taskShape.superRefine((task, context) => {
@@ -68,6 +78,18 @@ export const taskSchema = taskShape.superRefine((task, context) => {
   }
   if (commands.some(Array.isArray) && task.shell === true) {
     context.addIssue({ code: 'custom', message: 'argv commands may not set shell = true' });
+  }
+  if (task.worker_vars !== undefined) {
+    // An argv element reaches wrangler as exactly one argument, whatever it contains. A shell
+    // command would need each value quoted for whichever shell the host runs it through, and a
+    // quoting rule that is right for one shell is an injection in another.
+    if (task.shell === true) {
+      context.addIssue({ code: 'custom', path: ['worker_vars'], message: 'worker_vars requires an argv command; a shell command can pass --var "NAME:$NAME" itself' });
+    }
+    const repeated = task.worker_vars.filter((name, index) => task.worker_vars?.indexOf(name) !== index);
+    if (repeated.length > 0) {
+      context.addIssue({ code: 'custom', path: ['worker_vars'], message: `worker_vars names ${repeated[0]} more than once` });
+    }
   }
 });
 

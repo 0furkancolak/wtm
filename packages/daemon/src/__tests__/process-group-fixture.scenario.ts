@@ -17,6 +17,9 @@ if (role === 'member') {
   });
   if (pidFile !== undefined) await writeFile(pidFile, String(process.pid));
 } else if (role === 'parent' && pidFile !== undefined && mode !== undefined) {
+  // 'exit-parent' ends the leader cleanly and 'crash-parent' with status 7; both leave the member
+  // behind in the group, the way wrangler leaves workerd behind when it dies.
+  const leavesMember = mode === 'exit-parent' || mode === 'crash-parent';
   if (mode === 'ignore-term') process.on('SIGTERM', () => {});
   const memberSource = `
     if (process.argv[1] === 'ignore-term' || process.argv[1] === 'child-ignore') {
@@ -26,10 +29,10 @@ if (role === 'member') {
     process.send?.('ready');
   `;
   const child = spawn(process.execPath, ['-e', memberSource, mode], {
-    stdio: mode === 'exit-parent' ? ['ignore', 'ignore', 'ignore', 'ipc'] : 'ignore',
+    stdio: leavesMember ? ['ignore', 'ignore', 'ignore', 'ipc'] : 'ignore',
   });
   if (child.pid === undefined) throw new Error('Fixture child did not receive a PID');
-  if (mode === 'exit-parent') {
+  if (leavesMember) {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('Fixture child readiness timed out')), 5_000);
       child.once('message', (message) => {
@@ -43,8 +46,10 @@ if (role === 'member') {
     child.disconnect();
   }
   await writeFile(pidFile, JSON.stringify({ parentPid: process.pid, childPid: child.pid }));
-  if (mode === 'exit-parent') child.unref();
-  else setInterval(() => {}, 1_000);
+  if (leavesMember) {
+    child.unref();
+    if (mode === 'crash-parent') process.exitCode = 7;
+  } else setInterval(() => {}, 1_000);
 } else {
   throw new Error('Invalid process-group fixture arguments');
 }

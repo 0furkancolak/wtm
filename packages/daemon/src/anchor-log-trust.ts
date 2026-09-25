@@ -11,6 +11,8 @@ export interface AnchorLogSpec {
   stderrPath: string;
   launchMarkerPath: string;
   completionMarkerPath: string;
+  /** Absent in a spec from before the marker existed; the anchor then writes no exit marker. */
+  exitMarkerPath?: string;
   rotationBytes: number;
   retainedFiles: number;
 }
@@ -19,6 +21,8 @@ export interface AnchorLogStore {
   open(signal?: AbortSignal): Promise<{ stdout: Writable; stderr: Writable }>;
   publishLaunch(signal?: AbortSignal): Promise<void>;
   publishCompletion(value: unknown | (() => unknown)): Promise<void>;
+  /** Records that the task's own process exited, while the rest of its group may still run. */
+  publishExit(value: unknown | (() => unknown)): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -442,6 +446,9 @@ export function createAnchorLogStore(platform: string, spec: AnchorLogSpec,
     },
     async publishLaunch(signal) { await publish(spec.launchMarkerPath, { pid: process.pid }, signal); },
     async publishCompletion(value) { await publish(spec.completionMarkerPath, value); },
+    async publishExit(value) {
+      if (spec.exitMarkerPath !== undefined) await publish(spec.exitMarkerPath, value);
+    },
     async close() {
       closed = true; streams?.stdout.destroy(); streams?.stderr.destroy(); await pending;
     },

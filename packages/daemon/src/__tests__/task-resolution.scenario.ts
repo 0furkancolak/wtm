@@ -57,6 +57,16 @@ try {
     '',
     '[tasks.serve]',
     'run = ["node", "server.js"]',
+    '',
+    // A monorepo app: its public variables live in its own directory, not at the worktree root.
+    '[tasks."api:dev"]',
+    'run = ["bun", "run", "dev"]',
+    'cwd = "{worktree.root}/apps/api"',
+  ].join('\n'));
+  await mkdir(join(fixture.linkedWorktreePath, 'apps', 'api'), { recursive: true });
+  await writeFile(join(fixture.linkedWorktreePath, 'apps', 'api', 'variables.toml'), [
+    '[env.development.vars]',
+    'CORS_ALLOWED_ORIGINS = "http://localhost:3000"',
   ].join('\n'));
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
   store = new SQLiteStateStore(join(stateDirectory, 'state.db'));
@@ -78,6 +88,7 @@ try {
   const second = await runtimeAt(secondWorktree);
   const main = await runtimeAt(fixture.firstRepoPath);
   const task = resolveTask(taskResolutionInput(first, 'serve'));
+  const appTask = resolveTask(taskResolutionInput(first, 'api:dev'));
   const featurePort = first.context.ports?.api as number;
   const webPort = first.context.ports?.web as number;
   const firstEnvironment = execEnvironment(first);
@@ -114,6 +125,11 @@ try {
       distinct: featurePort !== webPort,
     },
     task: { argv: task.argv, cwd: task.cwd === fixture.linkedWorktreePath, port: task.envDelta.PORT === String(featurePort) },
+    // The app's own variables.toml names its allowlist variable; only the task that runs there gets it.
+    appDirectoryCors: {
+      appTask: appTask.envDelta.CORS_ALLOWED_ORIGINS === `http://localhost:${featurePort},http://localhost:${webPort}`,
+      rootTask: 'CORS_ALLOWED_ORIGINS' in task.envDelta,
+    },
     unregistered,
   }, null, 0)}\n`);
 } finally {

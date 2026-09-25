@@ -1,6 +1,6 @@
 {
   "name": "worktree-runtime-manager",
-  "version": "0.2.0-rc.2",
+  "version": "0.2.0-rc.3",
   "description": "Local-first runtime and safety manager for Git worktrees: per-worktree tasks, environments, ports, process supervision, shared job queues, and safe removal.",
   "keywords": [
     "git",
