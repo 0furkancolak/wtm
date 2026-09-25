@@ -396,6 +396,7 @@ idle                optional automatic suspension of a managed long-running task
 queue               boolean, opt in a finite task to the shared queue
 memory_estimate_mib  positive integer, estimated peak for the whole task/worker tree
 queue_env           environment overrides applied only to enqueued execution
+worker_vars         variable names handed to a `wrangler dev` worker as --var (argv tasks only)
 ```
 
 `main`/`worktree` are mutually exclusive with `run`.
@@ -403,6 +404,52 @@ queue_env           environment overrides applied only to enqueued execution
 `shell` is required when a command is written as a single string and rejected when a command is written as an argv array.
 
 `expose` is accepted by the configuration schema but has no CLI dispatch effect in V1: it does not create a top-level `wtm <task>` word. Tasks are always addressed by name through `wtm run`, `wtm start`, `wtm restart` or `wtm resolve`.
+
+### Cloudflare workers (`wrangler dev`)
+
+`wrangler dev` builds a worker's `env` from its own configuration's `vars` and from `.dev.vars`
+(or, when there is no `.dev.vars`, the `.env` family) — never from the process environment it was
+started with. A value WTM sets for the task, such as `{cors.origins}` or a sibling repository's
+`{port.web}`, therefore reaches the wrangler process and stops there: the worker keeps whatever the
+file says. When `.dev.vars` is shared from the main checkout with `policy = "symlink"`, that is the
+main checkout's static origins, and a browser on the WTM-leased port is refused by CORS.
+
+`worker_vars` names variables of the task's own resolved environment to pass as
+`--var NAME:VALUE`, which wrangler ranks above both files:
+
+```toml
+[repos.api.environment]
+CORS_ALLOWED_ORIGINS = "{cors.origins}"
+FRONTEND_URL = "http://localhost:{port.web}"
+API_URL = "http://localhost:{port.api}"
+
+[tasks."api:dev"]
+run = ["bunx", "wrangler", "dev", "--port", "{port.api}", "-c", "wrangler.jsonc"]
+worker_vars = ["CORS_ALLOWED_ORIGINS", "FRONTEND_URL", "API_URL"]
+background = true
+```
+
+- The pairs are appended to the argv (ahead of a `--` terminator, if there is one), one argument
+  each, so a value is never re-parsed by a shell. `worker_vars` is refused on a `shell = true`
+  task: quoting a value correctly for every shell a host might run it through is not something WTM
+  can promise. A shell task can pass `--var "NAME:$NAME"` itself.
+- Each name must be set by a WTM layer — `[environment]`, `[repos.<name>.environment]`, the task's
+  own `env`, or a variable WTM derives (an endpoint's `env`, the CORS variable). A name only the
+  daemon's inherited environment carries is refused with `WTM_CONFIG_INVALID`.
+- `--var` values are visible on the command line (`ps`, WTM's process records). Forward origins,
+  ports and URLs; keep secrets in `.dev.vars`.
+- `--env-file` is not an alternative: given any `--env-file`, wrangler stops reading `.dev.vars`
+  altogether, secrets included.
+
+An argv template can also spell a single pair directly, `"--var", "API_URL:{env.API_URL}"`;
+`worker_vars` is the same thing without repeating each name twice.
+
+`wtm doctor`'s `worker-env` check and `wtm explain`'s `<task>.worker_env` decisions report, for
+every worker configuration in the worktree, which WTM variables its files also define and are not
+forwarded. The files are read for variable names only. The same check covers a `wrangler.json`
+that application code reads directly — for example a `next.config.ts` that takes
+`NEXT_PUBLIC_API_URL` from `wrangler.json` `vars` — where WTM's value reaches the process
+environment and nothing reads it. That case has to be fixed in the application.
 
 ### Overriding a task per worktree
 

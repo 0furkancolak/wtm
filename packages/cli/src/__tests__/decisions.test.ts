@@ -235,3 +235,39 @@ describe('explained decisions', () => {
     expect(keys.filter((key) => key.startsWith('repos.') && key.endsWith('.environment.PORT'))).toEqual([]);
   });
 });
+
+describe('explained worker environments', () => {
+  it('says, per wrangler dev task, which WTM variables reach the worker and which do not', () => {
+    const decisions = explainDecisions({
+      runtime: runtime(),
+      adapters,
+      resources,
+      environment: { PORT: '4000' },
+      workers: [{
+        task: 'api:dev',
+        directory: '.',
+        report: {
+          forwarded: ['CORS_ORIGINS'],
+          shadowed: [{ name: 'PORT', file: '.dev.vars' }],
+          unreached: ['WTM_ID'],
+        },
+      }],
+    });
+
+    expect(decisions.find(({ key }) => key === 'api:dev.worker_env')).toEqual({
+      kind: 'task',
+      key: 'api:dev.worker_env',
+      value: {
+        directory: '.',
+        forwarded: ['CORS_ORIGINS'],
+        shadowed: [{ name: 'PORT', file: '.dev.vars' }],
+        unreached: ['WTM_ID'],
+      },
+      provenance: { source: 'wtm:derived' },
+      reason: 'This task runs `wrangler dev`, which builds the worker\'s env from its wrangler config vars and '
+        + '.dev.vars, never from the process environment. Only the forwarded variables (worker_vars, or a --var '
+        + 'in the command) reach the worker with WTM\'s value; the shadowed ones reach it with the file\'s value, '
+        + 'and the unreached ones not at all.',
+    });
+  });
+});

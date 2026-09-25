@@ -89,8 +89,13 @@ export function resolveTask(input: TaskResolutionInput): ResolvedTask {
   // contributor choose (docs/14-testing-performance-security.md classifies branch names as
   // untrusted) — `branch.slug` is already shell-safe by construction, so only the raw form needs
   // a guard, and only when the result will actually reach a shell.
-  const argv = (typeof command === 'string' ? [command] : command)
-    .map((argument) => resolveTemplate(argument, context, task.shell === true ? assertShellSafeBranch(input.taskName) : undefined));
+  const argv = withWorkerVars(
+    (typeof command === 'string' ? [command] : command)
+      .map((argument) => resolveTemplate(argument, context, task.shell === true ? assertShellSafeBranch(input.taskName) : undefined)),
+    input.taskName,
+    task.worker_vars ?? [],
+    envDelta,
+  );
   const rawCwd = task.cwd ?? input.context.worktree?.root;
   if (rawCwd === undefined) {
     throw new WtmTaskResolutionError(`Task ${input.taskName} has no resolvable working directory.`, {
@@ -115,6 +120,40 @@ export function resolveTask(input: TaskResolutionInput): ResolvedTask {
     singleton: task.singleton ?? true,
     ...(healthcheck === undefined ? {} : { healthcheck }),
   };
+}
+
+/**
+ * `argv` with one `--var NAME:VALUE` pair per `worker_vars` name, placed ahead of a `--`
+ * terminator when there is one so the pairs are still read as wrangler's own options. wrangler
+ * splits each pair on its first `:`, so a URL value survives intact, and a `--var` given on the
+ * command line outranks both the configuration's `vars` and `.dev.vars`.
+ *
+ * Only a variable a WTM layer sets is forwarded. The inherited environment is whatever the
+ * daemon happened to start with, and forwarding it would put a value on the worker that nothing
+ * in the configuration chose.
+ */
+function withWorkerVars(
+  argv: string[],
+  taskName: string,
+  names: readonly string[],
+  environment: Record<string, string>,
+): string[] {
+  if (names.length === 0) return argv;
+  const pairs = names.flatMap((name) => {
+    if (!Object.hasOwn(environment, name)) {
+      const key = bareTomlKey.test(taskName) ? taskName : JSON.stringify(taskName);
+      throw new WtmTaskResolutionError(
+        `Task ${taskName} lists ${name} in worker_vars, but no WTM environment layer sets it. `
+        + `Set it in [environment], [repos.<name>.environment] or [tasks.${key}.env].`,
+        { taskName, variable: name },
+      );
+    }
+    return ['--var', `${name}:${environment[name] as string}`];
+  });
+  const terminator = argv.indexOf('--');
+  return terminator === -1
+    ? [...argv, ...pairs]
+    : [...argv.slice(0, terminator), ...pairs, ...argv.slice(terminator)];
 }
 
 /** A TOML bare key. Anything else has to be quoted before it can be suggested as one. */

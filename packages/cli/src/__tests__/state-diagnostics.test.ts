@@ -1043,3 +1043,76 @@ const linuxHost = () => selectPlatformRuntime({
   home: '/home/x',
   env: { XDG_RUNTIME_DIR: '/run/user/501' },
 });
+
+describe('the worker-env check', () => {
+  /**
+   * A workspace whose one repository runs a Cloudflare worker: `wtm.toml` at `root`, the
+   * repository at `root/repo`, and whatever worker files `files` writes there.
+   */
+  async function doctorForWorker(toml: string, files: Record<string, string>) {
+    const root = mkdtempSync(join(tmpdir(), 'wtm-worker-env-doctor-'));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, 'repo'));
+    writeFileSync(join(root, 'wtm.toml'), toml);
+    for (const [name, contents] of Object.entries(files)) writeFileSync(join(root, 'repo', name), contents);
+    return (await doctorIn(root)).find(({ check }) => check === 'worker-env');
+  }
+
+  const workerToml = (task: string) => [
+    'version = 1',
+    '[repos.api]',
+    'path = "repo"',
+    '[repos.api.environment]',
+    'API_URL = "http://localhost:1"',
+    'FRONTEND_URL = "http://localhost:2"',
+    'WTM_ONLY = "x"',
+    '[tasks."api:dev"]',
+    task,
+    'background = true',
+  ].join('\n');
+
+  const workerFiles = {
+    'wrangler.jsonc': '{ "name": "api", /* c */ "vars": { "APP_ENV": "dev" } }',
+    // Values here stand in for the secrets a real `.dev.vars` holds; none may leave this file.
+    '.dev.vars': 'API_URL=http://localhost:4000\nFRONTEND_URL=http://localhost:3000\nSESSION_SECRET=hunter2\n',
+  };
+
+  it('warns when WTM sets a variable the worker also defines, and names the fix', async () => {
+    const finding = await doctorForWorker(workerToml('run = ["bunx", "wrangler", "dev", "-c", "wrangler.jsonc"]'), workerFiles);
+
+    expect(finding).toMatchObject({
+      status: 'warning',
+      details: { workers: 1, tasks: 'api:dev', shadowed: 'API_URL, FRONTEND_URL' },
+    });
+    expect(finding?.message).toContain('api:dev runs `wrangler dev`');
+    expect(finding?.message).toContain('.dev.vars defines API_URL, FRONTEND_URL');
+    expect(finding?.message).toContain('Add worker_vars = ["API_URL", "FRONTEND_URL"] to [tasks."api:dev"].');
+    expect(JSON.stringify(finding)).not.toContain('hunter2');
+    expect(JSON.stringify(finding)).not.toContain('localhost:4000');
+  });
+
+  it('passes once every shadowed variable is forwarded, by worker_vars or a literal --var', async () => {
+    const forwarded = await doctorForWorker(workerToml([
+      'run = ["bunx", "wrangler", "dev", "--var", "API_URL:{env.API_URL}"]',
+      'worker_vars = ["FRONTEND_URL"]',
+    ].join('\n')), workerFiles);
+
+    expect(forwarded).toMatchObject({ status: 'pass', details: { workers: 1, tasks: 'api:dev', shadowed: '' } });
+  });
+
+  it('points at a wrangler config that app code reads directly, even with no wrangler dev task', async () => {
+    const finding = await doctorForWorker(
+      workerToml('run = ["bun", "run", "dev"]').replace('WTM_ONLY', 'NEXT_PUBLIC_API_URL'),
+      { 'wrangler.json': '{ "vars": { "NEXT_PUBLIC_API_URL": "https://api.example.com" } }' },
+    );
+
+    expect(finding).toMatchObject({ status: 'warning', details: { workers: 1, tasks: '', shadowed: 'NEXT_PUBLIC_API_URL' } });
+    expect(finding?.message).toContain('wrangler.json defines NEXT_PUBLIC_API_URL');
+    expect(finding?.message).toContain('reads it from wrangler.json');
+  });
+
+  it('passes quietly where there is no worker at all', async () => {
+    expect(await doctorForWorker(workerToml('run = ["bun", "run", "dev"]'), {}))
+      .toMatchObject({ status: 'pass', details: { workers: 0 } });
+  });
+});

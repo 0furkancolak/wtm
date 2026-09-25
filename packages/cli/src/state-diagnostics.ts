@@ -38,6 +38,7 @@ import { planChanges } from './changes';
 import { createDaemonStartupDiagnostic } from './daemon-startup-diagnostic';
 import { formatRemediation, hostDaemonStatusPath } from './daemon-status';
 import { explainDecisions } from './decisions';
+import { inspectWorkerEnvironments, workerEnvironmentFinding } from './worker-env';
 import type {
   DiagnosticDataSource,
   DoctorDiagnostic,
@@ -301,6 +302,7 @@ export function createStateDiagnosticDataSource(
 
     findings.push(await configFinding(workspace, current));
     findings.push(await adapterFinding(current));
+    findings.push(await workerFinding(current));
     findings.push(await resourceFinding(current));
     findings.push(portFinding(workspace, worktrees));
     findings.push(await processFinding(worktrees));
@@ -625,6 +627,33 @@ export function createStateDiagnosticDataSource(
     };
   };
 
+  /**
+   * Which variables WTM sets that a Cloudflare worker in this worktree never sees. `wrangler dev`
+   * builds a worker's env from its own files, so a CORS allowlist WTM derived for this feature
+   * reaches the wrangler process and stops there -- which looks like an authorization bug from
+   * the browser, and is the hardest kind of misconfiguration to trace back to its cause.
+   *
+   * Resolved without allocating: the answer needs variable names, never a port.
+   */
+  const workerFinding = async (
+    current: WorktreeRecord | undefined,
+  ): Promise<DoctorDiagnostic['findings'][number]> => {
+    if (current === undefined) {
+      return {
+        check: 'worker-env',
+        status: 'unknown',
+        message: 'Worker environment diagnostics need a registered worktree in this workspace; see the registration check.',
+      };
+    }
+    try {
+      return workerEnvironmentFinding(await inspectWorkerEnvironments(await worktreeRuntime(false, current.path)));
+    } catch {
+      // Same reasoning as `resourceFinding`: a configuration that does not resolve is the `config`
+      // check's finding, and must not cost the reader every other one.
+      return { check: 'worker-env', status: 'unknown', message: 'Worker environment diagnostics are unavailable; see the config check.' };
+    }
+  };
+
   const resourceFinding = async (
     current: WorktreeRecord | undefined,
   ): Promise<DoctorDiagnostic['findings'][number]> => {
@@ -734,6 +763,7 @@ export function createStateDiagnosticDataSource(
       adapters: await adapters(runtime),
       resources: await inspectRuntimeResources(runtime),
       environment: execEnvironment(runtime),
+      workers: (await inspectWorkerEnvironments(runtime)).tasks,
     });
   };
 

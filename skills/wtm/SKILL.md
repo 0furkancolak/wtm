@@ -272,6 +272,10 @@ pointing at another repository into `wtm.toml`.
 - To fix one worktree's `cwd`, port template or argv for a task, use `wtm task set`
   (`--task-json` for full fidelity), not a hand edit to `wtm.toml`. Edit `wtm.toml` only when the
   fix should apply to every worktree of the workspace, not just this one.
+- A `wrangler dev` worker never reads the process environment: its `env` comes from wrangler
+  config `vars` and `.dev.vars`. If `wtm doctor --json`'s `worker-env` check warns, add the
+  variables it names to the task's `worker_vars` (argv tasks; `wtm task set --worker-var` for one
+  worktree) instead of hand-writing `--var` or editing a shared `.dev.vars`.
 - After finishing implementation work, leave review/test steps with `wtm checklist set --item
   "..." --json` instead of listing them in chat; the dev overlay shows them as checkboxes.
 

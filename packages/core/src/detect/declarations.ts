@@ -71,6 +71,30 @@ export async function readDeclaredNames(path: string): Promise<string[]> {
   return parseDeclarations(await readDeclarationFile(path), false).map(({ name }) => name);
 }
 
+/** An assignment that is in force: `KEY=` or `export KEY=`, never the commented-out form. */
+const definitionPattern = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
+
+/**
+ * The names a dotenv-format file actually assigns, or `null` when there is no such file. Unlike
+ * {@link readDeclaredNames}, a commented-out line does not count: the question is what a program
+ * loading the file will see, not what the file documents. Values are never read.
+ */
+export async function readDefinedNames(path: string): Promise<string[] | null> {
+  let contents: string;
+  try {
+    contents = await readFile(path, 'utf8');
+  } catch {
+    return null;
+  }
+  if (contents.length > maxDeclarationBytes) return [];
+  const names: string[] = [];
+  for (const line of contents.split(/\r?\n/)) {
+    const name = definitionPattern.exec(line)?.[1];
+    if (name !== undefined && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
 async function readDeclarationFile(path: string): Promise<string> {
   let contents: string;
   try {

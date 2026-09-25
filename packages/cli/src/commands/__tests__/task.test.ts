@@ -40,6 +40,12 @@ describe('taskValueFromFlags', () => {
     expect(taskValueFromFlags({ argv: ['node', 'server.js'] })).toEqual({ value: { run: ['node', 'server.js'] } });
   });
 
+  test('collects repeated --worker-var into worker_vars, in the order given', () => {
+    expect(taskValueFromFlags({
+      argv: ['bunx', 'wrangler', 'dev'], workerVar: ['CORS_ALLOWED_ORIGINS', 'API_URL'],
+    })).toEqual({ value: { run: ['bunx', 'wrangler', 'dev'], worker_vars: ['CORS_ALLOWED_ORIGINS', 'API_URL'] } });
+  });
+
   test('prefers --task-json over the individual flags, and validates it', () => {
     expect(taskValueFromFlags({ taskJson: '{"run":"npm run dev","shell":true}', run: 'ignored' }))
       .toEqual({ value: { run: 'npm run dev', shell: true } });

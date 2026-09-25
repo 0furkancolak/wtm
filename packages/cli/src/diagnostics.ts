@@ -89,7 +89,7 @@ const statusSchema = z.object({
  * list — and a data source that answers a check it never declared cannot validate at all.
  */
 export const doctorChecks = [
-  'registration', 'git', 'config', 'adapters', 'resources', 'ports', 'process-records',
+  'registration', 'git', 'config', 'adapters', 'worker-env', 'resources', 'ports', 'process-records',
   'platform', 'socket-path',
 ] as const;
 
@@ -196,6 +196,7 @@ const unknownDoctorFindings: DoctorDiagnostic['findings'] = [
   { check: 'git', status: 'unknown', message: 'Git diagnostics are unavailable.' },
   { check: 'config', status: 'unknown', message: 'Config diagnostics are unavailable.' },
   { check: 'adapters', status: 'unknown', message: 'Adapter diagnostics are unavailable.' },
+  { check: 'worker-env', status: 'unknown', message: 'Worker environment diagnostics are unavailable.' },
   { check: 'resources', status: 'unknown', message: 'Resource diagnostics are unavailable.' },
   { check: 'ports', status: 'unknown', message: 'Port diagnostics are unavailable.' },
   { check: 'process-records', status: 'unknown', message: 'Process record diagnostics are unavailable.' },

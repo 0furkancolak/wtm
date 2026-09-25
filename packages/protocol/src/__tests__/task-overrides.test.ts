@@ -36,6 +36,8 @@ describe('task override protocol', () => {
       idle: { enabled: true, timeout: '10m' },
     }).success).toBe(true);
     expect(taskOverrideValueSchema.safeParse({ run: ['node', 'server.js'] }).success).toBe(true);
+    expect(taskOverrideValueSchema.safeParse({ run: ['wrangler', 'dev'], worker_vars: ['API_URL'] }).success).toBe(true);
+    expect(taskOverrideValueSchema.safeParse({ run: ['wrangler', 'dev'], worker_vars: ['NOT A NAME'] }).success).toBe(false);
     expect(taskOverrideValueSchema.safeParse({ run: 'npm run dev', shell: true, unknownField: true }).success).toBe(false);
   });
 

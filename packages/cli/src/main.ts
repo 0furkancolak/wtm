@@ -406,6 +406,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
   taskSet.option('--singleton', 'refuse a second concurrent run');
   taskSet.option('--description <text>', 'shown by wtm explain and wtm status');
   taskSet.option('--env <KEY=VALUE>', 'an environment variable; repeat for more', (value: string, previous: string[] = []) => [...previous, value]);
+  taskSet.option('--worker-var <NAME>', 'pass this variable to a wrangler dev worker as --var; repeat for more (argv tasks only)', (value: string, previous: string[] = []) => [...previous, value]);
   taskSet.option('--task-json <definition>', 'the full task definition as JSON, in place of the flags above');
   taskSet.action(async (name: string, options: ScopeOptions & TargetOptions & TaskFlags) => {
     const target = await taskTarget(['wtm', 'task', 'set'], options);

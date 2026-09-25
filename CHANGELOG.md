@@ -7,6 +7,19 @@ All notable changes are documented here. This project follows Semantic Versionin
 Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract
 are unstable, and a breaking change may land in a minor release without a deprecation window.
 
+### Added
+
+- `worker_vars` on a task (and `wtm task set --worker-var`): names from the task's resolved
+  environment that WTM passes to a `wrangler dev` worker as `--var NAME:VALUE`. wrangler builds a
+  worker's `env` from its config `vars` and `.dev.vars`, never from the process environment, so a
+  CORS allowlist or port WTM derived used to reach the wrangler process and stop there. The worker
+  kept a symlinked `.dev.vars`'s static origins, and a browser on the WTM-leased port was refused
+  by CORS. argv tasks only: values are passed one argument each and are never shell-parsed.
+- `wtm doctor` has a `worker-env` check, and `wtm explain` a `<task>.worker_env` decision. Both say
+  which WTM variables a worker's own files (`vars`, `.dev.vars`, `.env`) also define and that
+  nothing forwards. This includes a `wrangler.json` that app code reads directly. Files are read
+  for variable names only.
+
 ## [0.2.0-rc.2] - 2026-09-23
 
 Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract

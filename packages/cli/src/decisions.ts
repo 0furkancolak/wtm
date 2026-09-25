@@ -1,6 +1,7 @@
 import { resolveRepoScope, type PreparedResource, type Provenance } from '@wtm/core';
 import type { AdapterReport, WorktreeRuntime } from '@wtm/daemon';
 import type { ExplainDiagnostic } from './diagnostics';
+import type { WorkerTaskReport } from './worker-env';
 
 type Decision = ExplainDiagnostic['decisions'][number];
 type JsonValue = Decision['value'];
@@ -11,6 +12,8 @@ export interface DecisionInput {
   resources: readonly PreparedResource[];
   /** The environment a task in this worktree is started with, already layered and rendered. */
   environment: Record<string, string>;
+  /** Every `wrangler dev` task here, and which WTM variables reach its worker. */
+  workers?: readonly WorkerTaskReport[];
 }
 
 /** Configuration WTM supplies rather than reads, named so it cannot be mistaken for a file. */
@@ -31,8 +34,27 @@ export function explainDecisions(input: DecisionInput): Decision[] {
     ...environmentDecisions(input),
     ...adapterDecisions(input.adapters),
     ...taskDecisions(input),
+    ...workerDecisions(input.workers ?? []),
     ...resourceDecisions(input),
   ];
+}
+
+/**
+ * For a `wrangler dev` task, the part of its environment that never reaches the worker. The
+ * environment decisions above describe the process; a worker is not that process, and a person
+ * reading `env.CORS_ALLOWED_ORIGINS` there has no way to learn that the worker sees another value.
+ */
+function workerDecisions(workers: readonly WorkerTaskReport[]): Decision[] {
+  return workers.map(({ task, directory, report }) => ({
+    kind: 'task' as const,
+    key: `${task}.worker_env`,
+    value: toJson({ directory, ...report }),
+    provenance: { source: wtmSource },
+    reason: 'This task runs `wrangler dev`, which builds the worker\'s env from its wrangler config vars and '
+      + '.dev.vars, never from the process environment. Only the forwarded variables (worker_vars, or a --var '
+      + 'in the command) reach the worker with WTM\'s value; the shadowed ones reach it with the file\'s value, '
+      + 'and the unreached ones not at all.',
+  }));
 }
 
 /** Every configuration leaf in force, with the file and line that settled it. */

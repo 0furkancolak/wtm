@@ -92,8 +92,8 @@ substitute for it.
 
 ### `wtm doctor [selector]`
 
-Runs deterministic checks for Git, config, adapters, resources, ports, process records and the
-host platform.
+Runs deterministic checks for Git, config, adapters, worker environments, resources, ports,
+process records and the host platform.
 
 The last two rows are host-scoped: they describe this machine rather than this workspace, and
 they are the same answer in every workspace on it. `platform` comes before `socket-path` because
@@ -106,6 +106,7 @@ it is the cause — the limit `socket-path` measures against is that platform's 
 | `git` | Whether every registered repository is still on disk |
 | `config` | Whether the configuration resolves, and whether `[ports].range` can offer the ports it prefers |
 | `adapters` | Which built-in adapters are in force, and why a detected one was left out |
+| `worker-env` | For every Cloudflare worker configuration in this worktree (`wrangler.json`/`.jsonc`/`.toml`, plus the one each `wrangler dev` task points at), which variables WTM sets that the worker's own files (`vars`, `.dev.vars`, `.env`) also define and that no `worker_vars`/`--var` forwards. A `warning` names the files, the variables and the `worker_vars` line that fixes it. Reads variable names only, and leases nothing |
 | `resources` | How many declared resources are in place, and why one is not |
 | `ports` | How many endpoints the workspace holds, and whether two worktrees hold the same one |
 | `process-records` | How many supervised tasks are running, and which records name a process that is gone |
@@ -386,7 +387,8 @@ as `state: 'unavailable'` with `detail`, not as a command error.
 wtm task list --json
 wtm task show <name> --json
 wtm task set <name> [--run <command> --shell | --argv <item>...] [--cwd <path>] [--background]
-  [--singleton] [--description <text>] [--env <KEY=VALUE>...] [--task-json <definition>] --json
+  [--singleton] [--description <text>] [--env <KEY=VALUE>...] [--worker-var <NAME>...]
+  [--task-json <definition>] --json
 wtm task unset <name> --json
 wtm task export <name>
 ```
@@ -406,7 +408,8 @@ execution commands above.
 task object as JSON, in place of every other flag) — the path an agent skill should prefer for
 full fidelity, since not every task field (`healthcheck`, `queue`, `requires`, …) has its own flag
 yet. `--run <command> --shell` is a shell string; `--argv <item>` (repeatable) is an argv array and
-takes no `--shell`. Cross-field rules (`--run` requires `--shell`, `queue_env` requires `queue`,
+takes no `--shell`. `--worker-var <NAME>` (repeatable) sets `worker_vars`, which needs `--argv`.
+Cross-field rules (`--run` requires `--shell`, `queue_env` requires `queue`,
 and so on) are enforced when the daemon writes the row — `WTM_CONFIG_INVALID` on a violation — not
 before, so a shape-valid-but-inconsistent definition still round-trips through `wtm task show`
 until it is written.

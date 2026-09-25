@@ -15,6 +15,8 @@ export interface TaskFlags {
   singleton?: boolean;
   description?: string;
   env?: string[];
+  /** `--worker-var`, repeated: the task's `worker_vars`. */
+  workerVar?: string[];
   taskJson?: string;
 }
 
@@ -60,6 +62,7 @@ export function taskValueFromFlags(flags: TaskFlags): { value: TaskOverrideValue
     ...(flags.singleton === undefined ? {} : { singleton: flags.singleton }),
     ...(flags.description === undefined ? {} : { description: flags.description }),
     ...(Object.keys(env).length === 0 ? {} : { env }),
+    ...(flags.workerVar === undefined || flags.workerVar.length === 0 ? {} : { worker_vars: flags.workerVar }),
   };
   const parsed = taskOverrideValueSchema.safeParse(value);
   if (!parsed.success) {
