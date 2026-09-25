@@ -1168,6 +1168,29 @@ describe('process states in status', () => {
     expect(processes[1]).toMatchObject({ exitSignal: 'SIGKILL' });
     expect(processes[2]).not.toHaveProperty('exitCode');
   });
+
+  it('reports a running record whose task already exited as exited, with how the task ended', async () => {
+    // The task died and children it started still hold its process group, so its record is
+    // RUNNING until they go. Calling it running is what made `wtm start` look like a no-op.
+    const run = (id: string): ManagedProcessRecord => ({
+      id, worktreeId: 'web-feature', taskName: id, pid: 4242, pgid: 4242, processStartTime: 'start',
+      commandFingerprint: 'fingerprint', state: 'RUNNING', startedAt: '2026-09-25T07:21:21.232Z',
+      stoppedAt: null, stdoutPath: '/dev/null', stderrPath: '/dev/null', cleanupRequired: false,
+    });
+    const source = createStateDiagnosticDataSource({
+      ...store,
+      listManagedProcesses: () => [run('api'), run('web')],
+    } as unknown as DaemonStateStore, {
+      cwd: '/workspace/web-feature', globalConfigPath: '/workspace/config.toml',
+      readTaskExit: async (record) => record.taskName === 'api' ? { exitCode: 1, signal: null } : null,
+    });
+
+    const processes = (await source.readStatus(registered)).processes;
+
+    expect(processes.map(({ task, state }) => [task, state])).toEqual([['api', 'exited'], ['web', 'running']]);
+    expect(processes[0]).toMatchObject({ exitCode: 1 });
+    expect(processes[1]).not.toHaveProperty('exitCode');
+  });
 });
 
 describe('reports take no ports', () => {

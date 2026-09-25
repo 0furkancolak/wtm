@@ -154,6 +154,12 @@ class MemoryProcessStore implements ManagedProcessStateStore {
     const record = this.#records.get(id);
     if (record === undefined) throw new Error('Unknown managed process');
     if (!update.expectedStates.includes(record.state)) return null;
+    // The SQLite store's rule: a terminal state is final. Without it this store accepted a
+    // STOPPED -> FAILED correction the real one refuses.
+    const terminal = ['STOPPED', 'FAILED', 'STALE_IDENTITY'];
+    if (record.state !== update.state && terminal.includes(record.state)) {
+      throw new Error(`Invalid managed process transition: ${record.state} -> ${update.state}`);
+    }
     if (
       update.reservationToken !== undefined
       && this.#reservations.get(`${record.worktreeId}\0${record.taskName}`)?.token !== update.reservationToken
@@ -959,6 +965,58 @@ describe('ManagedProcessSupervisor', () => {
     const stopped = await supervisor.stop({ worktreeId: worktree.id, taskName: 'descendant' });
     expect(stopped.state).toBe('STOPPED');
     await waitFor(() => !pidExists(pids.childPid));
+  });
+
+  test('start after the task crashed but left its group behind starts a new run instead of reporting the dead one', async () => {
+    // marcapony, 2026-09-25: wrangler died and its workerd children held the group for 30 s. The
+    // record stayed RUNNING for that window, and `wtm start` answered `existing: true` for a task
+    // that no longer ran.
+    const { root, store, worktree, supervisor } = await setup(500);
+    const pidFile = join(root, 'crashed.json');
+    const argv = ['node', '--import', tsxLoader, fixturePath, 'parent', pidFile, 'crash-parent'];
+    const first = await supervisor.start({ worktreeId: worktree.id, taskName: 'lingering', argv, cwd: root, env: process.env });
+    const pids = await waitForJson(pidFile) as { parentPid: number; childPid: number };
+    await waitFor(() => !pidExists(pids.parentPid));
+    await waitFor(async () => await supervisor.taskExit(first.record) !== null);
+    expect(store.getManagedProcess(first.record.id)?.state).toBe('RUNNING');
+    expect(await supervisor.taskExit(first.record)).toMatchObject({ exitCode: 7, signal: null });
+
+    await rm(pidFile);
+    const second = await supervisor.start({ worktreeId: worktree.id, taskName: 'lingering', argv, cwd: root, env: process.env });
+
+    expect(second.existing).toBe(false);
+    expect(second.record.id).not.toBe(first.record.id);
+    expect(store.getManagedProcess(first.record.id)).toMatchObject({ state: 'FAILED', exitCode: 7, cleanupRequired: false });
+    expect(pidExists(pids.childPid)).toBe(false);
+    await supervisor.stop({ worktreeId: worktree.id, taskName: 'lingering' });
+  });
+
+  test('stopping a run whose task already exited records how the task ended', async () => {
+    const { root, store, worktree, supervisor } = await setup(500);
+    const pidFile = join(root, 'crashed-stop.json');
+    const started = await supervisor.start({
+      worktreeId: worktree.id, taskName: 'lingering-stop',
+      argv: ['node', '--import', tsxLoader, fixturePath, 'parent', pidFile, 'crash-parent'],
+      cwd: root, env: process.env,
+    });
+    const pids = await waitForJson(pidFile) as { parentPid: number; childPid: number };
+    await waitFor(async () => await supervisor.taskExit(started.record) !== null);
+
+    const stopped = await supervisor.stop({ worktreeId: worktree.id, taskName: 'lingering-stop' });
+
+    expect(stopped).toMatchObject({ state: 'FAILED', exitCode: 7, cleanupRequired: false });
+    expect(store.findActiveManagedProcess(worktree.id, 'lingering-stop')).toBeNull();
+    await waitFor(() => !pidExists(pids.childPid));
+  });
+
+  test('a running task has no exit marker', async () => {
+    const { root, worktree, supervisor } = await setup();
+    const started = await supervisor.start({
+      worktreeId: worktree.id, taskName: 'alive', argv: longRunningArgv, cwd: root, env: process.env,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await supervisor.taskExit(started.record)).toBeNull();
+    await supervisor.stop({ worktreeId: worktree.id, taskName: 'alive' });
   });
 
   test('TERM-honoring task leader with TERM-ignoring descendant escalates through the verified anchor', async () => {

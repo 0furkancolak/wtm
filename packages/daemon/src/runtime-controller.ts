@@ -25,7 +25,10 @@ import {
   type ManagedProcessStartInput,
   type ManagedProcessStartResult,
 } from './process-supervisor';
-import type { ManagedProcessCompletion } from './logs';
+import type { ManagedProcessCompletion, ManagedTaskExit } from './logs';
+
+/** What `ps` reports about a run whose task exited while its group lingers. */
+interface TaskExitView { exitCode: number | null; signal: string | null; exitedAt: string }
 import { observeReadiness, uncheckedReadiness, type ReadinessFetch } from './readiness';
 import { readHostJobMemory, type HostJobMemory } from './job-memory';
 import { checkProcessBudgets } from './process-budgets';
@@ -89,6 +92,8 @@ export interface DaemonRuntimeSupervisor {
   stop(selector: ManagedProcessSelector): Promise<ManagedProcessRecord>;
   stopAll(worktreeId: string): Promise<ManagedProcessRecord[]>;
   list(worktreeId?: string): ManagedProcessRecord[];
+  /** How a running record's task exited, when it has while its group lingers; see the supervisor. */
+  taskExit?(record: ManagedProcessRecord): Promise<ManagedTaskExit | null>;
 }
 
 export interface DaemonRuntimeLogReader {
@@ -211,6 +216,18 @@ export class DaemonRuntimeController {
       worktreeId,
       taskName,
     });
+  }
+
+  /**
+   * A RUNNING record whose task has exited while children it left behind keep the group alive
+   * (wrangler leaving `workerd`) is not a running task. `ps` says so rather than show it as live;
+   * the next `start` replaces it and records the exit.
+   */
+  async #withTaskExit(record: ManagedProcessRecord): Promise<ManagedProcessRecord & { taskExited?: TaskExitView }> {
+    if (record.state !== 'RUNNING' || this.#supervisor.taskExit === undefined) return record;
+    const exited = await this.#supervisor.taskExit(record);
+    if (exited === null) return record;
+    return { ...record, taskExited: { exitCode: exited.exitCode, signal: exited.signal, exitedAt: exited.exitedAt } };
   }
 
   async handle(request: IpcRequest, context?: { signal?: AbortSignal }): Promise<JsonEnvelope<unknown>> {
@@ -360,7 +377,8 @@ export class DaemonRuntimeController {
       if (request.command === 'ps') {
         const registration = await this.#resolver.resolveWorktree(cwd);
         const scope = registration.workspaceWorktreeIds ?? [registration.worktreeId];
-        const history = scope.flatMap((worktreeId) => this.#supervisor.list(worktreeId)).map(publicProcessRecord);
+        const history = await Promise.all(scope.flatMap((worktreeId) => this.#supervisor.list(worktreeId))
+          .map(async (record) => await this.#withTaskExit(publicProcessRecord(record))));
         // `ps` asks about every task of the scope at once, so it counts as interaction with each
         // of them. Nothing inside WTM polls this command; it is only ever a person's `wtm ps`.
         for (const worktreeId of scope) this.#observeActivity(worktreeId);

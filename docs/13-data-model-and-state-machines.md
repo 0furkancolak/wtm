@@ -511,6 +511,14 @@ signal). Recovery after a daemon restart reads the same marker for a run whose p
 are both gone. Without a marker the end is unknown, and the run is `STOPPED` with neither column
 set. A run stopped on request records neither column.
 
+The anchor stays until the task's whole process group is gone, so a task that exits and leaves
+children behind keeps its run `RUNNING`. The anchor therefore also writes `exited.json`
+(`pid`, `exitCode`, `signal`, `exitedAt`) the moment the task's own process exits, under the same
+directory, size and identity checks as `completion.json`. A `RUNNING` run with that marker is not a
+running task. `wtm start` stops what is left and records the task's exit, `FAILED` unless it was
+0, before starting a new run. `wtm stop` and `wtm restart` record it the same way, still through
+`STOPPING`, because a terminal state is final in the store.
+
 ## Heavy job state
 
 ```text

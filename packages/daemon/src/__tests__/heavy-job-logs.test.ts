@@ -29,4 +29,29 @@ describe('durable job completion evidence', () => {
       expect(await readFile(outside, 'utf8')).toBe(JSON.stringify(completion));
     } finally { await logs.close(); await rm(root, { recursive: true, force: true, maxRetries: 5 }); }
   });
+
+  test('the task-exit marker is read by anchor identity, cleared on prepare, and removable with the job', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wtm-job-exit-'));
+    const logs = new ManagedLogStore({ root: join(root, 'logs') });
+    try {
+      const paths = await logs.prepare('worktree', 'job-exit');
+      expect(paths.exitMarkerPath).toBe(join(paths.stdoutPath, '..', 'exited.json'));
+      expect(await logs.readTaskExit(paths.stdoutPath, 17)).toBeNull();
+      const exited = { pid: 17, exitCode: 7, signal: null, exitedAt: '2026-09-25T07:27:11.000Z' };
+      await writeFile(paths.exitMarkerPath, JSON.stringify(exited), { mode: 0o600 });
+      expect(await logs.readTaskExit(paths.stdoutPath, 17)).toEqual(exited);
+      await expect(logs.readTaskExit(paths.stdoutPath, 18)).rejects.toThrow('identity');
+      await writeFile(paths.exitMarkerPath, 'x'.repeat(2048));
+      await expect(logs.readTaskExit(paths.stdoutPath, 17)).rejects.toThrow('exit marker');
+
+      // A new run in the same directory must not inherit the previous run's exit.
+      await writeFile(paths.exitMarkerPath, JSON.stringify(exited), { mode: 0o600 });
+      const again = await logs.prepare('worktree', 'job-exit');
+      expect(await logs.readTaskExit(again.stdoutPath, 17)).toBeNull();
+
+      await writeFile(paths.exitMarkerPath, JSON.stringify(exited), { mode: 0o600 });
+      await logs.removeJob('worktree', 'exit');
+      expect(await readFile(paths.exitMarkerPath, 'utf8').catch(() => null)).toBeNull();
+    } finally { await logs.close(); await rm(root, { recursive: true, force: true, maxRetries: 5 }); }
+  });
 });

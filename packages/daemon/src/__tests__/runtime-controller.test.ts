@@ -253,6 +253,36 @@ describe('DaemonRuntimeController', () => {
     expect(JSON.stringify([live, every])).not.toContain('reservation-secret');
   });
 
+  test('ps marks a running record whose task already exited, while what it left behind lingers', async () => {
+    const records = [
+      { ...processRecord, id: 'run-1', taskName: 'api', state: 'RUNNING', stoppedAt: null },
+      { ...processRecord, id: 'run-2', taskName: 'web', state: 'RUNNING', stoppedAt: null },
+    ] as ManagedProcessRecord[];
+    const controller = new DaemonRuntimeController({
+      supervisor: {
+        ...noProcesses(),
+        list: () => records,
+        taskExit: async (record) => record.id === 'run-1'
+          ? { pid: record.pid, exitCode: 1, signal: null, exitedAt: '2026-09-25T07:27:11.000Z' }
+          : null,
+      },
+      logs: { read: async () => '' },
+      resolver: {
+        resolveTask: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7', task }),
+        resolveWorktree: async () => ({ workspaceId: 'workspace-1', worktreeId: 'worktree-7' }),
+        resolveExec: async () => ({ cwd: '/repo/wt', envDelta: {} }),
+      },
+    });
+
+    const processes = ((await controller.handle(request('ps', { cwd: '/repo/wt' }))).data as {
+      processes: Array<ManagedProcessRecord & { taskExited?: unknown }>;
+    }).processes;
+
+    expect(processes.find(({ id }) => id === 'run-1')?.taskExited)
+      .toEqual({ exitCode: 1, signal: null, exitedAt: '2026-09-25T07:27:11.000Z' });
+    expect(processes.find(({ id }) => id === 'run-2')).not.toHaveProperty('taskExited');
+  });
+
   test('strictly rejects command-specific unknown argument keys before resolution', async () => {
     let resolutions = 0;
     const controller = new DaemonRuntimeController({

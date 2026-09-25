@@ -27,6 +27,7 @@ import {
   inspectAdapters,
   inspectProcessIdentity,
   inspectRuntimeResources,
+  ManagedLogStore,
   resolveWorktreeRuntime,
   type AdapterReport,
   type ProcessIdentity,
@@ -83,6 +84,12 @@ export interface StateDiagnosticOptions {
    */
   selectPlatform?: () => PlatformRuntime;
   /**
+   * How a RUNNING record's task exited, when its anchor recorded that while children it left keep
+   * the group alive. Defaults to reading the anchor's marker under this host's log root; tests
+   * answer it directly. `null` means the task is running, or that there is nothing to read.
+   */
+  readTaskExit?: (record: ManagedProcessRecord) => Promise<{ exitCode: number | null; signal: string | null } | null>;
+  /**
    * The CI provider `wtm status --pr` (item 13) resolves a PR through. Defaults to a live `gh`
    * invocation, resolved the same way the daemon's `CiWatcher` resolves it
    * (`packages/daemon/src/runtime-factory.ts`) — this is the seam tests fake, since `--pr` must
@@ -125,6 +132,14 @@ export function createStateDiagnosticDataSource(
   const chooseHost = options.selectPlatform ?? (() => selectPlatformRuntime());
   let host: { runtime: PlatformRuntime; refusal: null } | { runtime: null; refusal: unknown } | null = null;
   const platform = () => (host ??= selectHost(chooseHost));
+  const readTaskExit = options.readTaskExit ?? (async (record: ManagedProcessRecord) => {
+    const runtime = platform().runtime;
+    if (runtime === null) return null;
+    try {
+      return await new ManagedLogStore({ root: runtime.paths.logRoot, fileTrust: runtime.fileTrust })
+        .readTaskExit(record.stdoutPath, record.pid);
+    } catch { return null; }
+  });
 
   /**
    * The address `doctor` measures and probes, or `null` when there is no platform to derive one
@@ -788,14 +803,20 @@ export function createStateDiagnosticDataSource(
     readDaemonStartupFailure: () => startup.failureItem(),
     readStatus: async (workspace, statusOptions) => {
       const worktree = currentWorktree(workspace.id);
-      const processes = worktree === undefined ? [] : store.listManagedProcesses({ worktreeId: worktree.id }).map((process) => ({
-        task: process.taskName,
-        pid: process.state === 'RUNNING' ? process.pid : null,
-        state: statusProcessState(process.state),
-        startedAt: process.startedAt,
-        argv: [],
-        ...(process.exitCode === undefined ? {} : { exitCode: process.exitCode }),
-        ...(process.exitSignal === undefined ? {} : { exitSignal: process.exitSignal }),
+      const records = worktree === undefined ? [] : store.listManagedProcesses({ worktreeId: worktree.id });
+      const processes = await Promise.all(records.map(async (process) => {
+        const exited = process.state === 'RUNNING' ? await readTaskExit(process) : null;
+        const exitCode = exited === null ? process.exitCode : exited.exitCode ?? undefined;
+        const exitSignal = exited === null ? process.exitSignal : exited.signal ?? undefined;
+        return {
+          task: process.taskName,
+          pid: process.state === 'RUNNING' ? process.pid : null,
+          state: exited === null ? statusProcessState(process.state) : 'exited' as const,
+          startedAt: process.startedAt,
+          argv: [],
+          ...(exitCode === undefined ? {} : { exitCode }),
+          ...(exitSignal === undefined ? {} : { exitSignal }),
+        };
       }));
       return {
         workspace,

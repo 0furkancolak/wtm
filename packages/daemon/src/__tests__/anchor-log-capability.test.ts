@@ -63,6 +63,7 @@ async function fixture(options: { pendingOpen?: boolean; pendingCompletion?: boo
       if (options.pendingCompletion) await completionAllowed.promise;
       completions.push(typeof value === 'function' ? value() : value);
     },
+    async publishExit() {},
     async close() { stdoutLog.destroy(); stderrLog.destroy(); },
   };
   const childProcess = {
