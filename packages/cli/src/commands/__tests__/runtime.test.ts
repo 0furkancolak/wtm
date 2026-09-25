@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { jsonEnvelopeSchema, type JsonEnvelope } from '@wtm/protocol';
 import { runCli } from '../../main';
 import type { ForegroundExecutor, RuntimeDaemonClient } from '../exec';
+import { DaemonConnectionLostError, DaemonRequestTimeoutError } from '../../client';
 
 function success(command: string, data: unknown = {}): JsonEnvelope<unknown> {
   return { schemaVersion: 1, ok: true, command, data, warnings: [], errors: [] };
@@ -143,5 +144,58 @@ describe('runtime CLI commands', () => {
     }]);
     expect(output.out()).not.toContain('/Users/private');
     expect(output.out()).not.toContain('stack');
+  });
+
+  test('a daemon that answers too slowly is reported as a timeout that may still complete', async () => {
+    const output = capture();
+    const client: RuntimeDaemonClient = {
+      request: async () => { throw new DaemonRequestTimeoutError('start', 60_000); },
+    };
+
+    expect(await runCli(['start', 'dev', '--json'], {
+      cwd: '/repo/wt', runtimeClient: client, taskTargetDatabasePath: '/nonexistent/wtm/state.db', ...output,
+    })).toBe(4);
+    expect(JSON.parse(output.out()).errors).toEqual([{
+      code: 'WTM_DAEMON_TIMEOUT',
+      message: 'The WTM daemon accepted the request but did not answer within 60s. It may still complete it; '
+        + 'check `wtm ps` before retrying.',
+      severity: 'error',
+      context: { command: 'start', timeoutMs: 60_000 },
+    }]);
+  });
+
+  test('a connection lost mid-request is still unavailable, but says the request may have been acted on', async () => {
+    const output = capture();
+    const client: RuntimeDaemonClient = {
+      request: async () => { throw new DaemonConnectionLostError('stop'); },
+    };
+
+    expect(await runCli(['stop', 'dev', '--json'], {
+      cwd: '/repo/wt', runtimeClient: client, taskTargetDatabasePath: '/nonexistent/wtm/state.db', ...output,
+    })).toBe(4);
+    expect(JSON.parse(output.out()).errors).toEqual([{
+      code: 'WTM_DAEMON_UNAVAILABLE',
+      message: 'The WTM daemon closed the connection before answering. The request may or may not have taken '
+        + 'effect; check `wtm ps` before retrying.',
+      severity: 'error',
+      context: { command: 'stop', reason: 'connection-lost' },
+    }]);
+  });
+
+  test('start, restart and stop wait as long as the daemon\'s own stop and launch bounds; reads do not', async () => {
+    const timeouts: Record<string, number | undefined> = {};
+    const client: RuntimeDaemonClient = {
+      request: async (command, _args, options) => {
+        timeouts[command] = options?.timeoutMs;
+        return success(command, { processes: [] });
+      },
+    };
+    for (const argv of [['start', 'dev'], ['restart', 'dev'], ['stop', 'dev'], ['ps'], ['logs', 'dev']]) {
+      await runCli([...argv, '--json'], {
+        cwd: '/repo/wt', runtimeClient: client, taskTargetDatabasePath: '/nonexistent/wtm/state.db', ...capture(),
+      });
+    }
+
+    expect(timeouts).toEqual({ start: 60_000, restart: 60_000, stop: 60_000, ps: undefined, logs: undefined });
   });
 });

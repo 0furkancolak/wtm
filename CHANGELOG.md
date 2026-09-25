@@ -19,6 +19,22 @@ are unstable, and a breaking change may land in a minor release without a deprec
   which WTM variables a worker's own files (`vars`, `.dev.vars`, `.env`) also define and that
   nothing forwards. This includes a `wrangler.json` that app code reads directly. Files are read
   for variable names only.
+- `WTM_DAEMON_TIMEOUT` (exit 4): the daemon accepted a request but did not answer in time, and
+  may still complete it.
+
+### Fixed
+
+- A runtime command whose request timed out, or whose connection dropped mid-request, was
+  reported as `WTM_DAEMON_UNAVAILABLE` ("WTM daemon is unavailable."), even though the daemon was
+  running and often finished the request. `wtm daemon status` then showed it as reachable a moment
+  later. A timeout is now `WTM_DAEMON_TIMEOUT`. A dropped connection says the request may have
+  taken effect.
+- `wtm start`, `wtm restart` and `wtm stop` waited only 5 seconds for the daemon. That is shorter
+  than a `stop` inside a 5s `grace_period`, or a `start` queued behind the previous run's exit, so
+  the first call after a crash could fail while the second succeeded. They now wait 60 seconds.
+- A runtime command no longer fails when it lands in the moment a restarting daemon has removed
+  its socket but not yet bound it again. A refused connect is retried for about a second. A
+  request that was already sent is never re-sent.
 
 ## [0.2.0-rc.2] - 2026-09-23
 

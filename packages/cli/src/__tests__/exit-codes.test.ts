@@ -56,6 +56,7 @@ const expectedExitCodes: Readonly<Record<WtmErrorCode, number>> = {
 
   // 4 — the daemon is not answering. A distinct class because a caller can act on it: start it.
   WTM_DAEMON_UNAVAILABLE: 4,
+  WTM_DAEMON_TIMEOUT: 4,
 
   // 5 — an adapter spoke a protocol WTM cannot use. Distinct so a caller can disable the adapter.
   ADAPTER_PROTOCOL_INCOMPATIBLE: 5,

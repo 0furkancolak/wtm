@@ -99,6 +99,7 @@ WTM_DAEMON_UNAVAILABLE
 WTM_DAEMON_INVALID_REQUEST
 WTM_DAEMON_PROTOCOL_INCOMPATIBLE
 WTM_DAEMON_REQUEST_FAILED
+WTM_DAEMON_TIMEOUT
 WTM_OPERATION_CONFLICT
 WTM_WORKTREE_PATH_OCCUPIED
 WTM_SOCKET_PATH_TOO_LONG
@@ -130,6 +131,22 @@ depend on a login session. systemd does not spend a distinct exit status on a bu
 exits 1, like a dozen ordinary refusals — so WTM classifies the condition rather than reading it
 off the exit code, which is why it is one diagnosable answer on both platforms instead of a generic
 request failure on one of them. It exits with code 4.
+
+A runtime command whose connect is refused (the socket is missing, or nothing is listening on it)
+is retried for about a second before it is reported: that is what a daemon between exiting and
+binding its socket again looks like, and nothing has been sent yet. A request that was sent and
+then lost its connection is not retried, since the daemon may have acted on it; it is still
+`WTM_DAEMON_UNAVAILABLE`, with `context.reason` `connection-lost` and a message that says the
+request may or may not have taken effect.
+
+`WTM_DAEMON_TIMEOUT` means the daemon accepted the request but did not answer in time. The
+daemon is running, and it may still complete the request, so the remedy is to look (`wtm ps`)
+rather than to start the daemon or repeat the command. `context` carries `command` and
+`timeoutMs`. Reads (`ps`, `logs`) wait 5 seconds. `start`, `restart` and `stop` wait 60 seconds,
+because a `stop` waits out the task's `grace_period` and a `start` can queue behind the previous
+run's exit being recorded. `start --wait` waits for its readiness deadline plus the launch
+allowance. It exits with code 4, like `WTM_DAEMON_UNAVAILABLE`. Before this code existed a slow
+answer was reported as `WTM_DAEMON_UNAVAILABLE`, which blamed a daemon that was up and working.
 
 `WTM_SOCKET_PATH_TOO_LONG` means the daemon's Unix socket path does not fit in the platform's
 socket address. The limit is that platform's `sizeof(sun_path)` — 104 bytes on macOS, 108 on

@@ -15,6 +15,36 @@ import {
 
 const defaultTransportTimeoutMs = 5_000;
 
+/**
+ * How long `start()` waits between connect attempts the daemon refused. A daemon that is being
+ * restarted removes its socket on the way out and binds it again only after recovering its
+ * process records, and a command that lands in that gap used to fail outright. Nothing has been
+ * sent at that point, so trying again cannot repeat an action. About a second in total: long
+ * enough to cover a restart's rebind, short enough that a daemon that is simply not installed
+ * is still reported promptly.
+ */
+const defaultConnectRetryDelaysMs: readonly number[] = [100, 300, 600];
+
+/**
+ * The daemon took the request and did not answer in time. Unlike an unreachable daemon, the
+ * request may still be carried out -- a `start` waiting behind a previous run's exit, a `stop`
+ * inside its grace period -- so the caller must not assume it failed.
+ */
+export class DaemonRequestTimeoutError extends Error {
+  constructor(readonly command: string, readonly timeoutMs: number) {
+    super(`Daemon request timed out: ${command}`);
+    this.name = 'DaemonRequestTimeoutError';
+  }
+}
+
+/** The connection went away with this request already sent; the daemon may have acted on it. */
+export class DaemonConnectionLostError extends Error {
+  constructor(readonly command: string) {
+    super(`Daemon connection lost during request: ${command}`);
+    this.name = 'DaemonConnectionLostError';
+  }
+}
+
 export interface DaemonClientOptions {
   socketPath: string;
   requestTimeoutMs?: number;
@@ -32,6 +62,8 @@ export interface DaemonClientOptions {
   transportTimeoutMs?: number;
   /** Fault injection stays at the socket boundary; ordinary callers use a real connection. */
   connect?: (address: string) => Socket;
+  /** The waits between refused connect attempts; see {@link defaultConnectRetryDelaysMs}. */
+  connectRetryDelaysMs?: readonly number[];
 }
 
 export interface FollowLogsOptions {
@@ -47,6 +79,7 @@ export interface DaemonRequestOptions {
 }
 
 interface PendingRequest {
+  command: string;
   resolve: (envelope: JsonEnvelope<unknown>) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -61,6 +94,7 @@ export class DaemonClient {
   readonly #transportTimeoutMs: number;
   readonly #maxFrameBytes: number;
   readonly #openSocket: (address: string) => Socket;
+  readonly #connectRetryDelaysMs: readonly number[];
   readonly #pending = new Map<string, PendingRequest>();
   readonly #timedOutRequestTombstones = new Set<string>();
   #socket: Socket | null = null;
@@ -73,6 +107,7 @@ export class DaemonClient {
     this.#maxFrameBytes = options.maxFrameBytes ?? defaultMaxIpcFrameBytes;
     this.#transportTimeoutMs = options.transportTimeoutMs ?? defaultTransportTimeoutMs;
     this.#openSocket = options.connect ?? ((address) => createConnection(address));
+    this.#connectRetryDelaysMs = options.connectRetryDelaysMs ?? defaultConnectRetryDelaysMs;
     if (!Number.isInteger(this.#requestTimeoutMs) || this.#requestTimeoutMs < 1) {
       throw new RangeError('Daemon request timeout must be a positive integer');
     }
@@ -86,8 +121,26 @@ export class DaemonClient {
     if (this.#socket !== null && !this.#socket.destroyed) return Promise.resolve();
     if (this.#socket?.destroyed) this.#socket = null;
     if (this.#starting !== null) return this.#starting;
-    this.#starting = this.#connect().finally(() => { this.#starting = null; });
+    this.#starting = this.#connectWithRetry().finally(() => { this.#starting = null; });
     return this.#starting;
+  }
+
+  /**
+   * Retries only a connect the peer refused or closed. A transport that went silent already cost
+   * a whole `transportTimeoutMs`, and trying it again would multiply that wait for nothing.
+   */
+  async #connectWithRetry(): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await this.#connect();
+        return;
+      } catch (error) {
+        const delay = this.#connectRetryDelaysMs[attempt];
+        const refused = error instanceof Error && error.message !== 'Daemon connection timed out';
+        if (delay === undefined || !refused || this.#closed) throw error;
+        await new Promise((resolve) => { setTimeout(resolve, delay).unref(); });
+      }
+    }
   }
 
   request(command: string, args?: unknown, options: DaemonRequestOptions = {}): Promise<JsonEnvelope<unknown>> {
@@ -118,7 +171,7 @@ export class DaemonClient {
         }
         this.#rememberTimedOutRequest(id);
         if (options.cancelRemote === true) this.#cancelRemoteRequest(id);
-        reject(new Error(`Daemon request timed out: ${command}`));
+        reject(new DaemonRequestTimeoutError(command, timeoutMs));
       }, timeoutMs);
       timer.unref();
       const onAbort = () => {
@@ -132,6 +185,7 @@ export class DaemonClient {
         reject(new Error(`Daemon request aborted: ${command}`));
       };
       this.#pending.set(id, {
+        command,
         resolve,
         reject,
         timer,
@@ -245,13 +299,13 @@ export class DaemonClient {
     this.#socket = socket;
     socket.on('data', (chunk) => this.#receive(decoder, typeof chunk === 'string' ? Buffer.from(chunk) : chunk));
     socket.on('error', () => {
-      if (this.#socket === socket) this.#failAll(new Error('Daemon connection failed'));
+      if (this.#socket === socket) this.#failAll(null);
     });
     socket.once('close', () => {
       if (this.#socket !== socket) return;
       this.#socket = null;
       this.#timedOutRequestTombstones.clear();
-      this.#failAll(new Error(this.#closed ? 'Daemon client is closed' : 'Daemon connection closed'));
+      this.#failAll(this.#closed ? new Error('Daemon client is closed') : null);
     });
     try {
       await new Promise<void>((resolve, reject) => {
@@ -342,7 +396,8 @@ export class DaemonClient {
     if (oldest !== undefined) this.#timedOutRequestTombstones.delete(oldest);
   }
 
-  #failAll(error: Error): void {
+  /** `null` is a lost connection: each request already sent is told which one it was. */
+  #failAll(error: Error | null): void {
     const pending = [...this.#pending.values()];
     this.#pending.clear();
     for (const request of pending) {
@@ -350,7 +405,7 @@ export class DaemonClient {
       if (request.signal !== undefined && request.onAbort !== undefined) {
         request.signal.removeEventListener('abort', request.onAbort);
       }
-      request.reject(error);
+      request.reject(error ?? new DaemonConnectionLostError(request.command));
     }
   }
 }
