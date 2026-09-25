@@ -108,6 +108,8 @@ binaries are Developer ID signed and notarized.
   one step, which GitHub rejects for the whole file ("workflow file issue"), so every push reported
   a failed run and no tag could publish an archive. A test now fails on any key defined twice in a
   workflow mapping.
+- CI's `win32_test_filter` dispatch failed before running a test. An unquoted space in its
+  `[[ =~ ]]` pattern made bash reject the conditional. The pattern is now held in a variable.
 - `wtm start`, `wtm restart` and `wtm stop` waited only 5 seconds for the daemon. That is shorter
   than a `stop` inside a 5s `grace_period`, or a `start` queued behind the previous run's exit, so
   the first call after a crash could fail while the second succeeded. They now wait 60 seconds.
