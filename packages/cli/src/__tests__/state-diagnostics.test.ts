@@ -1082,7 +1082,7 @@ describe('the worker-env check', () => {
 
     expect(finding).toMatchObject({
       status: 'warning',
-      details: { workers: 1, tasks: 'api:dev', shadowed: 'API_URL, FRONTEND_URL' },
+      details: { workers: 1, tasks: 'api:dev', unforwardedBy: 'api:dev', shadowed: 'API_URL, FRONTEND_URL' },
     });
     expect(finding?.message).toContain('api:dev runs `wrangler dev`');
     expect(finding?.message).toContain('.dev.vars defines API_URL, FRONTEND_URL');
@@ -1097,7 +1097,23 @@ describe('the worker-env check', () => {
       'worker_vars = ["FRONTEND_URL"]',
     ].join('\n')), workerFiles);
 
-    expect(forwarded).toMatchObject({ status: 'pass', details: { workers: 1, tasks: 'api:dev', shadowed: '' } });
+    expect(forwarded).toMatchObject({ status: 'pass', details: { workers: 1, tasks: 'api:dev', unforwardedBy: '', shadowed: '' } });
+  });
+
+  it('names only the tasks that leave a variable behind, when several run the same worker', async () => {
+    const finding = await doctorForWorker(workerToml([
+      'run = ["bunx", "wrangler", "dev"]',
+      'worker_vars = ["API_URL", "FRONTEND_URL"]',
+      '[tasks."api:dev-bare"]',
+      'run = ["bunx", "wrangler", "dev"]',
+    ].join('\n')), workerFiles);
+
+    expect(finding).toMatchObject({
+      status: 'warning',
+      details: { workers: 1, tasks: 'api:dev, api:dev-bare', unforwardedBy: 'api:dev-bare', shadowed: 'API_URL, FRONTEND_URL' },
+    });
+    expect(finding?.message).toStartWith('api:dev-bare runs `wrangler dev`');
+    expect(finding?.message).toContain('to [tasks."api:dev-bare"].');
   });
 
   it('points at a wrangler config that app code reads directly, even with no wrangler dev task', async () => {
@@ -1106,7 +1122,7 @@ describe('the worker-env check', () => {
       { 'wrangler.json': '{ "vars": { "NEXT_PUBLIC_API_URL": "https://api.example.com" } }' },
     );
 
-    expect(finding).toMatchObject({ status: 'warning', details: { workers: 1, tasks: '', shadowed: 'NEXT_PUBLIC_API_URL' } });
+    expect(finding).toMatchObject({ status: 'warning', details: { workers: 1, tasks: '', unforwardedBy: '', shadowed: 'NEXT_PUBLIC_API_URL' } });
     expect(finding?.message).toContain('wrangler.json defines NEXT_PUBLIC_API_URL');
     expect(finding?.message).toContain('reads it from wrangler.json');
   });

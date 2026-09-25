@@ -25,6 +25,8 @@ export interface WorkerLocationReport {
   directory: string;
   /** The `wrangler dev` tasks that run this worker, sorted. Empty for a config nothing here runs. */
   tasks: string[];
+  /** Of those, the ones that leave a variable in {@link shadowed} unforwarded -- the ones to fix. */
+  unforwardedBy: string[];
   /**
    * Variables WTM sets that this worker's own files also define and that do not reach it: some
    * task running it leaves them unforwarded, or no task runs it and whatever reads the file does
@@ -108,6 +110,7 @@ export async function inspectWorkerEnvironments(runtime: WorktreeRuntime): Promi
     locations: [...locations.values()].map((location) => ({
       directory: location.directory,
       tasks: location.tasks.map(({ task }) => task),
+      unforwardedBy: location.tasks.filter(({ report }) => report.shadowed.length > 0).map(({ task }) => task),
       shadowed: location.tasks.length === 0
         ? analyzeWorkerEnvironment({ environmentNames: baseNames, forwarded: [], definitions: location.definitions }).shadowed
         : uniqueByName(location.tasks.flatMap(({ report }) => report.shadowed)),
@@ -124,8 +127,14 @@ export function workerEnvironmentFinding(inspection: WorkerEnvironmentInspection
 } {
   const { locations } = inspection;
   const tasks = [...new Set(locations.flatMap((location) => location.tasks))].sort(compare);
+  const unforwardedBy = [...new Set(locations.flatMap((location) => location.unforwardedBy))].sort(compare);
   const shadowed = [...new Set(locations.flatMap((location) => location.shadowed.map(({ name }) => name)))].sort(compare);
-  const details = { workers: locations.length, tasks: tasks.join(', '), shadowed: shadowed.join(', ') };
+  const details = {
+    workers: locations.length,
+    tasks: tasks.join(', '),
+    unforwardedBy: unforwardedBy.join(', '),
+    shadowed: shadowed.join(', '),
+  };
   const problems = locations.filter((location) => location.shadowed.length > 0);
   if (problems.length === 0) {
     return {
@@ -153,8 +162,13 @@ function locationMessage(location: WorkerLocationReport): string {
       + `environment only: anything that reads ${names.length === 1 ? 'it' : 'them'} from `
       + `${files.join(' or ')} instead (a build script, a framework config) sees the file's value.`;
   }
-  const runners = location.tasks.length === 1 ? `${location.tasks[0]} runs` : `${location.tasks.join(', ')} run`;
-  const target = location.tasks.length === 1 ? `[tasks.${JSON.stringify(location.tasks[0])}]` : 'the task that runs this worker';
+  // Only the tasks that leave something behind: one that already forwards everything is not the
+  // one to edit, even when it runs the same worker.
+  const offenders = location.unforwardedBy;
+  const runners = offenders.length === 1 ? `${offenders[0]} runs` : `${offenders.join(', ')} run`;
+  const target = offenders.length === 1
+    ? `[tasks.${JSON.stringify(offenders[0])}]`
+    : offenders.map((task) => `[tasks.${JSON.stringify(task)}]`).join(' and ');
   return `${runners} \`wrangler dev\`${where}, where ${defines}, and WTM sets ${names.length === 1 ? 'it' : 'them'} too. `
     + 'wrangler builds a worker\'s env from its config vars and .dev.vars, never from the process environment, '
     + `so the worker keeps the files' values. Add worker_vars = [${names.map((name) => JSON.stringify(name)).join(', ')}] to ${target}.`;
