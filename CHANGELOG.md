@@ -7,6 +7,28 @@ All notable changes are documented here. This project follows Semantic Versionin
 Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract
 are unstable, and a breaking change may land in a minor release without a deprecation window.
 
+## [0.2.0-rc.3] - 2026-09-25
+
+Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract
+are unstable, and a breaking change may land in a minor release without a deprecation window.
+
+<!-- gatekeeper-quarantine:start -->
+### Before you run a macOS binary downloaded through a browser
+
+A browser stamps `com.apple.quarantine` on what it saves, and these executables are only ad-hoc
+signed, so macOS sends `SIGKILL` at `exec`. The process dies before any WTM code runs: exit 137,
+nothing on stdout, nothing on stderr, and no error WTM is able to report about itself. Clear the
+attribute from the downloaded file first:
+
+```bash
+xattr -d com.apple.quarantine wtm
+```
+
+Installing with `curl` and `tar` as the README describes is unaffected — neither writes the
+quarantine attribute. This note is a workaround for a defect and is removed once the stable macOS
+binaries are Developer ID signed and notarized.
+<!-- gatekeeper-quarantine:end -->
+
 ### Added
 
 - `worker_vars` on a task (and `wtm task set --worker-var`): names from the task's resolved
@@ -32,6 +54,11 @@ are unstable, and a breaking change may land in a minor release without a deprec
   `wtm status` processes (migration 019). `RUNTIME_START_FAILED` names the exit status and points
   at `wtm logs <task>`.
 - `wtm ps --all` lists every recorded run.
+- `wtm gc` reports, and with `--apply` gives back, the port leases of a feature none of whose
+  worktrees has ever run a managed task (`data.leases`). Earlier versions leased every
+  `[ports.*]` endpoint whenever `wtm status` or `wtm doctor` was run, and those leases stayed. A
+  feature whose ports something is still listening on (a foreground `wtm run`, or a server started
+  from `eval "$(wtm env)"`) keeps all of them. A feature that has run a task keeps them regardless.
 
 ### Changed
 
@@ -70,6 +97,17 @@ are unstable, and a breaking change may land in a minor release without a deprec
   running and often finished the request. `wtm daemon status` then showed it as reachable a moment
   later. A timeout is now `WTM_DAEMON_TIMEOUT`. A dropped connection says the request may have
   taken effect.
+- A task that died while processes it started lived on (wrangler leaving `workerd` behind) kept its
+  record `RUNNING` until they exited, 30 seconds in the reported case. For that whole window
+  `wtm start` answered `existing: true` for a task that no longer ran. The anchor now writes an
+  `exited.json` marker the moment the task's own process exits. `wtm start` then stops what is
+  left, records the run `FAILED` with the task's exit status, and starts a new run. `wtm stop` and
+  `wtm restart` record the exit status the same way. `wtm ps` marks such a run with `taskExited`,
+  and `wtm status` shows it as `exited`.
+- The tag-triggered release workflow never ran. `release.yml` defined `if-no-files-found` twice in
+  one step, which GitHub rejects for the whole file ("workflow file issue"), so every push reported
+  a failed run and no tag could publish an archive. A test now fails on any key defined twice in a
+  workflow mapping.
 - `wtm start`, `wtm restart` and `wtm stop` waited only 5 seconds for the daemon. That is shorter
   than a `stop` inside a 5s `grace_period`, or a `start` queued behind the previous run's exit, so
   the first call after a crash could fail while the second succeeded. They now wait 60 seconds.
@@ -78,23 +116,6 @@ are unstable, and a breaking change may land in a minor release without a deprec
 
 Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract
 are unstable, and a breaking change may land in a minor release without a deprecation window.
-
-<!-- gatekeeper-quarantine:start -->
-### Before you run a macOS binary downloaded through a browser
-
-A browser stamps `com.apple.quarantine` on what it saves, and these executables are only ad-hoc
-signed, so macOS sends `SIGKILL` at `exec`. The process dies before any WTM code runs: exit 137,
-nothing on stdout, nothing on stderr, and no error WTM is able to report about itself. Clear the
-attribute from the downloaded file first:
-
-```bash
-xattr -d com.apple.quarantine wtm
-```
-
-Installing with `curl` and `tar` as the README describes is unaffected — neither writes the
-quarantine attribute. This note is a workaround for a defect and is removed once the stable macOS
-binaries are Developer ID signed and notarized.
-<!-- gatekeeper-quarantine:end -->
 
 ### Fixed
 

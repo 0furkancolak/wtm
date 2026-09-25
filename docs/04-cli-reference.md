@@ -80,9 +80,11 @@ Only variable names and safe values — a port, or a bare `http(s)` address — 
 
 Shows resolved worktree identity, state, endpoints, processes and runtime resources.
 
-A process's `state` is `running`, `stopped`, `failed` or `stale`. `failed` is a run that crashed
-or could not be cleaned up; it used to read `stopped`, the same as a deliberate stop. A run that
-ended by itself also carries `exitCode` or `exitSignal`, as in `wtm ps`.
+A process's `state` is `running`, `exited`, `stopped`, `failed` or `stale`. `failed` is a run that crashed
+or could not be cleaned up; it used to read `stopped`, the same as a deliberate stop. `exited` is a
+run whose task has ended while processes it started still hold its process group (see `wtm ps`);
+it carries the task's `exitCode` or `exitSignal`. A run that ended by itself also carries
+`exitCode` or `exitSignal`, as in `wtm ps`.
 
 `--pr` adds this worktree's pull request as an optional `pr` section: `{ summary, detail? }`.
 `summary` is the PR's number, URL, state, mergeability and rolled-up check status, or `null` when
@@ -605,6 +607,14 @@ non-zero on its own is `FAILED`. One that ends while no daemon is running is `FA
 according to the completion marker its anchor wrote, and `STOPPED` when there is no marker.
 Records never carry the start reservation's `cleanupOwnerToken`.
 
+A `RUNNING` run whose task has already exited carries `taskExited: { exitCode, signal, exitedAt }`.
+The task's own process ended, and processes it started (wrangler's `workerd`, say) still hold its
+process group, so the run is not over. The anchor records the task's exit the moment it happens.
+`wtm start` on such a run stops what is left (TERM, then KILL after the grace period), records the
+run `FAILED` with the task's exit status, or `STOPPED` for exit 0, and starts a new run. It no
+longer answers `existing: true` for a task that is not running. `wtm stop` and `wtm restart`
+record the task's exit status the same way.
+
 ### `wtm ports`
 
 Shows endpoint leases.
@@ -983,6 +993,21 @@ Dependency cache GC requires adapter-native cleanup plans and is never included 
 GC never walks a Git working tree, so the resources `[resources]` creates inside a worktree are
 outside every plan. `gc` warns which ones those are rather than leaving the silence to be read
 as "there is nothing else"; removing the worktree removes them.
+
+`data.leases` lists the port leases of each feature of the workspace (one branch across its
+repositories) none of whose worktrees has ever run a managed task:
+
+- `reclaimable`: a dry run would give them back.
+- `released`: `--apply` gave them back.
+- `in-use`: something listens on one of the ports that no managed task accounts for, such as a
+  foreground `wtm run` or a server started from `eval "$(wtm env)"`. Every port of the feature
+  stays.
+- `started`: a task of the feature recorded a run between planning and releasing, so they stay.
+
+Each entry names the `branch`, its `worktrees` and the `endpoints` (`name`, `port`). A feature
+that has run a task keeps its leases, however long ago that was. Its `{port.x}` values are a
+promise to whatever was configured with them. The next `wtm start` of a reclaimed feature leases
+its endpoints again, preferring the same ports when they are free.
 
 ## Registration
 

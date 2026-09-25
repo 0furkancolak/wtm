@@ -53,7 +53,7 @@ failure, `2` usage or configuration, `3` safety refusal or conflict, `4` daemon 
 | `wtm start <task>` | Start a long-running task under supervision. `--wait --timeout <duration> --json` waits for its healthcheck. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm stop [task]` | Stop one managed task, or all of this worktree's. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm restart <task>` | Stop and start a managed task; accepts `--wait --timeout`. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
-| `wtm ps --json` | Live runs and each task's latest crash (`exitCode`/`exitSignal`); `--all` for history. |
+| `wtm ps --json` | Live runs and each task's latest crash (`exitCode`/`exitSignal`); `taskExited` = task dead, children linger (`wtm start` replaces it); `--all` for history. |
 | `wtm logs [task]` | Read managed task logs; `--follow` streams raw output. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm exec -- <argv>` | Run raw argv in this worktree with its resolved environment. `--worktree <selector>` (`--repo <name>`), before `--`, targets another worktree. |
 | `wtm tui [selector]` | Interactive terminal dashboard for one worktree: identity, running tasks, ports and health, polling `status`/`doctor` on a timer. Needs a real TTY; not for agent/scripted use — read `status`/`doctor --json` instead. |
@@ -74,7 +74,7 @@ failure, `2` usage or configuration, `3` safety refusal or conflict, `4` daemon 
 | `wtm create <branch> --json` | Create a registered worktree for a branch. `--from <ref>`, `--repos <a,b>` (from the workspace root), `--resume`. |
 | `wtm analyze [selector] --json` | Report removal safety; `--all`, `--cleanup-candidates`, `--refresh-remotes`. |
 | `wtm remove <selector> --json` | Remove a worktree safely; `--refresh-remotes`, `--resume` (only when an error asks for it). |
-| `wtm gc --json` | Plan resource garbage collection; `--apply` performs the guarded plan. |
+| `wtm gc --json` | Plan resource GC and never-started features' port leases (`data.leases`); `--apply` performs it. |
 | `wtm disk --json` | Report logical and allocated resource usage. |
 | `wtm forget [selector] --json` | Retire a registration whose directory is gone; `--force` if it still exists. |
 | `wtm init [path] --yes --json` | Initialize and register a workspace; `--no-detect`, `--max-depth <n>`, `--ai-skill`. |
