@@ -668,10 +668,11 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     renderRuntime(await runRestartCommand({ cwd: target.cwd, taskName, ...readinessArguments(options) }, dependencies.runtimeClient, dependencies.signal), runtimeJson(program, options));
   });
 
-  const ps = program.command('ps').description('List WTM-managed process groups.');
+  const ps = program.command('ps').description('List WTM-managed process groups: live runs and each task\'s latest crash.');
+  ps.option('--all', 'include every recorded run, clean stops and older crashes too');
   addJsonOption(ps);
-  ps.action(async (options: ScopeOptions) => {
-    renderRuntime(await runPsCommand({ cwd }, dependencies.runtimeClient), runtimeJson(program, options));
+  ps.action(async (options: ScopeOptions & { all?: boolean }) => {
+    renderRuntime(await runPsCommand({ cwd, ...(options.all === true ? { all: true } : {}) }, dependencies.runtimeClient), runtimeJson(program, options));
   });
 
   const logs = program.command('logs [task]').description('Read managed task logs.');

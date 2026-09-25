@@ -71,7 +71,7 @@ const runtimeArgumentSchemas = {
   start: runtimeStartArgumentsSchema,
   restart: runtimeStartArgumentsSchema,
   stop: z.object({ cwd: cwdSchema, taskName: taskNameSchema.optional() }).strict(),
-  ps: z.object({ cwd: cwdSchema }).strict(),
+  ps: z.object({ cwd: cwdSchema, all: z.boolean().optional() }).strict(),
   logs: z.object({
     cwd: cwdSchema,
     taskName: taskNameSchema.optional(),
@@ -226,6 +226,7 @@ export class DaemonRuntimeController {
         waitTimeoutMs?: number;
         follow?: false;
         argv?: string[];
+        all?: boolean;
         cursors?: Record<string, {
           stdout?: { dev: number; ino: number; offset: number; generation?: string };
           stderr?: { dev: number; ino: number; offset: number; generation?: string };
@@ -269,13 +270,20 @@ export class DaemonRuntimeController {
         if (result.record.state !== 'RUNNING' || result.record.cleanupRequired) {
           return {
             ...success(request.command, {
-              process: result.record, existing: result.existing,
+              process: publicProcessRecord(result.record), existing: result.existing,
               readiness: { ...uncheckedReadiness(), state: 'PROCESS_EXITED', observedAt: new Date().toISOString() },
             }, scopeOf(resolved)),
             ok: false,
             errors: [{
-              code: 'RUNTIME_START_FAILED', message: 'Managed task did not remain running after launch.',
-              severity: 'error', context: { taskName, processId: result.record.id, state: result.record.state },
+              code: 'RUNTIME_START_FAILED',
+              message: `Managed task did not remain running after launch${exitDescription(result.record)}. `
+                + `Its output is in \`wtm logs ${taskName}\`.`,
+              severity: 'error',
+              context: {
+                taskName, processId: result.record.id, state: result.record.state,
+                ...(result.record.exitCode === undefined ? {} : { exitCode: result.record.exitCode }),
+                ...(result.record.exitSignal === undefined ? {} : { exitSignal: result.record.exitSignal }),
+              },
             }],
           };
         }
@@ -287,7 +295,7 @@ export class DaemonRuntimeController {
         this.#observeActivity(resolved.worktreeId, taskName);
         if (healthcheck === null || !healthcheck.success) {
           return success(request.command, {
-            process: result.record, existing: result.existing, readiness: uncheckedReadiness(),
+            process: publicProcessRecord(result.record), existing: result.existing, readiness: uncheckedReadiness(),
           }, scopeOf(resolved));
         }
         const observation = await observeReadiness({
@@ -346,17 +354,19 @@ export class DaemonRuntimeController {
           });
         }
         if (records.length > 0) this.#onRuntimeEvent('runtime.stopped', worktreeId);
-        return success('stop', { processes: records }, scopeOf(registration));
+        return success('stop', { processes: records.map(publicProcessRecord) }, scopeOf(registration));
       }
 
       if (request.command === 'ps') {
         const registration = await this.#resolver.resolveWorktree(cwd);
         const scope = registration.workspaceWorktreeIds ?? [registration.worktreeId];
-        const processes = scope.flatMap((worktreeId) => this.#supervisor.list(worktreeId));
+        const history = scope.flatMap((worktreeId) => this.#supervisor.list(worktreeId)).map(publicProcessRecord);
         // `ps` asks about every task of the scope at once, so it counts as interaction with each
         // of them. Nothing inside WTM polls this command; it is only ever a person's `wtm ps`.
         for (const worktreeId of scope) this.#observeActivity(worktreeId);
-        return success('ps', { processes }, scopeOf(registration));
+        if (args.all === true) return success('ps', { processes: history }, scopeOf(registration));
+        const processes = liveProcessRecords(history);
+        return success('ps', { processes, omitted: history.length - processes.length }, scopeOf(registration));
       }
 
       if (request.command === 'logs') {
@@ -600,4 +610,40 @@ function truncateUtf8Tail(value: string, maximumBytes: number): string {
   let start = bytes.byteLength - maximumBytes;
   while (start < bytes.byteLength && (Number(bytes[start]) & 0xc0) === 0x80) start += 1;
   return bytes.subarray(start).toString('utf8');
+}
+
+/**
+ * The runs `wtm ps` shows without `--all`: everything still alive or still owed a cleanup, and
+ * for each task that is not running, its latest run when that run failed. Every run ever recorded
+ * is kept for `logs` and for `--all`, and listing them all by default buried the one crash that
+ * mattered under dozens of clean stops, labelled only by worktree id.
+ */
+function liveProcessRecords(records: readonly ManagedProcessRecord[]): ManagedProcessRecord[] {
+  const latest = new Map<string, ManagedProcessRecord>();
+  for (const record of records) latest.set(`${record.worktreeId}\u0000${record.taskName}`, record);
+  const running = new Set(records
+    .filter((record) => isLiveProcessState(record.state))
+    .map((record) => `${record.worktreeId}\u0000${record.taskName}`));
+  return records.filter((record) => {
+    if (isLiveProcessState(record.state) || record.state === 'STALE_IDENTITY' || record.cleanupRequired) return true;
+    const key = `${record.worktreeId}\u0000${record.taskName}`;
+    return record.state === 'FAILED' && !running.has(key) && latest.get(key) === record;
+  });
+}
+
+function isLiveProcessState(state: ManagedProcessRecord['state']): boolean {
+  return state === 'STARTING' || state === 'RUNNING' || state === 'STOPPING';
+}
+
+/** A record as a client may see it: the start reservation's token is a capability, not data. */
+function publicProcessRecord(record: ManagedProcessRecord): ManagedProcessRecord {
+  const { cleanupOwnerToken: _token, ...rest } = record;
+  return rest;
+}
+
+/** ` (exit code 1)`, ` (signal SIGKILL)`, or nothing when the end was not observed. */
+function exitDescription(record: ManagedProcessRecord): string {
+  if (record.exitSignal !== undefined) return ` (signal ${record.exitSignal})`;
+  if (record.exitCode !== undefined) return ` (exit code ${record.exitCode})`;
+  return '';
 }

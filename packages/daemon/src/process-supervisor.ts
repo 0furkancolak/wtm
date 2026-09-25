@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import type {
   ManagedProcessRecord, ManagedProcessState, ManagedProcessInput, ManagedProcessQuery,
-  ManagedProcessUpdate, ManagedProcessCreateOptions, ManagedProcessReservationOptions,
+  ManagedProcessUpdate, ManagedProcessCreateOptions, ManagedProcessReservationOptions, ManagedProcessExit,
 } from '@wtm/core';
 import { selectPlatformRuntime, selfRuntimeInvocation } from '@wtm/platform';
 import { processObservationBudgetFor } from '@wtm/platform/process';
@@ -359,10 +359,16 @@ export class ManagedProcessSupervisor {
       } else if (inspection.status === 'absent') {
         const group = await this.#inspectGroup(record.pgid);
         if (group.status === 'absent') {
+          // It ended while no daemon was listening. Its anchor wrote down how, unless the anchor
+          // itself was killed; without that record the end is unknown, and STOPPED stays the
+          // answer rather than a guess at a crash.
+          const ended = record.state === 'STARTING' || record.state === 'RUNNING'
+            ? await this.#completedExit(record) : null;
           recovered.push(this.#transition(
             record,
-            record.state === 'FAILED' ? 'FAILED' : 'STOPPED',
+            record.state === 'FAILED' || (ended !== null && !ended.clean) ? 'FAILED' : 'STOPPED',
             false,
+            ended?.exit,
           ));
           this.#releaseReservationAfterRecovery(record);
         } else {
@@ -710,7 +716,13 @@ export class ManagedProcessSupervisor {
       const state: ManagedProcessState = group === 'gone'
         ? (record.state === 'STOPPING' || (exitCode === 0 && signal === null) ? 'STOPPED' : 'FAILED')
         : 'FAILED';
-      if (isActiveState(record.state)) this.#transition(record, state, group !== 'gone');
+      // A run stopped on request ended because it was asked to; only one that ended by itself
+      // records how. The anchor's own status is derived from the task's (128 + n for a signal),
+      // so the task's, from its completion marker, is preferred when the marker is readable.
+      const exit = record.state === 'STOPPING'
+        ? undefined
+        : (await this.#completedExit(record))?.exit ?? { code: exitCode, signal };
+      if (isActiveState(record.state)) this.#transition(record, state, group !== 'gone', exit);
       this.#onExit(this.#stateStore.getManagedProcess(recordId) ?? record, { exitCode, signal, groupAbsent: group === 'gone', exitedAt });
     }).catch((error) => this.#reportError(error));
   }
@@ -719,6 +731,7 @@ export class ManagedProcessSupervisor {
     record: ManagedProcessRecord,
     state: ManagedProcessState,
     cleanupRequired = record.cleanupRequired,
+    exit?: ManagedProcessExit,
   ): ManagedProcessRecord {
     if (record.state === state && record.cleanupRequired === cleanupRequired) return record;
     const updated = this.#stateStore.updateManagedProcess(record.id, {
@@ -726,8 +739,25 @@ export class ManagedProcessSupervisor {
       state,
       stoppedAt: isActiveState(state) ? null : this.#now().toISOString(),
       cleanupRequired,
+      ...(exit === undefined || isActiveState(state) ? {} : { exit }),
     });
     return updated ?? this.#stateStore.getManagedProcess(record.id) ?? record;
+  }
+
+  /**
+   * How the run's task ended, from the completion marker its anchor wrote, or `null` when there
+   * is none to read. A marker that fails its identity or trust checks is treated as absent: it is
+   * evidence about a run, never a reason to fail recovering one.
+   */
+  async #completedExit(record: ManagedProcessRecord): Promise<{ exit: ManagedProcessExit; clean: boolean } | null> {
+    let completion;
+    try { completion = await this.#logs.readCompletion(record.stdoutPath, record.pid); }
+    catch { return null; }
+    if (completion === null) return null;
+    return {
+      exit: { code: completion.exitCode, signal: completion.signal },
+      clean: completion.exitCode === 0 && completion.signal === null && completion.timedOut !== true && !completion.logFailed,
+    };
   }
 
   async #serialize<T>(key: string, operation: () => Promise<T>): Promise<T> {

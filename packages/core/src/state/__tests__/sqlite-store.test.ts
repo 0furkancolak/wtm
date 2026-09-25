@@ -143,7 +143,7 @@ describe('SQLiteStateStore', () => {
       activeAfterStop: null,
       orderedStates: ['STOPPED', 'FAILED'],
       rejectedSecondActiveSingleton: true,
-      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
     });
   });
 
@@ -156,6 +156,10 @@ describe('SQLiteStateStore', () => {
       rejectedRevival: true,
       rejectedTerminalWithoutTimestamp: true,
       rejectedNonterminalTimestamp: true,
+      // A run that ended by itself keeps how it ended; one nobody saw end has nothing to show.
+      failedExit: { state: 'FAILED', exitCode: 3, exitSignal: null },
+      signalledExit: { state: 'FAILED', exitCode: null, exitSignal: 'SIGKILL' },
+      stoppedWithoutExit: { hasExitCode: false, hasExitSignal: false },
     });
   });
 
@@ -198,7 +202,7 @@ describe('SQLiteStateStore', () => {
       tieWinner: 'tie-z',
       tieLoserCleanupRequired: false,
       leaseSurvivedExpiry: true,
-      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+      migrationVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
     });
   });
 

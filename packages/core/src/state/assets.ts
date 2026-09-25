@@ -23,6 +23,7 @@ export const migrationFileNames = [
   '016-task-overrides.sql',
   '017-checklist-items.sql',
   '018-drop-dead-resources-table.sql',
+  '019-managed-process-exit.sql',
 ] as const;
 
 export const filesystemMigrationAssets: MigrationAssetProvider = {

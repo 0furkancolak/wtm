@@ -80,6 +80,10 @@ Only variable names and safe values — a port, or a bare `http(s)` address — 
 
 Shows resolved worktree identity, state, endpoints, processes and runtime resources.
 
+A process's `state` is `running`, `stopped`, `failed` or `stale`. `failed` is a run that crashed
+or could not be cleaned up; it used to read `stopped`, the same as a deliberate stop. A run that
+ended by itself also carries `exitCode` or `exitSignal`, as in `wtm ps`.
+
 `--pr` adds this worktree's pull request as an optional `pr` section: `{ summary, detail? }`.
 `summary` is the PR's number, URL, state, mergeability and rolled-up check status, or `null` when
 the branch has none. Without `--pr`, `status` never touches the network; with it, this is the one
@@ -581,6 +585,19 @@ SHA-256 check on its own; `untrust` is for ending trust deliberately, without wa
 ### `wtm ps`
 
 Lists the WTM-managed process groups of the whole workspace — a feature that spans two repositories runs two servers, and both are the answer.
+
+By default it lists the runs that are live (`STARTING`, `RUNNING`, `STOPPING`), any in
+`STALE_IDENTITY` or still owed a cleanup, and, for each task that is not running, its latest run
+when that run `FAILED`. A crash stays visible until the task is started again, and a clean stop
+drops out. `data.omitted` counts the runs left out. `--all` lists every recorded run, and has no
+`omitted`. Runs are never deleted; `wtm logs` and `--all` still reach them.
+
+A run that ended by itself carries how it ended: `exitCode` (the task's own exit status) or
+`exitSignal` (the signal that ended it). Both are absent for a run stopped on request, and for one
+whose end no daemon observed, so absent means "not known", never "exited 0". A task that exits
+non-zero on its own is `FAILED`. One that ends while no daemon is running is `FAILED` or `STOPPED`
+according to the completion marker its anchor wrote, and `STOPPED` when there is no marker.
+Records never carry the start reservation's `cleanupOwnerToken`.
 
 ### `wtm ports`
 

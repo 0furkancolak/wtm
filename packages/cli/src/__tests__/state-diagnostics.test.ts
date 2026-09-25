@@ -1116,3 +1116,31 @@ describe('the worker-env check', () => {
       .toMatchObject({ status: 'pass', details: { workers: 0 } });
   });
 });
+
+describe('process states in status', () => {
+  it('reports a run that crashed as failed, with how it ended, rather than as stopped', async () => {
+    const run = (id: string, state: ManagedProcessRecord['state'], extra: Partial<ManagedProcessRecord> = {}): ManagedProcessRecord => ({
+      id, worktreeId: 'web-feature', taskName: id, pid: 4242, pgid: 4242, processStartTime: 'start',
+      commandFingerprint: 'fingerprint', state, startedAt: '2026-09-25T07:21:21.232Z',
+      stoppedAt: '2026-09-25T07:27:41.729Z', stdoutPath: '/dev/null', stderrPath: '/dev/null', cleanupRequired: false,
+      ...extra,
+    });
+    const source = createStateDiagnosticDataSource({
+      ...store,
+      listManagedProcesses: () => [
+        run('crashed', 'FAILED', { exitCode: 1 }),
+        run('killed', 'FAILED', { exitSignal: 'SIGKILL' }),
+        run('stopped', 'STOPPED'),
+      ],
+    } as unknown as DaemonStateStore, { cwd: '/workspace/web-feature', globalConfigPath: '/workspace/config.toml' });
+
+    const processes = (await source.readStatus(registered)).processes;
+
+    expect(processes.map(({ task, state }) => [task, state])).toEqual([
+      ['crashed', 'failed'], ['killed', 'failed'], ['stopped', 'stopped'],
+    ]);
+    expect(processes[0]).toMatchObject({ exitCode: 1 });
+    expect(processes[1]).toMatchObject({ exitSignal: 'SIGKILL' });
+    expect(processes[2]).not.toHaveProperty('exitCode');
+  });
+});

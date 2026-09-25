@@ -158,7 +158,12 @@ class MemoryProcessStore implements ManagedProcessStateStore {
       update.reservationToken !== undefined
       && this.#reservations.get(`${record.worktreeId}\0${record.taskName}`)?.token !== update.reservationToken
     ) throw new Error('Reservation not owned');
-    const updated = { ...record, ...update, stoppedAt: update.stoppedAt ?? null };
+    const { exit, ...rest } = update;
+    const updated = {
+      ...record, ...rest, stoppedAt: update.stoppedAt ?? null,
+      ...(exit?.code === null || exit === undefined ? {} : { exitCode: exit.code }),
+      ...(exit?.signal === null || exit === undefined ? {} : { exitSignal: exit.signal }),
+    };
     this.#records.set(id, updated);
     return { ...updated };
   }
@@ -761,6 +766,52 @@ describe('ManagedProcessSupervisor', () => {
     await waitFor(() => store.getManagedProcess(started.record.id)?.state === 'STOPPED');
     expect(await readFile(started.record.stdoutPath, 'utf8')).toBe('natural stdout\n');
     expect(await readFile(started.record.stderrPath, 'utf8')).toBe('natural stderr\n');
+  });
+
+  test('a task that exits non-zero on its own is FAILED, and keeps its exit status', async () => {
+    const { root, store, worktree, supervisor } = await setup();
+    const started = await supervisor.start({
+      worktreeId: worktree.id, taskName: 'crash', argv: ['node', '-e', 'process.exit(3)'], cwd: root, env: process.env,
+    });
+
+    await waitFor(() => store.getManagedProcess(started.record.id)?.state === 'FAILED');
+    const record = store.getManagedProcess(started.record.id);
+    expect(record?.exitCode).toBe(3);
+    expect(record).not.toHaveProperty('exitSignal');
+  });
+
+  test('a task that exits 0 on its own is STOPPED, and says it exited 0', async () => {
+    const { root, store, worktree, supervisor } = await setup();
+    const started = await supervisor.start({
+      worktreeId: worktree.id, taskName: 'done', argv: immediateExitArgv, cwd: root, env: process.env,
+    });
+
+    await waitFor(() => store.getManagedProcess(started.record.id)?.state === 'STOPPED');
+    expect(store.getManagedProcess(started.record.id)?.exitCode).toBe(0);
+  });
+
+  test('a run that ended while no daemon watched is recovered from its completion marker', async () => {
+    // The daemon that started it is gone (restart, upgrade, crash) when the task dies, so no exit
+    // listener sees it. Its anchor still wrote how it ended; recovery used to call every such run
+    // STOPPED, a crash included.
+    const root = await mkdtemp(join(tmpdir(), 'wtm-supervisor-recover-exit-'));
+    const store = new MemoryProcessStore();
+    const logs = () => new ManagedLogStore({ root: join(root, 'logs') });
+    const first = createSupervisor({ stateStore: store, logs: logs(), gracePeriodMs: 1_000, pollIntervalMs: 10 });
+    cleanups.push(async () => { await removeRootDirectory(root); });
+    const started = await first.start({
+      worktreeId: 'worktree-1', taskName: 'crash-while-away',
+      argv: ['node', '-e', 'setTimeout(() => process.exit(4), 300)'], cwd: root, env: process.env,
+    });
+    await first.close();
+    await waitFor(async () => (await inspectProcessGroup(started.record.pgid)).status === 'absent', 5_000);
+    expect(store.getManagedProcess(started.record.id)?.state).toBe('RUNNING');
+
+    const second = createSupervisor({ stateStore: store, logs: logs(), gracePeriodMs: 1_000, pollIntervalMs: 10 });
+    cleanups.push(async () => { await second.close(); });
+    await second.recover();
+
+    expect(store.getManagedProcess(started.record.id)).toMatchObject({ state: 'FAILED', exitCode: 4 });
   });
 
   test('anchor-owned writers rotate a fast stream without gaps or duplicate bytes', async () => {

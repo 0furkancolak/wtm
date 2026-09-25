@@ -21,9 +21,27 @@ are unstable, and a breaking change may land in a minor release without a deprec
   for variable names only.
 - `WTM_DAEMON_TIMEOUT` (exit 4): the daemon accepted a request but did not answer in time, and
   may still complete it.
+- Managed runs record how they ended: `exitCode` or `exitSignal` on `wtm ps` records and on
+  `wtm status` processes (migration 019). `RUNTIME_START_FAILED` names the exit status and points
+  at `wtm logs <task>`.
+- `wtm ps --all` lists every recorded run.
+
+### Changed
+
+- `wtm ps` lists live runs, and each stopped task's latest run when that run failed, instead of
+  every run ever recorded across the workspace. In a busy workspace that was dozens of rows per
+  task, labelled only by worktree id, and a crash was easy to miss among clean stops.
+  `data.omitted` counts what was left out; `--all` restores the full list.
 
 ### Fixed
 
+- `wtm status` reported a crashed run as `stopped`, the same word as a deliberate stop. It is now
+  `failed`.
+- A run that ended while no daemon was watching (daemon restarted, upgraded or crashed) was always
+  recovered as `STOPPED`, even when it had crashed. Recovery now reads the anchor's completion
+  marker and records `FAILED` with the exit status.
+- `wtm ps`, `wtm start` and `wtm stop` records no longer include the start reservation's
+  `cleanupOwnerToken`.
 - A runtime command whose request timed out, or whose connection dropped mid-request, was
   reported as `WTM_DAEMON_UNAVAILABLE` ("WTM daemon is unavailable."), even though the daemon was
   running and often finished the request. `wtm daemon status` then showed it as reachable a moment

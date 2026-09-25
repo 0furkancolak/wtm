@@ -128,6 +128,8 @@ interface ManagedProcessRow {
   stderr_path: string;
   cleanup_required: 0 | 1;
   cleanup_owner_token: string | null;
+  exit_code: number | null;
+  exit_signal: string | null;
 }
 
 interface RepositoryOperationLeaseRow {
@@ -250,6 +252,8 @@ function managedProcessFromRow(row: ManagedProcessRow): ManagedProcessRecord {
     stderrPath: row.stderr_path,
     cleanupRequired: row.cleanup_required === 1,
     ...(row.cleanup_owner_token === null ? {} : { cleanupOwnerToken: row.cleanup_owner_token }),
+    ...(row.exit_code === null ? {} : { exitCode: row.exit_code }),
+    ...(row.exit_signal === null ? {} : { exitSignal: row.exit_signal }),
   };
 }
 
@@ -1297,12 +1301,18 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
       }
       const result = this.#database.prepare(`
         UPDATE managed_processes SET state = ?, stopped_at = ?,
-          cleanup_required = COALESCE(?, cleanup_required)
+          cleanup_required = COALESCE(?, cleanup_required),
+          exit_code = CASE WHEN ? = 1 THEN ? ELSE exit_code END,
+          exit_signal = CASE WHEN ? = 1 THEN ? ELSE exit_signal END
         WHERE id = ? AND state IN (${placeholders})
       `).run(
         update.state,
         update.stoppedAt ?? null,
         update.cleanupRequired === undefined ? null : update.cleanupRequired ? 1 : 0,
+        update.exit === undefined ? 0 : 1,
+        update.exit?.code ?? null,
+        update.exit === undefined ? 0 : 1,
+        update.exit?.signal ?? null,
         id,
         ...update.expectedStates,
       );

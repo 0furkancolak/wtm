@@ -34,6 +34,7 @@ describe('runtime CLI commands', () => {
       { argv: ['stop', '--json'], call: { command: 'stop', arguments: { cwd: '/repo/wt' } } },
       { argv: ['restart', 'dev', '--json'], call: { command: 'restart', arguments: { cwd: '/repo/wt', taskName: 'dev' } } },
       { argv: ['ps', '--json'], call: { command: 'ps', arguments: { cwd: '/repo/wt' } } },
+      { argv: ['ps', '--all', '--json'], call: { command: 'ps', arguments: { cwd: '/repo/wt', all: true } } },
       { argv: ['logs', 'dev', '--json'], call: { command: 'logs', arguments: { cwd: '/repo/wt', taskName: 'dev', follow: false } } },
     ] as const;
 

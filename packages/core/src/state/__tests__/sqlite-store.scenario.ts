@@ -771,6 +771,16 @@ function managedProcessLifecycle() {
     } catch {
       rejectedNonterminalTimestamp = true;
     }
+    const exited = (taskName: string, exit: { code: number | null; signal: string | null }) => {
+      const record = store.createManagedProcess({ ...base, taskName, state: 'RUNNING' });
+      const failed = store.updateManagedProcess(record.id, {
+        expectedStates: ['RUNNING'], state: 'FAILED', stoppedAt: '2026-08-27T10:03:00.000Z', exit,
+      });
+      // Read back through a fresh lookup, not the update's return, so the columns are proven stored.
+      const stored = store.getManagedProcess(record.id);
+      if (failed === null || stored === null) throw new Error('Expected FAILED transition');
+      return { state: stored.state, exitCode: stored.exitCode ?? null, exitSignal: stored.exitSignal ?? null };
+    };
     return {
       wrongExpectedStateReturnedNull: wrongExpected === null,
       runningState: running.state,
@@ -779,6 +789,9 @@ function managedProcessLifecycle() {
       rejectedRevival,
       rejectedTerminalWithoutTimestamp,
       rejectedNonterminalTimestamp,
+      failedExit: exited('exit-code', { code: 3, signal: null }),
+      signalledExit: exited('exit-signal', { code: null, signal: 'SIGKILL' }),
+      stoppedWithoutExit: { hasExitCode: 'exitCode' in stopped, hasExitSignal: 'exitSignal' in stopped },
     };
   });
 }

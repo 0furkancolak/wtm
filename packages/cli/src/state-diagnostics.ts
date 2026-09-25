@@ -791,9 +791,11 @@ export function createStateDiagnosticDataSource(
       const processes = worktree === undefined ? [] : store.listManagedProcesses({ worktreeId: worktree.id }).map((process) => ({
         task: process.taskName,
         pid: process.state === 'RUNNING' ? process.pid : null,
-        state: process.state === 'RUNNING' ? 'running' as const : process.state === 'STALE_IDENTITY' ? 'stale' as const : 'stopped' as const,
+        state: statusProcessState(process.state),
         startedAt: process.startedAt,
         argv: [],
+        ...(process.exitCode === undefined ? {} : { exitCode: process.exitCode }),
+        ...(process.exitSignal === undefined ? {} : { exitSignal: process.exitSignal }),
       }));
       return {
         workspace,
@@ -866,6 +868,17 @@ export function createStateDiagnosticDataSource(
       }),
     }),
   };
+}
+
+/**
+ * A crash used to read as `stopped` here, the same word as a run someone stopped on purpose, so
+ * the one row that explained a broken environment looked like every other.
+ */
+function statusProcessState(state: ManagedProcessRecord['state']): StatusDiagnostic['processes'][number]['state'] {
+  if (state === 'RUNNING') return 'running';
+  if (state === 'STALE_IDENTITY') return 'stale';
+  if (state === 'FAILED') return 'failed';
+  return 'stopped';
 }
 
 async function isDirectory(path: string): Promise<boolean> {

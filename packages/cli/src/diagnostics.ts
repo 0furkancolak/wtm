@@ -46,9 +46,12 @@ const statusSchema = z.object({
   processes: z.array(z.object({
     task: z.string().min(1),
     pid: z.number().int().positive().nullable(),
-    state: z.enum(['running', 'stopped', 'stale', 'unknown']),
+    state: z.enum(['running', 'stopped', 'failed', 'stale', 'unknown']),
     startedAt: z.string().min(1).nullable(),
     argv: z.array(z.string()),
+    /** How a run that ended by itself ended; absent when that is not known. */
+    exitCode: z.number().int().optional(),
+    exitSignal: z.string().min(1).optional(),
   }).strict()),
   resources: z.array(z.object({
     name: z.string().min(1),
