@@ -113,3 +113,15 @@ describe('CORS resolution', () => {
     expect(await resolveCors({ root, origins: [] })).toEqual({ value: '', variables: [] });
   });
 });
+
+describe('CORS variable detection from variables.toml', () => {
+  it('reads the allowlist variable the checked-in public configuration declares', async () => {
+    await writeFile(join(root, 'variables.toml'), [
+      '[env.development.vars]',
+      'CORS_ALLOWED_ORIGINS = "http://localhost:3000"',
+      'API_URL = "http://localhost:8000"',
+    ].join('\n'));
+
+    expect(await detectCorsVariables(root)).toEqual(['CORS_ALLOWED_ORIGINS']);
+  });
+});

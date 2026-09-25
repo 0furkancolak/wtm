@@ -42,6 +42,30 @@ describe('service detection', () => {
     expect(service?.port?.evidence).toEqual([{ file: 'api/.env.example', detail: 'PORT=' }]);
   });
 
+  it('reads variables.toml, but never takes an infrastructure port in it for the app\'s own', async () => {
+    // A variables.toml holds every public value the app reads, the database and cache it talks
+    // to included. `REDIS_PORT = 6379` is where Redis listens, not where this app does.
+    const api = await repository('api', {
+      'variables.toml': [
+        '[env.development.vars]',
+        'API_URL = "http://localhost:8000"',
+        'CORS_ALLOWED_ORIGINS = "http://localhost:3000"',
+        'REDIS_PORT = "6379"',
+      ].join('\n'),
+      'package.json': JSON.stringify({ scripts: { dev: 'bun run src/index.ts --port 8000' } }),
+    });
+    const web = await repository('web', {
+      'variables.toml': '[env.development.vars]\nPORT = 3000\nAPI_URL = "http://localhost:8000"\n',
+    });
+
+    const services = (await detect(api, web)).services;
+
+    expect(named(services, 'api')?.port).toMatchObject({ env: null, preferred: 8000 });
+    expect(named(services, 'api')?.cors).toEqual(['CORS_ALLOWED_ORIGINS']);
+    expect(named(services, 'web')?.port).toMatchObject({ env: 'PORT', preferred: 3000 });
+    expect(named(services, 'web')?.port?.evidence).toEqual([{ file: 'web/variables.toml', detail: 'PORT=' }]);
+  });
+
   it('links a repository to the one whose port its address already names', async () => {
     const api = await repository('api', { '.env.example': 'PORT=4000\n' });
     const web = await repository('web', { '.env.example': 'VITE_API_URL=http://localhost:4000/v1\n' });

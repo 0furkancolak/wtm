@@ -3,7 +3,7 @@ import { basename, join, relative, sep } from 'node:path';
 import { join as joinPosix } from 'node:path/posix';
 import { corsVariablePattern } from '../runtime/cors';
 import { readComposeFile, type ComposeService } from './compose';
-import { readEnvDeclarations, type EnvDeclaration } from './declarations';
+import { publicVariablesFile, readEnvDeclarations, type EnvDeclaration } from './declarations';
 
 /** Where a detected fact was read from, named the way the repository names it. */
 export interface DetectionEvidence {
@@ -181,7 +181,11 @@ function detectPort(input: {
  */
 function ownPortDeclaration(declarations: EnvDeclaration[]): EnvDeclaration | undefined {
   const ports = declarations.filter(({ name }) => portVariablePattern.test(name));
-  return ports.find(({ name }) => name === 'PORT') ?? ports[0];
+  // A `variables.toml` holds every public value the app reads, the services it talks to
+  // included: its `REDIS_PORT` is where Redis listens, not where this app does. Only its own
+  // `PORT` speaks for the app; a prefixed guess comes from an example file or not at all.
+  return ports.find(({ name }) => name === 'PORT')
+    ?? ports.find(({ file }) => file !== publicVariablesFile);
 }
 
 /** `next dev -p 3000`, `vite --port 5173`, `PORT=3000 node server.js`. */

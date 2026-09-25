@@ -247,7 +247,7 @@ every port; that is how a web application reaches the API of its own branch.
 
 ## Configuration WTM writes for itself
 
-`wtm init` reads each repository (`.env.example`, `package.json`, compose files, `Makefile`) and
+`wtm init` reads each repository (`variables.toml`, `.env.example`, `package.json`, compose files, `Makefile`) and
 writes the port each repository wants, its variable, its CORS allowlist variable and any address
 pointing at another repository into `wtm.toml`.
 
@@ -255,7 +255,7 @@ pointing at another repository into `wtm.toml`.
   port; `wtm detect --write --json` appends the tables `wtm.toml` lacks.
 - Read `data.additions` for the exact TOML, and `warnings` for what was left alone and why.
 - Neither edits an existing line. If detection is wrong, correct `wtm.toml`: it is the source of truth.
-- Values come only from `.env` example files, and only ports or bare `http(s)` addresses. Never put a
+- Values come only from `variables.toml` and `.env` example files, and only ports or bare `http(s)` addresses. Never put a
   secret where WTM would have to carry it.
 
 ## Rules

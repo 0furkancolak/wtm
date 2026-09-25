@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { parse as parseToml } from 'smol-toml';
 
 /**
  * The files a repository uses to show which variables it reads, with placeholder values it is
@@ -19,6 +20,25 @@ export const exampleDeclarationFiles = [
  * there before its caller can see one.
  */
 export const declarationFiles = [...exampleDeclarationFiles, '.env'] as const;
+
+/**
+ * The checked-in, public half of `.env` some apps keep beside it: the `[vars]` and
+ * `[env.<name>.vars]` tables a wrangler configuration uses, holding every value that is not a
+ * secret, while `.env` keeps only the secrets. The app's own tooling copies the chosen table into
+ * the process environment and fills only what the environment leaves empty, so a value WTM sets
+ * wins over it, exactly as it wins over `.env`.
+ *
+ * It is read ahead of the example files: an app that has one tends to leave `.env.example`
+ * holding names only, and this is where the values it documents actually live.
+ */
+export const publicVariablesFile = 'variables.toml';
+
+/**
+ * The `[env.<name>.vars]` tables that describe this machine. Any other named environment
+ * (`staging`, `production`) describes somewhere else: its names are declarations, but its values
+ * are never a local port or address.
+ */
+const localEnvironmentNames = ['development', 'dev', 'local'] as const;
 
 /** `KEY=`, `export KEY=`, and the commented-out form an example file often uses. */
 const declarationPattern = /^\s*(?:#\s*)?(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
@@ -55,6 +75,11 @@ export interface EnvDeclaration {
 export async function readEnvDeclarations(root: string): Promise<EnvDeclaration[]> {
   const declarations: EnvDeclaration[] = [];
   const seen = new Set<string>();
+  for (const declaration of await readPublicVariables(join(root, publicVariablesFile))) {
+    if (seen.has(declaration.name)) continue;
+    seen.add(declaration.name);
+    declarations.push({ ...declaration, file: publicVariablesFile });
+  }
   for (const file of declarationFiles) {
     const keepValues = (exampleDeclarationFiles as readonly string[]).includes(file);
     for (const declaration of parseDeclarations(await readDeclarationFile(join(root, file)), keepValues)) {
@@ -64,6 +89,61 @@ export async function readEnvDeclarations(root: string): Promise<EnvDeclaration[
     }
   }
   return declarations;
+}
+
+/**
+ * A `variables.toml`'s declarations: every name in `[vars]` and in each `[env.<name>.vars]`, in
+ * file order, with the value kept only when it comes from `[vars]` or a local environment and
+ * has one of the safe shapes. Public is not the same as safe to repeat -- such a file can hold a
+ * connection string with a demo password in it -- so the same filter as an example file's
+ * applies. A file that does not parse declares nothing.
+ */
+async function readPublicVariables(path: string): Promise<Array<Omit<EnvDeclaration, 'file'>>> {
+  const text = await readDeclarationFile(path);
+  if (text === '') return [];
+  let document: unknown;
+  try {
+    document = parseToml(text);
+  } catch {
+    return [];
+  }
+  const tables: Array<{ vars: Record<string, unknown>; local: boolean }> = [];
+  const top = recordAt(document, 'vars');
+  if (top !== undefined) tables.push({ vars: top, local: true });
+  const environments = recordAt(document, 'env') ?? {};
+  for (const [name, environment] of Object.entries(environments)) {
+    const vars = recordAt(environment, 'vars');
+    if (vars !== undefined) tables.push({ vars, local: (localEnvironmentNames as readonly string[]).includes(name) });
+  }
+  // A local table's value outranks a remote table's name-only entry, whichever the file lists first.
+  tables.sort((left, right) => Number(right.local) - Number(left.local));
+
+  const declarations = new Map<string, Omit<EnvDeclaration, 'file'>>();
+  const order: string[] = [];
+  for (const { vars, local } of tables) {
+    for (const [name, raw] of Object.entries(vars)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) continue;
+      // A list or table cannot become an environment variable, so it declares nothing.
+      if (typeof raw !== 'string' && typeof raw !== 'number' && typeof raw !== 'boolean') continue;
+      const value = local ? keptValue(String(raw)) : null;
+      const existing = declarations.get(name);
+      if (existing === undefined) {
+        declarations.set(name, { name, value });
+        order.push(name);
+      } else if (existing.value === null && value !== null) {
+        existing.value = value;
+      }
+    }
+  }
+  // File order, not table order: the reader of a detection report recognises it that way.
+  const position = (name: string) => text.search(new RegExp(`^\\s*${name}\\s*=`, 'm'));
+  return order.sort((left, right) => position(left) - position(right)).map((name) => declarations.get(name) as Omit<EnvDeclaration, 'file'>);
+}
+
+function recordAt(value: unknown, key: string): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const next = (value as Record<string, unknown>)[key];
+  return typeof next === 'object' && next !== null && !Array.isArray(next) ? next as Record<string, unknown> : undefined;
 }
 
 /** The variable names alone, which is all a caller that must not see values should ask for. */

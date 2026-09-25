@@ -19,6 +19,13 @@ are unstable, and a breaking change may land in a minor release without a deprec
   which WTM variables a worker's own files (`vars`, `.dev.vars`, `.env`) also define and that
   nothing forwards. This includes a `wrangler.json` that app code reads directly. Files are read
   for variable names only.
+- `variables.toml`, the checked-in public half of `.env` some apps keep, is now a declaration
+  file. CORS detection and `wtm init`/`wtm detect` read it ahead of the `.env` example files:
+  names from `[vars]` and every `[env.<name>.vars]`, and safe port or URL values from `[vars]`
+  and the `development`/`dev`/`local` tables. The app's tooling fills only variables the
+  environment leaves empty, so WTM's value wins without any `worker_vars`. CORS variables are
+  also detected in a task's own `cwd`. A monorepo app in `apps/api` gets the allowlist under the
+  name its own `variables.toml` or `.env.example` declares, and other tasks don't.
 - `WTM_DAEMON_TIMEOUT` (exit 4): the daemon accepted a request but did not answer in time, and
   may still complete it.
 - Managed runs record how they ended: `exitCode` or `exitSignal` on `wtm ps` records and on

@@ -8,8 +8,10 @@ import {
   inspectResources,
   prepareResources,
   repoEnvironment,
+  detectCorsVariables,
   resolveCors,
   resolveEndpoints,
+  resolveTemplate,
   resolveEnvironment,
   resolveExistingEndpoints,
   resolveWorkspaceConfig,
@@ -51,6 +53,11 @@ export interface WorktreeRuntime {
   automaticEnvironment: Record<string, string>;
   /** The `[repos.<name>.environment]` of the repository this worktree belongs to, if any. */
   repoEnvironment?: Record<string, string>;
+  /**
+   * Variables WTM derived for one task only, keyed by task name: the CORS allowlist under the
+   * name the task's own working directory declares, when that is not the worktree root.
+   */
+  taskAutomaticEnvironment?: Record<string, Record<string, string>>;
   endpoints: ResolvedEndpoints;
   /**
    * Which file, and which line of it, each configuration key came from. `wtm explain` exists
@@ -130,10 +137,15 @@ export async function resolveWorktreeRuntime(input: WorktreeRuntimeInput): Promi
     Object.fromEntries(overrides.map((override) => [override.taskName, override.task])),
   );
 
+  const context = templateContext(registration, endpoints, cors.value);
+  const taskCors = config.value.cors?.enabled === false || config.value.cors?.env !== undefined || cors.value === ''
+    ? {}
+    : await taskDirectoryCors(resolved.value, context, registration.worktree.path, cors.value, cors.variables);
+
   return {
     registration,
     config: resolved.value,
-    context: templateContext(registration, endpoints, cors.value),
+    context,
     automaticEnvironment: {
       ...endpoints.env,
       ...Object.fromEntries(cors.variables.map((name) => [name, cors.value])),
@@ -142,7 +154,45 @@ export async function resolveWorktreeRuntime(input: WorktreeRuntimeInput): Promi
     provenance: resolved.provenance,
     ...(observed === undefined ? {} : { observedEndpoints: observed.endpoints }),
     ...(repo === undefined ? {} : { repoEnvironment: repo }),
+    ...(Object.keys(taskCors).length === 0 ? {} : { taskAutomaticEnvironment: taskCors }),
   };
+}
+
+/**
+ * The CORS allowlist, published for each task under the variable its own working directory
+ * declares. The worktree root is not always where an app lives: a monorepo's API keeps its
+ * `variables.toml` or `.env.example` in `apps/api`, and a task started there with
+ * `cwd = "{worktree.root}/apps/api"` reads its allowlist from a name the root never mentions.
+ * Only names the root did not already publish are added, and only to the tasks that run there.
+ */
+async function taskDirectoryCors(
+  config: WtmConfig,
+  context: TemplateContext,
+  worktreeRoot: string,
+  value: string,
+  rootVariables: readonly string[],
+): Promise<Record<string, Record<string, string>>> {
+  const byDirectory = new Map<string, Promise<string[]>>();
+  const result: Record<string, Record<string, string>> = {};
+  for (const [taskName, task] of Object.entries(config.tasks ?? {})) {
+    if (task.cwd === undefined) continue;
+    let directory: string;
+    try {
+      directory = resolve(worktreeRoot, resolveTemplate(task.cwd, context));
+    } catch {
+      // A cwd that needs a port not leased yet is resolved when the task is; nothing to add here.
+      continue;
+    }
+    if (directory === worktreeRoot) continue;
+    let detected = byDirectory.get(directory);
+    if (detected === undefined) {
+      detected = detectCorsVariables(directory);
+      byDirectory.set(directory, detected);
+    }
+    const names = (await detected).filter((name) => !rootVariables.includes(name));
+    if (names.length > 0) result[taskName] = Object.fromEntries(names.map((name) => [name, value]));
+  }
+  return result;
 }
 
 /**
@@ -198,7 +248,7 @@ export function taskResolutionInput(runtime: WorktreeRuntime, taskName: string):
     taskName,
     isMain: runtime.registration.worktree.isMain,
     context: runtime.context,
-    automaticEnvironment: runtime.automaticEnvironment,
+    automaticEnvironment: { ...runtime.automaticEnvironment, ...runtime.taskAutomaticEnvironment?.[taskName] },
     ...(runtime.repoEnvironment === undefined ? {} : { repoEnvironment: runtime.repoEnvironment }),
   };
 }

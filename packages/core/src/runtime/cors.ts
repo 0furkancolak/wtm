@@ -1,5 +1,4 @@
-import { join } from 'node:path';
-import { declarationFiles, readDeclaredNames } from '../detect/declarations';
+import { declarationFiles, readEnvDeclarations } from '../detect/declarations';
 import type { CorsConfig } from '../config/schema';
 
 /**
@@ -49,13 +48,12 @@ export async function resolveCors(input: CorsResolutionInput): Promise<ResolvedC
   return { value, variables };
 }
 
-/** The CORS variables the repository's own example files declare, in the order first seen. */
+/**
+ * The CORS variables the directory's own declaration files name -- its `variables.toml`, its
+ * example files and its `.env` -- in the order first seen.
+ */
 export async function detectCorsVariables(root: string): Promise<string[]> {
-  const found = new Set<string>();
-  for (const file of corsDeclarationFiles) {
-    for (const name of await readDeclaredNames(join(root, file))) {
-      if (corsVariablePattern.test(name)) found.add(name);
-    }
-  }
-  return [...found];
+  return (await readEnvDeclarations(root))
+    .map(({ name }) => name)
+    .filter((name) => corsVariablePattern.test(name));
 }

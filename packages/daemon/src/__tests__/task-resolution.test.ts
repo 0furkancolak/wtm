@@ -28,6 +28,7 @@ describe('worktree runtime resolution', () => {
       },
       perRepositoryPort: { api: true, web: true, distinct: true },
       task: { argv: ['node', 'server.js'], cwd: true, port: true },
+      appDirectoryCors: { appTask: true, rootTask: false },
       unregistered: 'This directory is not inside a worktree WTM has registered. Run `wtm init` in the workspace root.',
     });
     // One feature, two repositories: the branch is checked out in both, and both belong to it.

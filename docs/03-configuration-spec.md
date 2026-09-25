@@ -305,11 +305,16 @@ origins = ["https://staging.example"]
 
 An API whose port changes per feature needs an allowlist that changes with it. WTM composes
 one from every endpoint marked as an origin, and publishes it under the variables the
-repository already declares in `.env.example`, `.env.sample`, `.env.template`,
+repository already declares in `variables.toml`, `.env.example`, `.env.sample`, `.env.template`,
 `.env.defaults`, or `.env` — matching `CORS_ORIGIN`, `CORS_ORIGINS`, `CORS_ALLOWED_ORIGINS`,
 `ALLOWED_ORIGINS`, and the same spellings behind a project prefix.
 
-Only variable *names* are read from those files; no value is ever parsed out of them. Naming
+These files are read in the worktree root, and also in the working directory of every task
+whose `cwd` is somewhere else. A monorepo app such as `apps/api` keeps its declarations in its
+own directory, and the task started there with `cwd = "{worktree.root}/apps/api"` gets the
+allowlist under the name that directory declares. Other tasks do not get it.
+
+Only variable *names* are read from those files for this; no value is ever parsed out of them. Naming
 `env` here replaces detection; `enabled = false` turns it off — `{cors.origins}` still
 resolves, so a configuration that names the variables itself should set it.
 
@@ -325,12 +330,41 @@ port>`. See [`docs/07`](07-process-port-runtime.md#local-reverse-proxy) for the 
 this is purely additive and only applies when `[proxy] enabled = true`, so `[cors]` itself needs
 no configuration to get it.
 
+### `variables.toml`: the public half of `.env`
+
+Some apps keep every value that is not a secret in a checked-in `variables.toml`, and only the
+secrets in the gitignored `.env`. The file uses the tables a wrangler configuration uses:
+
+```toml
+[env.development.vars]
+API_URL = "http://localhost:8000"
+CORS_ALLOWED_ORIGINS = "http://localhost:3000,http://localhost:3001"
+REDIS_PORT = "6379"
+```
+
+The app's own tooling copies the chosen table into the process environment and fills only the
+variables the environment leaves empty or unset. A value WTM sets therefore wins, just as it wins
+over `.env`. Such an app needs no `worker_vars` and no change to the file: publishing
+`CORS_ALLOWED_ORIGINS` for the feature is enough. The `wrangler dev` case above is the opposite,
+and the only one where WTM's value loses to a file.
+
+WTM reads `variables.toml` as a declaration file, ahead of the `.env` example files, because an
+app that has one tends to leave `.env.example` with names only. It counts the names in `[vars]`
+and in every `[env.<name>.vars]`. Values come only from `[vars]` and the local environments
+(`development`, `dev`, `local`), and only when they are a port or a loopback/service URL, the same
+filter as an example file. A checked-in file is not automatically safe to repeat: a connection
+string with a demo password in it is dropped all the same. `staging`, `production` and any other
+named environment describe somewhere else, so they contribute names only. For the app's own port,
+only a bare `PORT` in `variables.toml` counts. Its `REDIS_PORT` is where Redis listens, not where
+the app does.
+
 ## Detection
 
 `wtm init` and `wtm detect` read each repository and write what they find as configuration.
 
 | Read | For |
 | --- | --- |
+| `variables.toml` | Variable names from `[vars]` and every `[env.<name>.vars]`; values that are a port or a loopback/service URL from `[vars]` and the `development`/`dev`/`local` tables. Only a bare `PORT` is taken as the app's own port |
 | `.env.example`, `.env.sample`, `.env.template`, `.env.defaults` | Variable names, and values that are a port or a loopback/service URL |
 | `.env` | Variable names only |
 | `package.json` | `scripts.dev`/`start`/`serve` port flags, workspace layout |
