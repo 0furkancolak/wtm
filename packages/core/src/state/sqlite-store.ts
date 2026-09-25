@@ -1194,6 +1194,27 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
     `).run(releasedAt, worktreeId).changes);
   }
 
+  /**
+   * Gives back the ports of a feature none of whose worktrees has ever run a managed task, and says
+   * how many; `null`, releasing nothing, when one of them has. The check and the release are one
+   * transaction, so a start that records its run after `wtm gc` planned keeps the ports it got.
+   */
+  releaseNeverStartedEndpointLeases(worktreeIds: readonly string[], releasedAt: string): number | null {
+    this.#assertOpen();
+    if (worktreeIds.length === 0) return 0;
+    const placeholders = worktreeIds.map(() => '?').join(', ');
+    return this.transaction(() => {
+      const ran = this.#database.prepare(`
+        SELECT 1 FROM managed_processes WHERE worktree_id IN (${placeholders}) LIMIT 1
+      `).get(...worktreeIds);
+      if (ran !== undefined) return null;
+      return this.#database.prepare(`
+        UPDATE endpoint_leases SET state = 'RELEASED', last_verified_at = ?
+        WHERE worktree_id IN (${placeholders}) AND state = 'ACTIVE'
+      `).run(releasedAt, ...worktreeIds).changes;
+    });
+  }
+
   reassignEndpointLeases(fromWorktreeId: string, toWorktreeId: string): number {
     this.#assertOpen();
     return this.transaction(() => this.#reassignActiveLeases(fromWorktreeId, toWorktreeId));

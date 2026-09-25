@@ -52,9 +52,15 @@ When do leases change:
 - A new lease is taken only by a command that is about to run something: `wtm start`, `wtm
   restart`, `wtm run`, `wtm exec`, and the daemon's eager preparation (`[prepare] mode = "eager"`).
   `wtm env` and `wtm explain` also lease, because they answer with the values a task would get.
+  An answer that leased nothing would either fail on `{port.x}` or print a number the next
+  `wtm start` could change, and `wtm env`'s output is often used to run a server outside WTM.
   `wtm resolve`, `wtm status`, `wtm doctor`, `wtm plan`, `wtm ports` and `wtm tui` never do.
   Before these reports stopped leasing, a worktree that never ran a task held a port for every
   `[ports.*]` endpoint as soon as an agent asked about it.
+- `wtm gc --apply` gives back the leases of a feature none of whose worktrees has ever run a
+  managed task, unless something is listening on one of its ports. That covers what older
+  versions' reports took, and what `wtm env`/`wtm explain` took for a feature that was never
+  started. A feature that has run a task keeps its leases.
 - The first lease for a feature covers every `[ports.*]` endpoint, not only the ones the task uses.
   This keeps the guarantee that every repository of a feature sees the same `{port.<name>}`, and
   that `{cors.origins}` names every origin of the feature.

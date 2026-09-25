@@ -1,5 +1,6 @@
 import { applyGcPlan, type ApplyGcOptions, type GcItemResult, type GcPlan } from '@wtm/core';
 import type { JsonEnvelope, WtmError } from '@wtm/protocol';
+import type { LeaseReclaimGroup } from './lease-reclaim';
 
 export interface GcCommandInput extends Omit<ApplyGcOptions, 'apply'> {
   plan: GcPlan;
@@ -12,6 +13,8 @@ export interface GcCommandResult {
   planned: number;
   excluded: number;
   items: Awaited<ReturnType<typeof applyGcPlan>>['items'];
+  /** Port leases of features that never ran a task; only the workspace-scoped command reports it. */
+  leases?: LeaseReclaimGroup[];
 }
 
 export type GcCommandEnvelope = JsonEnvelope<GcCommandResult>;
