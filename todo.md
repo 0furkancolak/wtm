@@ -2453,8 +2453,10 @@ yaşadı. Anchor grubun boşalmasını beklediği için kayıt o süre boyunca `
       `wtm stop`/`wtm restart` da çıkış kodunu kaydediyor (`STOPPING` üzerinden; terminal durum
       store'da değiştirilemiyor).
 - [x] `wtm ps` kayda `taskExited` ekliyor, `wtm status` `exited` gösteriyor.
-- [ ] Windows: kod yolu platformdan bağımsız (aynı anchor log store'u, `taskkill /T`); win32
-      filter koşusu ile yerel kanıt henüz alınmadı.
+- [x] Windows: kod yolu platformdan bağımsız (aynı anchor log store'u, `taskkill /T`). win32
+      filter koşusu `36120644004`: `heavy-job-logs` + `anchor-log-capability` 7/7 yeşil (işaret
+      okuma, kimlik, `prepare()` temizliği, `removeJob`). Uçtan uca kalan-grup senaryosu
+      (`process-supervisor.test.ts`) Windows'ta item 9 kapsamındaki bilinen hatalar yüzünden koşmuyor.
 
 ---
 
