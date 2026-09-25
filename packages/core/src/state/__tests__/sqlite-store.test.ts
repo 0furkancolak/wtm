@@ -240,6 +240,16 @@ describe('SQLiteStateStore', () => {
     });
   });
 
+  test('hands a vanished worktree\'s feature leases to a live sibling on its branch instead of releasing them', () => {
+    expect(runScenario('feature-lease-survives-owner-absence')).toEqual({
+      sharedPort: 4100,
+      // The renamed worktree is a live sibling on the same branch, so it takes its own port back.
+      handedOver: [{ port: 4100, holder: 'renamed-api' }],
+      loneLease: [{ port: 4150, state: 'RELEASED' }],
+      alonePort: 4150,
+    });
+  });
+
   test('gives back the ports of a worktree Git no longer reports, and returns them if it comes back', () => {
     expect(runScenario('orphaned-endpoint-release')).toEqual({
       allocatedPort: 4100,

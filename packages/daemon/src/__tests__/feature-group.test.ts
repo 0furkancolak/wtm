@@ -6,7 +6,7 @@ import type {
   WorktreeRecord,
   WorktreeState,
 } from '@wtm/core';
-import { featureGroup, type Registration } from '../task-resolution';
+import { featureGroup, findRegistration, leaseOwner, type Registration } from '../task-resolution';
 
 const workspace: WorkspaceRecord = {
   id: 'workspace-1', name: 'demo', root: '/projects/demo', scope: 'local',
@@ -102,5 +102,52 @@ describe('featureGroup', () => {
     const registration: Registration = { workspace, repository: api, worktree: apiWorktree };
 
     expect(featureGroup(fakeStore([], []), registration)).toEqual([apiWorktree]);
+  });
+});
+
+describe('leaseOwner', () => {
+  test('never hands the group\'s leases to a dead worktree, even when it sorts first', () => {
+    // A shell whose working directory still spells a renamed worktree's old path resolves to the
+    // old, ORPHANED row. `featureGroup` keeps it (it is the caller), and it sorts first -- so it
+    // became the owner, new leases landed on it, and the next reconcile released them from under
+    // the feature's running tasks.
+    const api = repository('repo-api', '/projects/demo/api');
+    const web = repository('repo-web', '/projects/demo/web');
+    const stale = worktree('worktree-old', api.id, '/projects/demo/.worktrees/ecw-1-api', 'feature', 'ORPHANED');
+    const live = worktree('worktree-api', api.id, '/projects/demo/.worktrees/ECW-1-api', 'feature', 'RUNNING');
+    const webWorktree = worktree('worktree-web', web.id, '/projects/demo/.worktrees/ECW-1-web', 'feature', 'READY');
+    const registration: Registration = { workspace, repository: api, worktree: stale };
+    const group = featureGroup(fakeStore([api, web], [stale, live, webWorktree]), registration);
+
+    expect(group[0]?.id).toBe('worktree-old');
+    expect(leaseOwner(group, registration).id).toBe('worktree-api');
+  });
+
+  test('falls back to the registration\'s own worktree when nothing in the group is live', () => {
+    const api = repository('repo-api', '/projects/demo/api');
+    const stale = worktree('worktree-old', api.id, '/projects/demo/api-old', 'feature', 'ORPHANED');
+    const registration: Registration = { workspace, repository: api, worktree: stale };
+
+    expect(leaseOwner([stale], registration).id).toBe('worktree-old');
+  });
+});
+
+describe('findRegistration', () => {
+  const api = repository('repo-api', '/projects/demo/api');
+  const stale = worktree('worktree-old', api.id, '/projects/demo/.worktrees/ecw-1-api', 'feature', 'ORPHANED');
+  const live = worktree('worktree-api', api.id, '/projects/demo/.worktrees/ECW-1-api', 'feature', 'RUNNING');
+  // What a case-insensitive filesystem's real path says about a directory whose case changed.
+  const canonical = (path: string) => path.replace('/ecw-1-api', '/ECW-1-api');
+
+  test('answers from the live worktree when the directory was reached through a stale spelling of its path', () => {
+    expect(findRegistration(fakeStore([api], [stale, live]), '/projects/demo/.worktrees/ecw-1-api/src', canonical).worktree.id)
+      .toBe('worktree-api');
+  });
+
+  test('still answers with a dead worktree when no live one is the same directory', () => {
+    expect(findRegistration(fakeStore([api], [stale]), '/projects/demo/.worktrees/ecw-1-api', canonical).worktree.id)
+      .toBe('worktree-old');
+    expect(findRegistration(fakeStore([api], [stale, live]), '/projects/demo/.worktrees/ecw-1-api', () => null).worktree.id)
+      .toBe('worktree-old');
   });
 });

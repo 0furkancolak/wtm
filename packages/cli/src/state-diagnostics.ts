@@ -253,12 +253,12 @@ export function createStateDiagnosticDataSource(
   // caller must pass the specific workspace's own current worktree's path instead (see
   // `adapterFinding`'s comment on `findRegistration` for why an unscoped `options.cwd` resolves
   // to whichever registered worktree is deepest, not necessarily this workspace's own).
+  //
+  // Resolved without allocating: this is a report, and every agent session begins with one in
+  // every worktree it touches. Leasing here is how a worktree that never ran a task came to hold
+  // a port for every endpoint in `[ports]`.
   const declaredResources = async (cwd = options.cwd): Promise<StatusDiagnostic['resources']> =>
-    await inspectRuntimeResources(await resolveWorktreeRuntime({
-      store,
-      cwd,
-      globalConfigPath: options.globalConfigPath,
-    }));
+    await inspectRuntimeResources(await worktreeRuntime(false, cwd));
 
 
   /**

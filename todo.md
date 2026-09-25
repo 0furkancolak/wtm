@@ -2436,6 +2436,53 @@ listeli: `docs/superpowers/specs/2026-09-14-ci-watch-design.md`.
 
 ---
 
+### [ ] 55. Task çıktıktan sonra grubunda kalan süreçler, task'ı "RUNNING" gösteriyor
+
+2026-09-25 marcapony bulgusu (`api:dev`, wrangler 4.127.1). wrangler kendi `ProxyWorker`'ında
+"Network connection lost." ile 07:27:11Z'de çıktı; workerd çocukları süreç grubunda ~30 sn daha
+yaşadı. Anchor, task çıktıktan sonra grubun tamamen boşalmasını **süresiz** bekliyor
+(`process-anchor.ts` `checkGroup`), bu yüzden kayıt o süre boyunca `RUNNING` kaldı ve ancak 07:27:41Z'de
+`FAILED` oldu. Aynı pencerede `wtm start api:dev` `existing: true` döndürüyor — ölü bir task'ı
+çalışıyor sanıp hiçbir şey başlatmıyor (supervisor düzeyinde yeniden üretildi, commit'lenmedi).
+
+#### Yapılacaklar
+
+- [ ] Anchor, task çıktığı anda ayrı bir işaret yazsın (`exited.json`: `exitCode`/`signal`), grup
+      boşalmayı beklemeden. `completion.json` ile aynı ACL/kimlik kurallarıyla (`anchor-log-trust.ts`),
+      `logs.ts` `prepare()` ve `removeJob` izin listesi dahil.
+- [ ] `wtm start` aktif bir kayıtta bu işareti görürse: kalan grubu `grace_period` ile durdursun,
+      eski koşuyu `FAILED` + çıkış kodu olarak kaydetsin ve yeni koşuyu başlatsın; `existing: true`
+      dönmesin.
+- [ ] `wtm ps`/`wtm status` bu durumu ayrı göstersin (ör. `EXITED`, "task çıktı, N süreç kaldı").
+- [ ] Windows yolu (`taskkill /T`) ve win32 filter koşusu ile kanıt.
+
+**Not:** Bu PR'da yalnızca teşhis edildi. `WTM_DAEMON_TIMEOUT` ve 60 sn'lik lifecycle timeout, aynı
+pencerede görülen "ilk `start` hata, ikincisi başarılı" belirtisini açıklayan client tarafını
+düzeltti; ilk çağrının gerçek hata metni kayıt altına alınmadığı için kesin nedeni doğrulanamadı.
+
+---
+
+### [ ] 56. Hiç başlatılmamış feature'ların port lease'lerini geri al
+
+2026-09-25 marcapony bulgusu: `ECW-893-api` (`DISCOVERED`, yalnızca `api:dev` çalıştıran bir repo)
+17 `[ports.*]` endpoint'inin hepsini 2026-09-17'den beri `ACTIVE` tutuyor. Asıl kaynak — rapor
+komutlarının (`status`, `doctor`, `resolve`, `tui`) lease alması — bu PR'da kapandı; ama
+geçmişte alınmış lease'ler duruyor ve `wtm env`/`wtm explain` hâlâ lease alıyor.
+
+#### Yapılacaklar
+
+- [ ] `wtm gc` (dry-run varsayılan, `--apply` ile) feature grubunun hiçbir üyesinde hiç
+      `managed_processes` kaydı olmayan lease'leri raporlasın ve serbest bıraksın; grupta çalışan
+      ya da geçmişte çalışmış bir task varsa dokunmasın.
+- [ ] Lease'i `wtm env`/`wtm explain` için de tembel yapmak ya da bırakmak kararı: ikisi de
+      "task hangi değerleri alır" sorusunu cevaplıyor; lease almadan cevap verirlerse lease'siz
+      `{port.x}` referansları için açık bir "henüz lease yok" durumu gerekir.
+- [ ] Port başına tembel lease **yapılmamalı**: aynı feature'daki tüm repoların aynı `{port.x}`'i
+      görmesi ve `{cors.origins}`'in feature'ın tüm origin'lerini içermesi ilk lease'te tüm
+      endpoint'leri gerektiriyor (bkz. `docs/07-process-port-runtime.md`, "When do leases change").
+
+---
+
 ## P2 — Ürünü belirgin biçimde farklılaştıracak işler
 
 ### [ ] 12. Local reverse proxy / stable feature domains

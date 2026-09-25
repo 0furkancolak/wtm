@@ -80,6 +80,35 @@ describe('endpoint planning', () => {
     expect(web.ports.api).toBe(api.ports.api as number);
   });
 
+  it('keeps a feature\'s port while its own task holds it, from any worktree of the feature', () => {
+    // The port a running task listens on is busy by definition. A resolution that probed the
+    // feature's existing lease would read that as "taken" and move the whole feature away from
+    // the task that holds it.
+    const store = createLeaseStore();
+    const first = resolveEndpoints(store, {
+      ports: { range: '4100-4199', web: { preferred: 4150 } },
+      worktreeId: 'api-feature', groupWorktreeIds: ['api-feature', 'web-feature'], index: 1,
+    }, alwaysFree);
+    let probes = 0;
+    const whileRunning: EndpointAvailabilityProbe = () => { probes += 1; return false; };
+
+    const again = [
+      resolveEndpoints(store, {
+        ports: { range: '4100-4199', web: { preferred: 4150 } },
+        worktreeId: 'api-feature', groupWorktreeIds: ['api-feature', 'web-feature'], index: 1,
+      }, whileRunning),
+      resolveEndpoints(store, {
+        ports: { range: '4100-4199', web: { preferred: 4150 } },
+        worktreeId: 'web-feature', groupWorktreeIds: ['web-feature', 'api-feature'], index: 2,
+      }, whileRunning),
+    ];
+
+    expect(first.ports).toEqual({ web: 4150 });
+    expect(again.map(({ ports }) => ports)).toEqual([{ web: 4150 }, { web: 4150 }]);
+    expect(probes).toBe(0);
+    expect(store.listEndpointLeases()).toHaveLength(1);
+  });
+
   it('refuses a preferred port the range would never offer', () => {
     // The allocator only tries a preference inside the range, so silence here is a workspace
     // that asked for 3000, was given 20000, and has nothing to read that explains it.

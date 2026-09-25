@@ -540,6 +540,12 @@ currently active can be refused by it, the same as `start` above.
 Prints the final command, cwd and environment delta without running it.
 Use `--json` for the stable V1 envelope. The argument is always a configured task name; it is not a worktree selector.
 
+`resolve` is a report: it answers from the ports the feature already holds and never leases one.
+Repeated calls return the same ports for as long as the leases exist. When the task references an
+endpoint nothing has leased yet, it fails with `WTM_TEMPLATE_UNRESOLVED`. `context.endpoint` names
+the endpoint, and the remediation is `wtm start <task>`, since `start` and `run` lease every endpoint
+of the feature.
+
 `--worktree <selector>` runs the command against another worktree instead of the one containing the
 current directory: a branch, a worktree directory name, a registered number, or a path. `--repo
 <name>` names the repository when the selector matches worktrees in several; it is refused without

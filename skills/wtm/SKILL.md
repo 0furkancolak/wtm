@@ -48,7 +48,7 @@ failure, `2` usage or configuration, `3` safety refusal or conflict, `4` daemon 
 | `wtm plan [selector] --json` | See the declarative changes WTM would make, without applying them. |
 | `wtm env [selector] --json` | Read the resolved environment delta. |
 | `wtm ports [selector] --json` | Read endpoint leases (the ports). |
-| `wtm resolve <task> --json` | Read a task's exact argv, working directory and environment without running it. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
+| `wtm resolve <task> --json` | Read a task's exact argv, working directory and environment without running it. Never leases a port: an endpoint nothing has leased yet fails with `WTM_TEMPLATE_UNRESOLVED` until `wtm start`/`wtm run` leases it. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm run <task>` | Run a task in the foreground. `--enqueue --idempotency-key <key> --json` queues a heavy one. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm start <task>` | Start a long-running task under supervision. `--wait --timeout <duration> --json` waits for its healthcheck. `--worktree <selector>` (`--repo <name>`) targets another worktree. |
 | `wtm stop [task]` | Stop one managed task, or all of this worktree's. `--worktree <selector>` (`--repo <name>`) targets another worktree. |

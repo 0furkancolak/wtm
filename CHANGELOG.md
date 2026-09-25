@@ -28,6 +28,13 @@ are unstable, and a breaking change may land in a minor release without a deprec
 
 ### Changed
 
+- `wtm resolve`, `wtm status` and `wtm doctor` (and `wtm tui`, which polls the last two) no longer
+  lease ports. They answer from the leases a feature already holds. A worktree that never ran a
+  task used to hold a port for every `[ports.*]` endpoint as soon as an agent ran `wtm status` in
+  it. That used up the range and pushed features off their preferred ports. `wtm resolve` on an
+  endpoint nothing has leased yet fails with `WTM_TEMPLATE_UNRESOLVED`, naming the endpoint and
+  suggesting `wtm start <task>`. `wtm start`, `wtm run`, `wtm exec`, `wtm env` and `wtm explain`
+  still lease.
 - `wtm ps` lists live runs, and each stopped task's latest run when that run failed, instead of
   every run ever recorded across the workspace. In a busy workspace that was dozens of rows per
   task, labelled only by worktree id, and a crash was easy to miss among clean stops.
@@ -35,6 +42,15 @@ are unstable, and a breaking change may land in a minor release without a deprec
 
 ### Fixed
 
+- A feature's ports could move while its tasks were running. When the worktree holding the
+  feature's shared leases left Git's listing (removed outside `wtm remove`, or renamed, which on a
+  case-insensitive disk can be a change of case alone), reconciliation released the leases. The
+  next allocation then found the preferred port busy with the feature's own task and took another
+  port. The leases now pass to a live worktree on the same branch.
+- A shell whose working directory still spelled a renamed worktree's old path resolved to the old,
+  orphaned worktree record. It then became the owner of the feature's new leases, which the next
+  reconcile released. WTM now resolves such a directory through its real path, and never records a
+  new lease on a dead worktree.
 - `wtm status` reported a crashed run as `stopped`, the same word as a deliberate stop. It is now
   `failed`.
 - A run that ended while no daemon was watching (daemon restarted, upgraded or crashed) was always

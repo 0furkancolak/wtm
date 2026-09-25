@@ -117,6 +117,56 @@ async function multiRepoRootRunWithoutRepositories() {
   ];
 }
 
+/**
+ * `wtm resolve` reports; it must not lease. It used to take a port for every endpoint of the
+ * feature on the way to an answer, so an agent's repeated `resolve` calls in a worktree whose
+ * leases had gone (a release, a rename) returned a new port each time while the task ran on
+ * another.
+ */
+async function resolveDoesNotLease() {
+  const root = await temporaryRoot();
+  git(root, 'init', '-q', '-b', 'main', '.');
+  git(root, 'config', 'user.email', 'production@example.invalid');
+  git(root, 'config', 'user.name', 'WTM Production');
+  await writeFile(join(root, 'wtm.toml'), [
+    'version = 1', '', '[workspace]', 'name = "production"', '',
+    '[ports]', 'range = "46100-46199"', '[ports.web]', 'preferred = 46150', '',
+    '[tasks.serve]', `run = ${JSON.stringify(['node', '-e', 'void 0', '{port.web}'])}`, '',
+  ].join('\n'));
+  git(root, 'add', '-A');
+  git(root, 'commit', '-qm', 'configure');
+  const databasePath = join(root, 'state.db');
+  const store = new SQLiteStateStore(databasePath);
+  const workspace = store.upsertWorkspace({ name: 'production', root, scope: 'local', configPath: join(root, 'wtm.toml') });
+  const repository = store.upsertRepository({ workspaceId: workspace.id, commonGitDir: join(root, '.git'), mainRoot: root, remoteIdentity: null });
+  store.reconcileWorktrees(repository.id, [{
+    path: root, head: 'head', branch: 'refs/heads/main', detached: false, bare: false, lockedReason: null, prunableReason: null,
+  }]);
+  store.close();
+  const dependencies = { cwd: root, taskTargetDatabasePath: databasePath, taskTargetGlobalConfigPath: join(root, 'global.toml') };
+  const leases = () => {
+    const reader = new SQLiteStateStore(databasePath);
+    try { return reader.listEndpointLeases().map(({ port, state, allocatedAt }) => ({ port, state, allocatedAt })); }
+    finally { reader.close(); }
+  };
+
+  const unleased = await capture(['resolve', 'serve', '--json'], dependencies);
+  const leasesBefore = leases().length;
+  const ran = await capture(['run', 'serve', '--json'], dependencies);
+  const afterRun = leases();
+  const first = await capture(['resolve', 'serve', '--json'], dependencies);
+  const second = await capture(['resolve', 'serve', '--json'], dependencies);
+  return {
+    unleased: [unleased.exitCode, unleased.envelope.errors[0]?.code, unleased.envelope.errors[0]?.context?.['endpoint'],
+      unleased.envelope.errors[0]?.message.includes('has no port leased yet')],
+    leasesBefore,
+    ran: [ran.exitCode, ran.envelope.data?.['task']?.argv?.[3]],
+    // `resolve`'s data is the resolved task itself; `run`'s wraps it with the exit status.
+    resolvedPorts: [first.envelope.data?.['argv']?.[3], second.envelope.data?.['argv']?.[3]],
+    leasesUnchanged: JSON.stringify(leases()) === JSON.stringify(afterRun),
+  };
+}
+
 async function scopedHelp() {
   const describe = async (argv: readonly string[]) => {
     let output = '';
@@ -134,6 +184,7 @@ try {
     foregroundRun: await foregroundRun(),
     multiRepoRootResolve: await multiRepoRootResolve(),
     multiRepoRootRunWithoutRepositories: await multiRepoRootRunWithoutRepositories(),
+    resolveDoesNotLease: await resolveDoesNotLease(),
     scopedHelp: await scopedHelp(),
   }));
 } finally {

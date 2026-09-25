@@ -288,7 +288,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
       return;
     }
     const envelope = dependencies.resolveRunner === undefined
-      ? await runProductionResolve({ cwd: target.cwd, taskName })
+      ? await runProductionResolve({ cwd: target.cwd, taskName }, productionResolutionPaths(dependencies))
       : await dependencies.resolveRunner({ cwd: target.cwd, taskName });
     renderRuntime(envelope, runtimeJson(program, options));
   });
@@ -310,7 +310,7 @@ export function createCli(dependencies: CliDependencies = {}, hooks: CliHooks = 
     }
     const envelope = options.enqueue === true
       ? await runEnqueueCommand({ cwd: target.cwd, taskName, ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }) }, dependencies.runtimeClient)
-      : await runProductionRun({ cwd: target.cwd, taskName });
+      : await runProductionRun({ cwd: target.cwd, taskName }, productionResolutionPaths(dependencies));
     renderRuntime(envelope, runtimeJson(program, options));
   });
 
@@ -1662,17 +1662,35 @@ async function runProductionForget(input: {
   }
 }
 
-async function runProductionResolve(input: { cwd: string; taskName: string }): Promise<JsonEnvelope<unknown>> {
+interface ProductionResolutionPaths { databasePath: string; globalConfigPath: string }
+
+/** The same state and global configuration the task commands' `--worktree`/`--repo` read. */
+function productionResolutionPaths(dependencies: CliDependencies): ProductionResolutionPaths {
+  const defaults = defaultProductionRuntimePaths();
+  return {
+    databasePath: dependencies.taskTargetDatabasePath ?? defaults.databasePath,
+    globalConfigPath: dependencies.taskTargetGlobalConfigPath ?? defaults.globalConfigPath,
+  };
+}
+
+async function runProductionResolve(
+  input: { cwd: string; taskName: string },
+  paths: ProductionResolutionPaths,
+): Promise<JsonEnvelope<unknown>> {
   try {
-    return await runResolveCommand(await productionTaskResolution(input));
+    // A report, so it answers from the leases that exist and takes none.
+    return await runResolveCommand(await productionTaskResolution({ ...input, allocate: false }, paths));
   } catch (error) {
     return resolutionFailure('resolve', input.taskName, error);
   }
 }
 
-async function runProductionRun(input: { cwd: string; taskName: string }): Promise<JsonEnvelope<unknown>> {
+async function runProductionRun(
+  input: { cwd: string; taskName: string },
+  paths: ProductionResolutionPaths,
+): Promise<JsonEnvelope<unknown>> {
   try {
-    return await runRunCommand(await productionTaskResolution({ ...input, prepare: true }));
+    return await runRunCommand(await productionTaskResolution({ ...input, prepare: true }, paths));
   } catch (error) {
     return resolutionFailure('run', input.taskName, error);
   }
@@ -1704,19 +1722,20 @@ function resolutionFailure(
  * only that one may create the resources the task expects to find.
  */
 async function productionTaskResolution(
-  input: { cwd: string; taskName: string; prepare?: boolean },
-  databasePath = defaultProductionRuntimePaths().databasePath,
+  input: { cwd: string; taskName: string; prepare?: boolean; allocate?: boolean },
+  paths: ProductionResolutionPaths,
 ): Promise<TaskResolutionInput & { workspaceId?: string }> {
   // The registry is what knows where the workspace root is, which in a directory holding
   // several repositories is nowhere near the current one. Resolving without it read the
   // wrong `wtm.toml` — or none — and answered differently from the supervised path.
-  const store = openStateStore(databasePath);
+  const store = openStateStore(paths.databasePath);
   if (store !== null) {
     try {
       const runtime = await resolveWorktreeRuntime({
         store,
         cwd: input.cwd,
-        globalConfigPath: defaultProductionRuntimePaths().globalConfigPath,
+        globalConfigPath: paths.globalConfigPath,
+        ...(input.allocate === false ? { allocate: false } : {}),
       });
       // The host's policy, like every other core call this file makes: `prepareResources`
       // otherwise falls back to core's POSIX-only default, which on win32 reads the `0o777` mode

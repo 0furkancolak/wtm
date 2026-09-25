@@ -1144,3 +1144,37 @@ describe('process states in status', () => {
     expect(processes[2]).not.toHaveProperty('exitCode');
   });
 });
+
+describe('reports take no ports', () => {
+  it('status and doctor answer without leasing an endpoint', async () => {
+    // Every agent session starts with `wtm status`/`wtm doctor`, in every worktree it touches.
+    // Both used to lease every [ports.*] endpoint on the way to an answer, which is how a
+    // worktree that never ran a task came to hold seventeen ports.
+    const root = mkdtempSync(join(tmpdir(), 'wtm-report-no-lease-'));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, 'repo'));
+    writeFileSync(join(root, 'wtm.toml'), [
+      'version = 1', '[ports]', 'range = "46200-46299"', '[ports.web]', 'preferred = 46250',
+      '[resources.env]', 'path = ".env"', 'policy = "ignore"',
+    ].join('\n'));
+    const local: WorkspaceRecord = { ...workspace, root, configPath: null };
+    const repository: RepositoryRecord = { ...repositories[0] as RepositoryRecord, commonGitDir: join(root, 'repo/.git'), mainRoot: join(root, 'repo') };
+    let allocations = 0;
+    const source = createStateDiagnosticDataSource({
+      listWorkspaces: () => [local],
+      listRepositories: () => [repository],
+      listWorktrees: () => [worktree('only', repository.id, join(root, 'repo'), 1)],
+      listManagedProcesses: () => [],
+      listEndpointLeases: () => [],
+      allocateEndpoint: () => { allocations += 1; throw new Error('a report must not lease'); },
+    } as unknown as DaemonStateStore, { cwd: join(root, 'repo'), globalConfigPath: join(root, 'config.toml') });
+    const registeredLocal = { id: local.id, name: local.name, root: local.root, scope: local.scope };
+
+    const status = await source.readStatus(registeredLocal);
+    const findings = (await source.readDoctor(registeredLocal)).findings;
+
+    expect(allocations).toBe(0);
+    expect(status.resources.map(({ name }) => name)).toEqual(['env']);
+    expect(findings.find(({ check }) => check === 'resources')?.status).toBe('pass');
+  });
+});

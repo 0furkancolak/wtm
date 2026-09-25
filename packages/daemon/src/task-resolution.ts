@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import {
   applyTaskOverrides,
@@ -93,7 +94,7 @@ export async function resolveWorktreeRuntime(input: WorktreeRuntimeInput): Promi
     globalConfigPath: input.globalConfigPath,
   });
   const group = featureGroup(input.store, registration);
-  const owner = group[0] ?? registration.worktree;
+  const owner = leaseOwner(group, registration);
   const observed = input.allocate === false
     ? resolveExistingEndpoints(input.store, {
       ...(config.value.ports === undefined ? {} : { ports: config.value.ports }),
@@ -276,11 +277,50 @@ function proxyHostnameOrigins(
   return origins;
 }
 
-export function findRegistration(store: StateRegistrationReader, cwd: string): Registration {
+/**
+ * The group member new shared leases are recorded on: its first live worktree. `featureGroup`
+ * keeps the caller's own worktree whatever its state, and a dead one that sorts first used to
+ * become the owner -- so a lease landed on a row reconcile releases on its next pass, and the
+ * following allocation moved the feature to another port while its tasks were still running.
+ */
+export function leaseOwner(group: readonly WorktreeRecord[], registration: Registration): WorktreeRecord {
+  return group.find((worktree) => !deadWorktreeStates.has(worktree.state)) ?? registration.worktree;
+}
+
+/**
+ * The directory's real path, which on a case-insensitive filesystem is also its real case, or
+ * `null` when it cannot be read (it no longer exists).
+ */
+function canonicalPath(path: string): string | null {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return null;
+  }
+}
+
+export function findRegistration(
+  store: StateRegistrationReader,
+  cwd: string,
+  canonical: (path: string) => string | null = canonicalPath,
+): Registration {
   const absolute = resolve(cwd);
-  const worktree = store.listWorktrees()
-    .filter((candidate) => containsPath(candidate.path, absolute))
-    .sort((left, right) => right.path.length - left.path.length)[0];
+  const worktrees = store.listWorktrees();
+  const containing = (path: string) => worktrees
+    .filter((candidate) => containsPath(candidate.path, path))
+    .sort((left, right) => right.path.length - left.path.length);
+  let worktree = containing(absolute)[0];
+  // A directory renamed under a running shell keeps the shell's old spelling in `cwd`. On a
+  // case-insensitive disk a change of case alone is such a rename, and the old spelling still
+  // reaches the directory, so it matched the old record Git no longer lists -- dead, and the
+  // wrong answer. The directory's real path names the record Git does list.
+  if (worktree === undefined || deadWorktreeStates.has(worktree.state)) {
+    const real = canonical(absolute);
+    const live = real === null || real === absolute
+      ? undefined
+      : containing(real).find((candidate) => !deadWorktreeStates.has(candidate.state));
+    worktree = live ?? worktree;
+  }
   if (worktree === undefined) {
     throw new DaemonRegistrationError(
       'This directory is not inside a worktree WTM has registered. Run `wtm init` in the workspace root.',

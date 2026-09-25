@@ -414,9 +414,7 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
         // since only full absence from the snapshot (the loop below) used to trigger release.
         // Skip mid-teardown states: something else already owns releasing their leases.
         if (snapshotRecord.prunableReason !== null && !cleanupOwnedStates.has(existing.state)) {
-          this.#database.prepare(`
-            UPDATE endpoint_leases SET state = 'RELEASED' WHERE worktree_id = ? AND state = 'ACTIVE'
-          `).run(existing.id);
+          this.#releaseOrHandOverLeases(existing, repository.workspace_id);
           this.#database.prepare("UPDATE worktrees SET state = 'ORPHANED', last_seen_at = ? WHERE id = ?")
             .run(timestamp, existing.id);
           const row = this.#database.prepare('SELECT * FROM worktrees WHERE id = ?').get(existing.id) as WorktreeRow;
@@ -470,9 +468,7 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
           // an older version, or by an interruption at exactly that moment — held its port for
           // the life of the database, with nothing able to reach it again. The statement costs
           // nothing once there is nothing left to release.
-          this.#database.prepare(`
-            UPDATE endpoint_leases SET state = 'RELEASED' WHERE worktree_id = ? AND state = 'ACTIVE'
-          `).run(existing.id);
+          this.#releaseOrHandOverLeases(existing, repository.workspace_id);
         }
         // CLEANING means a removal already reached its own `release-endpoints` stage
         // (`markWorktreeCleaning`) — the same removal's own `reconcile` stage, right here, is
@@ -1200,29 +1196,58 @@ export class SQLiteStateStore implements StateStore, FeatureCreationStore {
 
   reassignEndpointLeases(fromWorktreeId: string, toWorktreeId: string): number {
     this.#assertOpen();
-    return this.transaction(() => {
-      const leases = this.#database.prepare(`
-        SELECT * FROM endpoint_leases WHERE worktree_id = ? AND state = 'ACTIVE'
-      `).all(fromWorktreeId) as EndpointRow[];
-      let reassigned = 0;
-      for (const lease of leases) {
-        // `(worktree_id, name)` is unique, so a straight UPDATE can collide with a row the
-        // target already holds for the same name -- most plausibly a stale RELEASED lease from
-        // before this worktree joined the group. A live ACTIVE row at the target is left alone
-        // (something else already gave this name a home there); a stale one is cleared first.
-        const existingAtTarget = this.#database.prepare(`
-          SELECT id, state FROM endpoint_leases WHERE worktree_id = ? AND name = ?
-        `).get(toWorktreeId, lease.name) as { id: string; state: string } | undefined;
-        if (existingAtTarget?.state === 'ACTIVE') continue;
-        if (existingAtTarget !== undefined) {
-          this.#database.prepare('DELETE FROM endpoint_leases WHERE id = ?').run(existingAtTarget.id);
-        }
-        this.#database.prepare('UPDATE endpoint_leases SET worktree_id = ? WHERE id = ?')
-          .run(toWorktreeId, lease.id);
-        reassigned += 1;
+    return this.transaction(() => this.#reassignActiveLeases(fromWorktreeId, toWorktreeId));
+  }
+
+  #reassignActiveLeases(fromWorktreeId: string, toWorktreeId: string): number {
+    const leases = this.#database.prepare(`
+      SELECT * FROM endpoint_leases WHERE worktree_id = ? AND state = 'ACTIVE'
+    `).all(fromWorktreeId) as EndpointRow[];
+    let reassigned = 0;
+    for (const lease of leases) {
+      // `(worktree_id, name)` is unique, so a straight UPDATE can collide with a row the
+      // target already holds for the same name -- most plausibly a stale RELEASED lease from
+      // before this worktree joined the group. A live ACTIVE row at the target is left alone
+      // (something else already gave this name a home there); a stale one is cleared first.
+      const existingAtTarget = this.#database.prepare(`
+        SELECT id, state FROM endpoint_leases WHERE worktree_id = ? AND name = ?
+      `).get(toWorktreeId, lease.name) as { id: string; state: string } | undefined;
+      if (existingAtTarget?.state === 'ACTIVE') continue;
+      if (existingAtTarget !== undefined) {
+        this.#database.prepare('DELETE FROM endpoint_leases WHERE id = ?').run(existingAtTarget.id);
       }
-      return reassigned;
-    });
+      this.#database.prepare('UPDATE endpoint_leases SET worktree_id = ? WHERE id = ?')
+        .run(toWorktreeId, lease.id);
+      reassigned += 1;
+    }
+    return reassigned;
+  }
+
+  /**
+   * Gives up the leases of a worktree Git no longer reports -- unless another live worktree of
+   * the workspace is on the same branch. A feature's endpoints are leased once, on one of its
+   * worktrees, and every repository on the branch reads them; releasing them because that one
+   * worktree went away (removed outside `wtm remove`, or renamed, which on a case-insensitive
+   * disk can be a change of case alone) took the ports from siblings still running on them, and
+   * the next allocation found the preferred port busy with those very tasks and moved the whole
+   * feature. The sibling with the lowest path inherits them, which in a rename is the renamed
+   * worktree itself. Whatever it already held under the same name stays; the rest is released.
+   */
+  #releaseOrHandOverLeases(worktree: WorktreeRow, workspaceId: string): void {
+    if (worktree.branch !== null) {
+      const heir = this.#database.prepare(`
+        SELECT candidate.id FROM worktrees AS candidate
+        JOIN repositories AS repository ON repository.id = candidate.repository_id
+        WHERE repository.workspace_id = ? AND candidate.branch = ? AND candidate.id != ?
+          AND candidate.state NOT IN ('ORPHANED', 'CLEANING', 'REMOVED', 'DEGRADED_CLEANUP')
+        ORDER BY candidate.path, candidate.id
+        LIMIT 1
+      `).get(workspaceId, worktree.branch, worktree.id) as { id: string } | undefined;
+      if (heir !== undefined) this.#reassignActiveLeases(worktree.id, heir.id);
+    }
+    this.#database.prepare(`
+      UPDATE endpoint_leases SET state = 'RELEASED' WHERE worktree_id = ? AND state = 'ACTIVE'
+    `).run(worktree.id);
   }
 
   createManagedProcess(

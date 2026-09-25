@@ -39,6 +39,32 @@ WTM guarantees no collision among active WTM-managed leases. External processes 
 
 A lease belongs to a worktree, so a worktree Git no longer reports gives its ports back: reconciliation releases every active lease of a worktree it marks `ORPHANED`. Otherwise a workspace that opens and finishes ten branches ends up holding ten dead leases inside a fixed band, and `wtm ports` lists addresses for directories that are gone. Releasing is reversible — a worktree that reappears reactivates its own lease and keeps its port, unless something else has taken it meanwhile.
 
+A feature's leases are the exception. They are recorded on one worktree of the feature and read by
+every worktree on the same branch, so when that one worktree leaves Git's listing while a live
+worktree of the workspace is still on its branch, reconciliation hands the leases to that sibling
+(the one with the lowest path) instead of releasing them. Releasing them took the ports away from
+tasks still running on them, and the next allocation found the preferred port busy with those same
+tasks and moved the feature. A renamed worktree is the common case: on a case-insensitive disk a
+change of case alone is a rename, and the renamed worktree takes its own ports back.
+
+When do leases change:
+
+- A new lease is taken only by a command that is about to run something: `wtm start`, `wtm
+  restart`, `wtm run`, `wtm exec`, and the daemon's eager preparation (`[prepare] mode = "eager"`).
+  `wtm env` and `wtm explain` also lease, because they answer with the values a task would get.
+  `wtm resolve`, `wtm status`, `wtm doctor`, `wtm plan`, `wtm ports` and `wtm tui` never do.
+  Before these reports stopped leasing, a worktree that never ran a task held a port for every
+  `[ports.*]` endpoint as soon as an agent asked about it.
+- The first lease for a feature covers every `[ports.*]` endpoint, not only the ones the task uses.
+  This keeps the guarantee that every repository of a feature sees the same `{port.<name>}`, and
+  that `{cors.origins}` names every origin of the feature.
+- A feature's existing active lease is reused as it is, without a bind probe. The port a running
+  task holds is busy by definition, and probing it would move the feature away from its own task.
+- New leases are recorded on a live worktree of the feature, never on an `ORPHANED` or
+  mid-teardown one that reconciliation would release on its next pass. A shell whose working
+  directory still spells a renamed worktree's old path resolves to the worktree Git lists now,
+  through the directory's real path.
+
 One allocation sends at most 256 candidates to one short-lived helper, inside the same
 SQLite transaction that checks leases and persists the selected endpoint. The compatible
 existing lease is considered first, then the configured preference and ascending range.
