@@ -7,6 +7,14 @@ All notable changes are documented here. This project follows Semantic Versionin
 Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract
 are unstable, and a breaking change may land in a minor release without a deprecation window.
 
+### Fixed
+
+- The tag workflow's `gh release create` step failed on the macOS runner's bash 3.2 when no Windows
+  archive was produced: the quoted expansion of an empty array is an unbound variable there under
+  `set -u`. v0.2.0-rc.3's four archives passed the gate and were attested, then the step stopped
+  before creating the release, which was published by hand from that run's artifacts. The
+  expansion is guarded, and a test fails on any unguarded array expansion in a `set -u` step.
+
 ## [0.2.0-rc.3] - 2026-09-25
 
 Targeted at **`v0.2.0`**. This project is still `0.x`: the public API and the on-disk state contract
