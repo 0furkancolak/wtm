@@ -110,7 +110,7 @@ it is the cause — the limit `socket-path` measures against is that platform's 
 | `git` | Whether every registered repository is still on disk |
 | `config` | Whether the configuration resolves, and whether `[ports].range` can offer the ports it prefers |
 | `adapters` | Which built-in adapters are in force, and why a detected one was left out |
-| `worker-env` | For every Cloudflare worker configuration in this worktree (`wrangler.json`/`.jsonc`/`.toml`, plus the one each `wrangler dev` task points at), which variables WTM sets that the worker's own files (`vars`, `.dev.vars`, `.env`) also define and that no `worker_vars`/`--var` forwards. A `warning` names the files, the variables and the `worker_vars` line that fixes it. Reads variable names only, and leases nothing |
+| `worker-env` | For every Cloudflare worker configuration in this worktree (`wrangler.json`/`.jsonc`/`.toml`, plus the one each `wrangler dev` task points at), which variables WTM sets that the worker's own files (`vars`, `.dev.vars`, `.env`) also define and that no `worker_vars`/`--var` forwards. For a configuration no `wrangler dev` task runs, only its `vars` count: app code that reads the wrangler config misses WTM's value, while `.env` loses to the process environment. A `warning` names the files, the variables and the `worker_vars` line that fixes it. Reads variable names only, and leases nothing |
 | `resources` | How many declared resources are in place, and why one is not |
 | `ports` | How many endpoints the workspace holds, and whether two worktrees hold the same one |
 | `process-records` | How many supervised tasks are running, and which records name a process that is gone |

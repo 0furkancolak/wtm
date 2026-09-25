@@ -56,7 +56,12 @@ export async function inspectWorkerEnvironments(runtime: WorktreeRuntime): Promi
     ...Object.keys(runtime.config.environment ?? {}),
     ...Object.keys(runtime.repoEnvironment ?? {}),
   ];
-  const locations = new Map<string, { directory: string; definitions: Record<string, string>; tasks: WorkerTaskReport[] }>();
+  const locations = new Map<string, {
+    directory: string;
+    configFile: string;
+    definitions: Record<string, string>;
+    tasks: WorkerTaskReport[];
+  }>();
   const locate = async (cwd: string, configPath: string | undefined, environment: string | undefined) => {
     const configFile = await findWranglerConfig({ cwd, ...(configPath === undefined ? {} : { configPath }) });
     if (configFile === undefined) return undefined;
@@ -68,7 +73,7 @@ export async function inspectWorkerEnvironments(runtime: WorktreeRuntime): Promi
         configPath: configFile,
         ...(environment === undefined ? {} : { environment }),
       });
-      location = { directory: relative(root, cwd) || '.', definitions, tasks: [] };
+      location = { directory: relative(root, cwd) || '.', configFile: relative(root, configFile) || configFile, definitions, tasks: [] };
       locations.set(key, location);
     }
     return location;
@@ -111,8 +116,15 @@ export async function inspectWorkerEnvironments(runtime: WorktreeRuntime): Promi
       directory: location.directory,
       tasks: location.tasks.map(({ task }) => task),
       unforwardedBy: location.tasks.filter(({ report }) => report.shadowed.length > 0).map(({ task }) => task),
+      // With no `wrangler dev` here, `.dev.vars` and `.env` are read by nothing that ranks them above
+      // the process environment (a framework loading `.env` lets the environment win); only code
+      // that reads the wrangler configuration itself can miss WTM's value.
       shadowed: location.tasks.length === 0
-        ? analyzeWorkerEnvironment({ environmentNames: baseNames, forwarded: [], definitions: location.definitions }).shadowed
+        ? analyzeWorkerEnvironment({
+          environmentNames: baseNames,
+          forwarded: [],
+          definitions: Object.fromEntries(Object.entries(location.definitions).filter(([, file]) => file === location.configFile)),
+        }).shadowed
         : uniqueByName(location.tasks.flatMap(({ report }) => report.shadowed)),
     })),
   };

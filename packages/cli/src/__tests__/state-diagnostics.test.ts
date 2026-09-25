@@ -1127,6 +1127,15 @@ describe('the worker-env check', () => {
     expect(finding?.message).toContain('reads it from wrangler.json');
   });
 
+  it('does not count .env or .dev.vars where no wrangler dev task runs, since only wrangler reads them over the environment', async () => {
+    const finding = await doctorForWorker(
+      workerToml('run = ["bun", "run", "dev"]'),
+      { 'wrangler.json': '{ "vars": { "APP_ENV": "dev" } }', '.env': 'API_URL=http://localhost:4000\n' },
+    );
+
+    expect(finding).toMatchObject({ status: 'pass', details: { workers: 1, shadowed: '' } });
+  });
+
   it('passes quietly where there is no worker at all', async () => {
     expect(await doctorForWorker(workerToml('run = ["bun", "run", "dev"]'), {}))
       .toMatchObject({ status: 'pass', details: { workers: 0 } });
