@@ -550,7 +550,9 @@ jobs:
           # from a release. The Windows archive is optional (`requiredReleaseTargets`) until todo
           # item 9 lands, so it is attached only when `verify-windows` actually produced one --
           # `dist/release/*.zip` expands to nothing and drops out of the argument list entirely
-          # under `nullglob` rather than reaching `gh` as a literal, nonexistent path.
+          # under `nullglob` rather than reaching `gh` as a literal, nonexistent path. The expansion
+          # is guarded because this runner's bash is 3.2, where the quoted `[@]` expansion of an empty
+          # array is an unbound variable under `set -u`: v0.2.0-rc.3's publish died here with no Windows zip.
           shopt -s nullglob
           zip_archives=(dist/release/*.zip)
           gh release create "${{ github.ref_name }}" \
@@ -561,7 +563,7 @@ jobs:
             dist/release/wtm-darwin-x64.tar.gz \
             dist/release/wtm-linux-x64.tar.gz \
             dist/release/wtm-linux-arm64.tar.gz \
-            "${zip_archives[@]}" \
+            ${zip_archives[@]+"${zip_archives[@]}"} \
             dist/release/SHA256SUMS
 
       - name: Publish to npm with provenance

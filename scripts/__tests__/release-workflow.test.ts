@@ -471,6 +471,25 @@ function duplicateKeys(source: string): string[] {
 }
 
 describe('workflow files', () => {
+  test('never expand a possibly empty array unguarded under set -u', () => {
+    // macOS runners run bash 3.2, where `"${a[@]}"` of an empty array is an unbound variable
+    // under `set -u`. The publish step of v0.2.0-rc.3 died on exactly that, with no Windows zip
+    // to attach, after every archive had passed the gate. `${a[@]+"${a[@]}"}` is the portable form.
+    for (const name of ['ci.yml', 'release.yml']) {
+      for (const [jobName, job] of Object.entries(workflow(name).jobs ?? {})) {
+        for (const step of job.steps ?? []) {
+          const run = step.run ?? '';
+          if (!/set -[a-z]*u/u.test(run)) continue;
+          const unguarded = [...run.matchAll(/(\$\{(\w+)\[@\]\+)?"\$\{(\w+)\[@\]\}"/gu)]
+            .filter((match) => match[1] === undefined)
+            .map((match) => match[0]);
+          expect({ name, jobName, step: step.name ?? step.uses, unguarded })
+            .toEqual({ name, jobName, step: step.name ?? step.uses, unguarded: [] });
+        }
+      }
+    }
+  });
+
   test('define no key twice in one mapping', () => {
     for (const name of ['ci.yml', 'release.yml']) {
       expect({ name, duplicates: duplicateKeys(readFileSync(`${root}.github/workflows/${name}`, 'utf8')) })
